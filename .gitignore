@@ -1,0 +1,18 @@
+# Backups / scratch
+*.bak
+*.bak_*
+*.with_reacq_fix.bak
+*.bak_precmdbox
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Dated backup snapshots
+_opt_backup_*/
+
+# Run logs / transient
+*.err
+_lastrun_*
+last_target.txt
+frame.jpg

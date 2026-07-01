@@ -1,0 +1,27 @@
+#!/bin/bash
+# Launch the K1 person lock-and-handoff follow. args: <mode preview|drive> [topic]
+# Marker = one-time lock onto the human at the marker, then follows THAT PERSON (YOLO) markerlessly;
+# re-show the marker to re-seed/recover. preview = detect + print only (never moves). drive = walk to follow (ARM-gated by the app).
+# Compiles loco_follow_bridge from source on first drive (verified g++ recipe).
+source /opt/ros/humble/setup.bash 2>/dev/null
+source /opt/booster/BoosterRos2/install/setup.bash 2>/dev/null
+cd /home/booster
+MODE="${1:-preview}"
+TOPIC="${2:-/boostercamera/head/raw/rgb}"
+shift 2 2>/dev/null || true   # remaining args ("$@") pass through to the node
+                              # (e.g. --stream --standoff-m 1.2 --vx-max 0.18 from the Tracker page)
+SDK=/home/booster/Workspace/booster_robotics_sdk
+BIN=/home/booster/loco_follow_bridge
+SRC=/home/booster/loco_follow_bridge.cpp
+if [ "$MODE" = "drive" ]; then
+  if [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
+    echo "[run_follow] compiling loco_follow_bridge ..."
+    g++ -std=c++17 "$SRC" -I "$SDK/include" "$SDK/lib/aarch64/libbooster_robotics_sdk.a" -lfastrtps -lfastcdr -lpthread -o "$BIN" || { echo "[run_follow] COMPILE FAILED"; exit 3; }
+    echo "[run_follow] compiled OK."
+  fi
+  # stderr (the node's log lines in --stream mode) must flow to the ssh pipe so K1Finder can show
+  # them; tee keeps an on-robot copy too. (Previously 2>file swallowed every diagnostic.)
+  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BIN" --topic "$TOPIC" "$@" 2> >(tee /home/booster/k1_follow.err >&2)
+else
+  exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" "$@" 2> >(tee /home/booster/k1_follow.err >&2)
+fi
