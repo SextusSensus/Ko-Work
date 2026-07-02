@@ -6,7 +6,7 @@ A zero-dependency Windows desktop app that scans your local network to discover 
 Built with PowerShell + Windows Forms, so it runs natively on Windows 11 with
 **nothing to install** (no Python, no Node).
 
-The app has five tabs.
+The app has six tabs.
 
 ### Tab 1 - Discover
 
@@ -127,6 +127,28 @@ The robot-side generator is `tree_manifest.py` (lives next to the app, deployed 
 each Refresh). All the app's robot paths were verified against this manifest, so
 the loco client, headers, static lib, and helper-script locations are real, not
 assumed.
+
+### Tab 6 - Tracker (person-follow)
+
+The person lock-and-handoff follow (`follow_person_k1.py`, deployed on each start
+together with `loco_follow_bridge.cpp` + `run_follow.sh`). Lock onto a person via
+gesture or ArUco marker, then the robot follows THAT person markerlessly
+(YOLO + OSNet deep re-ID over TensorRT on the Orin). PREVIEW never moves;
+walking requires **DRIVE (walk)** + **ARM MOTION** + a typed confirm.
+
+- **Perception row**: appearance backend (`global` histogram / `osnet` deep re-ID —
+  default osnet; the ReID ONNX is auto-staged and size-verified), `Auto re-acq`
+  (passive, audit-only re-lock vote), `Range fence`, and the red **`Arm re-lock`**
+  (default OFF — gated on the arm-validation runbook in
+  `_follow_autonomy/ARM_VALIDATION_RUNBOOK.md`).
+- **REID badge**: live engine health — green `OSNet(TRT/CUDA)`, amber `CPU-EP`,
+  red `HIST fallback` / `DEGRADED`. The node refuses armed re-lock on anything
+  but a healthy GPU engine.
+- **Safety spine** (2026-07 hardening): velocity slew limits, depth-validated
+  close-range floor + geofence, depth-fps floor → turn-only, anti-lunge relock
+  range gates, DRIVE precondition (refuses to walk on unhealthy sensors), and a
+  colored health log (whitelisted node telemetry; faults red/amber). Current
+  state + flag reference: `_follow_autonomy/HARDENING_2026-07.md`.
 
 ## How to run
 

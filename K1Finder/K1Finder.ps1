@@ -128,6 +128,39 @@ function Ensure-GestureModel([string]$ip){
     return $false
 }
 
+# Make the OSNet ReID ONNX exist on the robot before an --appearance osnet follow. Priority:
+#   1) already present;  2) a local copy (matching basename) next to the app -> scp it (OFFLINE-safe).
+# NO robot-side export branch (OSNet has no ultralytics one-liner -> pre-stage the .onnx). Returns $true
+# if present afterward. On $false the node still launches and SAFELY falls back to a colour histogram
+# (the REID badge shows HIST red and the node's arm-gate auto-refuses armed re-lock). Never throws.
+function Ensure-ReidModel([string]$ip){
+    $remote = $script:ReidEngine
+    if(Test-RobotFile $ip $remote){ Add-LogTrack ('ReID engine present: {0}' -f $remote) $green; return $true }
+    $local = Join-Path $SCRIPT_DIR (Split-Path $remote -Leaf)
+    if(Test-Path $local){
+        Add-LogTrack ('Staging ReID engine ({0}) to robot...' -f (Split-Path $local -Leaf)) $accent
+        try{
+            $rdir = (Split-Path $remote -Parent) -replace '\\','/'
+            $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("mkdir -p '{0}'" -f $rdir))) -NoNewWindow -PassThru; $null = $p.WaitForExit(10000)
+            $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($local, ("{0}@{1}:{2}" -f $script:SshUser,$ip,$remote))) -NoNewWindow -PassThru
+            # APP-4: a timed-out scp keeps writing in the background and a bare `test -f` passes on
+            # the truncated in-progress file -> KILL on timeout, then verify the REMOTE SIZE below.
+            if(-not $p.WaitForExit(120000)){ try{ $p.Kill() }catch{}; $null=$p.WaitForExit(2000); Add-LogTrack 'scp timed out -> staging treated as FAILED' $red }
+        }catch{ Add-LogTrack ('scp failed: {0}' -f $_) $red }
+        # Size-verified presence (not just existence): catches truncated/aborted transfers. Remote
+        # command uses NO double quotes (safe through Start-Process arg quoting, like Test-RobotFile).
+        $llen = (Get-Item $local).Length
+        $tmp = Join-Path $env:TEMP 'k1_reid_sz.txt'
+        try{
+            Remove-Item $tmp -ErrorAction SilentlyContinue
+            $q = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ('test -f ''{0}'' && [ $(stat -c%s ''{0}'') -eq {1} ] && echo SIZEOK || echo BAD' -f $remote,$llen))) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
+            $null = $q.WaitForExit(10000)
+            if((Get-Content $tmp -Raw -ErrorAction SilentlyContinue) -match 'SIZEOK'){ Add-LogTrack 'ReID engine staged (scp, size verified).' $green; return $true }
+        }catch{}
+    }
+    Add-LogTrack ('ReID engine unavailable ({0}) -> deep re-ID falls back to histogram; armed re-lock auto-refused. Pre-stage {1} on the robot (or next to the app) to enable OSNet.' -f $remote, (Split-Path $remote -Leaf)) $amber
+    return $false
+}
 # ---- Reachability helper ----------------------------------------------------
 function Test-K1Reachable {
     param([string]$ip)
@@ -229,6 +262,7 @@ $liveSync = [hashtable]::Synchronized(@{ Jpeg=$null; Seq=0; Frames=0; Stop=$fals
 # ---- Tracker (marker-seeded markerless PERSON-follow): annotated stream + status byte ----
 $trackSync = [hashtable]::Synchronized(@{ Jpeg=$null; Seq=0; Frames=0; Stop=$false; Done=$false; Err=''; Lock=0 })
 $script:TrackProc=$null; $script:TrackPS=$null; $script:TrackRS=$null; $script:TrackOn=$false; $script:TrackDrive=$false; $script:TrackErrSub=$null
+$script:HbProc=$null   # Deadman-HB relay ssh process (P2 #12); alive only while the follow runs with 'Deadman HB' checked
 $script:trackMs=$null; $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1
 $script:TrackStart=[datetime]::MinValue
 $script:TrackMaxSec=125          # UI-side hard session watchdog (python also self-limits at 120s)
@@ -542,13 +576,22 @@ $trackMuteChk=New-Object System.Windows.Forms.CheckBox; $trackMuteChk.Text='mute
 
 # --- 3rd row: perception backend + per-session feature toggles (the new follow-mode flags) ---
 $lblPercep=New-Object System.Windows.Forms.Label; $lblPercep.Text='Perception:'; $lblPercep.AutoSize=$true; $lblPercep.Location='10,112'; $grpTrackCtl.Controls.Add($lblPercep)
-$trackApp=New-Object System.Windows.Forms.ComboBox; $trackApp.DropDownStyle='DropDownList'; $trackApp.Size='92,24'; $trackApp.Location='88,108'; [void]$trackApp.Items.AddRange(@('global','striped','osnet')); $trackApp.SelectedIndex=2; $grpTrackCtl.Controls.Add($trackApp)   # default OSNet (deep ReID; armed re-lock needs it)
+# 'striped' removed from the operator-facing list: it is the documented lock-loser (degraded then lost the lock).
+# The node's --appearance striped path is left intact for a dev who passes it via the CLI (Get-TrackExtraArgs still
+# emits '--appearance striped' when $app -eq 'striped'). Items are now global,osnet -> osnet is index 1.
+$trackApp=New-Object System.Windows.Forms.ComboBox; $trackApp.DropDownStyle='DropDownList'; $trackApp.Size='92,24'; $trackApp.Location='88,108'; [void]$trackApp.Items.AddRange(@('global','osnet')); $trackApp.SelectedIndex=1; $grpTrackCtl.Controls.Add($trackApp)   # default OSNet (deep ReID; armed re-lock needs it)
 $trackCoast=New-Object System.Windows.Forms.CheckBox; $trackCoast.Text='Coast occlusions'; $trackCoast.AutoSize=$true; $trackCoast.Location='192,110'; $grpTrackCtl.Controls.Add($trackCoast)
 $trackReacq=New-Object System.Windows.Forms.CheckBox; $trackReacq.Text='Auto re-acq'; $trackReacq.AutoSize=$true; $trackReacq.Location='322,110'; $trackReacq.Checked=$true; $grpTrackCtl.Controls.Add($trackReacq)
 $trackFence=New-Object System.Windows.Forms.CheckBox; $trackFence.Text='Range fence'; $trackFence.AutoSize=$true; $trackFence.Location='416,110'; $grpTrackCtl.Controls.Add($trackFence)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
 $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
+# Deadman HB (P2 #12): passes --require-heartbeat to the node (which also env-arms the bridge's own
+# K1_REQUIRE_HB watchdog) and starts the app-side heartbeat relay. The remote loop touches the hb
+# file ONLY on bytes RECEIVED from this app, so mtime freshness == end-to-end connectivity: WiFi
+# drop / app freeze / laptop death -> touches stop -> node zeroes (400ms) + bridge kPrepares (1.5s).
+# Default OFF (tethered byte-identical). One pillar of the untethered gate (UNTETHERED_FOLLOW.md).
+$trackHbChk=New-Object System.Windows.Forms.CheckBox; $trackHbChk.Text='Deadman HB'; $trackHbChk.AutoSize=$true; $trackHbChk.Location='610,110'; $trackHbChk.ForeColor=$red; $trackHbChk.Font=$fontBold; $grpTrackCtl.Controls.Add($trackHbChk)
 
 # --- Acquisition + command-surface toggles (LAUNCH-time for gesture/A-B; runtime for voice) ---
 # Gesture lock = --lock-trigger gesture (raised hand seeds instead of the marker). A/B = --lock-trigger
@@ -558,6 +601,9 @@ $chkGesture=New-Object System.Windows.Forms.CheckBox; $chkGesture.Text='Gesture 
 $chkAB=New-Object System.Windows.Forms.CheckBox; $chkAB.Text='A/B (compare)'; $chkAB.AutoSize=$true; $chkAB.Location='120,154'; $grpTrackCtl.Controls.Add($chkAB)
 $chkVoice=New-Object System.Windows.Forms.CheckBox; $chkVoice.Text='Voice cmds'; $chkVoice.AutoSize=$true; $chkVoice.Location='240,154'; $chkVoice.ForeColor=$accent; $chkVoice.Font=$fontBold; $chkVoice.Enabled=$false; $grpTrackCtl.Controls.Add($chkVoice)
 $voiceStatus=New-Object System.Windows.Forms.Label; $voiceStatus.Text='Voice: off'; $voiceStatus.AutoSize=$true; $voiceStatus.Location='340,156'; $voiceStatus.ForeColor=[System.Drawing.Color]::DimGray; $grpTrackCtl.Controls.Add($voiceStatus)
+# --- persistent ReID-health badge (parsed from the node's REID-ENGINE ok/FAILED + REID-DEGRADED stderr) ---
+# OSNet(TRT)/OSNet(CUDA)=green, CPU-EP=amber, HIST fallback / DEGRADED=red, '--'=idle. Set by Update-ReidBadge.
+$reidBadge=New-Object System.Windows.Forms.Label; $reidBadge.Text='REID: --'; $reidBadge.AutoSize=$false; $reidBadge.Size='168,22'; $reidBadge.TextAlign='MiddleCenter'; $reidBadge.Location='470,155'; $reidBadge.ForeColor='White'; $reidBadge.BackColor=[System.Drawing.Color]::Gray; $reidBadge.Font=$fontBold; $reidBadge.BorderStyle='FixedSingle'; $grpTrackCtl.Controls.Add($reidBadge)
 $chkGesture.Add_CheckedChanged({ if($chkGesture.Checked -and $chkAB.Checked){ $chkAB.Checked=$false } })
 $chkAB.Add_CheckedChanged({ if($chkAB.Checked -and $chkGesture.Checked){ $chkGesture.Checked=$false } })
 $chkVoice.Add_CheckedChanged({ if($chkVoice.Checked){ Start-Voice } else { Stop-Voice } })
@@ -748,6 +794,9 @@ function Get-TrackExtraArgs {
         $a += '--arm-reacquire'
     }
     if($trackFence -and $trackFence.Checked){ $a += '--max-follow-range 4.0' }
+    # Deadman HB: node gates velocity on a fresh /tmp/k1_hb mtime AND env-arms the bridge's own
+    # heartbeat watchdog. The app-side relay (Start-HbRelay) is started by Start-Tracker.
+    if($trackHbChk -and $trackHbChk.Checked){ $a += '--require-heartbeat' }
     # Lock trigger (gesture control / A/B to retire ArUco). A/B (--lock-trigger both) OVERRIDES the
     # gesture toggle: ArUco still DRIVES the seed while gesture audits (GBIND lines) -- the safe way
     # to compare before flipping the default. gesture/both both need the pose model on the robot.
@@ -774,6 +823,71 @@ function Set-TrackBadge([int]$st){
     }
 }
 
+# --- ReID-health badge (UI thread only). State is a short token; DEGRADED latches until a de-latch line. ---
+$script:ReidBadgeState=''
+$script:ReidLastGood='CUDA'   # last CONFIRMED GPU-class provider (TRT/CUDA); restored on a mid-run recovery
+function Set-ReidBadge([string]$state){
+    # Idempotent: skip repaint if unchanged (the node re-logs REID-ENGINE ok only once, but DEGRADED/
+    # recovered can repeat). DEGRADED/HIST outrank a later CPU-EP/OK read within a session -> see Update-ReidBadge.
+    if($state -eq $script:ReidBadgeState){ return }
+    $script:ReidBadgeState=$state
+    if($state -in @('TRT','CUDA','CPU')){ $script:ReidLastGood=$state }   # remember the last CONFIRMED provider (CPU too -- a recovery on a CPU-EP host must restore amber CPU, never a guessed green)
+    switch($state){
+        'TRT'     { $reidBadge.Text='REID: OSNet(TRT)';   $reidBadge.BackColor=$green }
+        'CUDA'    { $reidBadge.Text='REID: OSNet(CUDA)';  $reidBadge.BackColor=$green }
+        'CPU'     { $reidBadge.Text='REID: CPU-EP';       $reidBadge.BackColor=$amber }
+        'HIST'    { $reidBadge.Text='REID: HIST fallback';$reidBadge.BackColor=$red }
+        'DEGRADED'{ $reidBadge.Text='REID: DEGRADED';     $reidBadge.BackColor=$red }
+        default   { $reidBadge.Text='REID: --';           $reidBadge.BackColor=[System.Drawing.Color]::Gray }
+    }
+}
+
+# Parse one whitelisted stderr line for ReID health and drive the badge. Called from the frame-timer drain.
+# Contract prefixes: 'REID-ENGINE ok ... providers=[...]' (init OK) / 'REID-ENGINE ... FAILED ...' or a
+# color_hist fallback line (load-fail -> HIST) / 'REID-DEGRADED <reason> ...' (mid-run fault, latches).
+function Update-ReidBadge([string]$line){
+    if(-not $line -or $line -notmatch '^REID'){ return }
+    # DEGRADED latch: once degraded, stay red until the node logs a recovery/de-latch line.
+    if($line -match '^REID-DEGRADED'){
+        # CPU-EP fallback is degraded-but-benign (amber, arm auto-refused) -- NOT the hard red all-none latch.
+        # It is emitted at init BEFORE the 'REID-ENGINE ok providers=CPU' line, so special-case it here so the
+        # amber CPU state is reachable (otherwise the DEGRADED guard below swallows the ok line).
+        if($line -match '(?i)cpu-?ep'){ Set-ReidBadge 'CPU'; return }
+        # mid-run recovery/de-latch -> restore the LAST CONFIRMED provider (TRT/CUDA), not a guessed one.
+        if($line -match '(?i)recover|de-?latch|cleared'){ if($script:ReidBadgeState -eq 'DEGRADED'){ Set-ReidBadge $script:ReidLastGood }; return }
+        Set-ReidBadge 'DEGRADED'; return
+    }
+    if($script:ReidBadgeState -eq 'DEGRADED'){ return }   # latched red overrides init chatter until recovery
+    if($line -match '^REID-ENGINE'){
+        if($line -match '(?i)fail|color_hist|hist[- ]?fallback'){ Set-ReidBadge 'HIST'; return }
+        if($line -match '(?i)ok'){
+            if($line -match '(?i)tensorrt|trt'){ Set-ReidBadge 'TRT' }
+            elseif($line -match '(?i)cuda'){ Set-ReidBadge 'CUDA' }
+            elseif($line -match '(?i)cpuexecutionprovider|cpu-?ep|cpu'){ Set-ReidBadge 'CPU' }
+            else { Set-ReidBadge 'CUDA' }   # 'ok' with an unrecognized provider string -> assume GPU-class (green), not a fault
+        }
+    }
+}
+
+# P0 observability: colour a whitelisted node stderr line by fault family for the Tracker log.
+# red = fault (FAILED / REID-DEGRADED / HIST / NO-FRAME / DEPTH DOWN|STARVED / RELOC REJECT|ERR),
+# amber = warn (CPU-EP / RELOC HOLD), else the normal $accent.
+function Get-TrackLineColor([string]$line){
+    if(-not $line){ return $accent }
+    # good-news / recovery lines are NOT faults (so 'DEPTH-STARVED cleared', 'REID-DEGRADED recovered',
+    # 'forward vx re-enabled' don't read red via the STARVED/DEGRADED substrings below).
+    if($line -match '(?i)cleared|re-enabled|recover|DRIVE-READY'){ return $green }
+    # CPU-EP fallback: degraded-but-benign -> amber (checked before the red REID-DEGRADED so 'REID-DEGRADED
+    # cpu-ep' is amber, matching the badge). Note 'cpu-?ep' does NOT match 'CPUExecutionProvider' in the
+    # healthy providers list, so the good init line stays $accent.
+    if($line -match '(?i)cpu-?ep'){ return $amber }
+    # amber checked BEFORE red: 'DRIVE-ABORT ping/prep/walk failed' contains 'failed' and would
+    # otherwise paint red; DRIVE-ABORT is a refusal (amber) by contract. Verified no red-family
+    # line matches this amber regex.
+    if($line -match '(?i)RELOC.*HOLD|DEPTH STALE|DRIVE-ABORT|ARM-REFUSED'){ return $amber }
+    if($line -match '(?i)FAILED|REID-DEGRADED|HIST|NO-FRAME|DEPTH.*(DOWN|STARVED)|RELOC.*(REJECT|ERR)'){ return $red }
+    return $accent
+}
 # Single-driver coordination: while the Tracker runs, lock out the Control-tab follow,
 # the manual controller connect, and this tab's own DRIVE/ARM mode switches; restore on stop.
 function Set-TrackLockout([bool]$tracking){
@@ -915,6 +1029,18 @@ function Start-Tracker([bool]$drive){
             if($r -ne 'OK'){ return $false }
         }
     }
+    # P0 ITEM 6: OSNet backend selected -> PREFLIGHT the ReID ONNX (static, file-present half; the dynamic
+    # 'init succeeded' half is the REID badge from the REID-ENGINE ok line). On a missing/unstageable engine
+    # we do NOT force 'striped' (a documented lock-loser) and do NOT silently arm: the node falls back to a
+    # colour histogram, the badge shows HIST (red), and the arm-gate auto-REFUSES armed re-lock. So: WARN + confirm.
+    $reidApp = if($trackApp -and $trackApp.SelectedItem){ [string]$trackApp.SelectedItem } else { 'global' }
+    if($reidApp -eq 'osnet'){
+        if(-not (Ensure-ReidModel $ip)){
+            $r=[System.Windows.Forms.MessageBox]::Show("The OSNet ReID engine ($script:ReidEngine) isn't on the robot and couldn't be auto-staged. Deep re-ID will run on a COLOUR-HISTOGRAM fallback (shown red on the REID badge) and ARMED markerless re-lock will be auto-refused. Start anyway?",'ReID engine missing',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
+            if($r -ne 'OK'){ return $false }
+            Add-LogTrack 'OSNet engine missing -> node falls back to histogram; armed re-lock auto-refused. Badge shows HIST.' $amber
+        }
+    }
     try{ $kp=Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip),'pkill -f follow_person_k1.py')) -NoNewWindow -PassThru; $null=$kp.WaitForExit(6000) }catch{}
     $trackSync.Stop=$false; $trackSync.Done=$false; $trackSync.Jpeg=$null; $trackSync.Seq=0; $trackSync.Frames=0; $trackSync.Err=''
     $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1; $trackSync.Lock=0
@@ -937,7 +1063,10 @@ function Start-Tracker([bool]$drive){
     $trackSync.ErrLines = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
     $errAction = {
         $d = $EventArgs.Data
-        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE )')){
+        # P0 OSNet-health: ALSO pass the ReID/reloc/depth/frame-stall families (REID-ENGINE, REID-DEGRADED,
+        # RELOC-*, DEPTH*/DEPTH-STARVED, NO-FRAME). These prefixes are emitted by follow_person_k1.py's log()
+        # at column 0 (see the node<->app log-prefix contract); the UI badge + amber/red coloring parse them.
+        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB)')){
             $Event.MessageData.Enqueue($d)
         }
     }
@@ -949,6 +1078,10 @@ function Start-Tracker([bool]$drive){
     $script:TrackOn=$true; $script:TrackDrive=$drive; $script:TrackStart=[datetime]::Now
     Set-TrackLockout $true
     Set-TrackBadge 0
+    $script:ReidBadgeState=''; $script:ReidLastGood='CUDA'; Set-ReidBadge '--'   # clear stale health + provider memory from a prior session; repopulated from REID-ENGINE lines
+    # Deadman HB: start the relay BEFORE the node launches so /tmp/k1_hb is fresh at the node's
+    # first gate check (the node fails closed on a missing/stale file either way).
+    if($trackHbChk -and $trackHbChk.Checked){ Start-HbRelay $ip }
     if($drive){
         Add-LogTrack ("FOLLOW DRIVE started ($ip): standoff $standoff m, max speed $vxmax m/s. Show the marker to lock onto the person, then the robot WALKS to follow THAT PERSON. ~10s camera warmup. Toggle OFF / STOP halts + returns to PREP.") $red
         $statusLbl.Text="Tracker DRIVE active: $ip"
@@ -957,6 +1090,33 @@ function Start-Tracker([bool]$drive){
         $statusLbl.Text="Tracker preview active: $ip"
     }
     return $true
+}
+
+# --- Deadman-HB relay (P2 #12). The remote loop touches the hb file ONLY when a byte ARRIVES
+# from this app's stdin pipe (`while read; do touch; done` -- no timers), so the file's mtime is
+# PROOF of live app->robot connectivity. Any break in the chain (WiFi drop, app freeze, laptop
+# sleep, kill) stops the touches within one byte-interval -> node zeroes velocity at 400ms and
+# the bridge stands (kPrepare) at 1.5s. Bytes are pumped from the 40ms $mediaTimer (~25Hz).
+function Start-HbRelay([string]$ip){
+    Stop-HbRelay
+    try{
+        $psi=New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName='ssh.exe'
+        $psi.Arguments=(Get-SshOptString)+" $($script:SshUser)@$ip `"while read -r _; do touch /tmp/k1_hb; done`""
+        $psi.UseShellExecute=$false; $psi.RedirectStandardInput=$true; $psi.CreateNoWindow=$true
+        $p=New-Object System.Diagnostics.Process; $p.StartInfo=$psi
+        if($p.Start()){
+            $p.StandardInput.AutoFlush=$true
+            $script:HbProc=$p
+            Add-LogTrack 'Deadman HB relay started (byte-driven touch; link loss stands the robot; link RETURN auto-resumes the follow -- tethered semantics, see UNTETHERED_FOLLOW.md blocker 3).' $green
+        } else {
+            Add-LogTrack 'Deadman HB relay FAILED to start -> node holds zero velocity (fail-closed).' $red
+        }
+    }catch{ Add-LogTrack ("Deadman HB relay error: $_ -> node holds zero velocity (fail-closed).") $red }
+}
+function Stop-HbRelay{
+    try{ if($script:HbProc -and -not $script:HbProc.HasExited){ $script:HbProc.Kill() } }catch{}
+    $script:HbProc=$null
 }
 
 function Stop-Tracker([bool]$procAlreadyDead=$false){
@@ -968,6 +1128,7 @@ function Stop-Tracker([bool]$procAlreadyDead=$false){
     # LOCAL kill FIRST and unconditionally - never gated behind a WinForms control read that
     # could throw during FormClosing. Tearing down the local ssh starts the remote SIGHUP path.
     try{ if($script:TrackProc -and -not $script:TrackProc.HasExited){ $script:TrackProc.Kill() } }catch{}
+    Stop-HbRelay   # heartbeat relay dies with the follow; remote loop exits on stdin EOF
     # THEN an independent belt-and-suspenders pkill over a second short-lived ssh (control read guarded),
     # so the robot is safed even if the streaming socket is half-open. The node's SIGTERM handler does
     # stop + ChangeMode(kPrepare); killing the node also EOFs the bridge stdin, which safes loco too.
@@ -1170,6 +1331,11 @@ function Stop-Follow([bool]$procAlreadyDead=$false){
 # ============================================================================
 $mediaTimer=New-Object System.Windows.Forms.Timer; $mediaTimer.Interval=40
 $mediaTimer.Add_Tick({
+    # Deadman-HB byte pump (~25Hz at the 40ms tick): each byte makes the remote loop touch the
+    # hb file once. A UI-thread freeze stops the pump -> deadman trips (intended: a frozen
+    # operator app is NOT a live operator). Dead/failed relay writes are swallowed -- the node
+    # is already fail-closed without fresh touches.
+    if($script:HbProc){ try{ if(-not $script:HbProc.HasExited){ $script:HbProc.StandardInput.WriteLine('h') } }catch{} }
     # Control log drain (skip the PTY's echo of our own command codes)
     while($ctrlSync.Log.Count -gt 0){ $ln=$ctrlSync.Log.Dequeue(); if($ln){ $t=$ln.Trim(); if(-not $script:CtrlCmdSet[$t]){ Add-LogCtrl $ln } } }
     # Follow-marker log drain + UI-side completion/watchdog (mediaTimer = UI thread)
@@ -1202,7 +1368,58 @@ $mediaTimer.Add_Tick({
     # --- Tracker: process-exit + DRIVE watchdog (UI thread) -----------------
     if($script:TrackOn){
         if($script:TrackProc -and $script:TrackProc.HasExited){
-            Add-LogTrack 'Follow process exited; cleaning up.' $amber
+            # ITEM 9: diagnose WHY the follow ssh exited. $script:TrackProc is a raw System.Diagnostics.Process
+            # (New-Object + .Start()), so .ExitCode is reliable here after .HasExited. run_follow.sh exits 3 on
+            # 'COMPILE FAILED'; other non-zero = DRIVE-ABORT / node crash; 0 = normal stop / our own kill.
+            $ec = $null
+            try{ $ec = [int]$script:TrackProc.ExitCode }catch{ $ec = $null }
+            if($ec -eq $null){
+                Add-LogTrack 'Follow process exited (exit code unavailable); cleaning up.' $amber
+            }
+            elseif($ec -eq 0){
+                Add-LogTrack 'Follow process exited (0, normal stop); cleaning up.' $amber
+            }
+            else{
+                # exit 3 = bridge COMPILE FAILED (diagnostics in k1_compile.err -- k1_follow.err
+                # holds the PREVIOUS session at compile time); exit 4 = node REFUSED to drive
+                # (DRIVE-ABORT, deliberate); anything else = crash.
+                $tailFile = '/home/booster/k1_follow.err'
+                if($ec -eq 3){ $tailFile='/home/booster/k1_compile.err'; Add-LogTrack 'Follow process exited 3 = COMPILE FAILED (run_follow.sh). See k1_compile.err tail below.' $red }
+                elseif($ec -eq 4){ Add-LogTrack 'Follow process exited 4 = DRIVE-ABORT (node refused to walk -- see the amber DRIVE-ABORT line above and the tail below).' $amber }
+                else{ Add-LogTrack "Follow process exited $ec (crash). See k1_follow.err tail below." $red }
+                # Bounded ssh tail of the remote stderr log into the Tracker log (red). Own System.Diagnostics.Process
+                # with RedirectStandardOutput + WaitForExit(4000)+Kill so the UI thread can never hang. Reuses
+                # $SSH_OPTS / $script:SshUser like the pkill paths (lines 1016/1079).
+                $ipErr=''
+                try{ $ipErr=$ipTrack.Text.Trim() }catch{}
+                if($ipErr){
+                    try{
+                        $tpsi=New-Object System.Diagnostics.ProcessStartInfo
+                        $tpsi.FileName='ssh.exe'
+                        $tpsi.Arguments=(Get-SshOptString)+" $($script:SshUser)@$ipErr `"tail -n 20 $tailFile 2>/dev/null`""
+                        $tpsi.UseShellExecute=$false; $tpsi.RedirectStandardOutput=$true; $tpsi.RedirectStandardError=$false; $tpsi.CreateNoWindow=$true
+                        $tproc=New-Object System.Diagnostics.Process; $tproc.StartInfo=$tpsi
+                        if($tproc.Start()){
+                            # WAIT (bounded) BEFORE reading: ReadToEnd() blocks until the stream CLOSES, so
+                            # calling it first would hang the UI thread forever on a wedged ssh (the 4s bound
+                            # below would never be reached). A 20-line tail is far below the pipe buffer, so
+                            # wait-then-read cannot deadlock; after Kill the pipe closes and the read returns.
+                            if(-not $tproc.WaitForExit(4000)){ try{ $tproc.Kill() }catch{}; $null=$tproc.WaitForExit(1500) }
+                            $tout=$tproc.StandardOutput.ReadToEnd()
+                            if($tout){
+                                $tailName = Split-Path $tailFile -Leaf
+                                foreach($ln in ($tout -split "`r?`n")){ if($ln.Trim().Length -gt 0){ Add-LogTrack ("$tailName> "+$ln) $red } }
+                            } else {
+                                Add-LogTrack 'k1_follow.err> (empty or unreadable).' $amber
+                            }
+                        } else {
+                            Add-LogTrack 'k1_follow.err> could not start ssh to fetch tail.' $amber
+                        }
+                    }catch{ Add-LogTrack ("k1_follow.err tail failed: $_") $amber }
+                } else {
+                    Add-LogTrack 'k1_follow.err> no robot IP available to fetch tail.' $amber
+                }
+            }
             Stop-Tracker $true   # proc already dead
         }
         elseif($script:TrackDrive -and (([datetime]::Now - $script:TrackStart).TotalSeconds -gt $script:TrackMaxSec)){
@@ -1213,7 +1430,10 @@ $mediaTimer.Add_Tick({
     # --- Tracker: annotated frame + state badge + chime + status-transition log ---
     if($script:TrackOn -and $trackSync.ErrLines){
         $el=$null
-        while($trackSync.ErrLines.TryDequeue([ref]$el)){ Add-LogTrack $el $accent }   # node stderr -> Tracker log
+        while($trackSync.ErrLines.TryDequeue([ref]$el)){
+            Update-ReidBadge $el                                 # REID-* lines drive the persistent health badge
+            Add-LogTrack $el (Get-TrackLineColor $el)             # amber/red for fault families, $accent otherwise
+        }
     }
     if($script:TrackOn -and $trackSync.Seq -ne $script:trackLastSeq){
         $script:trackLastSeq=$trackSync.Seq

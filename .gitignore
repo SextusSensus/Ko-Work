@@ -16,3 +16,6 @@ _opt_backup_*/
 _lastrun_*
 last_target.txt
 frame.jpg
+
+# Session archive (moved backups + scratch; see _backups/README.txt)
+K1Finder/_backups/

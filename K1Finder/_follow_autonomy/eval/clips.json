@@ -1,0 +1,43 @@
+{
+  "_readme": "Replay-eval manifest (replay_eval.py expect --manifest clips.json). Clips come from runbook sessions: save the annotated stream or a phone video of each loss->relock sequence, scp to /home/booster/clips/. checks = python regexes over the node's decision-log lines. The four OPS_BEHAVIOR_EVAL clip families are stubbed below -- fill in real clip paths as they are recorded.",
+  "clips": [
+    {
+      "_family": "A: look-alike bystander -- the lock must never migrate",
+      "clip": "/home/booster/clips/A_lookalike.mp4",
+      "flags": "--appearance osnet --reid-engine /home/booster/reid/osnet_x0_25_msmt17.onnx --auto-reacquire",
+      "checks": [
+        { "require": "LOCKED person seeded|RESEED|GBIND" },
+        { "forbid": "RELOC-ERR" },
+        { "max": { "pattern": "AUTO-RELOCK", "n": 0 } }
+      ]
+    },
+    {
+      "_family": "B: brief occlusion -- coast through, no hard loss",
+      "clip": "/home/booster/clips/B_occlusion.mp4",
+      "flags": "--appearance osnet --reid-engine /home/booster/reid/osnet_x0_25_msmt17.onnx --coast-frames 6",
+      "checks": [
+        { "require": "COAST" },
+        { "max": { "pattern": "LOST target", "n": 0 } }
+      ]
+    },
+    {
+      "_family": "C: true exit + return -- audit vote must pass on the RIGHT person, never a stranger",
+      "clip": "/home/booster/clips/C_exit_return.mp4",
+      "flags": "--appearance osnet --reid-engine /home/booster/reid/osnet_x0_25_msmt17.onnx --auto-reacquire",
+      "checks": [
+        { "require": "LOST target" },
+        { "require": "RELOC-VOTE-PASS" },
+        { "forbid": "RELOC-ERR" }
+      ]
+    },
+    {
+      "_family": "E: crowd -- zero impostor admission to the gallery",
+      "clip": "/home/booster/clips/E_crowd.mp4",
+      "flags": "--appearance osnet --reid-engine /home/booster/reid/osnet_x0_25_msmt17.onnx --auto-reacquire",
+      "checks": [
+        { "max": { "pattern": "GALLERY-ADMIT.*anchor_sim=0\\.[0-4]", "n": 0 } },
+        { "forbid": "RELOC-REJECT-TELEPORT" }
+      ]
+    }
+  ]
+}

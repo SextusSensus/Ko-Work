@@ -75,6 +75,7 @@ import cv2
 
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
 
@@ -332,7 +333,9 @@ class GestureTrigger(LockTrigger):
         self.model = None
         self.ok = False
         self.ran_inference = False
-        self.holds = {}            # track_id -> consecutive confirmed-raise frames
+        self.holds = {}            # track_id -> confirmed-raise frames (with miss forgiveness)
+        self._miss = {}            # track_id -> consecutive missed pose frames (field fix: one
+                                   # blurry/low-conf frame used to HARD-RESET the whole hold)
         self._tick = 0
         self._cmd_tick = 0         # separate decimation counter for the in-follow STOP gesture
         self._stop_streak = 0      # consecutive STOP-gesture checks the seed held both hands up
@@ -494,11 +497,21 @@ class GestureTrigger(LockTrigger):
             return None                     # decimated (audit cadence)
         raisers, owners = self._raisers(frame, persons)
         self._log_latency()
+        # MISS FORGIVENESS (field fix 2026-07-02): a single blurry / kp-conf-dip pose frame used
+        # to hard-reset the whole hold, which at kp-conf 0.5 made an 8-streak nearly impossible
+        # to complete. Now a hold survives up to --gesture-miss-tol consecutive missed frames
+        # (the miss does NOT increment the hold); identity walls are untouched (two raisers
+        # still refuse; the reseed anchor floor still gates re-seeds).
+        _tol = int(getattr(self.a, "gesture_miss_tol", 0))
         for tid in list(self.holds.keys()):
             if tid not in raisers:
-                del self.holds[tid]         # reset hold for anyone not raising this frame
+                self._miss[tid] = self._miss.get(tid, 0) + 1
+                if self._miss[tid] > _tol:
+                    del self.holds[tid]
+                    self._miss.pop(tid, None)
         for tid in raisers:
             self.holds[tid] = self.holds.get(tid, 0) + 1
+            self._miss.pop(tid, None)
         hold_n = int(self.a.gesture_hold)
         confirmed = [tid for tid, c in self.holds.items() if c >= hold_n]
         gdbg(self.a, "FRAME persons=%d pose_dets=%d raisers=%s holds=%s need=%d confirmed=%s"
@@ -1244,6 +1257,10 @@ class ReidEngine:
         self._batch_ok = bool(batch)
         self._dyn_batch = False        # True only if the model's batch axis is dynamic AND batch on
         self.providers_active = []
+        # ITEM 3: True iff a GPU EP (TensorRT/CUDA) was AVAILABLE but onnxruntime fell back to the
+        # CPU EP as the active provider. OSNet re-ID on CPU is far too slow to be trustworthy for an
+        # ARMED (driving) re-lock, so the node folds this into forcing re-lock -> audit-only.
+        self.cpu_ep_degraded = False
         try:
             if not model_path or not os.path.exists(model_path):
                 raise FileNotFoundError("reid model not found: %s" % model_path)
@@ -1269,6 +1286,20 @@ class ReidEngine:
             _b0 = _in0.shape[0] if _in0.shape else 1
             self._dyn_batch = (not (isinstance(_b0, int) and _b0 >= 1)) and self._batch_ok
             self.providers_active = list(self.session.get_providers())
+            # ITEM 3 (EP assertion): a GPU EP was AVAILABLE but the ACTIVE first provider is the CPU
+            # EP == onnxruntime silently fell back (missing TRT/CUDA runtime, engine-build failure,
+            # etc.). Flag it so the node can refuse ARMED (driving) re-lock. avail was computed above.
+            _gpu_avail = ("TensorrtExecutionProvider" in avail or "CUDAExecutionProvider" in avail)
+            _active0 = self.providers_active[0] if self.providers_active else ""
+            # An OSNet running on the CPU EP is too slow to trust for a DRIVING re-lock -- refuse arming
+            # whether it FELL BACK from an available GPU EP or is a CPU-only ORT build (both cases). Only
+            # ever DENIES arming (audit-only); TRACK/COAST identity is unaffected. On a GPU host that keeps
+            # a GPU EP active this stays False (byte-identical).
+            if _active0 == "CPUExecutionProvider":
+                self.cpu_ep_degraded = True
+                _why = "cpu-ep fell-back" if _gpu_avail else "cpu-ep cpu-only-build"
+                log("REID-DEGRADED %s active=%s avail=%s -> armed re-lock refused (audit-only)"
+                    % (_why, _active0, ",".join(avail)))
             # Warm up -- the FIRST infer builds/loads the TRT engine (slow, once).
             dummy = np.zeros((1, 3, self.in_h, self.in_w), dtype=np.float32)
             for _ in range(3):
@@ -1525,6 +1556,9 @@ class CamNode(Node):
         self._depth_stamp = 0.0
         self._depth_count = 0      # total depth frames received (0 == never seen -> still WARMING)
         self._depth_fps = 0.0      # EMA of depth publish rate, for health + diagnosis
+        # ITEM 7(c): RGB fps EMA, mirroring the depth fps above -- for the DRIVE precondition (d)
+        # and observability. Stamped under _lock in _cb. 0 == no RGB frame pair seen yet.
+        self._rgb_fps = 0.0
         self._t0 = time.monotonic()  # node start, for the depth warm-up grace window
 
     def _cb(self, msg):
@@ -1535,8 +1569,20 @@ class CamNode(Node):
         if bgr is None:
             return
         with self._lock:
+            # ITEM 7(c): RGB fps EMA (same 0.8/0.2 smoothing as the depth EMA in _depth_cb).
+            # BOTH RGB topics (raw/rgb + rgb) deliver the SAME camera frames into this one callback,
+            # so each frame can arrive twice ~ms apart; without a dt floor the EMA blends those
+            # inter-pair bursts (inst ~200-500) with real frame gaps and reads 10x high (observed
+            # 130-203 on a 13fps camera). Ignore dt < 20ms so the EMA tracks UNIQUE-frame rate
+            # (a real camera never exceeds ~50fps here; twin-topic pairs are always < 20ms apart).
+            _now = time.monotonic()
+            if self._stamp > 0.0:
+                _dt = _now - self._stamp
+                if _dt >= 0.02:
+                    _inst = 1.0 / _dt
+                    self._rgb_fps = _inst if self._rgb_fps <= 0.0 else (0.8 * self._rgb_fps + 0.2 * _inst)
             self._latest = bgr
-            self._stamp = time.monotonic()
+            self._stamp = _now
             self._seq += 1
             self.frames_total += 1
 
@@ -1589,6 +1635,21 @@ class CamNode(Node):
         if age <= DEPTH_DOWN_S:
             return "STALE", fps
         return "DOWN", fps
+
+    def rgb_fps(self):
+        """ITEM 7(c): current RGB publish-rate EMA (0.0 until a frame pair is seen)."""
+        with self._lock:
+            return self._rgb_fps
+
+    def rgb_stamp(self):
+        """ITEM 7(b): monotonic time the newest RGB frame arrived (0.0 == none yet)."""
+        with self._lock:
+            return self._stamp
+
+    def depth_stamp(self):
+        """ITEM 7(b): monotonic time the newest depth frame arrived (0.0 == none yet)."""
+        with self._depth_lock:
+            return self._depth_stamp
 
 
 # Stage 1 sub-states of S_TRACK, carried on Seed.track_state. The node-level
@@ -1719,6 +1780,10 @@ class Follower:
         # every access, so `feat_fn is self.reid.embed` is ALWAYS False (it silently forced
         # audit-only). == compares __self__/__func__, which is the real intent.
         _osnet_ok = (self.reid is not None and self.reid.ok and self.feat_fn == self.reid.embed)
+        # ITEM 3: an OSNet running on the CPU EP (GPU EP was available but fell back) is too slow to
+        # trust for a DRIVING re-lock -> treat it like a failed arm precondition (audit-only). This
+        # only ever DENIES arming; it can never grant it (additive to the safe direction).
+        _ep_ok = not (self.reid is not None and getattr(self.reid, "cpu_ep_degraded", False))
         _ladder_ok = (args.bank_floor >= args.anchor_floor
                       and args.reloc_floor > args.anchor_floor
                       and args.reloc_view_floor >= args.bank_floor
@@ -1726,11 +1791,11 @@ class Follower:
                       and args.reloc_iso_bypass_anchor > args.anchor_floor
                       and args.reloc_arm_streak >= args.reloc_streak
                       and args.reloc_arm_margin >= args.reloc_margin)
-        self._relock_armed = bool(args.arm_reacquire) and _osnet_ok and _ladder_ok
+        self._relock_armed = bool(args.arm_reacquire) and _osnet_ok and _ep_ok and _ladder_ok
         if args.arm_reacquire and not self._relock_armed:
             log("ARM-REFUSED: markerless re-lock requires --appearance osnet with a loaded ReID "
-                "engine (osnet_ok=%s) AND a valid floor ladder (ladder_ok=%s) -> audit-only"
-                % (_osnet_ok, _ladder_ok))
+                "engine (osnet_ok=%s) on a GPU EP (ep_ok=%s) AND a valid floor ladder (ladder_ok=%s) "
+                "-> audit-only" % (_osnet_ok, _ep_ok, _ladder_ok))
 
         # Lock trigger -- the ACQUISITION primitive (--lock-trigger). DEFAULT 'aruco'
         # reproduces today byte-for-byte (the gesture model is not even constructed, so
@@ -1830,6 +1895,19 @@ class Follower:
         self._reacq_range_id = None
         self._postrelock_noforward = False
         self._close_streak = 0
+        # ITEM 4: mid-run OSNet fault watchdog. _reid_none_streak counts CONSECUTIVE frames where
+        # embed_batch returned all-None over a NON-EMPTY person set; at --reid-fault-k it latches
+        # _reid_degraded, which FORCES armed re-lock to audit-only (disarm) until a valid embed
+        # returns. Latching + a single de-latch log on recovery.
+        self._reid_none_streak = 0
+        self._reid_degraded = False
+        # ITEM 5: depth-fps floor latch (hysteresis). True == sustained depth fps below --min-depth-fps
+        # -> force TURN-ONLY (suppress forward vx) via the existing forbid_forward keystone.
+        self._depth_starved = False
+        # F4/FR-4 log-flood throttles: NO-FRAME and the per-frame RELOC vote lines are safety
+        # telemetry, not a firehose -- 1/s each keeps the .err file and the app log readable.
+        self._last_noframe_log = 0.0
+        self._reloc_log_last = 0.0
 
     # -- signals ------------------------------------------------------------
     def install_signal_handlers(self):
@@ -2078,6 +2156,60 @@ class Follower:
         if self._stop_requested:
             return False
 
+        # ITEM 7(d): DRIVE PRECONDITION. Before kWalking, require BOTH RGB and depth publishing at
+        # >= --drive-min-fps, sustained for --drive-ready-secs. BOUNDED by --startup-frame-wait so it
+        # can NEVER hang. On timeout we REFUSE to drive (DRIVE-ABORT) -- the safe, least-surprising
+        # choice: every existing frame-starvation path in this file refuses to walk rather than
+        # walking blind (no-frame -> DRIVE-ABORT, YOLO-fail -> DRIVE-ABORT), and forward drive is
+        # gated on validated depth anyway, so a robot that walks with dead depth would only ever
+        # turn-in-place -- surprising and pointless. --drive-min-fps 0 disables the whole gate
+        # (today's single-first-frame behaviour, byte-for-byte).
+        if float(getattr(self.a, "drive_min_fps", 0.0)) > 0.0:
+            _floor = float(self.a.drive_min_fps)
+            _need = max(float(getattr(self.a, "drive_ready_secs", 0.0)), 0.0)
+            # Depth-DISABLED config (--depth-topic none): there is no depth subscription, so its fps
+            # is 0.0 forever and requiring it would make drive PERMANENTLY unreachable (a regression
+            # -- that config could previously drive, turn-only, with forward vx already impossible
+            # via the rsrc=='depth' keystone). Require depth freshness only when depth is enabled.
+            _need_depth = bool(self.a.depth_topic) and (self.a.depth_topic.lower() != "none")
+            _t0 = time.monotonic()
+            _ready_since = None
+            _last_wait_log = 0.0
+            while (time.monotonic() - _t0) < self.a.startup_frame_wait:
+                if self._stop_requested:
+                    return False
+                time.sleep(0.1)   # cam-spin thread services callbacks
+                _now = time.monotonic()
+                _rf = self.node.rgb_fps()
+                _dh, _df = self.node.depth_health(_now)
+                # FR-3: fps EMAs only update on frame ARRIVAL and never decay, so a stream that
+                # dies mid-window keeps its last healthy number -- 'sustained-fresh' must ALSO
+                # check AGE. RGB: newest frame within a floor-scaled window. Depth: the age-based
+                # health state must be FRESH (WARMING/STALE/DOWN all fail).
+                _rs = self.node.rgb_stamp()
+                _fresh_win = max(2.0 / _floor, 0.5)
+                _rgb_live = (_rs > 0.0) and ((_now - _rs) <= _fresh_win)
+                _ok_now = ((_rf >= _floor) and _rgb_live
+                           and ((not _need_depth) or (_df >= _floor and _dh == "FRESH")))
+                if _ok_now:
+                    if _ready_since is None:
+                        _ready_since = _now
+                    if (_now - _ready_since) >= _need:
+                        log("DRIVE-READY rgb_fps=%.1f depth_fps=%.1f (>= floor %.1f for %.1fs) -> walk"
+                            % (_rf, _df, _floor, _need))
+                        break
+                else:
+                    _ready_since = None
+                if (_now - _last_wait_log) >= 1.0:
+                    _last_wait_log = _now
+                    log("DRIVE-WAIT rgb_fps=%.1f depth_fps=%.1f depth=%s need>=%.1f for %.1fs"
+                        % (_rf, _df, _dh, _floor, _need))
+            else:
+                log("DRIVE-ABORT sensors not sustained-fresh (rgb_fps=%.1f depth_fps=%.1f floor=%.1f) "
+                    "within %.1fs; staying safe (no walk)"
+                    % (self.node.rgb_fps(), self.node.depth_health()[1], _floor, self.a.startup_frame_wait))
+                return False
+
         ok, reply = self.bridge.command_expect_ok("prep", timeout=6.0)
         log("BRIDGE prep -> %s" % reply)
         if not ok:
@@ -2104,7 +2236,7 @@ class Follower:
         while (time.monotonic() - t0) < timeout:
             if self._stop_requested:
                 return False
-            rclpy.spin_once(self.node, timeout_sec=0.1)
+            time.sleep(0.1)   # cam-spin thread services callbacks
             frame, _, _ = self.node.take_if_new(-1)
             if frame is not None or self.node.frames_total > 0:
                 return True
@@ -2115,8 +2247,40 @@ class Follower:
         while (time.monotonic() - t0) < secs:
             if self._stop_requested:
                 return True
-            rclpy.spin_once(self.node, timeout_sec=0.05)
+            time.sleep(0.05)   # callbacks are serviced by the cam-spin executor thread
         return False
+
+    def _cam_spin(self):
+        """Background executor thread: services ALL CamNode callbacks at sensor rate (FR-1).
+        rclpy.shutdown() during teardown ends the spin; the thread is a daemon and must
+        never crash the process."""
+        try:
+            self._cam_exec.spin()
+        except Exception:  # noqa: BLE001 -- teardown races are expected and harmless
+            pass
+
+    def _reid_watchdog(self, any_valid):
+        """ITEM 4 mid-run OSNet fault watchdog (shared). Count CONSECUTIVE all-None embed
+        outcomes over a non-empty person set; at --reid-fault-k latch _reid_degraded (surface
+        ONCE), forcing armed re-lock -> audit-only. Any valid embed de-latches with a single
+        recovery line. Called from BOTH _embed_persons (TRACK) and _try_reacquire (REACQUIRE
+        vote) so a recovered engine de-latches even while the target is lost. --reid-fault-k 0
+        disables (byte-identical to the pre-watchdog behavior)."""
+        _k = int(getattr(self.a, "reid_fault_k", 0))
+        if _k <= 0:
+            return
+        if any_valid:
+            if self._reid_degraded:
+                log("REID-DEGRADED recovered (valid embed after %d all-none frames) -> re-arm eligible"
+                    % self._reid_none_streak)
+            self._reid_none_streak = 0
+            self._reid_degraded = False
+        else:
+            self._reid_none_streak += 1
+            if self._reid_none_streak >= _k and not self._reid_degraded:
+                self._reid_degraded = True
+                log("REID-DEGRADED all-none streak=%d k=%d -> armed re-lock forced audit-only"
+                    % (self._reid_none_streak, _k))
 
     # -- main run -----------------------------------------------------------
     def run(self):
@@ -2124,8 +2288,23 @@ class Follower:
         topics = list(dict.fromkeys([self.a.topic,
                                      "/boostercamera/head/raw/rgb",
                                      "/boostercamera/head/rgb"]))
-        depth_topic = self.a.depth_topic if self.a.depth_topic.lower() != "none" else None
+        # Depth is DISABLED for "" / whitespace / any-case "none" -- parse_args normalizes the
+        # spelling, and the DRIVE precondition's _need_depth uses the SAME test so they can never
+        # diverge (an empty-string topic used to subscribe nothing yet still be "required").
+        depth_topic = self.a.depth_topic if (self.a.depth_topic
+                                             and self.a.depth_topic.lower() != "none") else None
         self.node = CamNode(topics, depth_topic)
+        # FR-1 (CRITICAL): service CamNode on a DEDICATED background executor thread. The old
+        # one-spin_once-per-10Hz-tick pattern measured the LOOP's callback-servicing rate, not the
+        # sensor: with 2 RGB subs + depth at KEEP_LAST 1, depth was serviced at <=3.3-5Hz on a
+        # healthy 30fps sensor, so the --min-depth-fps floor latched spuriously and could never
+        # clear, and rgb/depth stamps (the skew gate) were tick-quantized. CamNode is fully
+        # lock-protected (_lock/_depth_lock cover every accessor), so a background executor is
+        # thread-safe as written; every fps EMA and stamp now measures the true sensor. The main
+        # loop no longer spins ROS at all; the wait loops become plain sleeps.
+        self._cam_exec = SingleThreadedExecutor()
+        self._cam_exec.add_node(self.node)
+        threading.Thread(target=self._cam_spin, daemon=True, name="cam-spin").start()
 
         # Load YOLO ONCE at startup (before any walking).
         self.det = PersonDetector(self.a.yolo_path, self.a.conf)
@@ -2134,15 +2313,17 @@ class Follower:
                depth_topic or "off", "ok" if self.det.ok else "DISABLED"))
 
         if self.drive:
+            # A drive REFUSAL exits 4 (not 0) so the app's exit-code classifier can tell
+            # "node declined to walk" from a normal operator stop and fetch the log tail.
             if not self.det.ok:
                 log("DRIVE-ABORT YOLO not loaded; cannot follow a person. Staying safe.")
                 self._cleanup()
                 rclpy.shutdown()
-                return
+                sys.exit(4)
             if not self.start_drive_chain():
                 self._cleanup()
                 rclpy.shutdown()
-                return
+                sys.exit(4)
 
         period = 1.0 / max(1.0, self.a.rate_hz)
         last_seq = -1
@@ -2159,7 +2340,8 @@ class Follower:
                     log("WATCHDOG max-seconds (%.0fs) reached -> stop" % self.a.max_seconds)
                     break
 
-                rclpy.spin_once(self.node, timeout_sec=0.0)
+                # (no ROS spin here -- the cam-spin executor thread services callbacks at
+                #  sensor rate; this loop just consumes the latest frame under lock)
                 frame, last_seq, _ = self.node.take_if_new(last_seq)
 
                 # Tier-1 command drain: one token per tick, BEFORE _process_frame, every tick
@@ -2176,8 +2358,38 @@ class Follower:
                     if _dh != last_depth_state or (now - last_depth_hb) >= 10.0:
                         last_depth_state = _dh
                         last_depth_hb = now
-                        log("DEPTH %s fps=%.1f%s" % (_dh, _dfps,
-                            "" if _dh in ("FRESH", "WARMING") else " (forward drive disabled)"))
+                        # NOTE: depth_health STATE (FRESH/STALE/DOWN) is age-based and does not by
+                        # itself gate forward drive -- the rsrc=='depth' keystone in _track does.
+                        # The old '(forward drive disabled)' string was MISLEADING; report the state
+                        # plainly and let DEPTH-STARVED below own the fps-floor gating.
+                        # ITEM 7(c): surface RGB fps on the SAME 10s/transition pulse (RGB is the
+                        # other half of the DRIVE precondition and a common silent-stall culprit).
+                        log("DEPTH %s fps=%.1f" % (_dh, _dfps))
+                        # NB: BOTH RGB topics feed one callback, so this is the COMBINED message
+                        # intake (~2x a single camera's rate on this rig) -- a LIVENESS number.
+                        log("RGB fps=%.1f (all-topics) total=%d" % (self.node.rgb_fps(), self.node.frames_total))
+                    # ITEM 5 (depth-fps floor): latch TURN-ONLY when sustained depth fps drops below
+                    # --min-depth-fps; clear only above floor + --depth-starved-margin (hysteresis).
+                    # Only meaningful once depth has actually been seen (not WARMING, count>0); a floor
+                    # of 0 disables this entirely (byte-identical to today). _depth_starved is folded
+                    # into the existing forbid_forward keystone in _track/_try_coast (TURN-ONLY, no
+                    # new stand). Latch-on/clear-off log once each.
+                    _floor = float(getattr(self.a, "min_depth_fps", 0.0))
+                    # FR-2: require a frame PAIR (_depth_count > 1) -- the EMA is 0.0 until two
+                    # frames exist, so a count>0 guard guaranteed a spurious fps=0.0 latch on the
+                    # first depth frame of every run. FR-1(8): also latch on age (_dh == "DOWN") --
+                    # a DEAD stream freezes the EMA at its last healthy value and a pure fps test
+                    # would never fire; clear only when the stream is genuinely FRESH again.
+                    if _floor > 0.0 and _dh != "WARMING" and self.node._depth_count > 1:
+                        if not self._depth_starved and (_dfps < _floor or _dh == "DOWN"):
+                            self._depth_starved = True
+                            log("DEPTH-STARVED fps=%.1f state=%s floor=%.1f -> TURN-ONLY (forward vx suppressed)"
+                                % (_dfps, _dh, _floor))
+                        elif (self._depth_starved and _dh == "FRESH"
+                              and _dfps >= (_floor + max(self.a.depth_starved_margin, 0.0))):
+                            self._depth_starved = False
+                            log("DEPTH-STARVED cleared fps=%.1f >= %.1f -> forward vx re-enabled"
+                                % (_dfps, _floor + max(self.a.depth_starved_margin, 0.0)))
                 if frame is not None:
                     ever_framed = True
                     last_frame_mono = now
@@ -2195,14 +2407,21 @@ class Follower:
                         else:
                             self._hold()
                 else:
+                    # F4: throttle BOTH NO-FRAME emissions to ~1/s -- they used to fire every 10Hz
+                    # tick, flooding the log through the whole camera warmup / any stall. The
+                    # stand/hold enforcement stays OUTSIDE the throttle (fires every tick).
                     if not ever_framed:
-                        log("NO-FRAME")
+                        if (now - self._last_noframe_log) >= 1.0:
+                            self._last_noframe_log = now
+                            log("NO-FRAME")
                     else:
                         stalled = (now - last_frame_mono) > self.a.stall_seconds
                         if stalled:
-                            log("NO-FRAME stall=%.1fs -> %s"
-                                % (now - last_frame_mono,
-                                   "stand" if self.a.stand_on_loss else "stop"))
+                            if (now - self._last_noframe_log) >= 1.0:
+                                self._last_noframe_log = now
+                                log("NO-FRAME stall=%.1fs -> %s"
+                                    % (now - last_frame_mono,
+                                       "stand" if self.a.stand_on_loss else "stop"))
                             if self.a.stand_on_loss:
                                 self._stand()   # camera frozen -> stable stand, never hold a gait blind
                             else:
@@ -2227,13 +2446,21 @@ class Follower:
                     # and could never accumulate to a larger K). Only blames frames where the
                     # gesture pose model actually ran. At K consecutive -> disable gesture so a
                     # 2nd model degrades to no-gesture BEFORE the C++ staleness watchdog must safe.
-                    if getattr(self._lock_trigger, "ran_inference", False):
+                    # SCOPED TO DRIVING STATES (field fix 2026-07-02): only an S_TRACK pose frame
+                    # (the in-follow STOP gesture -- the June trip case) can destabilize a walking
+                    # gait. The ACQUISITION trigger runs only in STATIONARY states (stood/held;
+                    # bridge stale tiers 800/3000ms), where a ~104ms frame is harmless -- yet the
+                    # unscoped counter was killing the trigger 0.5s into every SEARCH (field log:
+                    # SLOW-LOOP dt=104ms x5 -> GESTURE-DISABLED-SLOW while stood, hand-up ignored).
+                    if (getattr(self._lock_trigger, "ran_inference", False)
+                            and self.state == S_TRACK):
                         self._gesture_overrun_streak += 1
                         if self._gesture_overrun_streak >= self.a.gesture_overrun_frames:
                             self._lock_trigger.on_overrun()
                             self._gesture_overrun_streak = 0
                 else:
                     self._overrun_streak = 0
+                    self._gesture_overrun_streak = 0   # within budget -> 'consecutive' resets (was cumulative)
                     self._gesture_overrun_streak = 0
                     rem = period - dt
                     if rem > 0:
@@ -2465,7 +2692,17 @@ class Follower:
                 self._reacq_range_streak = 0   # REG-3: fresh in-range streak entering REACQUIRE
                 self._reacq_range_id = None
                 return
-            sy = self._slew(self._prev_vyaw, self.search_dir * self.a.search_yaw, self.vyaw_slew)
+            # SEARCH DWELL (field finding 2026-07-02): with someone in frame, HOLD the scan
+            # (yaw -> 0 via the slew) instead of sweeping past them -- the re-lock vote needs
+            # ~5 consecutive same-track frames, and rotating at full yaw blurred embeddings,
+            # churned tracker ids, and left the vote at g=0.51-0.54 vs the 0.55 floor. Bounded:
+            # the --search-timeout still stands the robot, so a bystander can stall the scan at
+            # most until the normal timeout (fail-safe direction). --no-search-dwell restores
+            # the continuous sweep.
+            _sy_target = self.search_dir * self.a.search_yaw
+            if persons and getattr(self.a, "search_dwell", False):
+                _sy_target = 0.0
+            sy = self._slew(self._prev_vyaw, _sy_target, self.vyaw_slew)
             sy = clamp(sy, self.vyaw_min, self.vyaw_max)
             self._drive_vel(0.0, 0.0, sy)   # yaw-only scan (gated by drive+walking; inert in preview)
             if (searched - self._search_log_last) >= 0.5:
@@ -2992,7 +3229,12 @@ class Follower:
         stamp p['_ph'] (with optional per-track every-N caching). No-op for global/striped
         (so they stay byte-identical) and when the engine isn't loaded. Always re-embeds the
         bound target and anyone NOT isolated (overlapping); evicts retired track ids."""
-        if (self.reid is None or not self.reid.ok or self.feat_fn is not self.reid.embed
+        # == not `is not`: self.reid.embed is a FRESH bound-method object each access, so the old
+        # `feat_fn is not self.reid.embed` was ALWAYS True -- this method NO-OP'd, the batched embed
+        # pass never ran, and the ITEM-4 mid-run fault watchdog below could never fire. == compares
+        # __self__/__func__ (matches the arm-gate ~L1721 and the relock re-check). Compute-neutral at
+        # --reid-every-n 1: embed_batch per-row here == the per-box embeds _associate did lazily.
+        if (self.reid is None or not self.reid.ok or self.feat_fn != self.reid.embed
                 or not persons):
             return
         n = max(1, int(self.a.reid_every_n))
@@ -3009,12 +3251,19 @@ class Follower:
                 p["_ph"] = cached[1]
         if boxes:
             feats = self.reid.embed_batch(frame, boxes)
+            any_valid = False
             for k, i in enumerate(need):
                 f = feats[k] if k < len(feats) else None
                 persons[i]["_ph"] = f
+                if f is not None:
+                    any_valid = True
                 tid = persons[i].get("track_id")
                 if tid is not None and f is not None:
                     self._reid_cache[tid] = (self._frame_idx, f)
+            # ITEM 4 (mid-run fault watchdog): boxes was non-empty, so embed_batch was asked to embed
+            # a real person set. All-None == the engine faulted this frame. Shared with the
+            # _try_reacquire vote path so recovery is also observable during REACQUIRE.
+            self._reid_watchdog(any_valid)
         if self.tracker is not None:                 # bound the cache: drop retired track ids
             live = set(self.tracker.tracks.keys())
             for tid in list(self._reid_cache.keys()):
@@ -3246,7 +3495,11 @@ class Follower:
         forbid_forward = ((rsrc != "depth")
                           or (rng is not None and self.a.min_safe_range > 0.0
                               and rng <= self.a.min_safe_range)
-                          or self._postrelock_noforward)
+                          or self._postrelock_noforward
+                          # ITEM 5: sustained depth-fps below --min-depth-fps -> TURN-ONLY. Composes
+                          # additively with the keystone above; re-applied after the slew below
+                          # (same as the other forbid_forward causes) so no forward command leaks.
+                          or self._depth_starved)
         if forbid_forward and vx > 0.0:
             vx = 0.0
         # FIX F1: keep a short window of recent VALIDATED depth ranges (its median is the glitch-
@@ -3333,7 +3586,10 @@ class Follower:
         # it (F1-coast). Re-applied after the slew so the ramp can't re-leak it (INV-1).
         forbid_forward = ((rng is not None and rsrc == "depth" and self.a.min_safe_range > 0.0
                            and rng <= self.a.min_safe_range)
-                          or self._postrelock_noforward)
+                          or self._postrelock_noforward
+                          # ITEM 5: depth-starved -> TURN-ONLY on the coast path too (coast forward vx
+                          # is already gated to validated depth; this suppresses it when depth is slow).
+                          or self._depth_starved)
         if forbid_forward and vx > 0.0:
             vx = 0.0
         self._postrelock_noforward = False   # one-shot consumed on the coast path too
@@ -3376,6 +3632,10 @@ class Follower:
             # candidate vectors are identical either way -- this is perf-only, no decision shift.
             if self.reid is not None and self.reid.ok and self.feat_fn == self.reid.embed:
                 _rfeats = self.reid.embed_batch(frame, [pp["box"] for pp in persons])
+                # Feed the fault watchdog from the vote path too: _embed_persons only runs in
+                # TRACK, so without this a latched REID-DEGRADED could never DE-latch during
+                # REACQUIRE even though fresh valid embeddings prove the engine recovered.
+                self._reid_watchdog(any(f is not None for f in _rfeats))
             else:
                 _rfeats = [self.feat_fn(frame, pp["box"]) for pp in persons]
             for i, p in enumerate(persons):
@@ -3409,9 +3669,15 @@ class Follower:
                 if ok:
                     survivors.append((g_s, a_s, d_s, i, p, k_s, via_multi))
                 else:
-                    log("RELOC-REJECT id=%s via=%s anchor=%.2f g=%.2f d=%.2f k=%d margin=%.2f iso=%s byp=%s"
-                        % (p.get("track_id"), "multi" if via_multi else "anchor",
-                           a_s, g_s, d_s, k_s, g_s - d_s, iso, iso_bypass))
+                    # FR-4: per-frame per-person REJECT lines flood the log in a crowd (10-45/s).
+                    # Throttle to ~1/s -- the values repeat near-identically frame-to-frame, so
+                    # one line a second preserves the diagnostic signal.
+                    _rn = time.monotonic()
+                    if (_rn - self._reloc_log_last) >= 1.0:
+                        self._reloc_log_last = _rn
+                        log("RELOC-REJECT id=%s via=%s anchor=%.2f g=%.2f d=%.2f k=%d margin=%.2f iso=%s byp=%s"
+                            % (p.get("track_id"), "multi" if via_multi else "anchor",
+                               a_s, g_s, d_s, k_s, g_s - d_s, iso, iso_bypass))
 
             if not survivors:
                 self._reloc_streak = 0; self._reloc_track_id = None
@@ -3434,18 +3700,24 @@ class Follower:
             win = survivors[0]
             best_g, best_d, best_k, best_via_multi = win[0], win[2], win[5], win[6]
             if not self._relock_armed:
-                log("RELOC-VOTE-PASS id=%s via=%s streak=%d g=%.2f k=%d (audit-only, NOT re-locking)"
-                    % (bid, "multi" if best_via_multi else "anchor", self._reloc_streak, best_g, best_k))
+                # FR-4: fires EVERY frame once the streak holds -- log the streak-threshold
+                # crossing immediately, then refresh at ~1/s.
+                _rn = time.monotonic()
+                if self._reloc_streak == self.a.reloc_streak or (_rn - self._reloc_log_last) >= 1.0:
+                    self._reloc_log_last = _rn
+                    log("RELOC-VOTE-PASS id=%s via=%s streak=%d g=%.2f k=%d (audit-only, NOT re-locking)"
+                        % (bid, "multi" if best_via_multi else "anchor", self._reloc_streak, best_g, best_k))
                 return False     # audit-only: zero behavioral/identity change
 
             # ---- ARMED re-lock. DELIBERATELY STRICTER than the audit vote (it DRIVES). ----
-            # (1) OSNet must STILL be the live backend (a mid-run engine fault silently falls
-            #     feat_fn back to color_hist while _relock_armed stayed True from init).
-            #     == not `is`: self.reid.embed makes a FRESH bound-method object each access, so
-            #     `feat_fn is self.reid.embed` is ALWAYS False (it silently forced armed->audit-only).
-            #     Matches the init-time _osnet_ok check (~L1273); == compares __self__/__func__.
-            if not (self.reid is not None and self.reid.ok and self.feat_fn == self.reid.embed):
-                log("RELOC-VOTE-PASS id=%s streak=%d (OSNet faulted mid-run -> audit-only)"
+            # (1) ITEM 4: refuse an ARMED (driving) re-lock while the mid-run OSNet fault watchdog is
+            #     LATCHED. feat_fn/reid.ok are init-only (never mutate mid-run), so the old
+            #     feat_fn==reid.embed re-check here guarded an IMPOSSIBLE state and never fired on a
+            #     real fault. The REAL signal is _reid_degraded, latched in _embed_persons after
+            #     --reid-fault-k consecutive all-None embed frames; it de-latches on a valid embed.
+            #     This actually forces armed -> audit-only when re-ID is silently dead.
+            if self._reid_degraded:
+                log("RELOC-VOTE-PASS id=%s streak=%d (REID-DEGRADED all-none -> audit-only)"
                     % (bid, self._reloc_streak))
                 return False
             # (2) longer ARMED streak + wider ARMED margin than the audit vote.
@@ -3500,9 +3772,12 @@ class Follower:
                 self._reacq_range_id = bid
                 self._reacq_range_streak = 0 if _bad else 1
             if _bad or self._reacq_range_streak < max(self.a.reloc_range_streak, 1):
-                log("RELOC-HOLD-RANGE id=%s rsrc=%s rng=%s ref=%s streak=%d"
-                    % (bid, rsrc_c, ("%.2f" % rng_c) if rng_c is not None else None,
-                       ("%.2f" % ref) if ref is not None else None, self._reacq_range_streak))
+                _rn = time.monotonic()   # FR-4: ~1/s (values repeat frame-to-frame while held)
+                if (_rn - self._reloc_log_last) >= 1.0:
+                    self._reloc_log_last = _rn
+                    log("RELOC-HOLD-RANGE id=%s rsrc=%s rng=%s ref=%s streak=%d"
+                        % (bid, rsrc_c, ("%.2f" % rng_c) if rng_c is not None else None,
+                           ("%.2f" % ref) if ref is not None else None, self._reacq_range_streak))
                 return False
             # ---- commit: resume-THEN-commit. Robot safely STANDING during the ~5s resume. ----
             if self.drive and self.standing:
@@ -3544,11 +3819,43 @@ class Follower:
                 rad = 4
                 x1 = max(0, u - rad); x2 = min(dw, u + rad + 1)
                 y1 = max(0, v - rad); y2 = min(dh, v + rad + 1)
-                roi = depth[y1:y2, x1:x2].reshape(-1)
-                roi = roi[np.isfinite(roi)]
+                roi_all = depth[y1:y2, x1:x2].reshape(-1)
+                roi = roi_all[np.isfinite(roi_all)]
                 roi = roi[roi > 0.05]   # ignore zeros / invalid
+                # ITEM 7(a): STRICTER 'depth' gate. Keep the existing >=3-pixel / >0.05m floor,
+                # then ALSO require a min valid-pixel FRACTION of the ROI and a dispersion ceiling
+                # (median absolute deviation) before authorising forward drive. A sparse (95%-hole
+                # patch reading off 3 edge pixels) or bimodal (foreground+background) ROI falls
+                # through to the bboxH pinhole (turn-only). This ONLY makes 'depth' harder to earn,
+                # never easier -- SAFE, and composes with every rsrc=='depth' consumer (the control
+                # law's forbid_forward keystone, the close-range floor, the depth-fps floor, and
+                # the F1 relock gate). Both thresholds default >0 (SAFE-ON); 0 restores today's gate.
                 if roi.size >= 3:
-                    return float(np.median(roi)), "depth"
+                    min_frac = float(getattr(self.a, "depth_min_valid_frac", 0.0))
+                    max_disp = float(getattr(self.a, "depth_max_dispersion_m", 0.0))
+                    n_total = max(int(roi_all.size), 1)
+                    frac_ok = (min_frac <= 0.0) or ((roi.size / n_total) >= min_frac)
+                    med = float(np.median(roi))
+                    if max_disp > 0.0:
+                        mad = float(np.median(np.abs(roi - med)))
+                        disp_ok = mad <= max_disp
+                    else:
+                        disp_ok = True
+                    # ITEM 7(b): RGB<->depth temporal skew. Reject a depth frame more than
+                    # --depth-max-skew-ms OLDER than the RGB frame being projected -> bboxH.
+                    # (depth newer than RGB is fine.) Off (0) or missing stamps -> pass.
+                    skew_ok = True
+                    max_skew = float(getattr(self.a, "depth_max_skew_ms", 0.0))
+                    if max_skew > 0.0:
+                        try:
+                            ds = self.node.depth_stamp(); rs = self.node.rgb_stamp()
+                            if ds > 0.0 and rs > 0.0 and (rs - ds) * 1000.0 > max_skew:
+                                skew_ok = False
+                        except Exception:  # noqa: BLE001 -- stamp fault -> do not block on skew alone
+                            skew_ok = True
+                    if frac_ok and disp_ok and skew_ok:
+                        return med, "depth"
+                    # else: fall through to the bboxH pinhole (turn-only) below.
             except Exception:  # noqa: BLE001
                 pass
         # Fallback: pinhole on bbox height.
@@ -3744,6 +4051,11 @@ def parse_args(argv):
     p.add_argument("--reid-every-n", type=int, default=1,
                    help="recompute the ReID embedding every N frames per track (1 = every frame; "
                         ">1 caches between, but always re-embeds the target + overlapping people)")
+    p.add_argument("--reid-fault-k", type=int, default=5,
+                   help="OSNet health watchdog: after this many CONSECUTIVE frames where the batched "
+                        "embed returns all-None over a NON-EMPTY person set, latch REID-DEGRADED and "
+                        "force any ARMED markerless re-lock to audit-only until a valid embedding "
+                        "returns. 0 disables the mid-run watchdog (today's behavior).")
     p.add_argument("--audit-cosine", action=argparse.BooleanOptionalAction, default=False,
                    help="log a per-frame AUDIT line: cosine of the bound target vs the best other "
                         "person to the frozen anchor -- to tune --anchor-floor/--bank-floor for cosine")
@@ -3834,6 +4146,12 @@ def parse_args(argv):
                    help="max seconds to yaw-scan for the lost person before standing (-> REACQUIRE)")
     p.add_argument("--search-yaw", type=float, default=0.30,
                    help="yaw rate (rad/s) for the SEARCH scan (clamped to the vyaw limits)")
+    p.add_argument("--search-dwell", action=argparse.BooleanOptionalAction, default=True,
+                   help="SEARCH: when a person is in frame, HOLD the yaw scan (dwell) so the "
+                        "re-lock vote gets a stable multi-frame look instead of sweeping past "
+                        "them (field fix: full-yaw rotation blurred embeddings + churned track "
+                        "ids -> vote rejected at g=0.51-0.54 vs the 0.55 floor). Bounded by "
+                        "--search-timeout. --no-search-dwell restores the continuous sweep.")
     # OPS follow-range geofence (depth-validated; 0 disables -> today's behavior)
     p.add_argument("--max-follow-range", type=float, default=0.0,
                    help="if >0, STAND (don't pursue) when the DEPTH-validated range to the "
@@ -3847,8 +4165,42 @@ def parse_args(argv):
     p.add_argument("--range-hysteresis", type=float, default=0.3,
                    help="follow-range geofence release margin (m): once range-gated, resume "
                         "only when the range returns inside the fence by this much (anti-chatter)")
+    p.add_argument("--min-depth-fps", type=float, default=5.0,
+                   help="depth-fps floor: when the sustained depth publish rate falls below this "
+                        "(fps), force TURN-ONLY (suppress forward vx, vx<=0) until it recovers above "
+                        "the floor + --depth-starved-margin. Composes with the rsrc=='depth' keystone; "
+                        "adds no new stand. 0 disables (today's behavior byte-for-byte).")
+    p.add_argument("--depth-starved-margin", type=float, default=1.0,
+                   help="hysteresis (fps) for --min-depth-fps: once depth-starved, clear only when "
+                        "depth fps rises above (--min-depth-fps + this). 0 = clear exactly at the "
+                        "floor. Ignored when --min-depth-fps is 0.")
     p.add_argument("--startup-frame-wait", type=float, default=25.0,
                    help="drive: max seconds to wait for first frame before walk")
+    # P1 ITEM 7: stricter depth validation + RGB<->depth skew + DRIVE precondition. All SAFE-ON;
+    # each has a 0/off value byte-identical to today. These only ever make forward drive HARDER.
+    p.add_argument("--depth-min-valid-frac", type=float, default=0.30,
+                   help="P1: min FRACTION of the ~9x9 centroid depth ROI that must be finite/>0.05m "
+                        "before a reading is labelled 'depth' (which alone authorises forward drive); "
+                        "a sparse patch (e.g. 3 edge pixels of a 95%-hole ROI) falls back to the "
+                        "bbox-height pinhole (turn-only). Keeps the >=3-pixel floor. 0 disables (today).")
+    p.add_argument("--depth-max-dispersion-m", type=float, default=0.5,
+                   help="P1: reject a depth reading whose valid ROI samples disperse more than this "
+                        "(median absolute deviation, metres) -> bbox-height pinhole (turn-only). Guards "
+                        "a bimodal foreground/background patch. 0 disables (today).")
+    p.add_argument("--depth-max-skew-ms", type=float, default=250.0,
+                   help="P1: reject a depth frame more than this many ms OLDER than the RGB frame whose "
+                        "centroid is projected -> treat as bbox-height (turn-only), so stale depth never "
+                        "authorises forward drive against a moved target. Default 250 stays coherent with "
+                        "--min-depth-fps 5 (healthy-at-the-floor depth ages up to 200ms between frames -- "
+                        "a tighter skew would flicker forward vx on a healthy stream). 0 disables (today).")
+    p.add_argument("--drive-min-fps", type=float, default=8.0,
+                   help="P1 DRIVE precondition: require BOTH RGB and depth publishing at >= this fps, "
+                        "sustained for --drive-ready-secs, before transitioning to kWalking. Bounded by "
+                        "--startup-frame-wait; on timeout the node REFUSES drive (DRIVE-ABORT), never "
+                        "walks blind. 0 disables the precondition (today's single-frame gate, byte-for-byte).")
+    p.add_argument("--drive-ready-secs", type=float, default=2.0,
+                   help="P1: how long BOTH RGB and depth must sustain >= --drive-min-fps before "
+                        "DRIVE-READY -> walk. Ignored when --drive-min-fps is 0.")
 
     # --- lock trigger (acquisition primitive) -- SCOPE_lock_trigger_gesture.md ---
     p.add_argument("--lock-trigger", choices=["aruco", "gesture", "both"], default="aruco",
@@ -3860,13 +4212,21 @@ def parse_args(argv):
                    help="YOLO11n-POSE model path (loaded only when --lock-trigger != aruco). .onnx runs "
                         "via onnxruntime (CUDA EP, fast, same backend as OSNet); a .pt is slower (torch); "
                         "a TRT .engine built on the Orin is fastest.")
-    p.add_argument("--gesture-hold", type=int, default=8,
-                   help="consecutive frames a raised hand must hold (keyed on tracker id) before "
-                        "it can seed; composes with --seed-frames")
-    p.add_argument("--gesture-kp-conf", type=float, default=0.5,
-                   help="min per-keypoint confidence for the wrist/shoulder raised-hand test")
-    p.add_argument("--gesture-kp-margin-frac", type=float, default=0.1,
-                   help="wrist must be above the same-side shoulder by this fraction of bbox height")
+    p.add_argument("--gesture-hold", type=int, default=6,
+                   help="qualifying pose frames a raised hand must hold (keyed on tracker id, "
+                        "with --gesture-miss-tol forgiveness) before it can seed; composes with "
+                        "--seed-frames. 6 @ every-n 3 ~= 1.8s of deliberate hand-up.")
+    p.add_argument("--gesture-kp-conf", type=float, default=0.35,
+                   help="min per-keypoint confidence for the wrist/shoulder raised-hand test "
+                        "(0.35: nano-pose wrist confidence at 3-4m commonly sits 0.3-0.5, so the "
+                        "old 0.5 randomly dropped real raises; the geometry margin still gates)")
+    p.add_argument("--gesture-kp-margin-frac", type=float, default=0.05,
+                   help="wrist must be above the same-side shoulder by this fraction of bbox height "
+                        "(0.05 ~= half a head: a natural bent-elbow hand-up passes; the old 0.10 "
+                        "needed a fully extended arm)")
+    p.add_argument("--gesture-miss-tol", type=int, default=1,
+                   help="hold survives this many CONSECUTIVE missed pose frames before resetting "
+                        "(a miss never increments the hold). 0 = the old hard-reset-on-any-miss.")
     p.add_argument("--gesture-min-sep-frac", type=float, default=0.12,
                    help="refuse a gesture seed if another person is within this fraction of the "
                         "image diagonal of the lock point (bystander-adjacency guard, SCOPE G4)")
@@ -3941,6 +4301,9 @@ def parse_args(argv):
         if args.reseed_anchor_floor <= 0.0:
             p.error("--lock-trigger %s requires --reseed-anchor-floor > 0: it is the sticky-lock "
                     "stranger defense the gesture seed relies on" % args.lock_trigger)
+    # Normalize the depth-topic spelling ONCE so the subscription decision (run()) and the DRIVE
+    # precondition (_need_depth) share one test: ""/whitespace/any-case-"none" == depth disabled.
+    args.depth_topic = (args.depth_topic or "").strip()
     return args
 
 

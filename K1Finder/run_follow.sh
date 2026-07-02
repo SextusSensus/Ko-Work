@@ -16,7 +16,10 @@ SRC=/home/booster/loco_follow_bridge.cpp
 if [ "$MODE" = "drive" ]; then
   if [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
     echo "[run_follow] compiling loco_follow_bridge ..."
-    g++ -std=c++17 "$SRC" -I "$SDK/include" "$SDK/lib/aarch64/libbooster_robotics_sdk.a" -lfastrtps -lfastcdr -lpthread -o "$BIN" || { echo "[run_follow] COMPILE FAILED"; exit 3; }
+    # Compile diagnostics -> k1_compile.err (the app tails THAT file on exit 3; k1_follow.err still
+    # holds the PREVIOUS session here and would masquerade as the compile diagnosis). The BRIDGE-
+    # prefixed marker passes the app's stderr whitelist so the failure also shows live.
+    g++ -std=c++17 "$SRC" -I "$SDK/include" "$SDK/lib/aarch64/libbooster_robotics_sdk.a" -lfastrtps -lfastcdr -lpthread -o "$BIN" 2>/home/booster/k1_compile.err || { echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
     echo "[run_follow] compiled OK."
   fi
   # stderr (the node's log lines in --stream mode) must flow to the ssh pipe so K1Finder can show
