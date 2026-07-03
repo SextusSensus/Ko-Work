@@ -3375,39 +3375,30 @@ class Follower:
         bearing_deg = math.degrees(bearing)
         self._viz_range = rng; self._viz_bearing = bearing_deg   # for the annotated stream
 
-        # OPS follow-range geofence -- a PRECONDITION gate, NOT spliced into the control
-        # law. On a VALIDATED depth range only (a pinhole/bboxH guess can never false-trip
-        # it, mirroring the SACRED COASTING vx rule), stop pursuing when the target is
-        # beyond --max-follow-range or inside --min-safe-range, escalating through the
-        # existing _stand()/_hold() floor. HYSTERESIS: once gated, stay gated until the
-        # range returns INSIDE the fence by --range-hysteresis, so a target loitering at
-        # the boundary cannot oscillate stand<->resume. A no-depth frame leaves the latch
-        # unchanged. lost_count is already 0, so an out-of-range-but-visible target stays
-        # tracked and resumes when back in range. Both ranges default 0 (disabled) -> today.
-        if rsrc == "depth" and rng is not None:
+        # OPS follow-range geofence -- a PRECONDITION gate, NOT spliced into the control law.
+        # FAR-side geofence ONLY (field fix 2026-07-03): STAND when the target is beyond
+        # --max-follow-range (a sprint / far depth glitch), with --range-hysteresis so it can't
+        # chatter at the boundary. The CLOSE side is deliberately NO LONGER a stand: standing
+        # when the person is within --min-safe-range FROZE the follow -- a marker seeds you in
+        # close (~0.36m), so the geofence stood the robot 130+ frames and never resumed until
+        # you backed past min_safe+hys (0.9m). Close-range safety is the per-frame forward-vx
+        # floor below (forbids driving TOWARD a too-close person) PLUS the standoff control law,
+        # which BACKS OFF to restore standoff -- the correct, non-frozen behavior. Depth-only
+        # (a bboxH guess can never trip it). --max-follow-range defaults 0 (off) unless the
+        # app's Range-fence toggle sets it, so by default this block is inert.
+        if rsrc == "depth" and rng is not None and self.a.max_follow_range > 0.0:
             m = max(self.a.range_hysteresis, 0.0)
             if self._range_gated:
-                far_ok  = (self.a.max_follow_range <= 0.0) or (rng <= self.a.max_follow_range - m)
-                near_ok = (self.a.min_safe_range  <= 0.0) or (rng >= self.a.min_safe_range + m)
-                self._range_gated = not (far_ok and near_ok)
+                self._range_gated = rng > (self.a.max_follow_range - m)
             else:
-                too_far   = self.a.max_follow_range > 0.0 and rng > self.a.max_follow_range
-                too_close = self.a.min_safe_range  > 0.0 and rng < self.a.min_safe_range
-                # REG-2: DEBOUNCE the close trip. Healthy depth swings 0.13-0.20m frame-to-frame,
-                # so a single noisy dip into the close band must not latch a multi-second stand
-                # during normal close-follow -- require N consecutive validated-depth sub-threshold
-                # frames first. The far trip is unaffected, and the per-frame forward-vx floor (in
-                # _track, which only ever backs off, never stands) still protects EVERY frame, so
-                # debouncing the STAND never lets the robot drive closer. Fail-safe dir preserved.
-                self._close_streak = self._close_streak + 1 if too_close else 0
-                self._range_gated = too_far or (self._close_streak >= max(self.a.reloc_range_streak, 1))
+                self._range_gated = rng > self.a.max_follow_range
             if self._range_gated:
                 if self.a.stand_on_loss:
                     self._stand()
                 else:
                     self._hold()
-                log("RANGE-GATE rng=%.2f[depth] outside fence=[%.2f,%.2f] hys=%.2f -> %s, not pursuing%s"
-                    % (rng, self.a.min_safe_range, self.a.max_follow_range, m,
+                log("RANGE-GATE rng=%.2f[depth] > max_follow=%.2f hys=%.2f -> %s, not pursuing%s"
+                    % (rng, self.a.max_follow_range, m,
                        "stand" if self.a.stand_on_loss else "hold",
                        "" if (self.drive and self.walking) else " [preview]"))
                 return
