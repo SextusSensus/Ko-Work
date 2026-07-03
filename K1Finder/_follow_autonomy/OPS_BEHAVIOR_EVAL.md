@@ -1,5 +1,13 @@
 # Follow-Mode Autonomy — Behavior, Ops & Eval
 
+> **STATUS 2026-07-02:** partially stale — `HARDENING_2026-07.md` wins on conflict. Two known
+> corrections: (1) the bridge **command-staleness deadman is NOT missing** — it exists in
+> `loco_follow_bridge.cpp` (50 Hz watchdog, zero→kPrepare, fail-closed heartbeat deadman) and
+> the 2026-07 audit rated it the most mature safety code in the repo; (2) the replay eval gate
+> specified below is still **spec-only** (being built as `eval/` — P2 #14). The drive
+> pre-flight this doc wanted now exists in code as the DRIVE precondition + the runbook
+> (`ARM_VALIDATION_RUNBOOK.md`).
+
 **Scope:** the runtime contract for taking `K1Finder/follow_person_k1.py` from `--preview` to `--drive`, and the regression gate that authorizes it. Complements (does not repeat) the two existing docs:
 
 - **`PLAN.md`** owns the *perception design* (architecture, staged rollout, A–E coverage).

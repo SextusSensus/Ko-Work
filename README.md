@@ -1,167 +1,115 @@
-# K1 Finder
+# Ko-Work
 
-A zero-dependency Windows desktop app that scans your local network to discover a
-**Booster K1** humanoid robot and hands you the exact connection details.
+Tooling for discovering, connecting to, and running follow-behaviours on a
+**Booster K1** humanoid robot.
 
-Built with PowerShell + Windows Forms, so it runs natively on Windows 11 with
-**nothing to install** (no Python, no Node).
+The repo is two layers that work together:
 
-The app has five tabs.
+1. **K1 Finder** — a zero-install Windows desktop app (PowerShell + Windows Forms)
+   that finds the robot on your LAN, opens an SSH shell, streams the head camera,
+   drives loco commands, and toggles the follow behaviours.
+2. **Robot-side autonomy stack** — the Python nodes and C++ bridges that actually
+   run *on* the K1 (marker-lock follow, markerless person-follow, camera streamer,
+   loco bridge), plus the design/safety docs behind them.
 
-### Tab 1 - Discover
+> ⚠️ **This drives a humanoid robot.** Every motion path is off by default and
+> gated behind an explicit ARM step. Read [Safety](#safety) before running
+> anything in `--drive`.
 
-1. **Detects** your local IPv4 subnet(s).
-2. **Scans** every address on the subnet for an open SSH port (22) and reads the
-   SSH banner.
-3. **Ranks** each host by how K1-like it is:
-   - Default wired IP `192.168.10.102` (strongest signal)
-   - On the K1 default subnet `192.168.10.x`
-   - Runs Ubuntu/Debian (the K1's OS)
-   - Hostname contains `booster` / `k1`
-4. **Verifies & connects** — pings + checks SSH on the chosen IP, then gives you
-   the SSH command and the Booster SDK connect recipe, and copies `ssh booster@<ip>`
-   to your clipboard.
-5. **Use in SSH & Files ->** sends the selected IP straight to Tab 2.
+---
 
-### Tab 2 - SSH & Files
+## Repo map
 
-Uses Windows' built-in OpenSSH client (`ssh.exe` / `scp.exe` / `ssh-keygen.exe`) -
-still zero installs.
+| Path | What it is |
+|---|---|
+| `K1Finder/K1Finder.ps1` | The K1 Finder app (main entry point). |
+| `K1Finder/Launch K1 Finder (no console).vbs` · `K1 Finder.bat` | Launchers — double-click to run the app. |
+| `K1Finder/README.md` | **Full app documentation** (all six tabs, in detail). |
+| `K1Finder/follow_person_k1.py` | Robot-side markerless person-follow (lock-and-handoff: ArUco is a one-time trigger, then YOLO tracks the person). |
+| `K1Finder/follow_marker_k1.py` | Robot-side ArUco-marker follow (tracks the printed marker directly). |
+| `K1Finder/loco_follow_bridge.cpp` | Compiled-on-robot bridge that turns follow velocities into Booster SDK `MoveCommand`s; the hard-clamp backstop. |
+| `K1Finder/stream_cam.py` | ROS2→JPEG camera pump streamed over SSH to the app's Live View. |
+| `K1Finder/enable_camera.cpp` | SDK helper to nudge the head camera into a streaming mode. |
+| `K1Finder/tree_manifest.py` | Runs on the robot to reflect the live Booster SDK file layout. |
+| `K1Finder/_follow_autonomy/` · `_redesign/` · `SCOPE_*.md` · `UNTETHERED_FOLLOW.md` | Design, hardening plans, and adversarial-safety gate docs. |
+| `follow_marker.png` | The DICT_4X4_50 ArUco marker to print for marker-follow. |
+| `follow_marker.py` · `follow_marker.png` | Standalone marker helper + image. |
 
-- **Robot IP** — type it, or **Pull from Discover** to reuse the discovered IP.
-  **Test SSH** checks reachability in-app.
-- **Open SSH Terminal** — launches a live shell: `ssh booster@<ip>` (type the
-  password `123456` when prompted).
-- **Enable passwordless login (install SSH key)** — generates an ed25519 key (if
-  you don't have one) and appends it to the robot's `~/.ssh/authorized_keys`. You
-  type the password **once**; after that, uploads need no password.
-- **Upload files / folders** — add files or a folder, set the remote path
-  (default `/home/booster/`), and **Upload to K1** (`scp -r`):
-  - Default: opens a console window so you can type the password and watch progress.
-  - Tick **Passwordless** (after installing the key) to run the transfer silently
-    and see the result inside the app.
+---
 
-### Tab 3 - Live View
+## Quick start (K1 Finder app)
 
-A live video feed from the K1's head camera, streamed over SSH (no extra installs).
+Requires only **Windows 11** — no Python or Node install needed; the app uses
+built-in PowerShell, Windows Forms, and the OpenSSH client.
 
-- Pick a **camera topic** (default `/boostercamera/head/rgb`), **FPS**, and JPEG
-  **quality**, then **Start**.
-- Under the hood: a small ROS2->JPEG pump (`stream_cam.py`) runs on the robot,
-  subscribes to the image topic (best-effort QoS), converts NV12->color, and writes
-  length-prefixed JPEG frames to stdout; the app reads them over SSH and paints a
-  PictureBox. Live FPS is shown in the status line.
-- **Marker lock‑on indicator:** the streamer detects the DICT_4X4_50 marker and
-  draws an overlay on the live frame — a center reticle, a green outline + center
-  dot on the marker, a `range`/`bearing` readout, and a top banner that reads
-  **NO MARKER** (gray) → **ACQUIRING…** (blue) → **LOCKED — READY TO FOLLOW**
-  (green) once the marker is seen on 3 consecutive frames. The app shows a matching
-  **MARKER LOCKED — READY** badge and plays a chime the moment it locks (and a
-  different sound if the lock is lost). Tick **mute lock sound** to silence it.
-- **If it says "waiting for camera frames"**, the camera isn't publishing in the
-  robot's current state. **Enable cam (beta)** tries the SDK's
-  `X5CameraClient.ChangeMode(NormalEnable)`; if it logs `ChangeMode -> 100`, that
-  RPC service isn't answering right now (the feed works whenever the robot's vision
-  stack is actively streaming - confirmed working when the camera was live).
+1. Power on the K1 and put your PC on the **same subnet** (wired is recommended).
+2. In `K1Finder/`, double-click **`Launch K1 Finder (no console).vbs`** (clean
+   window) or **`K1 Finder.bat`** (with console/debug output).
+3. Click **Scan for K1** — or type the robot IP and click **Verify / Connect**.
 
-### Tab 4 - Control
+From there the app's six tabs cover discovery, SSH/file upload, live camera view,
+loco control, an SDK file browser, and the Tracker (person-follow). See
+**[`K1Finder/README.md`](K1Finder/README.md)** for the complete tab-by-tab walkthrough.
 
-A clickable menu of **every** loco command, driving the robot's own
-`b1_loco_example_client` over an SSH stdin pipe (SDK interface `127.0.0.1`).
+---
 
-1. **Connect** (launches the loco client; wait a few seconds for DDS discovery).
-2. **Test link (gft)** - sends the read-only GetFrameTransform; a `pos:`/`ori:`
-   reply confirms the link **without moving the robot**.
-3. Tick **ARM MOTION** (confirms a warning) to enable the motion buttons.
-
-Command groups: **Modes** (Prepare/Walking/Custom/Damping), **Move**
-(fwd/back/left/right/turn/STOP), **Head** (up/down/left/right/center),
-**Gestures/posture** (Wave, Get-up, Lie-down, Rock/Paper/Scissor/OK/Grasp).
-
-Safety: **DAMPING** and **STOP** are always enabled (even un-armed); everything
-that moves the robot is disabled until you ARM. To wave: `Prepare` -> `Walking` ->
-`WAVE`.
-
-#### Follow marker (QR / ArUco) - a single toggle
-
-The Control tab has a **Follow Marker (QR)** toggle that makes the K1 track a
-printed `follow_marker.png` (DICT_4X4_50 ArUco marker).
-
-- **Toggle ON (PREVIEW, default):** runs `follow_marker_k1.py` on the robot -
-  subscribes to the live head camera, detects the marker, and prints
-  `range`/`bearing` to the log. **Never moves the robot.**
-- Tick **DRIVE (walk the robot)** + **ARM MOTION**, then toggle ON: the K1
-  physically walks to hold a standoff behind the marker, driven by a compiled
-  `loco_follow_bridge` (`MoveCommand(vx,vy,vyaw)`).
-- **Toggle OFF:** sends Ctrl-C -> the robot stops and returns to PREP.
-
-Safety (built + adversarially reviewed): DRIVE is off by default and requires
-ARM + a confirm dialog; it refuses if the manual controller is connected (only
-one driver of locomotion at a time). Hard velocity clamps live in **both** the
-Python and the C++ bridge. The robot stops on lost marker, camera stall (>1s),
-a session watchdog (~120s), toggle-off, app close, or SSH drop - every exit path
-ends in `MoveCommand(0,0,0) + ChangeMode(kPrepare)`. The compiled bridge is the
-backstop: it safes the robot on its own EOF/SIGINT/SIGTERM.
-
-Robot-side files (deployed automatically): `follow_marker_k1.py`,
-`loco_follow_bridge.cpp` (compiled on first DRIVE), `run_follow.sh`. The marker
-image is `follow_marker.png`. The camera is bursty/subscriber-gated (~10s warmup).
-
-### Tab 5 - Robot Files (SDK browser)
-
-Reflects the robot's **actual** Booster SDK file layout so paths are never guessed.
-
-- **Refresh from robot** deploys `tree_manifest.py` to the K1, runs it (one
-  Python pass that walks the SDK + `/home/booster`), and pulls back three files
-  into the app's temp dir: `k1_tree.txt`, `k1_paths.json`, `k1_paths_list.txt`.
-- **Left TreeView**: the live SDK tree (`include/booster/{idl,robot/...}`,
-  `example`, `python`, `lib`, `build` binaries) plus `/home/booster`. Folders are
-  black, files blue; the SDK root is auto-expanded and selected.
-- **Right - Key paths grid**: every canonical path from `k1_paths.json` with an
-  **OK** (green) / **MISSING** (red) / **topic** / **n/a** status. A red row is a
-  drift signal - the SDK moved and the manifest already has the new location.
-- **File preview**: double-click a file in the tree (or an **OK** key row) to scp
-  it back and show the first ~400 lines; binaries show size/type only.
-
-The robot-side generator is `tree_manifest.py` (lives next to the app, deployed on
-each Refresh). All the app's robot paths were verified against this manifest, so
-the loco client, headers, static lib, and helper-script locations are real, not
-assumed.
-
-## How to run
-
-- Double-click **`Launch K1 Finder (no console).vbs`** for the clean, window-only experience.
-- Or double-click **`K1 Finder.bat`** if you want to see console/debug output too.
-
-Either one opens the app window. Click **Scan for K1**, or type the robot's IP and
-click **Verify / Connect**.
-
-## Booster K1 connection facts (what this app is built on)
+## Connection facts
 
 | Item | Value |
 |---|---|
 | Default **wired** IP | `192.168.10.102` |
 | SSH login | `ssh booster@192.168.10.102` (default password `123456`) |
-| SDK transport | **Fast-DDS** (ROS2-compatible); the SDK client connects by passing the robot **IP** |
+| SDK transport | **Fast-DDS** (ROS2-compatible); the SDK client connects by IP |
 | Wi-Fi | K1 gets a **dynamic IP** — use the scanned IP, not `.102` |
 
-Example SDK connect (after you have the IP):
+Robot-side environment (sourced before the follow nodes run):
 
 ```bash
-# C++
-./b1_loco_example_client 192.168.10.102
-# Python
-python3 sdk_pybind_b1_example.py 192.168.10.102
+source /opt/ros/humble/setup.bash
+source /opt/booster/BoosterRos2/install/setup.bash
 ```
 
-## Notes / honest caveats
+---
 
-- Discovery keys on **SSH (port 22)** because the K1 runs Linux with SSH enabled.
-  A host that has 22 open and is on `192.168.10.x` running Ubuntu ranks "High".
-  Other Linux boxes on your LAN may also show up as lower-confidence rows — pick
-  the one whose IP/hostname matches your robot.
-- Your control PC must be on the **same subnet** as the K1. Wired is recommended.
-- If the scan finds nothing: confirm the K1 is powered on, you're on the same
-  network, and (on wired) you're in the `192.168.10.x` range.
-- This app does **not** drive the robot — it finds it and verifies the link. Actual
-  motion control is done with the Booster SDK (Fast-DDS) using the IP it gives you.
+## Follow behaviours
+
+Two follow nodes run on the robot; both default to **PREVIEW** (detect + print,
+never move) and only drive when explicitly armed.
+
+- **Marker follow** (`follow_marker_k1.py`) — the K1 holds a standoff behind a
+  printed ArUco marker.
+- **Person follow** (`follow_person_k1.py`) — *lock-and-handoff*: the marker is a
+  one-time trigger to lock onto the human standing at it, after which the robot
+  follows **that person** markerlessly (YOLO person detection + colour signature),
+  re-seeding from the marker only to recover from a hard loss. See the module
+  docstring for the full state machine (`SEARCH_MARKER → SEEDED → TRACK →
+  REACQUIRE`).
+
+Both are toggled from the app's **Control** tab.
+
+---
+
+## Safety
+
+The motion paths were built and adversarially reviewed. In `--drive` mode:
+
+- **Off by default.** Preview mode never spawns the bridge and never moves the robot.
+- **ARM required.** Driving needs ARM + a confirm dialog, and refuses if the manual
+  controller is connected (only one driver of locomotion at a time).
+- **Hard velocity clamps in both layers** — the Python node *and* the compiled C++
+  bridge.
+- **Stops on:** lost target, camera stall (>1s), session watchdog, toggle-off,
+  app close, or SSH drop. Every exit path ends in
+  `MoveCommand(0,0,0) + ChangeMode(kPrepare)`.
+- **Bridge is the backstop** — it safes the robot on its own EOF / SIGINT / SIGTERM.
+
+**Untethered operation is currently FORBIDDEN** — going wireless removes the SSH
+link that today acts as the deadman. See
+[`K1Finder/UNTETHERED_FOLLOW.md`](K1Finder/UNTETHERED_FOLLOW.md) for the pre-flight
+gate that must be cleared first.
+
+---
+
+## License
+
+See [`LICENSE`](LICENSE).

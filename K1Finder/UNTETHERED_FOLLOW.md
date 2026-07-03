@@ -3,6 +3,16 @@
 **Status: DO NOT RUN UNTETHERED. This document is the gate, not the green light.**
 Scoped 2026-06-26 (design + 4-lens adversarial-safety workflow; all four lenses returned RETHINK). Grounded against the live `follow_person_k1.py`, `loco_follow_bridge.cpp`, `K1Finder.ps1` + the [perception-expansion-plan].
 
+> **UPDATE 2026-07-02 (P2 #12):** the software heartbeat layer of blocker (2) now EXISTS and has a
+> UI path — the bridge's `K1_REQUIRE_HB`/`K1_HB_FILE` mtime deadman (zero @400ms → kPrepare @1.5s,
+> ANDed with the v-gate) + the node's `--require-heartbeat` gate in `_drive_vel`, wired to the
+> Tracker tab's red **`Deadman HB`** checkbox, which also starts a byte-driven relay (remote
+> touches happen only on bytes received from the app, so mtime freshness == live connectivity).
+> This is a **laptop-tethered-equivalent** deadman (the laptop+WiFi is the operator link), NOT the
+> passive-safe fob this doc requires for untethered. **The gate stands:** hardware e-stop
+> verification, no-auto-resume-on-hb-return, the launch-guard, the fob, and the AP/failure-matrix
+> (P3) all remain open. Nothing below is downgraded.
+
 Going untethered does not *remove* the need for a deadman — it **removes the deadman you currently have** (the SSH link) and forces you to rebuild it. Today nothing replaces it. This doc is the safety gate that must be cleared first.
 
 ## Why untethered is currently FORBIDDEN (verified against live code)

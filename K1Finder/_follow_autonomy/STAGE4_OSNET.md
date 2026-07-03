@@ -1,5 +1,11 @@
 # Stage 4 (deep) — OSNet ReID embedding, TRT FP16
 
+> **STATUS 2026-07-02:** design doc, partially stale — `HARDENING_2026-07.md` wins on conflict.
+> Confirmed live on the Orin via TensorRT. The batched-embed/every-n path below is now
+> CODE-live but effectively per-row (shipped ONNX is fixed batch=1; dynamic-axis re-export
+> pending). Engine health is surfaced (REID badge + `REID-DEGRADED` watchdog); armed re-lock
+> is refused on CPU-EP or a faulted engine. The app default is now **osnet** (not default-off).
+
 The optional learned-embedding appearance backend. Drops into the same `feat_fn`/`sim_fn` swap point as `global`/`striped`, behind `--appearance osnet`. **Default-off; falls back to the histogram if anything is missing — nothing here changes behavior unless you pass `--appearance osnet --reid-engine …`.**
 
 ## Why / what it buys
