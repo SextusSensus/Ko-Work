@@ -19,3 +19,9 @@ frame.jpg
 
 # Session archive (moved backups + scratch; see _backups/README.txt)
 K1Finder/_backups/
+
+# Offline pip wheel closures (large binaries; regenerate per K1Finder/wheels/README.md)
+K1Finder/wheels/*.whl
+
+# Auto-downloaded YOLO / ultralytics model weights (regenerated on first use)
+*.pt
