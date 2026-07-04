@@ -93,11 +93,34 @@ label stack → write a **scrubbable labeled Rerun view** + a structured per-fra
   - Honest finding: with the 70° FOV, ~100% of detections are "in corridor" (the whole view IS the
     corridor) — that filter only earns its keep with a wider sensor or near-center weighting.
 
-### Phase 2 — "What actually matters" + the representation — effort S
-Analyze the labeled runs: which classes enter the forward corridor, how often depth-geometry alone
-suffices vs. needs the semantic label, typical detection range/latency. This **empirically** defines
-the minimal live subset (likely: COCO person+chair+couch+table + depth clearance). Freeze the compact
-egocentric obstacle message.
+### Phase 2 — "What actually matters" + the representation — effort S — ✅ BUILT + VALIDATED 2026-07-04
+`eval/rrd_obstacles.py` turns the raw tracked detections (`obstacles.jsonl`) into a TRUE obstacle set
+and the avoidance signal, and freezes the egocentric representation. On the real run:
+**536 raw detections → 6 unique obstacles** (filter transient tracks by `seen`-count; MERGE by two
+rules — co-location for stationary objects across any gap, endpoint-stitch for a moving object handed
+to a new id; the two 2.5 m chairs correctly merged).
+
+**Egocentric obstacle representation (frozen — `obstacle_set.json`), base frame x=right y=fwd z=up:**
+```
+Obstacle = {id, cls, range_stable, suspect_iddrift, spread_m, xyz, range_m, range_min_m,
+            bearing_deg, persistence, first, last, merged_tracks, source}
+ReflexSnapshot(per frame) = {frame_idx, nearest_corridor_m, nearest_class, n_in_corridor, brake}
+```
+`nearest_corridor_m` is THE scalar a graded-brake reflex acts on (∞ when the corridor is clear).
+
+**Three findings that steer Phase 3 (the real payoff):**
+1. **`range-stable` ≠ world-static (no odometry).** The FOLLOWED operator reads range-stable only
+   because the robot holds standoff. You cannot split object motion from robot ego-motion in the
+   egocentric frame — the labels are descriptive, not a world model. (The "3 persons" here are
+   operator@1.6m + 2 bystanders, NOT a split, precisely because standoff pins the operator's range.)
+2. **ID-drift/depth-glitch is the false-brake risk.** The one SUSPECT obstacle (a "chair" spanning
+   0.5–4.2 m = furniture-that-moves = ID drift) and its spurious 0.5 m reading are the ONLY thing that
+   trips the brake. → the reflex must gate on an **aged-median** range (reuse the follow's F1 anti-glitch
+   gate), never a raw min. Same failure class the Rerun work exposed (the relock lunge).
+3. **Geometry triggers, semantics modulate.** Every corridor obstacle had a depth return, so
+   depth-clearance ALONE would brake; COCO adds the CLASS (person vs chair) for class-aware braking,
+   not the trigger. → the live reflex = cheap depth forward-clearance (always) + unfiltered COCO (class),
+   both off the control loop.
 
 ### Phase 3 — Live minimal reflex (on-robot, MEASURED + GATED) — effort M
 Distill the cheapest useful thing onto the robot, on the cam-spin/decimated pattern (never the control
