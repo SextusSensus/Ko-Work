@@ -33,7 +33,7 @@ episode (`observation.state` + `action` + `head_rgb` video).
 | `observation.state[6]` `fsm_state_id` | `/fsm/state_id` | 3=TRACK 2=REACQUIRE 1.5=SEARCHING 1=SEARCH 0=PARKED |
 | `action[0]` `vx` | `/cmd/vx` | forward m/s (truthful post-clamp) |
 | `action[1]` `vyaw` | `/cmd/vyaw` | yaw rad/s. `vy ≡ 0` (2-DOF) |
-| `observation.images.head_rgb` | `/camera/rgb` | `Image` → mp4 (h264); depth optional via `--with-depth` |
+| `observation.images.head_rgb` | `/camera/rgb` | `Image` → mp4 (h264). Depth is READ from live `.rrd`s but **depth export is not implemented** — `--with-depth` exits with an error (the `.rrd` stays the depth artifact of record) |
 
 Scalars are **forward-filled** onto the union of scalar `frame_idx`; each state frame takes the
 **nearest-earlier** RGB frame (images are decimated 1/N in the `.rrd`).
@@ -41,8 +41,12 @@ Scalars are **forward-filled** onto the union of scalar `frame_idx`; each state 
 ## Usage
 ```bash
 python3 rrd_to_lerobot.py <in.rrd> --out <dir> [--fps 10] [--task "follow the locked person"] \
-                          [--with-depth] [--repo-id local/k1_follow] [--raw]
+                          [--repo-id local/k1_follow] [--raw] [--allow-no-track]
 ```
+The episode is **trimmed to start at the first real TRACK frame** (`/follow/range` sample) — a
+TRACK-less `.rrd` is refused (else the forward-fill would fabricate `range=0.0` rows that read as
+"at the robot"); pass `--allow-no-track` for a health/FSM-only export. Images are paired
+**nearest-earlier only** (a frame before the first logged image gets `None`, never a future image).
 - If the **`lerobot` library is importable**, the script hands off to `LeRobotDataset.create()` /
   `add_frame()` / `save_episode()` — **format-correct by construction**. Use this for a
   loader-conformant dataset.
@@ -62,12 +66,14 @@ script degrades to a **PNG frame folder** beside the mp4 path and records
 `video_backend=png-fallback` in `info.json` — inspectable, just not a video.
 
 ## Validation status
-- **Read + state/action assembly + RAW write: VALIDATED off-robot** on a real `.rrd`
-  (`state (T,7)`, `action (T,2)`, per-frame RGB reconstructed from `Image:buffer`/`Image:format`;
-  parquet + meta correct). This is the pipeline proof.
-- **mp4 encode:** validated as *degrade-to-PNG* locally (no ffmpeg on the dev laptop); the mp4 path
-  needs an ffmpeg-equipped machine.
+- **Read + state/action assembly + RAW write: VALIDATED on a REAL robot `.rrd`** (2026-07-04, a 137 MB
+  live `--rerun` preview recording): 417 RGB + **124 depth** frames extracted (448×544 head cam),
+  `state (247,7)` (real `depth_fps`=13.1 column), `action (247,2)`, parquet + meta correct. This
+  validation also caught a real sink bug (`SEARCH_MARKER` FSM state unmapped → -1). Pipeline proven.
+- **mp4 encode: VALIDATED** — with `imageio-ffmpeg` installed, real h264 (544×448 @ 10 fps, 247 robot
+  frames, readable back with imageio). Without ffmpeg it degrades to the PNG folder as designed.
 - **Canonical `lerobot` path:** written to the documented API but **NOT run** (library not installed
   here). Validate against the installed `lerobot` version before trusting byte-level v3 conformance —
   the format is perishable.
-- **Depth + a depth-valid episode:** needs a LIVE `--rerun` `.rrd` with `/camera/depth` (robot).
+- **A depth-valid FOLLOWING episode** (non-zero range/vx/vyaw): still needs a locked TRACK run on the
+  robot (gesture lock didn't fire in the first attempt; retry with `--gesture-debug`).

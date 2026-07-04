@@ -17,7 +17,9 @@ Schema mapping (see LEROBOT_EXPORT.md):
   observation.state = [range_m, bearing_deg, rsrc_is_depth, anchor_sim, conf, depth_fps, fsm_state_id]
   action            = [vx, vyaw]                         (vy == 0, 2-DOF twist)
   observation.images.head_rgb  <- /camera/rgb            (Image -> mp4)
-  (observation.images.head_depth <- /camera/depth is available in LIVE .rrds; --with-depth to include)
+  (depth: /camera/depth IS read out of live .rrds, but depth EXPORT is not implemented yet --
+   --with-depth exits with an error rather than silently dropping it; the .rrd stays the
+   depth artifact of record)
 
 Usage:
   python3 rrd_to_lerobot.py <in.rrd> --out <dir> [--fps 10] [--task "follow the locked person"]
@@ -126,13 +128,30 @@ def _ffill(series_by_fi, frames):
     return out
 
 
-def assemble_episode(scalars, images):
+def assemble_episode(scalars, images, allow_no_track=False):
     """Build the aligned per-frame (state, action, rgb) episode on the union of scalar frame_idx.
-    RGB frames are decimated in the .rrd (1/N), so each state frame takes the NEAREST earlier image."""
+    RGB frames are decimated in the .rrd (1/N), so each state frame takes the NEAREST earlier image.
+
+    Review fixes 2026-07-04:
+      * The episode is TRIMMED to start at the first frame with real follow data (/follow/range) --
+        _ffill's 0.0 seed would otherwise FABRICATE range=0.0/sim=0.0/conf=0.0 rows for every
+        pre-lock SEARCH frame (range 0.0 m reads as "AT the robot") and pollute stats.json. Pass
+        allow_no_track=True to export a TRACK-less .rrd anyway (health/FSM QA only).
+      * An image is only paired with a frame it precedes-or-equals -- pre-first-image frames get
+        None, never a FUTURE image (temporal causality for anything training-shaped)."""
     import numpy as np
     frames = sorted({fi for e in scalars for fi in scalars[e]})
     if not frames:
         raise SystemExit("no scalar frames in the .rrd -- was it recorded with --rerun on a real run?")
+
+    rng_fis = scalars.get("/follow/range", {})
+    if rng_fis:
+        anchor = min(rng_fis)
+        frames = [fi for fi in frames if fi >= anchor]
+    elif not allow_no_track:
+        raise SystemExit("no TRACK frames (/follow/range) in the .rrd -- nothing to export as an "
+                         "episode. Re-run with a locked follow, or pass --allow-no-track for a "
+                         "health/FSM-only export (state cols will be 0-filled).")
 
     state_cols = []
     for ent, _name in STATE_ENTITIES:
@@ -145,14 +164,14 @@ def assemble_episode(scalars, images):
     action = np.array([_ffill(scalars.get(e, {}), frames) for e, _ in ACTION_ENTITIES],
                       dtype=np.float32).T                     # (T, 2)
 
-    # nearest-earlier RGB for each state frame
+    # nearest-EARLIER RGB for each state frame (never a future image; None before the first image)
     img_fis = sorted(images)
     rgb = []
     j = 0
     for fi in frames:
         while j + 1 < len(img_fis) and img_fis[j + 1] <= fi:
             j += 1
-        rgb.append(images[img_fis[j]] if img_fis else None)
+        rgb.append(images[img_fis[j]] if (img_fis and img_fis[j] <= fi) else None)
     return frames, state, action, rgb
 
 
@@ -225,7 +244,7 @@ def write_raw(out, frames, state, action, rgb, fps, task, repo_id, with_depth):
             "index": {"dtype": "int64", "shape": [1]},
             "task_index": {"dtype": "int64", "shape": [1]},
         },
-        "video_backend": ("mp4" if video_written else "png-fallback (ffmpeg not found)"),
+        "video_backend": ("mp4" if video_written else "png-fallback (mp4 encode unavailable or failed)"),
     }
     with open(os.path.join(out, "meta", "info.json"), "w") as f:
         json.dump(info, f, indent=2)
@@ -252,10 +271,16 @@ def _write_video(path, rgb, fps):
                 if im is not None:
                     w.append_data(im)
         return True
-    except Exception as e:  # noqa: BLE001 -- ffmpeg absent -> PNG folder fallback (still inspectable)
+    except Exception as e:  # noqa: BLE001 -- ffmpeg absent/failed -> PNG folder fallback (still inspectable)
         print("RRD2LR video note: mp4 encode failed (%s) -> writing PNG frames" % e)
+        import os as _os
+        try:  # review fix: never leave a partial mp4 at the canonical video_path -- a downstream
+            if _os.path.exists(path):  # loader would resolve the template, find it, and die on decode
+                _os.remove(path)
+        except OSError:
+            pass
         try:
-            import imageio, os as _os
+            import imageio
             d = path[:-4] + "_frames"
             _os.makedirs(d, exist_ok=True)
             for i, im in enumerate(rgb):
@@ -275,12 +300,19 @@ def try_write_lerobot(out, frames, state, action, rgb, fps, task, repo_id):
     except Exception:
         return False
     import numpy as np
+    # Review fix: all-None rgb would declare a (0,0,3) video feature no frame ever supplies ->
+    # fall back to write_raw (which handles imageless episodes). Trim any image-less prefix so
+    # every retained frame HAS an image and the shape comes from a real one.
+    if not any(im is not None for im in rgb):
+        return False
+    first = next(i for i, im in enumerate(rgb) if im is not None)
+    frames, state, action, rgb = frames[first:], state[first:], action[first:], rgb[first:]
     features = {
         "observation.state": {"dtype": "float32", "shape": (state.shape[1],),
                               "names": [n for _, n in STATE_ENTITIES]},
         "action": {"dtype": "float32", "shape": (action.shape[1],),
                    "names": [n for _, n in ACTION_ENTITIES]},
-        "observation.images.head_rgb": {"dtype": "video", "shape": (rgb[0].shape if rgb and rgb[0] is not None else (0, 0, 3)),
+        "observation.images.head_rgb": {"dtype": "video", "shape": tuple(rgb[0].shape),
                                         "names": ["height", "width", "channel"]},
     }
     ds = LeRobotDataset.create(repo_id=repo_id, fps=int(fps), root=out, features=features)
@@ -300,17 +332,26 @@ def main():
     ap.add_argument("--fps", type=float, default=10.0)
     ap.add_argument("--task", default="follow the locked person")
     ap.add_argument("--repo-id", default="local/k1_follow")
-    ap.add_argument("--with-depth", action="store_true", help="also export head_depth if present")
+    ap.add_argument("--with-depth", action="store_true",
+                    help="NOT IMPLEMENTED: depth frames are read but a head_depth export does not "
+                         "exist yet -- this flag exits with an error instead of silently no-opping")
+    ap.add_argument("--allow-no-track", action="store_true",
+                    help="export a TRACK-less .rrd anyway (health/FSM QA only; follow state cols "
+                         "are 0-filled). Default: refuse, so fabricated range=0.0 rows can't ship")
     ap.add_argument("--raw", action="store_true", help="force the RAW layout (skip the lerobot lib)")
     a = ap.parse_args()
 
+    if a.with_depth:  # review fix: this was a silently-dead flag; fail loudly until implemented
+        raise SystemExit("--with-depth: depth export not implemented yet (depth frames are read "
+                         "but not written; the .rrd is the depth artifact of record). "
+                         "Re-run without it.")
     if not os.path.exists(a.rrd):
         raise SystemExit("no such .rrd: %s" % a.rrd)
     print("reading %s ..." % a.rrd)
     scalars, images, depth = read_rrd(a.rrd)
     print("  entities: %d scalar, %d rgb frames, %d depth frames"
           % (len(scalars), len(images), len(depth)))
-    frames, state, action, rgb = assemble_episode(scalars, images)
+    frames, state, action, rgb = assemble_episode(scalars, images, allow_no_track=a.allow_no_track)
     n_rgb = sum(1 for im in rgb if im is not None)
     print("  episode: T=%d frames, state%s, action%s, rgb=%d/%d"
           % (len(frames), tuple(state.shape), tuple(action.shape), n_rgb, len(frames)))

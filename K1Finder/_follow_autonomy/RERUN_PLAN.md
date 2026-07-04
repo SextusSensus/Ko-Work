@@ -43,25 +43,48 @@ autonomy-ops (offline staging), embodied-ai-advisor (tool-fit + honest thesis fr
   RerunWheels` pinned `==0.23.1 --user`.
 - **Phase 1 on robot:** `replay_eval selftest` = SELFTEST-OK (node+YOLO+determinism); `run --rerun`
   → 13 MB offline `.rrd`.
-- **Phase 2 loop-cost GATE (preview): PASS.** Baseline (off) steady-state loop WORK-time p50=73 /
-  p90=78 / p99=82 ms; with `--rerun` p50=77 / p90=83 / p99=97 ms — **Δ ≈ +4–5 ms typical, +15 ms p99**
-  (batcher-lock contention with the cam-spin images), stays **under the 100 ms budget**; SLOW-LOOP=0,
-  auto-disable never fired; sensor rates unchanged (RGB ~31, DEPTH ~13). Added an always-on `LOOP-MS`
-  p50/p99 stderr pulse (tagged rerun on/off) for this. **DRIVE NOT cleared from preview:** the audit
-  measured the drive loop at 104–107 ms (already at budget); +rerun would push it over → SLOW-LOOP →
-  the `--rerun-overrun-frames` backstop sheds rerun (gait safe, recording lost). Needs a supervised
-  drive session + likely a higher `--rerun-image-every-n` to shrink the p99 tail.
+- **Phase 2 loop-cost GATE: PASS in preview, at-the-edge during following, DRIVE deferred.**
+  - *Preview (SEARCH):* baseline loop p50=73/p90=78/p99=82 ms; `--rerun` p50=77/p90=83/p99=97 ms —
+    comfortably under the 100 ms budget, SLOW-LOOP=0.
+  - *Active TRACK following (`--rerun`, images 1/10), measured 2026-07-04 on a 576-frame gesture-lock
+    run:* the **direct Rerun control-loop cost `/diag/rr_track_ms` = p50 2.84 / p90 6.55 / p99 13.32
+    ms** (max 25). Total `/diag/loop_ms` = p50 79.6 / p90 100.3 / p99 131.9 ms — i.e. the loop sits
+    **right at budget (p90≈100 ms)** while following with Rerun on. Rerun is ~3 ms typical; its p99
+    tail (~13 ms, the predicted batcher contention) is what pushes an already-heavy following loop over.
+  - *Backstop verified:* with `--rerun-image-every-n 3 --rerun-overrun-frames 8`, `RERUN-DISABLED-SLOW`
+    fired on the startup TRT-load/warmup stall (8 consec. over-budget) BEFORE the lock — gait safe,
+    recording shed; with `-overrun-frames 30 --image-every-n 10` it rode through the whole follow.
+  - Added an always-on `LOOP-MS` p50/p99 stderr pulse (tagged rerun on/off) + `eval/rrd_loop_stats.py`.
+  - **DRIVE NOT cleared:** the drive loop is already 104–107 ms (audit); +Rerun's tail pushes it
+    consistently over → the backstop sheds Rerun (gait safe, recording lost). For `--rerun`+`--drive`,
+    use a HIGH `--rerun-image-every-n` (10+) and expect the backstop to arbitrate; measure in a
+    supervised drive session before trusting a recording under drive.
 - **Version compat CONFIRMED:** laptop rerun **0.33.1 reads the robot's 0.23.1 `.rrd`** (extracted
   `/diag/loop_ms`), so the "Open .rrd" viewer + Phase-4 export work on robot recordings.
 - **`RerunLogger/` FOUND:** `/opt/booster/RerunLogger/bin/booster-rerun-logger` (a compiled SDK
   binary). Our node-side path is independent of it; a future optimization could piggyback it for
   images to cut the control-loop cost. Not yet probed for what it streams.
-- **Gesture lock still flaky:** did not fire in a capstone follow attempt → no TRACK episode captured
-  yet (a rich following `.rrd` with range/vx/vyaw needs a reliable lock — marker or a fixed gesture).
+- **Gesture lock WORKS** (2026-07-04, `--gesture-debug`): first attempts didn't fire because the
+  hand was raised while already in TRACK (`GDBG STATE-SKIP state=TRACK ... pose not run` — the
+  acquisition pose only runs in SEARCH/REACQUIRE/PARKED, by design). Raising a hand during SEARCH
+  locks cleanly (`holds={1:12} need=6 confirmed=[1]` → `LOCKED ... gesture handoff complete`, conf
+  ~0.6). Captured a 576-frame following `.rrd` (range 1.6–1.7 m depth, real vx/vyaw) — the Phase-4
+  motion episode.
+
+- **Laptop-side closure (2026-07-04, robot charging):** the **native viewer opens the robot `.rrd`**
+  (rerun-cli 0.33.1 at `anaconda3\Scripts\rerun.exe` — the exact path `Find-RerunViewer` probes, same
+  `Start-Process` action as the app's "Open .rrd" button). **Phase-4 mp4 validated on real data**
+  (`imageio-ffmpeg` → h264 544×448 @10fps, 247 real robot frames readable back). New
+  `eval/rrd_loop_stats.py` = the reusable loop-cost-gate extractor (laptop 0.33+ only). Export
+  validation also caught + fixed a sink bug: the FSM search state is `SEARCH_MARKER`, not `SEARCH`
+  (was logging -1 on the `/fsm/state_id` series). Wheel closure gitignored; regeneration + the
+  numpy pin documented in `wheels/README.md`. Work committed on `rerun-observability` (88c043e).
 
 **Remaining (robot-gated):** a locked following `.rrd` (range/vx/vyaw) for a real Phase-4 episode +
-the TRACK loop-cost; the `--rerun`+`--drive` gate in a supervised drive session; probe what
-`booster-rerun-logger` streams; app GUI click-test (tick Rerun, Open .rrd); arm-validation.
+the TRACK loop-cost — retry gesture lock WITH `--gesture-debug` (it did not fire in the first capstone
+attempt; robot went offline before the debug re-run); the `--rerun`+`--drive` gate in a supervised
+drive session; probe what `booster-rerun-logger` streams; app GUI click-test (tick Rerun, Open .rrd);
+arm-validation.
 
 ## Why
 Twice this session a real bug was **misdiagnosed from a text log** — the relock **lunge** (depth

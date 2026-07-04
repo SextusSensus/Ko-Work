@@ -81,11 +81,19 @@ function Deploy-RobotFiles {
 # follow_person_k1.py = lock-and-handoff: marker is a one-time lock onto the person, then YOLO-follows that person.
 function Deploy-FollowFiles {
     param([string]$ip)
-    foreach ($f in @('follow_person_k1.py','loco_follow_bridge.cpp','run_follow.sh','stage_pose.py','k1_rerun.py')) {
+    foreach ($f in @('follow_person_k1.py','loco_follow_bridge.cpp','run_follow.sh','stage_pose.py')) {
         $src = Join-Path $SCRIPT_DIR $f
         if (-not (Test-Path $src)) { return $false }
         $args = $SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f))
         $p = Start-Process scp.exe -ArgumentList $args -NoNewWindow -PassThru
+        $null = $p.WaitForExit(20000)
+    }
+    # k1_rerun.py is BEST-EFFORT (review fix): Rerun is never a launch dependency -- the node
+    # degrades to a no-op sink when the module is absent (follow_person_k1.py _NullRR), so a
+    # missing local copy must not block the follow like the hard-required files above do.
+    $rr = Join-Path $SCRIPT_DIR 'k1_rerun.py'
+    if (Test-Path $rr) {
+        $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($rr, ("{0}@{1}:/home/booster/k1_rerun.py" -f $script:SshUser, $ip))) -NoNewWindow -PassThru
         $null = $p.WaitForExit(20000)
     }
     return $true
@@ -176,14 +184,16 @@ function Ensure-ReidModel([string]$ip){
 # NOTE: installs into whatever `python3` resolves to in the ssh shell -- the SAME interpreter
 # run_follow.sh launches the node with, so an import here means an import at node start.
 function Test-RerunImport([string]$ip){
-    $tmp = Join-Path $env:TEMP 'k1_rerun_imp.txt'
+    # Unique temp name + kill-on-timeout (review fix): a stalled prior ssh could hold the redirect
+    # file open and false-negative every later check with a fixed name.
+    $tmp = Join-Path $env:TEMP ('k1_rerun_imp_{0}.txt' -f ([IO.Path]::GetRandomFileName() -replace '\.',''))
     try{
-        Remove-Item $tmp -ErrorAction SilentlyContinue
         $q = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), "python3 -c 'import rerun,sys; sys.stdout.write(rerun.__version__)'")) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
-        $null = $q.WaitForExit(15000)
+        if(-not $q.WaitForExit(15000)){ try{ $q.Kill() }catch{}; $null=$q.WaitForExit(2000) }
         $v = (Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
         if($v -and ($v.Trim() -match '^\d+\.\d+')){ return $v.Trim() }
     }catch{}
+    finally{ Remove-Item $tmp -ErrorAction SilentlyContinue }
     return $null
 }
 function Ensure-RerunWheels([string]$ip){
@@ -253,8 +263,17 @@ function Open-RerunRecording([string]$path){
     if(-not ($path -and (Test-Path $path))){ Add-LogTrack ('No .rrd to open.') $amber; return }
     $exe = Find-RerunViewer
     if($exe){ try{ Start-Process $exe -ArgumentList ('"{0}"' -f $path); Add-LogTrack ('Opened in Rerun viewer: {0}' -f (Split-Path $path -Leaf)) $accent }catch{ Add-LogTrack ('viewer launch failed: {0}' -f $_) $red } ; return }
-    try{ Start-Process 'python' -ArgumentList ('-m rerun "{0}"' -f $path); Add-LogTrack 'Opened via python -m rerun.' $accent }
-    catch{ Add-LogTrack 'Rerun viewer not found. pip install rerun-sdk on the laptop, or set $script:RerunViewerExe.' $amber }
+    # Review fix: pre-verify the module imports -- Start-Process 'python' succeeds even when
+    # rerun-sdk is absent (console flashes 'No module named rerun'), which used to log a false
+    # 'Opened' and made the actionable pip-install hint unreachable.
+    $imp=$false
+    try{ $q=Start-Process 'python' -ArgumentList '-c "import rerun"' -WindowStyle Hidden -PassThru; if($q.WaitForExit(15000) -and $q.ExitCode -eq 0){ $imp=$true } }catch{}
+    if($imp){
+        try{ Start-Process 'python' -ArgumentList ('-m rerun "{0}"' -f $path); Add-LogTrack 'Opened via python -m rerun.' $accent }
+        catch{ Add-LogTrack ('viewer launch failed: {0}' -f $_) $red }
+    } else {
+        Add-LogTrack 'Rerun viewer not found. pip install rerun-sdk on the laptop, or set $script:RerunViewerExe.' $amber
+    }
 }
 # ---- Reachability helper ----------------------------------------------------
 function Test-K1Reachable {
@@ -723,7 +742,17 @@ $btnFollowCmd.Add_Click({ Send-FollowCmd 'FOLLOW' })
 # Rerun (Phase 3): pull the newest .rrd off the robot and open it in the laptop viewer. Always
 # enabled (unlike the session-only Cmd buttons) -- you scrub AFTER a run. No-op-safe if none exists.
 $btnRrd=New-Object System.Windows.Forms.Button; $btnRrd.Text='Open .rrd'; $btnRrd.Size='110,28'; $btnRrd.Location='598,186'; $btnRrd.FlatStyle='Flat'; $btnRrd.ForeColor=$accent; $grpTrackCtl.Controls.Add($btnRrd)
-$btnRrd.Add_Click({ $ip=$ipTrack.Text.Trim(); if(-not $ip){ Add-LogTrack 'Enter the robot IP first.' $amber; return }; $script:RobotIP=$ip; $p=Pull-RerunRecording $ip; if($p){ Open-RerunRecording $p } })
+$btnRrd.Add_Click({
+    $ip=$ipTrack.Text.Trim(); if(-not $ip){ Add-LogTrack 'Enter the robot IP first.' $amber; return }
+    $script:RobotIP=$ip
+    # Review fix: the newest .rrd during a live Rerun follow is the file being WRITTEN -- pulling it
+    # yields a truncated snapshot missing the most recent (most diagnostic) seconds. Warn + confirm.
+    if($script:TrackOn -and $trackRerun -and $trackRerun.Checked){
+        $r=[System.Windows.Forms.MessageBox]::Show("A Rerun-recording follow session is still running. The newest .rrd is still being written (its tail is unflushed) -- pulling now yields a TRUNCATED snapshot. Stop the session first for a complete recording. Pull anyway?",'Recording in progress',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
+        if($r -ne [System.Windows.Forms.DialogResult]::OK){ return }
+    }
+    $p=Pull-RerunRecording $ip; if($p){ Open-RerunRecording $p }
+})
 
 # --- big annotated video --------------------------------------------------
 $trackPic=New-Object System.Windows.Forms.PictureBox; $trackPic.Dock='Fill'; $trackPic.BackColor=[System.Drawing.Color]::Black; $trackPic.SizeMode='Zoom'
@@ -1154,7 +1183,11 @@ function Start-Tracker([bool]$drive){
         if(-not (Ensure-RerunWheels $ip)){
             $r=[System.Windows.Forms.MessageBox]::Show("rerun-sdk isn't importable on the robot and couldn't be auto-staged from a local wheels\ dir. Rerun recording will be DISABLED (the follow runs normally, no .rrd). Start anyway?",'Rerun unavailable',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
             if($r -ne 'OK'){ return $false }
-            Add-LogTrack 'rerun-sdk missing -> node runs with Rerun disabled (no .rrd).' $amber
+            # Uncheck so Get-TrackExtraArgs OMITS --rerun (review fix): the launch args now match the
+            # message above -- the follow is byte-identical by construction, and a Test-RerunImport
+            # false-negative can't silently start a recording the operator was told wouldn't exist.
+            $trackRerun.Checked = $false
+            Add-LogTrack 'rerun-sdk missing -> --rerun omitted for this start; re-tick Rerun to retry staging.' $amber
         }
     }
     try{ $kp=Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip),'pkill -f follow_person_k1.py')) -NoNewWindow -PassThru; $null=$kp.WaitForExit(6000) }catch{}
@@ -1182,7 +1215,7 @@ function Start-Tracker([bool]$drive){
         # P0 OSNet-health: ALSO pass the ReID/reloc/depth/frame-stall families (REID-ENGINE, REID-DEGRADED,
         # RELOC-*, DEPTH*/DEPTH-STARVED, NO-FRAME). These prefixes are emitted by follow_person_k1.py's log()
         # at column 0 (see the node<->app log-prefix contract); the UI badge + amber/red coloring parse them.
-        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB|RERUN)')){
+        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|LOOP-MS|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB|RERUN)')){
             $Event.MessageData.Enqueue($d)
         }
     }
