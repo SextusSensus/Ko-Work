@@ -47,9 +47,17 @@ Never run a 7B VLM on every pixel. Per region, cheap → expensive:
 fused with depth + tracked exactly like the COCO path. Highest leverage, cleanest integration
 (ultralytics-native). Domain prompt-lists become a per-environment config.
 
-### Phase B — Structured item records + taxonomy (effort S)
-Merge T0+T1 into one item record against a small taxonomy; dedup in the world frame (via the map).
-The representation the dataset + any downstream consumer reads.
+### Phase B — Structured item records + taxonomy — ✅ BUILT 2026-07-04 (effort S)
+`eval/rrd_items.py`: pools one or more labeled runs (COCO and/or open-vocab), FILTERS transient
+tracks, MERGES into unique physical items (class-AGNOSTIC co-location = same 3D spot is the same
+item, even across sources + across models, e.g. "refrigerator"[coco]+"cabinet"[open-vocab] -> one
+item with the losing votes kept) + same-source endpoint-stitch, maps each to the TAXONOMY (label ->
+category), estimates cheap ATTRIBUTES (physical size from box+depth, range-stability), and emits
+`items.json` (the structured artifact) + a scrubbable `.rrd` (items coloured by category).
+Validated: 1085 detections from BOTH runs (23 tracks) -> **11 unique items** across 4 categories;
+the fridge record fused both sources with `all_labels {refrigerator:191, cardboard box:64,
+cabinet:64}`. Record: `{id, label, category, all_labels, sources, attributes, xyz, range_m,
+bearing_deg, persistence, first, last}`. World-frame dedup drops in once the map provides poses.
 
 ### Phase C — VLM enrichment (T2), region-gated (effort M)
 Run a VLM only on novel/uncertain/interesting regions → fine-grained label + attributes + a grounded
