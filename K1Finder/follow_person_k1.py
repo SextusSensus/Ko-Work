@@ -1927,6 +1927,8 @@ class Follower:
         self._track_range_hist = []
         self._track_range_t = None
         self._reacq_range_streak = 0
+        self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
+        self._last_clr_log = 0.0     # 1Hz throttle for the CLEARANCE observability line
         self._reacq_range_id = None
         self._postrelock_noforward = False
         self._close_streak = 0
@@ -2010,6 +2012,62 @@ class Follower:
             # not actually moving (preview / stood / not yet walking) -> baseline rests at 0
             self._prev_vx = 0.0
             self._prev_vyaw = 0.0
+
+    # ---- OBSTACLE-BRAKE reflex (Phase 3 of OBSTACLE_LABELING_PLAN.md) ---------------------------
+    # Geometry TRIGGERS, semantics modulate: a cheap depth forward-clearance reduction grades vx down
+    # as an obstacle enters the forward corridor. It ONLY ever REDUCES forward vx (never authorizes
+    # it), yaw is untouched, and it composes with the forbid_forward keystone -- so it cannot make the
+    # forward path less safe, only more cautious. Default-off (--obstacle-brake); byte-identical off.
+    def _corridor_clearance(self):
+        """Robust nearest-obstacle range (m) in the forward corridor, or None. Cheap: a percentile
+        over the central band of the depth map (excludes the floor via a mid-vertical band). Uses a
+        PERCENTILE (not raw min) + an AGED-MEDIAN history -- Phase-2 finding: a single depth-glitch
+        pixel at a raw min would FALSE-BRAKE (the relock-lunge failure class)."""
+        if self.node is None:
+            return None
+        d = self.node.latest_depth(self.a.depth_max_age)
+        if d is None:
+            return None
+        try:
+            h, w = d.shape[:2]
+            cf = max(0.05, min(1.0, self.a.obstacle_corridor_frac))
+            x0 = int(w * (0.5 - cf / 2.0)); x1 = int(w * (0.5 + cf / 2.0))
+            y0 = int(h * self.a.obstacle_band_top); y1 = int(h * self.a.obstacle_band_bot)
+            band = d[y0:y1, x0:x1]
+            v = band[(band > 0.15) & (band < self.a.obstacle_max_m) & np.isfinite(band)]
+            if v.size < self.a.obstacle_min_valid:
+                return None
+            clr = float(np.percentile(v, self.a.obstacle_pctile))
+        except Exception:  # noqa: BLE001 -- a reflex must never break the loop
+            return None
+        self._clr_hist.append(clr)
+        self._clr_hist = self._clr_hist[-max(1, self.a.obstacle_aged):]
+        return float(sorted(self._clr_hist)[len(self._clr_hist) // 2])   # aged-median
+
+    def _obstacle_vx_cap(self, target_range):
+        """Max forward vx allowed by the corridor clearance (None = no cap). Graded: clear above
+        --obstacle-brake-start, linearly down to 0 at --obstacle-brake-stop.
+
+        Only brakes for obstacles BETWEEN the robot and the followed target -- the operator is in the
+        forward corridor BY DEFINITION, so if the nearest corridor return is at (or beyond) the target
+        range minus a margin, that return IS the target and we do NOT brake (else the reflex fights the
+        follow's own standoff control). We brake only when something is meaningfully closer -- a chair
+        in the way."""
+        if not self.a.obstacle_brake:
+            return None, None
+        clr = self._corridor_clearance()
+        if clr is None:
+            return None, None
+        if target_range is not None and clr > (target_range - self.a.obstacle_target_margin):
+            return None, clr                             # nearest return is the followed target -> no cap
+        bs, bp = self.a.obstacle_brake_start, self.a.obstacle_brake_stop
+        if clr >= bs:
+            cap = None                                   # corridor clear -> no forward cap
+        elif clr <= bp:
+            cap = 0.0                                    # too close -> no forward drive (turn/back only)
+        else:
+            cap = self.vx_max * (clr - bp) / max(1e-6, bs - bp)
+        return cap, clr
 
     def _hold(self):
         """Command a halt (hold position). Safe in preview (no-op)."""
@@ -3574,6 +3632,12 @@ class Follower:
                           or self._depth_starved)
         if forbid_forward and vx > 0.0:
             vx = 0.0
+        # OBSTACLE-BRAKE (Phase 3): cap forward vx by the corridor clearance -- computed ONCE here,
+        # applied before the slew (so the slew ramps toward the cap) and re-applied after (like
+        # forbid_forward). Only ever reduces forward vx; yaw untouched. Inert unless --obstacle-brake.
+        _obs_cap, _clr = self._obstacle_vx_cap(rng)
+        if _obs_cap is not None and vx > _obs_cap:
+            vx = _obs_cap
         # FIX F1: keep a short window of recent VALIDATED depth ranges (its median is the glitch-
         # resistant reference for the relock jump gate), stamped for ageing. SKIP on a post-relock
         # one-shot frame so a glitched relock range can never poison the window (F1-glitch).
@@ -3585,9 +3649,21 @@ class Follower:
         vx = self._slew(self._prev_vx, vx, self.vx_slew)
         if forbid_forward and vx > 0.0:       # SACRED: the slew must never re-leak a forbidden forward
             vx = 0.0
+        if _obs_cap is not None and vx > _obs_cap:   # re-apply the obstacle cap after the slew (INV-1)
+            vx = _obs_cap
         vx = clamp(vx, self.vx_min, self.vx_max)
 
         self._drive_vel(vx, 0.0, vyaw)
+        # OBSTACLE-BRAKE observability: throttled CLEARANCE line + Rerun scalar when engaged.
+        if self.a.obstacle_brake and _clr is not None:
+            _nowm = time.monotonic()
+            if _obs_cap is not None and (_nowm - self._last_clr_log) >= 1.0:
+                self._last_clr_log = _nowm
+                log("CLEARANCE %.2fm -> vx-cap %.2f (brake %.1f..%.1f)"
+                    % (_clr, _obs_cap, self.a.obstacle_brake_stop, self.a.obstacle_brake_start))
+            if _RR.ok:
+                _RR.scalar("/reflex/clearance_m", _clr)
+                _RR.scalar("/reflex/vx_cap", _obs_cap if _obs_cap is not None else self.vx_max)
 
         log("TRACK id=%s%s c=(%d,%d) range=%s[%s] bearing=%+05.1fdeg vx=%+.2f vyaw=%+.2f cost=%.2f/2nd=%s sim=%.2f conf=%.2f%s"
             % (best.get("track_id"), " LOCK" if track_locked else "",
@@ -4049,6 +4125,33 @@ def parse_args(argv):
     p.add_argument("--rerun-overrun-frames", type=int, default=8,
                    help="auto-disable Rerun after this many CONSECUTIVE over-budget control-loop "
                         "frames while --rerun is on (loop-safety backstop; default 8)")
+
+    # --- OBSTACLE-BRAKE reflex (Phase 3 obstacle-avoidance). DEFAULT-OFF + byte-identical when off. ---
+    p.add_argument("--obstacle-brake", action="store_true",
+                   help="grade forward vx down as an obstacle enters the forward DEPTH corridor "
+                        "(geometry-triggered forward-clearance reflex; yaw untouched; only ever "
+                        "REDUCES vx). Off by default. Composes with the forbid_forward keystone.")
+    p.add_argument("--obstacle-brake-start", type=float, default=1.5,
+                   help="corridor clearance (m) at/below which vx starts grading down")
+    p.add_argument("--obstacle-brake-stop", type=float, default=0.7,
+                   help="corridor clearance (m) at/below which forward vx is capped to 0 (turn/back only)")
+    p.add_argument("--obstacle-corridor-frac", type=float, default=0.35,
+                   help="central fraction of image WIDTH treated as the forward corridor")
+    p.add_argument("--obstacle-band-top", type=float, default=0.30,
+                   help="top of the vertical band scanned (frac of height; skips the ceiling)")
+    p.add_argument("--obstacle-band-bot", type=float, default=0.68,
+                   help="bottom of the vertical band scanned (frac of height; skips the near floor)")
+    p.add_argument("--obstacle-max-m", type=float, default=5.0,
+                   help="ignore corridor depth beyond this (m)")
+    p.add_argument("--obstacle-pctile", type=float, default=8.0,
+                   help="robust-near percentile of corridor depth (not raw min -> glitch-resistant)")
+    p.add_argument("--obstacle-min-valid", type=int, default=40,
+                   help="min valid corridor depth pixels to trust a clearance reading")
+    p.add_argument("--obstacle-aged", type=int, default=3,
+                   help="aged-median window (frames) over the clearance -> a single glitch can't brake")
+    p.add_argument("--obstacle-target-margin", type=float, default=0.4,
+                   help="don't brake unless the corridor obstacle is at least this much CLOSER than "
+                        "the followed target (m) -- so the reflex ignores the operator it's following")
     p.add_argument("--assoc-margin", type=float, default=0.15,
                    help="min cost gap between best and runner-up person; below "
                         "this the frame is treated as no-match (prefer stop)")

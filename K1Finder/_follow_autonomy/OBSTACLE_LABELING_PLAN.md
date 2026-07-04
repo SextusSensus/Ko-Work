@@ -122,17 +122,23 @@ ReflexSnapshot(per frame) = {frame_idx, nearest_corridor_m, nearest_class, n_in_
    not the trigger. → the live reflex = cheap depth forward-clearance (always) + unfiltered COCO (class),
    both off the control loop.
 
-### Phase 3 — Live minimal reflex (on-robot, MEASURED + GATED) — effort M
-Distill the cheapest useful thing onto the robot, on the cam-spin/decimated pattern (never the control
-loop), loop-cost-gated exactly like Rerun:
-- Unfilter COCO classes in `PersonDetector` (near-free) → is a labeled obstacle in the forward cone?
-- Depth forward-clearance (a cheap numpy reduction over the forward corridor) → nearest obstacle range.
-- Fuse → **graded vx cap** as the corridor closes; **yaw untouched**; **fail-to-stop with no depth**
-  (composes with the existing `forbid_forward` keystone — reuse it, don't add a parallel path).
-- Class-aware option (brake earlier for a person than a static chair) — geometry-first; semantics are
-  a modifier, never the sole trigger.
-- Ships default-off; a loop-cost gate (p50/p99 of the reflex's added ms, SLOW-LOOP streak vs baseline)
-  before `--drive`, with an auto-disable backstop — the exact discipline the Rerun gate established.
+### Phase 3 — Live minimal reflex (on-robot, MEASURED + GATED) — effort M — ✅ BUILT 2026-07-04
+The **OBSTACLE-BRAKE reflex** in `follow_person_k1.py` (`--obstacle-brake`, default-off):
+- `_corridor_clearance()` — cheap depth forward-clearance: a PERCENTILE (p8, not raw min ->
+  glitch-resistant per Phase-2 finding 2) over the central corridor band (mid-vertical, skips the
+  floor) + an AGED-MEDIAN history. `_obstacle_vx_cap(target_range)` grades vx down from
+  `--obstacle-brake-start` to 0 at `--obstacle-brake-stop`.
+- **Ignores the followed operator** (`--obstacle-target-margin`): only brakes for an obstacle
+  meaningfully CLOSER than the target -- else the nearest corridor return IS the operator and the
+  reflex would fight the follow's own standoff (a real bug caught in testing).
+- Composes with `forbid_forward` (applied before AND after the slew, INV-1); **only ever REDUCES
+  forward vx, yaw untouched, fail-to-stop with no depth** -> cannot make the forward path less safe.
+- Observability: throttled `CLEARANCE` line + `/reflex/clearance_m` & `/reflex/vx_cap` Rerun scalars.
+- **BYTE-IDENTICAL when off: PROVEN** (`replay_eval compare --flags-b=--obstacle-brake` -> COMPARE-OK,
+  twice); compiles on robot py3.10.
+- **STILL TODO:** unfilter-COCO class-awareness (brake earlier for a person; geometry-first modifier);
+  the loop-cost gate + auto-disable backstop before `--rerun`+`--drive`; a live drive validation with
+  a deliberate intervening obstacle (blocked so far by gesture-lock flakiness = no TRACK to observe).
 
 ### Phase 4 — Capture tier (thesis) — pipeline-proof ONLY — effort S
 `obstacles.jsonl` + rgb/depth → a structured environment-labeled dataset. **Honest scope:** single
