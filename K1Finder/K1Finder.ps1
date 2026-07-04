@@ -716,7 +716,7 @@ $trackHbChk=New-Object System.Windows.Forms.CheckBox; $trackHbChk.Text='Deadman 
 # Gesture lock = --lock-trigger gesture (raised hand seeds instead of the marker). A/B = --lock-trigger
 # both (ArUco still drives, gesture audits -> GBIND data to retire ArUco). Voice = System.Speech keyword
 # recognizer that maps spoken words to the SAME command enum the Cmd buttons send.
-$chkGesture=New-Object System.Windows.Forms.CheckBox; $chkGesture.Text='Gesture lock'; $chkGesture.AutoSize=$true; $chkGesture.Location='10,154'; $chkGesture.ForeColor=$accent; $chkGesture.Font=$fontBold; $grpTrackCtl.Controls.Add($chkGesture)
+$chkGesture=New-Object System.Windows.Forms.CheckBox; $chkGesture.Text='Gesture lock'; $chkGesture.AutoSize=$true; $chkGesture.Location='10,154'; $chkGesture.ForeColor=$accent; $chkGesture.Font=$fontBold; $chkGesture.Checked=$true; $grpTrackCtl.Controls.Add($chkGesture)   # DEFAULT ON (2026-07-05, user request): gesture is the default lock trigger; UNTICK for the (more reliable) ArUco marker. Raise a hand DURING SEARCH to seed.
 $chkAB=New-Object System.Windows.Forms.CheckBox; $chkAB.Text='A/B (compare)'; $chkAB.AutoSize=$true; $chkAB.Location='120,154'; $grpTrackCtl.Controls.Add($chkAB)
 $chkVoice=New-Object System.Windows.Forms.CheckBox; $chkVoice.Text='Voice cmds'; $chkVoice.AutoSize=$true; $chkVoice.Location='240,154'; $chkVoice.ForeColor=$accent; $chkVoice.Font=$fontBold; $chkVoice.Enabled=$false; $grpTrackCtl.Controls.Add($chkVoice)
 $voiceStatus=New-Object System.Windows.Forms.Label; $voiceStatus.Text='Voice: off'; $voiceStatus.AutoSize=$true; $voiceStatus.Location='340,156'; $voiceStatus.ForeColor=[System.Drawing.Color]::DimGray; $grpTrackCtl.Controls.Add($voiceStatus)
