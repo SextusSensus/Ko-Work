@@ -137,6 +137,12 @@ def main():
     ap.add_argument("--conf", type=float, default=0.30)
     ap.add_argument("--hfov", type=float, default=70.0)
     ap.add_argument("--model", default="yolo11n.pt")
+    ap.add_argument("--open-vocab", default=None,
+                    help="OPEN-VOCAB detection: a comma list of arbitrary text prompts (e.g. "
+                         "'pallet,cardboard box,shopping cart,forklift,person') -> YOLO-World detects "
+                         "them with NO retraining. Beats the fixed COCO-80 for the domain long tail.")
+    ap.add_argument("--model-world", default="yolov8s-worldv2.pt",
+                    help="YOLO-World checkpoint for --open-vocab (auto-downloads)")
     ap.add_argument("--track", action="store_true",
                     help="ByteTrack the detections and dedup into a stable obstacle set (one chair = one)")
     ap.add_argument("--seg", action="store_true",
@@ -149,7 +155,6 @@ def main():
 
     import numpy as np
     import rerun as rr
-    from ultralytics import YOLO
 
     print("reading %s ..." % a.rrd)
     scalars, images, depth = read_rrd(a.rrd)
@@ -157,10 +162,18 @@ def main():
     if not images:
         raise SystemExit("no rgb frames in the .rrd")
 
-    model = YOLO(a.model)
-    names = model.names
     keep = None
-    if a.classes:
+    if a.open_vocab:
+        from ultralytics import YOLOWorld
+        model = YOLOWorld(a.model_world)
+        prompts = [c.strip() for c in a.open_vocab.split(",") if c.strip()]
+        model.set_classes(prompts)     # open-vocab: detect these text prompts, no retraining
+        print("  OPEN-VOCAB (%d prompts): %s" % (len(prompts), ", ".join(prompts)))
+    else:
+        from ultralytics import YOLO
+        model = YOLO(a.model)
+    names = model.names
+    if a.classes and not a.open_vocab:
         want = {c.strip().lower() for c in a.classes.split(",")}
         keep = {i for i, n in names.items() if n.lower() in want}
     segmenter = Segmenter() if a.seg else None
