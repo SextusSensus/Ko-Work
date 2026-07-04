@@ -122,7 +122,18 @@
       "Bash(git ls-remote *)",
       "Bash(git add *)",
       "Bash(git rm *)",
-      "Bash(git commit -q -m 'Initial commit: K1 Finder / follow-person autonomy stack *)"
+      "Bash(git commit -q -m 'Initial commit: K1 Finder / follow-person autonomy stack *)",
+      "Bash(git remote *)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\toddm\\\\OneDrive\\\\Desktop\\\\runtime\"; \"GIT_ASKPASS=$env:GIT_ASKPASS\"; \"SSH_ASKPASS=$env:SSH_ASKPASS\"; \"GCM_INTERACTIVE=$env:GCM_INTERACTIVE\"; \"---cred config---\"; git config --list --show-origin 2>&1 | Select-String -Pattern 'credential|askpass' ; \"---gcm path---\"; \\(Get-Command git-credential-manager -ErrorAction SilentlyContinue\\).Source)",
+      "PowerShell(git config --global credential.helper manager; git config --global credential.guiPrompt true; \"helper set to: $\\(git config --global credential.helper\\)\")",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\toddm\\\\OneDrive\\\\Desktop\\\\runtime\"; $env:GCM_INTERACTIVE=\"true\"; git push -u origin main 2>&1 | Out-String)",
+      "PowerShell(Set-Location \"C:\\\\Users\\\\toddm\\\\OneDrive\\\\Desktop\\\\runtime\"; git push -u origin main 2>&1 | Out-String; \"---EXIT $LASTEXITCODE---\")",
+      "Bash(awk '$1>1')",
+      "PowerShell(& 'C:\\\\Users\\\\toddm\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-toddm-OneDrive-Desktop-runtime\\\\5f64d64b-1ba5-40bf-a90b-6eb534836435\\\\scratchpad\\\\apply_app_p0.ps1')",
+      "Bash(diff -u follow_person_k1.py.bak_20260701_150448 follow_person_k1.py)",
+      "Bash(diff -u K1Finder.ps1.bak_20260701_150448 K1Finder.ps1)",
+      "PowerShell(& 'C:\\\\Users\\\\toddm\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-toddm-OneDrive-Desktop-runtime\\\\5f64d64b-1ba5-40bf-a90b-6eb534836435\\\\scratchpad\\\\apply_node_p1.ps1')",
+      "Bash(grep -nE '\\\\$ipTrack\\\\s*=|\\\\$ipTrack\\\\.' K1Finder.ps1)"
     ]
   }
 }

@@ -27,6 +27,10 @@ $K1_DEFAULT_IP    = '192.168.1.81'
 $script:ReidEngine = '/home/booster/reid/osnet_x0_25_msmt17.onnx'   # OSNet ONNX on the robot (used by --appearance osnet)
 $script:GestureModel = '/home/booster/yolo11n-pose.onnx'           # YOLO11n-pose ONNX (run via onnxruntime CUDA EP -- much faster than the .pt/torch path, same backend as OSNet). Local yolo11n-pose.onnx next to the app is auto-scp'd by Ensure-GestureModel (offline). For MAX speed export a TRT .engine ON the Orin later.
 $script:VoiceRec = $null                                            # System.Speech recognizer handle while voice commands are ON
+# --- Rerun (rerun.io) observability (Phase 3) ---
+$script:RerunDir       = '/home/booster/rerun'                      # on-robot .rrd output dir (--rerun-dir)
+$script:RerunWheelDir  = '/home/booster/wheels'                     # offline pip --find-links dir for the rerun-sdk closure
+$script:RerunViewerExe = $null                                      # laptop viewer exe (auto-detected by Find-RerunViewer; falls back to `python -m rerun`)
 $K1_SSH_USER      = 'booster'
 $K1_SSH_PASS      = '123456'
 $K1_LOCO_IFACE    = '127.0.0.1'
@@ -82,6 +86,14 @@ function Deploy-FollowFiles {
         if (-not (Test-Path $src)) { return $false }
         $args = $SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f))
         $p = Start-Process scp.exe -ArgumentList $args -NoNewWindow -PassThru
+        $null = $p.WaitForExit(20000)
+    }
+    # k1_rerun.py is BEST-EFFORT (review fix): Rerun is never a launch dependency -- the node
+    # degrades to a no-op sink when the module is absent (follow_person_k1.py _NullRR), so a
+    # missing local copy must not block the follow like the hard-required files above do.
+    $rr = Join-Path $SCRIPT_DIR 'k1_rerun.py'
+    if (Test-Path $rr) {
+        $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($rr, ("{0}@{1}:/home/booster/k1_rerun.py" -f $script:SshUser, $ip))) -NoNewWindow -PassThru
         $null = $p.WaitForExit(20000)
     }
     return $true
@@ -160,6 +172,108 @@ function Ensure-ReidModel([string]$ip){
     }
     Add-LogTrack ('ReID engine unavailable ({0}) -> deep re-ID falls back to histogram; armed re-lock auto-refused. Pre-stage {1} on the robot (or next to the app) to enable OSNet.' -f $remote, (Split-Path $remote -Leaf)) $amber
     return $false
+}
+
+# ---- Rerun (rerun.io) staging + viewer (Phase 3) ---------------------------
+# Make rerun-sdk importable on the robot before a --rerun follow. OFFLINE-first, mirrors
+# Ensure-ReidModel's verify-by-effect discipline (success == the import works, NOT file presence):
+#   1) already importable (python3 -c import rerun) -> done;
+#   2) a local wheels\ dir next to the app -> scp the aarch64/cp310 closure to /home/booster/wheels
+#      + pip install --no-index --find-links, then RE-VERIFY the import.
+# Never throws. On $false the node still launches with Rerun DISABLED (no .rrd, follow byte-identical).
+# NOTE: installs into whatever `python3` resolves to in the ssh shell -- the SAME interpreter
+# run_follow.sh launches the node with, so an import here means an import at node start.
+function Test-RerunImport([string]$ip){
+    # Unique temp name + kill-on-timeout (review fix): a stalled prior ssh could hold the redirect
+    # file open and false-negative every later check with a fixed name.
+    $tmp = Join-Path $env:TEMP ('k1_rerun_imp_{0}.txt' -f ([IO.Path]::GetRandomFileName() -replace '\.',''))
+    try{
+        $q = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), "python3 -c 'import rerun,sys; sys.stdout.write(rerun.__version__)'")) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
+        if(-not $q.WaitForExit(15000)){ try{ $q.Kill() }catch{}; $null=$q.WaitForExit(2000) }
+        $v = (Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
+        if($v -and ($v.Trim() -match '^\d+\.\d+')){ return $v.Trim() }
+    }catch{}
+    finally{ Remove-Item $tmp -ErrorAction SilentlyContinue }
+    return $null
+}
+function Ensure-RerunWheels([string]$ip){
+    $v = Test-RerunImport $ip
+    if($v){ Add-LogTrack ('rerun-sdk present on robot (v{0}).' -f $v) $green; return $true }
+    $wdir = Join-Path $SCRIPT_DIR 'wheels'
+    $whls = @(); if(Test-Path $wdir){ $whls = @(Get-ChildItem -Path $wdir -Filter '*.whl' -ErrorAction SilentlyContinue) }
+    if($whls.Count -eq 0){
+        Add-LogTrack ('rerun-sdk not importable + no local wheels\ dir ({0}) -> Rerun disabled (follow proceeds). Stage the aarch64 cp310 rerun-sdk closure into wheels\ to enable.' -f $wdir) $amber
+        return $false
+    }
+    Add-LogTrack ('Staging {0} Rerun wheel(s) to robot...' -f $whls.Count) $accent
+    $rwdir = $script:RerunWheelDir
+    try{
+        $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("mkdir -p '{0}'" -f $rwdir))) -NoNewWindow -PassThru; $null=$p.WaitForExit(10000)
+        foreach($w in $whls){
+            $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($w.FullName, ("{0}@{1}:{2}/{3}" -f $script:SshUser,$ip,$rwdir,$w.Name))) -NoNewWindow -PassThru
+            if(-not $p.WaitForExit(120000)){ try{$p.Kill()}catch{}; Add-LogTrack ('scp of {0} timed out -> Rerun staging FAILED.' -f $w.Name) $red; return $false }
+        }
+    }catch{ Add-LogTrack ('wheel scp failed: {0}' -f $_) $red; return $false }
+    Add-LogTrack 'Installing rerun-sdk (pip --user --no-index)...' $accent
+    try{
+        # PIN 0.23.1: the newest rerun that allows numpy 1.x. rerun >=0.23.2 requires numpy>=2, which
+        # would break the robot's numpy-1.26-ABI follow stack (onnxruntime/cv2/rclpy). --user installs
+        # to ~/.local (system dist-packages is not writable and MUST NOT be touched).
+        $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("python3 -m pip install --user --no-index --find-links '{0}' 'rerun-sdk==0.23.1'" -f $rwdir))) -NoNewWindow -PassThru
+        $null = $p.WaitForExit(180000)
+    }catch{ Add-LogTrack ('pip install failed: {0}' -f $_) $red; return $false }
+    $v = Test-RerunImport $ip
+    if($v){ Add-LogTrack ('rerun-sdk installed (v{0}).' -f $v) $green; return $true }
+    Add-LogTrack 'rerun-sdk still not importable after install -> Rerun disabled (follow proceeds).' $amber
+    return $false
+}
+# Locate the laptop-side Rerun viewer exe (pinned for 'Open .rrd'); fall back to `python -m rerun`.
+function Find-RerunViewer {
+    if($script:RerunViewerExe -and (Test-Path $script:RerunViewerExe)){ return $script:RerunViewerExe }
+    $cands = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\rerun\rerun.exe'),
+        (Join-Path $env:USERPROFILE 'anaconda3\Scripts\rerun.exe'),
+        (Join-Path $env:USERPROFILE 'AppData\Roaming\Python\Python313\Scripts\rerun.exe')
+    )
+    foreach($c in $cands){ if(Test-Path $c){ $script:RerunViewerExe=$c; return $c } }
+    try{ $g=(Get-Command rerun.exe -ErrorAction SilentlyContinue).Source; if($g){ $script:RerunViewerExe=$g; return $g } }catch{}
+    return $null
+}
+# Pull the NEWEST /home/booster/rerun/*.rrd to the local work dir; return the local path (or $null).
+function Pull-RerunRecording([string]$ip){
+    if(-not $ip){ return $null }
+    $tmp = Join-Path $env:TEMP 'k1_rrd_name.txt'
+    try{
+        Remove-Item $tmp -ErrorAction SilentlyContinue
+        $q = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), 'ls -1t /home/booster/rerun/*.rrd 2>/dev/null | head -1')) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
+        $null = $q.WaitForExit(10000)
+    }catch{ Add-LogTrack ('rrd list failed: {0}' -f $_) $red; return $null }
+    $remote = (Get-Content $tmp -Raw -ErrorAction SilentlyContinue); if($remote){ $remote=$remote.Trim() }
+    if(-not $remote){ Add-LogTrack 'No .rrd on the robot (/home/booster/rerun). Run a follow with Rerun ticked first.' $amber; return $null }
+    $leaf = Split-Path $remote -Leaf; $dst = Join-Path $WORK $leaf
+    Add-LogTrack ('Pulling {0} ...' -f $leaf) $accent
+    try{
+        $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}:{2}" -f $script:SshUser,$ip,$remote), $dst)) -NoNewWindow -PassThru
+        if(-not $p.WaitForExit(120000)){ try{$p.Kill()}catch{}; Add-LogTrack 'scp of .rrd timed out.' $red; return $null }
+    }catch{ Add-LogTrack ('scp failed: {0}' -f $_) $red; return $null }
+    if((Test-Path $dst) -and (Get-Item $dst).Length -gt 0){ Add-LogTrack ('Pulled {0} ({1:N0} bytes).' -f $leaf,(Get-Item $dst).Length) $green; return $dst }
+    Add-LogTrack '.rrd did not transfer.' $red; return $null
+}
+function Open-RerunRecording([string]$path){
+    if(-not ($path -and (Test-Path $path))){ Add-LogTrack ('No .rrd to open.') $amber; return }
+    $exe = Find-RerunViewer
+    if($exe){ try{ Start-Process $exe -ArgumentList ('"{0}"' -f $path); Add-LogTrack ('Opened in Rerun viewer: {0}' -f (Split-Path $path -Leaf)) $accent }catch{ Add-LogTrack ('viewer launch failed: {0}' -f $_) $red } ; return }
+    # Review fix: pre-verify the module imports -- Start-Process 'python' succeeds even when
+    # rerun-sdk is absent (console flashes 'No module named rerun'), which used to log a false
+    # 'Opened' and made the actionable pip-install hint unreachable.
+    $imp=$false
+    try{ $q=Start-Process 'python' -ArgumentList '-c "import rerun"' -WindowStyle Hidden -PassThru; if($q.WaitForExit(15000) -and $q.ExitCode -eq 0){ $imp=$true } }catch{}
+    if($imp){
+        try{ Start-Process 'python' -ArgumentList ('-m rerun "{0}"' -f $path); Add-LogTrack 'Opened via python -m rerun.' $accent }
+        catch{ Add-LogTrack ('viewer launch failed: {0}' -f $_) $red }
+    } else {
+        Add-LogTrack 'Rerun viewer not found. pip install rerun-sdk on the laptop, or set $script:RerunViewerExe.' $amber
+    }
 }
 # ---- Reachability helper ----------------------------------------------------
 function Test-K1Reachable {
@@ -604,6 +718,9 @@ $voiceStatus=New-Object System.Windows.Forms.Label; $voiceStatus.Text='Voice: of
 # --- persistent ReID-health badge (parsed from the node's REID-ENGINE ok/FAILED + REID-DEGRADED stderr) ---
 # OSNet(TRT)/OSNet(CUDA)=green, CPU-EP=amber, HIST fallback / DEGRADED=red, '--'=idle. Set by Update-ReidBadge.
 $reidBadge=New-Object System.Windows.Forms.Label; $reidBadge.Text='REID: --'; $reidBadge.AutoSize=$false; $reidBadge.Size='168,22'; $reidBadge.TextAlign='MiddleCenter'; $reidBadge.Location='470,155'; $reidBadge.ForeColor='White'; $reidBadge.BackColor=[System.Drawing.Color]::Gray; $reidBadge.Font=$fontBold; $reidBadge.BorderStyle='FixedSingle'; $grpTrackCtl.Controls.Add($reidBadge)
+# Rerun (rerun.io) recording toggle -> --rerun (Phase 3). Default OFF and byte-identical to today
+# when off. Records a scrubbable .rrd on the robot; pull+open it with the 'Open .rrd' button below.
+$trackRerun=New-Object System.Windows.Forms.CheckBox; $trackRerun.Text='Rerun'; $trackRerun.AutoSize=$true; $trackRerun.Location='645,156'; $trackRerun.ForeColor=$accent; $trackRerun.Font=$fontBold; $grpTrackCtl.Controls.Add($trackRerun)
 $chkGesture.Add_CheckedChanged({ if($chkGesture.Checked -and $chkAB.Checked){ $chkAB.Checked=$false } })
 $chkAB.Add_CheckedChanged({ if($chkAB.Checked -and $chkGesture.Checked){ $chkGesture.Checked=$false } })
 $chkVoice.Add_CheckedChanged({ if($chkVoice.Checked){ Start-Voice } else { Stop-Voice } })
@@ -622,6 +739,20 @@ $btnResume.Add_Click({ Send-FollowCmd 'RESUME' })
 $btnPark.Add_Click({ Send-FollowCmd 'PARK' })
 $btnStatus.Add_Click({ Send-FollowCmd 'STATUS' })
 $btnFollowCmd.Add_Click({ Send-FollowCmd 'FOLLOW' })
+# Rerun (Phase 3): pull the newest .rrd off the robot and open it in the laptop viewer. Always
+# enabled (unlike the session-only Cmd buttons) -- you scrub AFTER a run. No-op-safe if none exists.
+$btnRrd=New-Object System.Windows.Forms.Button; $btnRrd.Text='Open .rrd'; $btnRrd.Size='110,28'; $btnRrd.Location='598,186'; $btnRrd.FlatStyle='Flat'; $btnRrd.ForeColor=$accent; $grpTrackCtl.Controls.Add($btnRrd)
+$btnRrd.Add_Click({
+    $ip=$ipTrack.Text.Trim(); if(-not $ip){ Add-LogTrack 'Enter the robot IP first.' $amber; return }
+    $script:RobotIP=$ip
+    # Review fix: the newest .rrd during a live Rerun follow is the file being WRITTEN -- pulling it
+    # yields a truncated snapshot missing the most recent (most diagnostic) seconds. Warn + confirm.
+    if($script:TrackOn -and $trackRerun -and $trackRerun.Checked){
+        $r=[System.Windows.Forms.MessageBox]::Show("A Rerun-recording follow session is still running. The newest .rrd is still being written (its tail is unflushed) -- pulling now yields a TRUNCATED snapshot. Stop the session first for a complete recording. Pull anyway?",'Recording in progress',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
+        if($r -ne [System.Windows.Forms.DialogResult]::OK){ return }
+    }
+    $p=Pull-RerunRecording $ip; if($p){ Open-RerunRecording $p }
+})
 
 # --- big annotated video --------------------------------------------------
 $trackPic=New-Object System.Windows.Forms.PictureBox; $trackPic.Dock='Fill'; $trackPic.BackColor=[System.Drawing.Color]::Black; $trackPic.SizeMode='Zoom'
@@ -794,6 +925,11 @@ function Get-TrackExtraArgs {
         $a += '--arm-reacquire'
     }
     if($trackFence -and $trackFence.Checked){ $a += '--max-follow-range 4.0' }
+    # Rerun observability -> record a scrubbable .rrd on the robot. Default OFF; byte-identical when off.
+    # The node auto-disables Rerun (RERUN-DISABLED-SLOW) if the loop goes over budget with it on, so the
+    # gait is never held hostage to logging -- but the loop-cost gate (RERUN_PLAN.md) is still the
+    # operator's call before ticking this WITH DRIVE.
+    if($trackRerun -and $trackRerun.Checked){ $a += ('--rerun --rerun-mode save --rerun-dir {0}' -f $script:RerunDir) }
     # Deadman HB: node gates velocity on a fresh /tmp/k1_hb mtime AND env-arms the bridge's own
     # heartbeat watchdog. The app-side relay (Start-HbRelay) is started by Start-Tracker.
     if($trackHbChk -and $trackHbChk.Checked){ $a += '--require-heartbeat' }
@@ -1041,6 +1177,19 @@ function Start-Tracker([bool]$drive){
             Add-LogTrack 'OSNet engine missing -> node falls back to histogram; armed re-lock auto-refused. Badge shows HIST.' $amber
         }
     }
+    # Rerun selected -> stage rerun-sdk (offline wheels). Best-effort: a follow is NEVER blocked by
+    # Rerun. On failure the node runs with Rerun disabled (no .rrd); offer to continue.
+    if($trackRerun -and $trackRerun.Checked){
+        if(-not (Ensure-RerunWheels $ip)){
+            $r=[System.Windows.Forms.MessageBox]::Show("rerun-sdk isn't importable on the robot and couldn't be auto-staged from a local wheels\ dir. Rerun recording will be DISABLED (the follow runs normally, no .rrd). Start anyway?",'Rerun unavailable',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
+            if($r -ne 'OK'){ return $false }
+            # Uncheck so Get-TrackExtraArgs OMITS --rerun (review fix): the launch args now match the
+            # message above -- the follow is byte-identical by construction, and a Test-RerunImport
+            # false-negative can't silently start a recording the operator was told wouldn't exist.
+            $trackRerun.Checked = $false
+            Add-LogTrack 'rerun-sdk missing -> --rerun omitted for this start; re-tick Rerun to retry staging.' $amber
+        }
+    }
     try{ $kp=Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip),'pkill -f follow_person_k1.py')) -NoNewWindow -PassThru; $null=$kp.WaitForExit(6000) }catch{}
     $trackSync.Stop=$false; $trackSync.Done=$false; $trackSync.Jpeg=$null; $trackSync.Seq=0; $trackSync.Frames=0; $trackSync.Err=''
     $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1; $trackSync.Lock=0
@@ -1066,7 +1215,7 @@ function Start-Tracker([bool]$drive){
         # P0 OSNet-health: ALSO pass the ReID/reloc/depth/frame-stall families (REID-ENGINE, REID-DEGRADED,
         # RELOC-*, DEPTH*/DEPTH-STARVED, NO-FRAME). These prefixes are emitted by follow_person_k1.py's log()
         # at column 0 (see the node<->app log-prefix contract); the UI badge + amber/red coloring parse them.
-        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB)')){
+        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|LOOP-MS|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB|RERUN)')){
             $Event.MessageData.Enqueue($d)
         }
     }

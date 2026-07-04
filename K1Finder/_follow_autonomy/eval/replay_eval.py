@@ -91,11 +91,33 @@ def frames_from(clip):
     cap.release()
 
 
-def replay(node_path, clip, flags, fps=10.0):
-    """Run one clip through the follow stack; return the captured decision-log lines."""
+def _make_sink(node_path, args, rerun_out, image_every):
+    """Build a k1_rerun.RerunSink (Phase 1). Import is best-effort: a missing k1_rerun.py or
+    rerun-sdk degrades to a no-op sink -- an eval is NEVER blocked by Rerun (same contract the
+    node uses). k1_rerun.py sits next to the node (both deploy to /home/booster/)."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(node_path)))
+        import k1_rerun
+    except Exception as e:  # noqa: BLE001
+        print("RERUN-SKIP cannot import k1_rerun (%s) -> no .rrd" % e)
+        return None
+    return k1_rerun.RerunSink(
+        enabled=True, path=rerun_out, image_every_n=image_every,
+        min_safe=getattr(args, "min_safe_range", 0.0),
+        standoff=getattr(args, "standoff_m", 0.0),
+        max_follow=getattr(args, "max_follow_range", 0.0))
+
+
+def replay(node_path, clip, flags, fps=10.0, rerun_out=None, rerun_image_every=3):
+    """Run one clip through the follow stack; return the captured decision-log lines.
+
+    When rerun_out is set, also build a scrubbable .rrd via k1_rerun.RerunSink (Phase 1): RGB +
+    target box + FSM state per frame, plus every TRACK/RANGE-GATE/AUTO-RELOCK line parsed into
+    scalars/events. ZERO node change -- the .rrd is built from the mod.log tap + the tapped seed."""
     mod = load_follow(node_path)
     clock = FakeClock()
     _time.monotonic = clock.monotonic          # deterministic time for BOTH harness + module
+    sink = None
     try:
         argv = ["--preview", "--topic", "/replay"] + [t for t in flags.split() if t]
         if "--drive" in argv:
@@ -109,15 +131,33 @@ def replay(node_path, clip, flags, fps=10.0):
         if not f.det.ok:
             raise SystemExit("YOLO failed to load (%s) -- run on the robot with ROS env sourced"
                              % args.yolo_path)
+        if rerun_out:
+            sink = _make_sink(node_path, args, rerun_out, rerun_image_every)
+            if sink is not None:
+                sink.refs_once()
         n = 0
         for frame in frames_from(clip):
             clock.tick(1.0 / fps)
             f.node.frames_total += 1
+            prev = len(decisions)
             f._process_frame(frame)
+            if sink is not None:
+                sink.frame(n, clock.now)
+                sink.image("/camera/rgb", frame, seq=n)
+                seed = getattr(f, "seed", None)
+                if seed is not None and getattr(seed, "box", None) is not None:
+                    sink.boxes("/camera/rgb/target", seed.box, getattr(seed, "track_id", None))
+                sink.state("/fsm/state", getattr(f, "state", "?"))
+                for ln in decisions[prev:]:               # only THIS frame's lines
+                    sink.feed_log_line(ln)
             n += 1
         decisions.append("REPLAY-END frames=%d" % n)
+        if sink is not None and sink.ok:
+            decisions.append("RERUN-SAVED %s" % sink.path)
         return decisions
     finally:
+        if sink is not None:
+            sink.close()
         _time.monotonic = _REAL_MONOTONIC
 
 
@@ -175,12 +215,17 @@ def main():
     ap.add_argument("--manifest", help="expect: clips.json")
     ap.add_argument("--fps", type=float, default=10.0, help="replay clock rate")
     ap.add_argument("--dump", help="write the decision log(s) to this file/prefix")
+    ap.add_argument("--rerun", help="run mode: also write a scrubbable Rerun .rrd to this path "
+                                    "(needs k1_rerun.py next to the node + rerun-sdk)")
+    ap.add_argument("--rerun-image-every", type=int, default=3,
+                    help="log 1 in N RGB frames to the .rrd (default 3)")
     a = ap.parse_args()
 
     if a.mode == "run":
         if not a.clip:
             ap.error("run needs --clip")
-        lines = replay(a.node, a.clip, a.flags, a.fps)
+        lines = replay(a.node, a.clip, a.flags, a.fps,
+                       rerun_out=a.rerun, rerun_image_every=a.rerun_image_every)
         for ln in lines:
             print(ln)
         if a.dump:

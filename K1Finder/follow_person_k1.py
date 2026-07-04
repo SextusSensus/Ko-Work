@@ -148,6 +148,24 @@ DEF_PERSON_H_M = 1.7          # assumed standing person height for bbox-height r
 _STREAM = False           # --stream: status text -> stderr, annotated JPEG frames -> stdout
 _MAGIC = b"K1F1"
 
+# --rerun (Phase 2): a crash-safe Rerun sink (k1_rerun.RerunSink), DEFAULT-OFF and fully inert
+# until init_rerun() flips it in main(). Every _RR.* call no-ops when disabled, so the follow is
+# byte-identical without --rerun. Images are logged ONLY on the cam-spin sensor thread; the control
+# loop logs cheap scalars/boxes/text. If k1_rerun.py is absent, _RR degrades to a permanent no-op.
+try:
+    from k1_rerun import RerunSink as _RerunSink
+    _RR = _RerunSink()                 # disabled-by-default -> _RR.ok is False, every method no-ops
+except Exception:                      # noqa: BLE001 -- a missing sink module must never stop the node
+    _RerunSink = None
+
+    class _NullRR:                     # permanent no-op stand-in (k1_rerun.py not importable)
+        ok = False
+
+        def __getattr__(self, _n):
+            return lambda *a, **k: None
+
+    _RR = _NullRR()
+
 
 def log(msg):
     """One flushed status line. In --stream mode it goes to STDERR so stdout
@@ -1585,6 +1603,13 @@ class CamNode(Node):
             self._stamp = _now
             self._seq += 1
             self.frames_total += 1
+            _seq_now = self._seq
+        # Rerun RGB (Phase 2): log on THIS (cam-spin) thread, OUTSIDE the lock so the control loop's
+        # take_if_new never waits on the batcher. sink.image() COPIES (BGR->RGB) + decimates 1/N, so
+        # it never aliases self._latest. Inert unless --rerun (_RR.ok False -> single branch skip).
+        if _RR.ok:
+            _RR.frame(_seq_now, time.time())
+            _RR.image("/camera/rgb", bgr, seq=_seq_now)
 
     def _depth_cb(self, msg):
         d = depth_to_meters(msg)
@@ -1600,6 +1625,13 @@ class CamNode(Node):
             self._depth = d
             self._depth_stamp = now
             self._depth_count += 1
+            _dcount = self._depth_count
+        # Rerun depth (Phase 2): cam-spin thread, OUTSIDE the lock; sink.depth() COPIES + casts +
+        # decimates by depth count, never aliasing self._depth (which the control loop reads under
+        # _depth_lock). frame_idx keyed best-effort to the current RGB seq (atomic int read).
+        if _RR.ok:
+            _RR.frame(self._seq, time.time())
+            _RR.depth("/camera/depth", d, seq=_dcount)
 
     def take_if_new(self, last_seq):
         with self._lock:
@@ -1741,6 +1773,9 @@ class Follower:
         # Stage 1: pixel-space motion tracker (None == --no-track == legacy path).
         self.tracker = MultiTracker(args.iou_min, args.max_coast) if args.track else None
         self._overrun_streak = 0    # consecutive frames the loop ran over its period
+        self._rr_overrun_streak = 0  # consecutive over-budget frames with --rerun on (auto-disable)
+        self._loop_ms_hist = collections.deque(maxlen=600)  # ~60s of loop WORK-time @ 10Hz
+        self._last_loopms_log = 0.0  # 10s cadence for the LOOP-MS observability line
 
         # Stage 2/4: appearance-feature backend -- the single swap point. 'global' =
         # the original single HS histogram (default; Stages 1-3 behavior verbatim);
@@ -2344,6 +2379,13 @@ class Follower:
                 #  sensor rate; this loop just consumes the latest frame under lock)
                 frame, last_seq, _ = self.node.take_if_new(last_seq)
 
+                # Rerun (Phase 2): stamp this control-loop iteration's frame_idx ONCE (keyed to the
+                # same self._seq the cam-spin image path uses -> a decision aligns to its frame).
+                # rerun time is per-thread, so this never collides with the cam-spin cursor. Inert
+                # unless --rerun.
+                if _RR.ok:
+                    _RR.frame(last_seq if last_seq >= 0 else 0, time.time())
+
                 # Tier-1 command drain: one token per tick, BEFORE _process_frame, every tick
                 # (so STOP/HOLD are honored even during a NO-FRAME stall). Microseconds; inert
                 # unless --commands. STOP/HOLD are prioritized inside CommandChannel.poll().
@@ -2390,6 +2432,12 @@ class Follower:
                             self._depth_starved = False
                             log("DEPTH-STARVED cleared fps=%.1f >= %.1f -> forward vx re-enabled"
                                 % (_dfps, _floor + max(self.a.depth_starved_margin, 0.0)))
+                    # Rerun health series (Phase 2): the sensor-truthful fps EMAs + the depth-starved
+                    # latch -- the exact signals whose misreading caused a whole session's misdiagnosis.
+                    if _RR.ok:
+                        _RR.scalar("/health/depth_fps", _dfps)
+                        _RR.scalar("/health/rgb_fps", self.node.rgb_fps())
+                        _RR.scalar("/health/depth_starved", 1.0 if self._depth_starved else 0.0)
                 if frame is not None:
                     ever_framed = True
                     last_frame_mono = now
@@ -2427,11 +2475,30 @@ class Follower:
                             else:
                                 self._hold()
 
+                # Rerun FSM series (Phase 2): log state EVERY iteration (not just TRACK) so SEARCH/
+                # SEARCHING/REACQUIRE show on the scrubber -- the reacquire-spin lives in those states.
+                if _RR.ok:
+                    _RR.state("/fsm/state", self.state)
+
                 if self.drive and self.walking and not self.bridge.alive():
                     log("BRIDGE died -> exiting (loco safed by bridge)")
                     break
 
                 dt = time.monotonic() - t0
+                if _RR.ok:
+                    _RR.scalar("/diag/loop_ms", dt * 1000.0)   # true loop dt straight into the .rrd
+                # Always-on loop-timing observability (autonomy-ops: observable by default). WORK-time
+                # per iteration (before the fill-sleep); a 10s p50/p99/max pulse tagged rerun on/off,
+                # so the --rerun loop-cost gate compares directly against the baseline in the logs.
+                self._loop_ms_hist.append(dt * 1000.0)
+                if (now - self._last_loopms_log) >= 10.0 and len(self._loop_ms_hist) >= 10:
+                    self._last_loopms_log = now
+                    _xs = sorted(self._loop_ms_hist)
+                    _n = len(_xs)
+                    _pct = lambda p: _xs[min(_n - 1, int(p * _n))]
+                    log("LOOP-MS n=%d p50=%.0f p90=%.0f p99=%.0f max=%.0f budget=%.0f rerun=%s"
+                        % (_n, _pct(0.5), _pct(0.9), _pct(0.99), _xs[-1], period * 1000.0,
+                           "on" if _RR.ok else "off"))
                 # Stage 1 slow-frame guard: surface a perception overrun in the
                 # log (visible in --preview) before it ever matters under --drive.
                 if dt > period:
@@ -2441,6 +2508,20 @@ class Follower:
                             % (self._overrun_streak, dt * 1000.0, period * 1000.0,
                                self.a.rate_hz))
                         self._overrun_streak = 0
+                    # Rerun auto-disable backstop (Phase 2 loop-safety gate item 4): if the loop is
+                    # over budget for N consecutive frames WHILE --rerun is on, shed the OPTIONAL
+                    # Rerun load FIRST -- disabling _RR makes the follow byte-identical again, well
+                    # before the C++ staleness watchdog would have to safe. Conservative default (8)
+                    # so a transient perception spike doesn't kill a useful recording; the .rrd's
+                    # /diag/rr_track_ms shows whether Rerun was actually the cost. This is a backstop,
+                    # NOT the primary gate -- the operator still runs the on-Orin probe before --drive.
+                    if _RR.ok:
+                        self._rr_overrun_streak += 1
+                        if self._rr_overrun_streak >= self.a.rerun_overrun_frames:
+                            _RR.ok = False
+                            log("RERUN-DISABLED-SLOW %d frames over budget with --rerun -> Rerun OFF "
+                                "(follow safe + byte-identical from here)" % self._rr_overrun_streak)
+                            self._rr_overrun_streak = 0
                     # NET-NEW gesture overrun auto-disable (SCOPE §4.3): an INDEPENDENT counter
                     # that does NOT share the SLOW-LOOP reset above (which fires every 5 frames
                     # and could never accumulate to a larger K). Only blames frames where the
@@ -2461,7 +2542,7 @@ class Follower:
                 else:
                     self._overrun_streak = 0
                     self._gesture_overrun_streak = 0   # within budget -> 'consecutive' resets (was cumulative)
-                    self._gesture_overrun_streak = 0
+                    self._rr_overrun_streak = 0        # same: Rerun auto-disable needs CONSECUTIVE overruns
                     rem = period - dt
                     if rem > 0:
                         time.sleep(rem)
@@ -3517,6 +3598,26 @@ class Follower:
                sim, best["conf"],
                "" if (self.drive and self.walking) else " [preview]"))
 
+        # Rerun follow scalars (Phase 2): control-loop, CHEAP signals only -- NO images here. Uses the
+        # SAME truthful post-clamp vx/vyaw the robot was just commanded (self._drive_vel above) and the
+        # REAL forbid_forward boolean (not the Phase-1 derivation). frame_idx/state are set once per
+        # iteration in run(); this only adds the follow-specific series + the target box. Self-timed to
+        # /diag/rr_track_ms so the on-Orin loop-cost gate can read p99 straight from the .rrd. Inert
+        # unless --rerun (single-branch skip when _RR.ok is False -> byte-identical).
+        if _RR.ok:
+            _rr_t0 = time.monotonic()
+            _RR.scalar("/follow/range", rng)
+            _RR.scalar("/follow/range_source", 2.0 if rsrc == "depth" else (1.0 if rsrc == "bboxH" else 0.0))
+            _RR.scalar("/follow/bearing", bearing_deg)
+            _RR.scalar("/cmd/vx", vx)
+            _RR.scalar("/cmd/vyaw", vyaw)
+            _RR.scalar("/cmd/forbid_forward", 1.0 if forbid_forward else 0.0)
+            _RR.scalar("/reid/sim", sim)
+            _RR.scalar("/track/conf", best["conf"])
+            _RR.scalar("/track/cost", cost)
+            _RR.boxes("/camera/rgb/target", best["box"], best.get("track_id"))
+            _RR.scalar("/diag/rr_track_ms", (time.monotonic() - _rr_t0) * 1000.0)
+
     # -- COASTING: follow the bound track's motion prediction through occlusion --
     def _try_coast(self, w_img, h_img):
         """Stage 1. When the locked person has NO accepted detection this frame but
@@ -3928,6 +4029,26 @@ def parse_args(argv):
                    help="emit annotated JPEG frames on stdout (Tracker page); "
                         "status text is routed to stderr")
     p.add_argument("--stream-quality", type=int, default=70)
+
+    # --- Rerun (rerun.io) observability (Phase 2). DEFAULT-OFF + byte-identical when off. ---
+    p.add_argument("--rerun", action="store_true",
+                   help="record a scrubbable Rerun .rrd (follow scalars + FSM + events on the "
+                        "control loop; RGB/depth on the cam-spin thread). Off by default and "
+                        "byte-identical to today when off. Needs k1_rerun.py + rerun-sdk on-robot. "
+                        "GATE: do NOT combine with --drive until the on-Orin loop-cost probe passes "
+                        "(see RERUN_PLAN.md loop-safety gate).")
+    p.add_argument("--rerun-mode", choices=["save", "connect"], default="save",
+                   help="save = timestamped .rrd on --rerun-dir (crash-safe); "
+                        "connect = stream to a laptop viewer at --rerun-addr (supervised DRIVE only)")
+    p.add_argument("--rerun-addr", default=None,
+                   help="--rerun-mode connect: gRPC address of the laptop viewer, e.g. 1.2.3.4:9876")
+    p.add_argument("--rerun-dir", default="/home/booster/rerun",
+                   help="--rerun-mode save: directory for the timestamped .rrd")
+    p.add_argument("--rerun-image-every-n", type=int, default=3,
+                   help="log 1 in N camera frames to keep the recording (and loop) light (default 3)")
+    p.add_argument("--rerun-overrun-frames", type=int, default=8,
+                   help="auto-disable Rerun after this many CONSECUTIVE over-budget control-loop "
+                        "frames while --rerun is on (loop-safety backstop; default 8)")
     p.add_argument("--assoc-margin", type=float, default=0.15,
                    help="min cost gap between best and runner-up person; below "
                         "this the frame is treated as no-match (prefer stop)")
@@ -4298,11 +4419,46 @@ def parse_args(argv):
     return args
 
 
+def init_rerun(args):
+    """Flip the module _RR sink on when --rerun is passed (Phase 2). Best-effort: a missing
+    k1_rerun.py or rerun-sdk logs a warning and the follow proceeds with Rerun disabled -- Rerun
+    is NEVER a safety dependency (same contract as the OSNet histogram fallback)."""
+    global _RR
+    if not getattr(args, "rerun", False):
+        return
+    if _RerunSink is None:
+        log("RERUN unavailable (k1_rerun.py not importable) -> disabled (follow proceeds)")
+        return
+    path = None
+    if args.rerun_mode == "save":
+        d = args.rerun_dir or "/home/booster/rerun"
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception as e:  # noqa: BLE001
+            log("RERUN mkdir %s failed: %s -> disabled" % (d, e))
+            return
+        path = os.path.join(d, "k1_follow_%d.rrd" % int(time.time()))
+    _RR = _RerunSink(
+        enabled=True, mode=args.rerun_mode, path=path, addr=args.rerun_addr,
+        image_every_n=args.rerun_image_every_n,
+        min_safe=args.min_safe_range, standoff=args.standoff_m, max_follow=args.max_follow_range)
+    _RR.refs_once()
+    if _RR.ok:
+        log("RERUN active mode=%s -> %s (image 1/%d)"
+            % (args.rerun_mode, _RR.path, args.rerun_image_every_n))
+        if args.drive:
+            log("RERUN + --drive: ensure the on-Orin loop-cost gate PASSED (RERUN_PLAN.md); "
+                "an over-budget streak auto-disables Rerun (RERUN-DISABLED-SLOW).")
+    else:
+        log("RERUN init failed -> disabled (follow proceeds)")
+
+
 def main():
     global _STREAM
     args = parse_args(sys.argv[1:])
     if args.stream:
         _STREAM = True   # status -> stderr, annotated frames -> stdout
+    init_rerun(args)     # flips _RR on only when --rerun; inert otherwise
     f = Follower(args)
     f.install_signal_handlers()
     f.run()
