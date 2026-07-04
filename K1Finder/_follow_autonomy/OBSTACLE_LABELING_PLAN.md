@@ -82,25 +82,63 @@ label stack → write a **scrubbable labeled Rerun view** + a structured per-fra
 - Fusion: per box, sample robust depth in the box → (range, bearing) → 3D; tag class.
 - Output: `Boxes2D`(class labels) on `/camera/rgb`, `Points3D`/`Boxes3D` in a top-down 3D view,
   the floor/wall planes, + `obstacles.jsonl` (per frame: class, xyz, extent, in_corridor).
-- **Prototype NOW** on the already-recorded `follow.rrd` to prove the pipeline end-to-end.
+- **BUILT + VALIDATED 2026-07-04** (`eval/rrd_label.py`) on the real `follow.rrd`:
+  - Object+depth fusion: 380 detections, 100% got a 3D range (person/chair/refrigerator/oven,
+    fridge at 1.1 m).
+  - `--track` (ByteTrack dedup): **536 raw detections → 10 unique obstacles** (6 person / 3 chair /
+    1 fridge); the `seen`-frame count cleanly separates real obstacles (100+ frames) from transient
+    ID-splits (2–5) — the Phase-2 "what matters" signal falls out for free.
+  - `--seg` (SegFormer-ADE20K): `/camera/seg` per-pixel structure + `/world/wall` & `/world/floor`
+    back-projected to 3D — the semantic wall/floor LABEL the geometry track can't give.
+  - Honest finding: with the 70° FOV, ~100% of detections are "in corridor" (the whole view IS the
+    corridor) — that filter only earns its keep with a wider sensor or near-center weighting.
 
-### Phase 2 — "What actually matters" + the representation — effort S
-Analyze the labeled runs: which classes enter the forward corridor, how often depth-geometry alone
-suffices vs. needs the semantic label, typical detection range/latency. This **empirically** defines
-the minimal live subset (likely: COCO person+chair+couch+table + depth clearance). Freeze the compact
-egocentric obstacle message.
+### Phase 2 — "What actually matters" + the representation — effort S — ✅ BUILT + VALIDATED 2026-07-04
+`eval/rrd_obstacles.py` turns the raw tracked detections (`obstacles.jsonl`) into a TRUE obstacle set
+and the avoidance signal, and freezes the egocentric representation. On the real run:
+**536 raw detections → 6 unique obstacles** (filter transient tracks by `seen`-count; MERGE by two
+rules — co-location for stationary objects across any gap, endpoint-stitch for a moving object handed
+to a new id; the two 2.5 m chairs correctly merged).
 
-### Phase 3 — Live minimal reflex (on-robot, MEASURED + GATED) — effort M
-Distill the cheapest useful thing onto the robot, on the cam-spin/decimated pattern (never the control
-loop), loop-cost-gated exactly like Rerun:
-- Unfilter COCO classes in `PersonDetector` (near-free) → is a labeled obstacle in the forward cone?
-- Depth forward-clearance (a cheap numpy reduction over the forward corridor) → nearest obstacle range.
-- Fuse → **graded vx cap** as the corridor closes; **yaw untouched**; **fail-to-stop with no depth**
-  (composes with the existing `forbid_forward` keystone — reuse it, don't add a parallel path).
-- Class-aware option (brake earlier for a person than a static chair) — geometry-first; semantics are
-  a modifier, never the sole trigger.
-- Ships default-off; a loop-cost gate (p50/p99 of the reflex's added ms, SLOW-LOOP streak vs baseline)
-  before `--drive`, with an auto-disable backstop — the exact discipline the Rerun gate established.
+**Egocentric obstacle representation (frozen — `obstacle_set.json`), base frame x=right y=fwd z=up:**
+```
+Obstacle = {id, cls, range_stable, suspect_iddrift, spread_m, xyz, range_m, range_min_m,
+            bearing_deg, persistence, first, last, merged_tracks, source}
+ReflexSnapshot(per frame) = {frame_idx, nearest_corridor_m, nearest_class, n_in_corridor, brake}
+```
+`nearest_corridor_m` is THE scalar a graded-brake reflex acts on (∞ when the corridor is clear).
+
+**Three findings that steer Phase 3 (the real payoff):**
+1. **`range-stable` ≠ world-static (no odometry).** The FOLLOWED operator reads range-stable only
+   because the robot holds standoff. You cannot split object motion from robot ego-motion in the
+   egocentric frame — the labels are descriptive, not a world model. (The "3 persons" here are
+   operator@1.6m + 2 bystanders, NOT a split, precisely because standoff pins the operator's range.)
+2. **ID-drift/depth-glitch is the false-brake risk.** The one SUSPECT obstacle (a "chair" spanning
+   0.5–4.2 m = furniture-that-moves = ID drift) and its spurious 0.5 m reading are the ONLY thing that
+   trips the brake. → the reflex must gate on an **aged-median** range (reuse the follow's F1 anti-glitch
+   gate), never a raw min. Same failure class the Rerun work exposed (the relock lunge).
+3. **Geometry triggers, semantics modulate.** Every corridor obstacle had a depth return, so
+   depth-clearance ALONE would brake; COCO adds the CLASS (person vs chair) for class-aware braking,
+   not the trigger. → the live reflex = cheap depth forward-clearance (always) + unfiltered COCO (class),
+   both off the control loop.
+
+### Phase 3 — Live minimal reflex (on-robot, MEASURED + GATED) — effort M — ✅ BUILT 2026-07-04
+The **OBSTACLE-BRAKE reflex** in `follow_person_k1.py` (`--obstacle-brake`, default-off):
+- `_corridor_clearance()` — cheap depth forward-clearance: a PERCENTILE (p8, not raw min ->
+  glitch-resistant per Phase-2 finding 2) over the central corridor band (mid-vertical, skips the
+  floor) + an AGED-MEDIAN history. `_obstacle_vx_cap(target_range)` grades vx down from
+  `--obstacle-brake-start` to 0 at `--obstacle-brake-stop`.
+- **Ignores the followed operator** (`--obstacle-target-margin`): only brakes for an obstacle
+  meaningfully CLOSER than the target -- else the nearest corridor return IS the operator and the
+  reflex would fight the follow's own standoff (a real bug caught in testing).
+- Composes with `forbid_forward` (applied before AND after the slew, INV-1); **only ever REDUCES
+  forward vx, yaw untouched, fail-to-stop with no depth** -> cannot make the forward path less safe.
+- Observability: throttled `CLEARANCE` line + `/reflex/clearance_m` & `/reflex/vx_cap` Rerun scalars.
+- **BYTE-IDENTICAL when off: PROVEN** (`replay_eval compare --flags-b=--obstacle-brake` -> COMPARE-OK,
+  twice); compiles on robot py3.10.
+- **STILL TODO:** unfilter-COCO class-awareness (brake earlier for a person; geometry-first modifier);
+  the loop-cost gate + auto-disable backstop before `--rerun`+`--drive`; a live drive validation with
+  a deliberate intervening obstacle (blocked so far by gesture-lock flakiness = no TRACK to observe).
 
 ### Phase 4 — Capture tier (thesis) — pipeline-proof ONLY — effort S
 `obstacles.jsonl` + rgb/depth → a structured environment-labeled dataset. **Honest scope:** single
