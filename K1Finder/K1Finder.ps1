@@ -184,16 +184,21 @@ function Ensure-ReidModel([string]$ip){
 # NOTE: installs into whatever `python3` resolves to in the ssh shell -- the SAME interpreter
 # run_follow.sh launches the node with, so an import here means an import at node start.
 function Test-RerunImport([string]$ip){
-    # Unique temp name + kill-on-timeout (review fix): a stalled prior ssh could hold the redirect
-    # file open and false-negative every later check with a fixed name.
-    $tmp = Join-Path $env:TEMP ('k1_rerun_imp_{0}.txt' -f ([IO.Path]::GetRandomFileName() -replace '\.',''))
-    try{
-        $q = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), "python3 -c 'import rerun,sys; sys.stdout.write(rerun.__version__)'")) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
-        if(-not $q.WaitForExit(15000)){ try{ $q.Kill() }catch{}; $null=$q.WaitForExit(2000) }
-        $v = (Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
-        if($v -and ($v.Trim() -match '^\d+\.\d+')){ return $v.Trim() }
-    }catch{}
-    finally{ Remove-Item $tmp -ErrorAction SilentlyContinue }
+    # RETRY x3 (fix 2026-07-05): a SINGLE flaky-ssh moment used to false-negative and pop the scary
+    # "rerun not on the robot" dialog even though rerun IS installed (verified 0.23.1 + working sink).
+    # rerun being absent is stable, so one clean import in a few tries is the truth; only declare it
+    # missing after ALL attempts fail. Unique temp per try + kill-on-timeout.
+    for($try=1; $try -le 3; $try++){
+        $tmp = Join-Path $env:TEMP ('k1_rerun_imp_{0}.txt' -f ([IO.Path]::GetRandomFileName() -replace '\.',''))
+        try{
+            $q = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), "python3 -c 'import rerun,sys; sys.stdout.write(rerun.__version__)'")) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
+            if(-not $q.WaitForExit(15000)){ try{ $q.Kill() }catch{}; $null=$q.WaitForExit(2000) }
+            $v = (Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
+            if($v -and ($v.Trim() -match '^\d+\.\d+')){ return $v.Trim() }
+        }catch{}
+        finally{ Remove-Item $tmp -ErrorAction SilentlyContinue }
+        if($try -lt 3){ Start-Sleep -Milliseconds 800 }
+    }
     return $null
 }
 function Ensure-RerunWheels([string]$ip){
