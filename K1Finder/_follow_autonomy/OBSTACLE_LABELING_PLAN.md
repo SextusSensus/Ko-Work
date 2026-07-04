@@ -82,7 +82,16 @@ label stack → write a **scrubbable labeled Rerun view** + a structured per-fra
 - Fusion: per box, sample robust depth in the box → (range, bearing) → 3D; tag class.
 - Output: `Boxes2D`(class labels) on `/camera/rgb`, `Points3D`/`Boxes3D` in a top-down 3D view,
   the floor/wall planes, + `obstacles.jsonl` (per frame: class, xyz, extent, in_corridor).
-- **Prototype NOW** on the already-recorded `follow.rrd` to prove the pipeline end-to-end.
+- **BUILT + VALIDATED 2026-07-04** (`eval/rrd_label.py`) on the real `follow.rrd`:
+  - Object+depth fusion: 380 detections, 100% got a 3D range (person/chair/refrigerator/oven,
+    fridge at 1.1 m).
+  - `--track` (ByteTrack dedup): **536 raw detections → 10 unique obstacles** (6 person / 3 chair /
+    1 fridge); the `seen`-frame count cleanly separates real obstacles (100+ frames) from transient
+    ID-splits (2–5) — the Phase-2 "what matters" signal falls out for free.
+  - `--seg` (SegFormer-ADE20K): `/camera/seg` per-pixel structure + `/world/wall` & `/world/floor`
+    back-projected to 3D — the semantic wall/floor LABEL the geometry track can't give.
+  - Honest finding: with the 70° FOV, ~100% of detections are "in corridor" (the whole view IS the
+    corridor) — that filter only earns its keep with a wider sensor or near-center weighting.
 
 ### Phase 2 — "What actually matters" + the representation — effort S
 Analyze the labeled runs: which classes enter the forward corridor, how often depth-geometry alone
