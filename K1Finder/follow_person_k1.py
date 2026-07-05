@@ -426,6 +426,31 @@ class GestureTrigger(LockTrigger):
         except Exception:  # noqa: BLE001
             return False
 
+    def _arm_owned(self, k, box, margin):
+        """OWNER-AUTHORITY (hardened 2026-07-05, wrong-person lock): the raised arm must belong to the
+        MATCHED body, not an overlapping neighbour. IoU box-overlap alone let a raiser's arm bind to a
+        bystander who never raised a hand. Require: both CONFIDENT shoulders inside the matched box
+        (the torso is this tracked person's) AND the RAISED wrist's X within the body column (the arm
+        rises from this body, not reaching in from the side). Never raises -> False on any fault."""
+        try:
+            kpc = float(self.a.gesture_kp_conf)
+            x1, y1, x2, y2 = box
+            padx = 0.12 * max(x2 - x1, 1.0)
+            def conf(idx): return float(k[idx][2]) >= kpc
+            def inx(idx): return (x1 - padx) <= float(k[idx][0]) <= (x2 + padx)
+            def iny(idx): return (y1 - 1.0) <= float(k[idx][1]) <= (y2 + 1.0)
+            def yv(idx): return float(k[idx][1])
+            # torso ownership: every CONFIDENT shoulder must sit inside the matched box
+            for sh in (KP_L_SHOULDER, KP_R_SHOULDER):
+                if conf(sh) and not (inx(sh) and iny(sh)):
+                    return False
+            # the RAISED wrist(s) must be in the body column (X inside the box, with pad)
+            lr = conf(KP_L_WRIST) and conf(KP_L_SHOULDER) and yv(KP_L_WRIST) < yv(KP_L_SHOULDER) - margin and inx(KP_L_WRIST)
+            rr = conf(KP_R_WRIST) and conf(KP_R_SHOULDER) and yv(KP_R_WRIST) < yv(KP_R_SHOULDER) - margin and inx(KP_R_WRIST)
+            return bool(lr or rr)
+        except Exception:  # noqa: BLE001
+            return False
+
     def _raisers(self, frame, persons):
         """Run pose, return (set of track_ids raising this frame, {track_id: owner_box}).
         Each pose detection is matched to a TRACKED YOLO person by IoU (a within-frame
@@ -464,16 +489,27 @@ class GestureTrigger(LockTrigger):
                     except Exception:  # noqa: BLE001
                         continue
                     best_tid, best_iou, best_box = None, 0.0, None
+                    second_iou = 0.0
                     for p in persons:
                         tid = p.get("track_id")
                         if tid is None:
                             continue
                         iou = iou_xyxy(pb, p["box"])
                         if iou > best_iou:
+                            second_iou = best_iou
                             best_iou, best_tid, best_box = iou, tid, p["box"]
+                        elif iou > second_iou:
+                            second_iou = iou
                     if best_tid is None or best_iou < self.a.iou_min:
                         gdbg(self.a, "NOMATCH pose#%d best_tid=%s best_iou=%.2f < iou_min=%.2f"
                              % (i, best_tid, best_iou, self.a.iou_min))
+                        continue
+                    # HARDEN (wrong-person lock): an AMBIGUOUS pose overlaps two people similarly ->
+                    # refuse to bind (don't guess which one raised the hand). Refusing is safe; the
+                    # operator re-raises when the frame is clearer.
+                    if (best_iou - second_iou) < self.a.gesture_owner_margin:
+                        gdbg(self.a, "AMBIG pose#%d best=%.2f second=%.2f gap<%.2f -> refuse bind"
+                             % (i, best_iou, second_iou, self.a.gesture_owner_margin))
                         continue
                     bh = max(best_box[3] - best_box[1], 1.0)
                     margin = self.a.gesture_kp_margin_frac * bh
@@ -489,8 +525,15 @@ class GestureTrigger(LockTrigger):
                     except Exception:  # noqa: BLE001
                         pass
                     if raised:
-                        raisers.add(best_tid)
-                        owners[best_tid] = best_box
+                        # HARDEN (wrong-person lock): the raised arm must be OWNED by the matched body
+                        # (shoulders inside the box + raised wrist in the body column). Blocks binding
+                        # a raiser's arm onto an overlapping bystander who never raised a hand.
+                        if not self._arm_owned(k, best_box, margin):
+                            gdbg(self.a, "ARM-DISOWNED tid=%s -> refuse (raised arm not owned by "
+                                 "the matched body; likely an overlapping neighbour)" % best_tid)
+                        else:
+                            raisers.add(best_tid)
+                            owners[best_tid] = best_box
             self._last_pose_dets = dets
         except Exception:  # noqa: BLE001
             self._last_pose_dets = dets
@@ -4442,6 +4485,10 @@ def parse_args(argv):
     p.add_argument("--gesture-miss-tol", type=int, default=1,
                    help="hold survives this many CONSECUTIVE missed pose frames before resetting "
                         "(a miss never increments the hold). 0 = the old hard-reset-on-any-miss.")
+    p.add_argument("--gesture-owner-margin", type=float, default=0.15,
+                   help="OWNER-AUTHORITY: min IoU gap the best pose->person match must beat the "
+                        "2nd-best by, else the bind is AMBIGUOUS and refused (prevents locking an "
+                        "overlapping bystander who never raised a hand). 0 = disable the ambiguity gate.")
     p.add_argument("--gesture-min-sep-frac", type=float, default=0.12,
                    help="refuse a gesture seed if another person is within this fraction of the "
                         "image diagonal of the lock point (bystander-adjacency guard, SCOPE G4)")
