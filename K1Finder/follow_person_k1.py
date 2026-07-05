@@ -2068,7 +2068,11 @@ class Follower:
         pixel at a raw min would FALSE-BRAKE (the relock-lunge failure class)."""
         if self.node is None:
             return None
-        d = self.node.latest_depth(self.a.depth_max_age)
+        # FIX (audit 2026-07-04): use latest_depth()'s default freshness (max_age=0.5 == DEPTH_FRESH_S),
+        # the SAME depth-staleness contract the main follow uses at its depth read. The prior code read
+        # a "depth_max_age" argparse attr that was never defined, so --obstacle-brake raised
+        # AttributeError on every tracked frame (this read is above the try) and bricked the follow.
+        d = self.node.latest_depth()
         if d is None:
             return None
         try:
@@ -2652,6 +2656,12 @@ class Follower:
         except Exception as e:  # noqa: BLE001
             log("EXCEPTION %s -> stopping" % e)
         finally:
+            # Flush the --rerun .rrd tail on any clean exit (SIGINT/TERM/HUP -> stop -> here). No-op
+            # when Rerun is disabled; wrapped so a flush fault can never mask the real exit path.
+            try:
+                _RR.close()
+            except Exception:  # noqa: BLE001
+                pass
             self._gbind_session_log()   # A/B rollup (no-op unless --lock-trigger both)
             self._cleanup()
             try:
@@ -4563,6 +4573,15 @@ def parse_args(argv):
         if args.reseed_anchor_floor <= 0.0:
             p.error("--lock-trigger %s requires --reseed-anchor-floor > 0: it is the sticky-lock "
                     "stranger defense the gesture seed relies on" % args.lock_trigger)
+        # AMBIG owner-margin invariant (audit 2026-07-04): a LONE clear raiser has second_iou=0, so the
+        # ambiguity gate (best_iou - second_iou < owner_margin -> refuse) passes only if
+        # best_iou >= owner_margin. best_iou is already >= iou_min (the earlier match gate), so setting
+        # owner_margin > iou_min opens a dead-zone where a solo raiser with modest overlap is refused and
+        # gesture can NEVER lock. Clamp to iou_min and warn (fail loud) rather than silently trap.
+        if args.gesture_owner_margin > args.iou_min:
+            log("WARN --gesture-owner-margin %.2f > --iou-min %.2f can refuse a lone raiser -> "
+                "clamping owner-margin to %.2f" % (args.gesture_owner_margin, args.iou_min, args.iou_min))
+            args.gesture_owner_margin = args.iou_min
     # Normalize the depth-topic spelling ONCE so the subscription decision (run()) and the DRIVE
     # precondition (_need_depth) share one test: ""/whitespace/any-case-"none" == depth disabled.
     args.depth_topic = (args.depth_topic or "").strip()
