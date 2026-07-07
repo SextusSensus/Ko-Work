@@ -81,8 +81,23 @@ function Get-SshOptString {
     '-o StrictHostKeyChecking=accept-new -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=8 -o ServerAliveInterval=5'
 }
 
+# Start a process and RELIABLY return its exit code. GOTCHA: Start-Process -PassThru leaves
+# $p.ExitCode = $null after WaitForExit(<ms>) UNLESS the OS handle is cached before the process
+# exits -- so touch $p.Handle first. Without this, every exit-code decision silently reads $null
+# and fail-closes even on success (this is exactly what broke the deploy). Returns the exit code,
+# or -1 if the process hangs past $TimeoutMs (then killed).
+function Invoke-Proc {
+    param([string]$Exe, [string[]]$ProcArgs, [int]$TimeoutMs = 20000)
+    $p = Start-Process $Exe -ArgumentList $ProcArgs -NoNewWindow -PassThru
+    try { $null = $p.Handle } catch {}
+    if ($p.WaitForExit($TimeoutMs)) { return [int]$p.ExitCode }
+    try { $p.Kill() } catch {}
+    return -1
+}
+
 # ---- Deploy robot-side helper scripts (idempotent) --------------------------
 $script:Deployed = $false
+$script:DeployErr = $null   # last deploy failure reason (honest message: local-missing vs push-failed)
 function Deploy-RobotFiles {
     param([string]$ip)
     $files = @('stream_cam.py','common.py','run_stream.sh','run_loco.sh')  # common.py: stream_cam imports to_bgr (P3.y)
@@ -102,41 +117,37 @@ function Deploy-RobotFiles {
 # follow_person_k1.py = lock-and-handoff: marker is a one-time lock onto the person, then YOLO-follows that person.
 function Deploy-FollowFiles {
     param([string]$ip)
+    $script:DeployErr = $null
+    # Hard-required helpers: the follow node imports every one of these, so a local-missing OR a
+    # failed push must abort the launch (fail-closed) with an HONEST reason. Invoke-Proc gives a
+    # reliable exit code (Start-Process -PassThru does not -- see helper). A non-zero here means
+    # the robot refused/timed-out the copy, NOT that a local file is missing -- name which case.
     foreach ($f in @('follow_person_k1.py','common.py','bridge.py','tracking.py','identity.py','rerun_sink.py','perception.py','triggers.py','loco_follow_bridge.cpp','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
         $src = Join-Path $ROBOT_DIR $f
-        if (-not (Test-Path $src)) { return $false }
-        $args = $SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f))
-        $p = Start-Process scp.exe -ArgumentList $args -NoNewWindow -PassThru
-        $null = $p.WaitForExit(20000)
+        if (-not (Test-Path $src)) { $script:DeployErr = ("local helper file not found: {0}" -f $src); return $false }
+        $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f)))
+        if ($rc -ne 0) { $script:DeployErr = ("scp of {0} to {1} failed (exit {2}) -- is the robot booted and reachable over SSH?" -f $f, $ip, $rc); return $false }
     }
     # Config layer (P1.1): the node loads /home/booster/config/defaults.yaml and FAIL-CLOSES
     # without it, so defaults.yaml is hard-required like the files above; the profiles are
     # best-effort. mkdir the flat config dir first (mirrors the reid/ mkdir pattern).
     $cfgDir = Join-Path $ROBOT_DIR 'config'
     $defaults = Join-Path $cfgDir 'defaults.yaml'
-    if (-not (Test-Path $defaults)) { return $false }
-    $mk = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser, $ip), 'mkdir -p /home/booster/config')) -NoNewWindow -PassThru
-    $null = $mk.WaitForExit(10000)
-    $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($defaults, ("{0}@{1}:/home/booster/config/defaults.yaml" -f $script:SshUser, $ip))) -NoNewWindow -PassThru
-    $null = $p.WaitForExit(20000)
+    if (-not (Test-Path $defaults)) { $script:DeployErr = ("local config not found: {0}" -f $defaults); return $false }
+    $null = Invoke-Proc ssh.exe ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser, $ip), 'mkdir -p /home/booster/config')) 10000
     # defaults.yaml is hard-required (node fail-closes without it): a failed/timed-out push must
     # abort the launch, not leave a stale config in place and report success.
-    if (($null -eq $p.ExitCode) -or ($p.ExitCode -ne 0)) { return $false }
+    $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($defaults, ("{0}@{1}:/home/booster/config/defaults.yaml" -f $script:SshUser, $ip)))
+    if ($rc -ne 0) { $script:DeployErr = ("scp of config/defaults.yaml to {0} failed (exit {1}) -- the node fail-closes without it." -f $ip, $rc); return $false }
     foreach ($prof in @('dev.yaml', 'demo.yaml', 'field.yaml')) {
         $ps = Join-Path $cfgDir $prof
-        if (Test-Path $ps) {
-            $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($ps, ("{0}@{1}:/home/booster/config/{2}" -f $script:SshUser, $ip, $prof))) -NoNewWindow -PassThru
-            $null = $p.WaitForExit(20000)
-        }
+        if (Test-Path $ps) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($ps, ("{0}@{1}:/home/booster/config/{2}" -f $script:SshUser, $ip, $prof))) }
     }
     # k1_rerun.py is BEST-EFFORT (review fix): Rerun is never a launch dependency -- the node
     # degrades to a no-op sink when the module is absent (follow_person_k1.py _NullRR), so a
-    # missing local copy must not block the follow like the hard-required files above do.
+    # missing local copy or failed push must not block the follow like the hard-required files do.
     $rr = Join-Path $ROBOT_DIR 'k1_rerun.py'
-    if (Test-Path $rr) {
-        $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($rr, ("{0}@{1}:/home/booster/k1_rerun.py" -f $script:SshUser, $ip))) -NoNewWindow -PassThru
-        $null = $p.WaitForExit(20000)
-    }
+    if (Test-Path $rr) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($rr, ("{0}@{1}:/home/booster/k1_rerun.py" -f $script:SshUser, $ip))) }
     return $true
 }
 
@@ -316,7 +327,7 @@ function Open-RerunRecording([string]$path){
     try{ $g=(Get-Command python.exe -ErrorAction SilentlyContinue); if($g -and ($g.Source -notmatch 'WindowsApps')){ $py=$g.Source } }catch{}
     if($py){
         $imp=$false
-        try{ $q=Start-Process $py -ArgumentList '-c "import rerun"' -WindowStyle Hidden -PassThru; if($q.WaitForExit(15000) -and $q.ExitCode -eq 0){ $imp=$true } }catch{}
+        try{ $q=Start-Process $py -ArgumentList '-c "import rerun"' -WindowStyle Hidden -PassThru; try{$null=$q.Handle}catch{}; if($q.WaitForExit(15000) -and $q.ExitCode -eq 0){ $imp=$true } }catch{}
         if($imp){
             try{ Start-Process $py -ArgumentList ('-m rerun "{0}"' -f $path); Add-LogTrack 'Opened via python -m rerun.' $accent; return }
             catch{ Add-LogTrack ('viewer launch failed: {0}' -f $_) $red }
@@ -1213,7 +1224,7 @@ function Start-Tracker([bool]$drive){
     # camera) so the K1 only ever streams the camera once.
     if($script:LiveOn){ Add-LogTrack 'Stopping Live View (single camera consumer)...' $amber; Stop-Live }
     Add-LogTrack ("Deploying follow helpers to {0} ..." -f $ip) $accent
-    if(-not (Deploy-FollowFiles $ip)){ Add-LogTrack ("Deploy failed: a helper file is missing under '{0}' (or its config\defaults.yaml). If you upgraded the layout, fully CLOSE + relaunch from desktop/. Copy this exact path to Claude." -f $ROBOT_DIR) $red; return $false }
+    if(-not (Deploy-FollowFiles $ip)){ Add-LogTrack ("Deploy failed: " + $(if($script:DeployErr){$script:DeployErr}else{"a helper under '$ROBOT_DIR' could not be deployed"})) $red; return $false }
     # Gesture / A-B selected -> make sure the pose model is on the robot first (auto-stage). On failure
     # the node still runs and falls back to the ArUco marker, so offer to continue rather than block.
     if(($chkGesture -and $chkGesture.Checked) -or ($chkAB -and $chkAB.Checked)){
@@ -1479,7 +1490,7 @@ function Start-Follow([bool]$drive){
     # camera) so the camera is only ever streamed once.
     if($script:LiveOn){ Add-LogCtrl 'Stopping Live View (single camera consumer)...' $amber; Stop-Live }
     Add-LogCtrl ("Deploying follow helpers to {0} ..." -f $ip) $accent
-    if(-not (Deploy-FollowFiles $ip)){ Add-LogCtrl ("Deploy failed: a helper file is missing under '{0}' (or its config\defaults.yaml). If you upgraded the layout, fully CLOSE + relaunch from desktop/. Copy this exact path to Claude." -f $ROBOT_DIR) $red; return $false }
+    if(-not (Deploy-FollowFiles $ip)){ Add-LogCtrl ("Deploy failed: " + $(if($script:DeployErr){$script:DeployErr}else{"a helper under '$ROBOT_DIR' could not be deployed"})) $red; return $false }
     $followSync.Stop=$false; $followSync.Log.Clear()
     $mode = if($drive){'drive'}else{'preview'}
     $remote="bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb"
