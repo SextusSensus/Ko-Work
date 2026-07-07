@@ -25,3 +25,11 @@ K1Finder/wheels/*.whl
 
 # Auto-downloaded YOLO / ultralytics model weights (regenerated on first use)
 *.pt
+
+# Generated file-tree manifests (regenerated on the robot by tree_manifest.py)
+K1Finder/k1_tree.txt
+K1Finder/k1_paths.json
+K1Finder/k1_paths_list.txt
+
+# Local Claude Code settings (per-machine)
+.claude/settings.local.json
