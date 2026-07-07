@@ -18,11 +18,13 @@ recommendation; **the call is yours.** Tick the box and I'll action it.
   (2026-07-05); ArUco is the fallback (untick "Gesture lock" in the Tracker tab).
 - So the marker workflow is still reachable → the printable source still has a use.
 
-**Recommendation: KEEP.** It's the printable source for the still-supported ArUco
-lock trigger, and it's tiny (~43 KB).
+**Recommendation was KEEP**, but the user chose REMOVE (ArUco lock trigger is being
+retired in favor of the raised-hand gesture).
 
-- [ ] **Keep** `follow_marker.png`
-- [ ] **Remove** it (ArUco lock trigger is being fully retired in favor of gesture)
+- [x] **Remove** it — **RESOLVED 2026-07-07:** `git rm follow_marker.png`; the file
+  references in `README.md` and `K1Finder/README.md` were de-referenced. The ArUco
+  code path in `follow_person_k1.py` is untouched (out of scope here); only the
+  printable asset was removed.
 
 ---
 

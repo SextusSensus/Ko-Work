@@ -31,7 +31,6 @@ The repo is two layers that work together:
 | `K1Finder/enable_camera.cpp` | SDK helper to nudge the head camera into a streaming mode. |
 | `K1Finder/tree_manifest.py` | Runs on the robot to reflect the live Booster SDK file layout. |
 | `K1Finder/_follow_autonomy/` · `SCOPE_*.md` · `UNTETHERED_FOLLOW.md` | Design, hardening plans, and adversarial-safety gate docs. |
-| `follow_marker.png` | The DICT_4X4_50 ArUco marker to print as the follow lock-trigger. |
 
 ---
 
