@@ -37,6 +37,12 @@ $K1_SSH_USER      = 'booster'
 $K1_SSH_PASS      = '123456'
 $K1_LOCO_IFACE    = '127.0.0.1'
 $SCRIPT_DIR       = Split-Path -Parent $MyInvocation.MyCommand.Path
+# P2.1 reorg: the app lives in desktop/; its deploy SOURCES moved to sibling dirs. The scp DEST
+# stays flat /home/booster/... (the robot layout is unchanged). last_target.txt is per-machine
+# runtime state and stays next to the app.
+$REPO_ROOT        = Split-Path -Parent $SCRIPT_DIR
+$ROBOT_DIR        = Join-Path $REPO_ROOT 'robot'
+$MODELS_DIR       = Join-Path $REPO_ROOT 'models'
 $LAST_TARGET_FILE = Join-Path $SCRIPT_DIR 'last_target.txt'
 $WORK             = Join-Path $env:TEMP 'k1finder'
 New-Item -ItemType Directory -Force -Path $WORK | Out-Null
@@ -68,7 +74,7 @@ function Deploy-RobotFiles {
     param([string]$ip)
     $files = @('stream_cam.py','run_stream.sh','run_loco.sh')
     foreach ($f in $files) {
-        $src = Join-Path $SCRIPT_DIR $f
+        $src = Join-Path $ROBOT_DIR $f
         if (-not (Test-Path $src)) { return $false }
         $args = $SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f))
         $p = Start-Process scp.exe -ArgumentList $args -NoNewWindow -PassThru
@@ -84,7 +90,7 @@ function Deploy-RobotFiles {
 function Deploy-FollowFiles {
     param([string]$ip)
     foreach ($f in @('follow_person_k1.py','loco_follow_bridge.cpp','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
-        $src = Join-Path $SCRIPT_DIR $f
+        $src = Join-Path $ROBOT_DIR $f
         if (-not (Test-Path $src)) { return $false }
         $args = $SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f))
         $p = Start-Process scp.exe -ArgumentList $args -NoNewWindow -PassThru
@@ -93,7 +99,7 @@ function Deploy-FollowFiles {
     # Config layer (P1.1): the node loads /home/booster/config/defaults.yaml and FAIL-CLOSES
     # without it, so defaults.yaml is hard-required like the files above; the profiles are
     # best-effort. mkdir the flat config dir first (mirrors the reid/ mkdir pattern).
-    $cfgDir = Join-Path $SCRIPT_DIR 'config'
+    $cfgDir = Join-Path $ROBOT_DIR 'config'
     $defaults = Join-Path $cfgDir 'defaults.yaml'
     if (-not (Test-Path $defaults)) { return $false }
     $mk = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser, $ip), 'mkdir -p /home/booster/config')) -NoNewWindow -PassThru
@@ -113,7 +119,7 @@ function Deploy-FollowFiles {
     # k1_rerun.py is BEST-EFFORT (review fix): Rerun is never a launch dependency -- the node
     # degrades to a no-op sink when the module is absent (follow_person_k1.py _NullRR), so a
     # missing local copy must not block the follow like the hard-required files above do.
-    $rr = Join-Path $SCRIPT_DIR 'k1_rerun.py'
+    $rr = Join-Path $ROBOT_DIR 'k1_rerun.py'
     if (Test-Path $rr) {
         $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($rr, ("{0}@{1}:/home/booster/k1_rerun.py" -f $script:SshUser, $ip))) -NoNewWindow -PassThru
         $null = $p.WaitForExit(20000)
@@ -142,7 +148,7 @@ function Test-RobotFile([string]$ip,[string]$path){
 function Ensure-GestureModel([string]$ip){
     $remote = $script:GestureModel
     if(Test-RobotFile $ip $remote){ Add-LogTrack ('Gesture model present: {0}' -f $remote) $green; return $true }
-    $local = Join-Path $SCRIPT_DIR (Split-Path $remote -Leaf)
+    $local = Join-Path $MODELS_DIR (Split-Path $remote -Leaf)
     if(Test-Path $local){
         Add-LogTrack ('Staging gesture model ({0}) to robot...' -f (Split-Path $local -Leaf)) $accent
         try{ $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($local, ("{0}@{1}:{2}" -f $script:SshUser,$ip,$remote))) -NoNewWindow -PassThru; $null = $p.WaitForExit(120000) }catch{ Add-LogTrack ('scp failed: {0}' -f $_) $red }
@@ -170,7 +176,7 @@ function Ensure-GestureModel([string]$ip){
 function Ensure-ReidModel([string]$ip){
     $remote = $script:ReidEngine
     if(Test-RobotFile $ip $remote){ Add-LogTrack ('ReID engine present: {0}' -f $remote) $green; return $true }
-    $local = Join-Path $SCRIPT_DIR (Split-Path $remote -Leaf)
+    $local = Join-Path $MODELS_DIR (Split-Path $remote -Leaf)
     if(Test-Path $local){
         Add-LogTrack ('Staging ReID engine ({0}) to robot...' -f (Split-Path $local -Leaf)) $accent
         try{
@@ -226,7 +232,7 @@ function Test-RerunImport([string]$ip){
 function Ensure-RerunWheels([string]$ip){
     $v = Test-RerunImport $ip
     if($v){ Add-LogTrack ('rerun-sdk present on robot (v{0}).' -f $v) $green; return $true }
-    $wdir = Join-Path $SCRIPT_DIR 'wheels'
+    $wdir = Join-Path $MODELS_DIR 'wheels'
     $whls = @(); if(Test-Path $wdir){ $whls = @(Get-ChildItem -Path $wdir -Filter '*.whl' -ErrorAction SilentlyContinue) }
     if($whls.Count -eq 0){
         Add-LogTrack ('rerun-sdk not importable + no local wheels\ dir ({0}) -> Rerun disabled (follow proceeds). Stage the aarch64 cp310 rerun-sdk closure into wheels\ to enable.' -f $wdir) $amber
@@ -1843,7 +1849,7 @@ function Refresh-RobotFiles {
     $ip=$ipFiles.Text.Trim()
     if(-not $ip){ Add-LogFiles 'Enter the robot IP first.' $amber; return }
     Set-RobotIP $ip   # keep all tabs in sync
-    $manifestSrc = Join-Path $SCRIPT_DIR 'tree_manifest.py'
+    $manifestSrc = Join-Path $ROBOT_DIR 'tree_manifest.py'
     if(-not (Test-Path $manifestSrc)){ Add-LogFiles ('Missing helper: '+$manifestSrc) $red; $filesStatus.Text='tree_manifest.py not found next to the app.'; $filesStatus.ForeColor=$red; return }
 
     $previewBox.Clear()

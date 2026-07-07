@@ -20,17 +20,19 @@ The repo is two layers that work together:
 
 ## Repo map
 
+Organized by **deploy target** (P2.1):
+
 | Path | What it is |
 |---|---|
-| `K1Finder/K1Finder.ps1` | The K1 Finder app (main entry point). |
-| `K1Finder/Launch K1 Finder (no console).vbs` · `K1 Finder.bat` | Launchers — double-click to run the app. |
-| `K1Finder/README.md` | **Full app documentation** (all six tabs, in detail). |
-| `K1Finder/follow_person_k1.py` | Robot-side markerless person-follow (lock-and-handoff: ArUco/gesture is a one-time trigger, then YOLO tracks the person). |
-| `K1Finder/loco_follow_bridge.cpp` | Compiled-on-robot bridge that turns follow velocities into Booster SDK `MoveCommand`s; the hard-clamp backstop. |
-| `K1Finder/stream_cam.py` | ROS2→JPEG camera pump streamed over SSH to the app's Live View. |
-| `K1Finder/enable_camera.cpp` | SDK helper to nudge the head camera into a streaming mode. |
-| `K1Finder/tree_manifest.py` | Runs on the robot to reflect the live Booster SDK file layout. |
-| `K1Finder/_follow_autonomy/` · `SCOPE_*.md` · `UNTETHERED_FOLLOW.md` | Design, hardening plans, and adversarial-safety gate docs. |
+| `desktop/K1Finder.ps1` · `K1 Finder.bat` · `Launch K1 Finder (no console).vbs` | The Windows K1 Finder app (main entry point) + launchers. |
+| `desktop/README.md` | **Full app documentation** (all six tabs, in detail). |
+| `robot/follow_person_k1.py` | Robot-side markerless person-follow (lock-and-handoff: ArUco/gesture is a one-time trigger, then YOLO tracks the person). |
+| `robot/loco_follow_bridge.cpp` | Compiled-on-robot bridge that turns follow velocities into Booster SDK `MoveCommand`s; the hard-clamp backstop. |
+| `robot/config/` | YAML config (`defaults.yaml` + `dev`/`demo`/`field` profiles); the node loads it fail-closed. |
+| `robot/stream_cam.py` · `enable_camera.cpp` · `tree_manifest.py` · `run_*.sh` | Camera pump, SDK camera-enable helper, file-tree manifest, and the launch scripts. |
+| `eval/` | The `replay_eval` regression harness, `config_selftest`, and the offline `rrd_*` labeling tools. |
+| `models/` | Model blobs (fetched/exported, gitignored) + the offline `wheels/` closure. |
+| `docs/` | Design docs, hardening plans, `SCOPE_*.md`, `UNTETHERED_FOLLOW.md`, adversarial-safety gate docs. |
 
 ---
 
@@ -40,13 +42,13 @@ Requires only **Windows 11** — no Python or Node install needed; the app uses
 built-in PowerShell, Windows Forms, and the OpenSSH client.
 
 1. Power on the K1 and put your PC on the **same subnet** (wired is recommended).
-2. In `K1Finder/`, double-click **`Launch K1 Finder (no console).vbs`** (clean
+2. In `desktop/`, double-click **`Launch K1 Finder (no console).vbs`** (clean
    window) or **`K1 Finder.bat`** (with console/debug output).
 3. Click **Scan for K1** — or type the robot IP and click **Verify / Connect**.
 
 From there the app's six tabs cover discovery, SSH/file upload, live camera view,
 loco control, an SDK file browser, and the Tracker (person-follow). See
-**[`K1Finder/README.md`](K1Finder/README.md)** for the complete tab-by-tab walkthrough.
+**[`desktop/README.md`](desktop/README.md)** for the complete tab-by-tab walkthrough.
 
 ---
 
@@ -100,7 +102,7 @@ The motion paths were built and adversarially reviewed. In `--drive` mode:
 
 **Untethered operation is currently FORBIDDEN** — going wireless removes the SSH
 link that today acts as the deadman. See
-[`K1Finder/UNTETHERED_FOLLOW.md`](K1Finder/UNTETHERED_FOLLOW.md) for the pre-flight
+[`docs/UNTETHERED_FOLLOW.md`](docs/UNTETHERED_FOLLOW.md) for the pre-flight
 gate that must be cleared first.
 
 ---

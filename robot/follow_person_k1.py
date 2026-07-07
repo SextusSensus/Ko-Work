@@ -289,7 +289,7 @@ def marker_center(frame):
 # single funnel _try_seed consumes. ArUco is the DEFAULT and stays byte-identical;
 # gesture is opt-in (--lock-trigger). A trigger fault degrades to "no lock this
 # frame", never to motion (fall risk stays perception-side). See
-# K1Finder/SCOPE_lock_trigger_gesture.md for the full design + safety rationale.
+# docs/SCOPE_lock_trigger_gesture.md for the full design + safety rationale.
 # ---------------------------------------------------------------------------
 LockHint = collections.namedtuple("LockHint", "point owner_box owner_tid source point_kind")
 
@@ -721,7 +721,7 @@ class CompositeTrigger(LockTrigger):
 # Drained once per tick, non-blocking, crash-safe. NEVER the node's PTY stdin
 # (which carries the Ctrl-C e-stop) and NEVER the bridge stdin (raw velocity).
 # The brain selects only a member of a FROZEN enum -- never a velocity, never an
-# identity. See K1Finder/SCOPE_nl_command_layer.md.
+# identity. See docs/SCOPE_nl_command_layer.md.
 # ---------------------------------------------------------------------------
 class CommandChannel:
     def __init__(self, path):
