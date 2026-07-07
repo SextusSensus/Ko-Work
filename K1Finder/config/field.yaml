@@ -1,0 +1,13 @@
+# field profile -- outdoor/field operation (PLACEHOLDER in P1.1).
+#
+# P1.2 populates this with the field-safety surface (stricter than demo where the
+# environment is less controlled): require_heartbeat: true, obstacle_brake: true,
+# max_follow_range/coast_frames/max_seconds tuned for open ground.
+#
+# NOTE: untethered operation remains FORBIDDEN until the UNTETHERED_FOLLOW.md gate
+# clears -- this profile does not unlock it; it only hardens the tethered config.
+#
+# Until P1.2 lands this profile overlays NOTHING (== defaults), so selecting it is
+# byte-identical to today. Same profile rules as dev.yaml (no drive/preview here;
+# floors stay null; unknown keys refuse to start).
+{}

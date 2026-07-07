@@ -1,0 +1,158 @@
+# K1 follow node -- base configuration (P1.1, IMPLEMENTATION_README.md Phase 1).
+#
+# AUTHORITATIVE DEFAULTS for follow_person_k1.py. Generated from the pre-refactor
+# argparse defaults (byte-identical values); the node loads this file, overlays an
+# optional --profile <name|path> YAML, then CLI flags override everything (CLI wins).
+# Keys are argparse dest names (underscores). The node REFUSES TO START if this file
+# is missing or its key set does not exactly match the known config surface
+# (fail-closed; see IMPLEMENTATION_README.md section 2).
+#
+# DO NOT set the 7 appearance-resolved floors to concrete values here or in profiles:
+#   hiconf, anchor_floor, bank_floor, reloc_floor, reloc_view_floor,
+#   reloc_iso_bypass_anchor, reloc_anchor_backstop
+# They MUST stay null so the node's per-appearance resolution runs (global/striped/
+# osnet use different similarity scales -- a baked value breaks lock stickiness).
+#
+# TUNE IN PROFILES (demo.yaml / field.yaml / dev.yaml), not here: this file mirrors
+# the code's shipped defaults so `no profile` == today's behavior byte-for-byte.
+admit_conf: 0.6
+admit_spacing: 5
+anchor_floor: null
+appearance: 'global'
+arm_reacquire: false
+assoc_margin: 0.15
+audit_cosine: false
+auto_reacquire: false
+bank_floor: null
+bbox_iou_isolate: 0.1
+bridge: './loco_follow_bridge'
+cmd_file: '/tmp/k1_cmd'
+coast_frames: 0
+coast_vx_scale: 0.0
+color_ema: 0.05
+commands: false
+conf: 0.35
+deadband_m: 0.2
+depth_max_dispersion_m: 0.5
+depth_max_skew_ms: 250.0
+depth_min_valid_frac: 0.3
+depth_starved_margin: 1.0
+depth_topic: '/boostercamera/head/depth'
+distractor_size: 32
+drive: false
+drive_min_fps: 8.0
+drive_ready_secs: 2.0
+ema_max_jump: 0.12
+gallery_size: 8
+gate: 0.85
+gesture_debug: false
+gesture_every_n: 3
+gesture_hold: 6
+gesture_hold_floor: 3
+gesture_hold_s: 0.9
+gesture_kp_conf: 0.35
+gesture_kp_margin_frac: 0.05
+gesture_min_sep_frac: 0.12
+gesture_miss_tol: 1
+gesture_model: 'yolo11n-pose.onnx'
+gesture_overrun_frames: 5
+gesture_owner_margin: 0.15
+gesture_stop: false
+gesture_stop_every_n: 5
+gesture_stop_hold: 4
+hb_file: '/tmp/k1_hb'
+hb_stale_ms: 400
+hfov_deg: 70.0
+hiconf: null
+idsw_debounce_frames: 3
+iou_min: 0.2
+k_vx: 0.35
+k_yaw: 0.9
+ll_dark_thresh: 90.0
+lock_trigger: 'aruco'
+lost_grace: 8
+low_light: true
+max_coast: 10
+max_follow_range: 0.0
+max_seconds: 120.0
+min_depth_fps: 5.0
+min_safe_range: 0.6
+obstacle_aged: 3
+obstacle_band_bot: 0.68
+obstacle_band_top: 0.3
+obstacle_brake: false
+obstacle_brake_start: 1.5
+obstacle_brake_stop: 0.7
+obstacle_corridor_frac: 0.35
+obstacle_max_m: 5.0
+obstacle_min_valid: 40
+obstacle_pctile: 8.0
+obstacle_target_margin: 0.4
+park_timeout: 0.0
+person_h_m: 1.7
+preview: false
+range_hysteresis: 0.3
+rate_hz: 10.0
+reacquire_timeout: 30.0
+reid_batch: true
+reid_engine: ''
+reid_every_n: 1
+reid_fault_k: 5
+reid_fp16: true
+reid_input: '256x128'
+reid_letterbox: true
+reloc_anchor_backstop: null
+reloc_arm_margin: 0.3
+reloc_arm_streak: 8
+reloc_dedup_ceiling: 0.85
+reloc_floor: null
+reloc_gallery_gate: false
+reloc_iso_bypass_anchor: null
+reloc_margin: 0.2
+reloc_max_jump_frac: 0.5
+reloc_max_range_jump_m: 2.5
+reloc_max_range_m: 5.0
+reloc_min_views: 3
+reloc_range_stale_s: 10.0
+reloc_range_streak: 2
+reloc_require_depth: true
+reloc_scale_tol: 1.8
+reloc_seconds: 6.0
+reloc_sep: 0.15
+reloc_streak: 5
+reloc_view_floor: null
+require_heartbeat: false
+rerun: false
+rerun_addr: null
+rerun_dir: '/home/booster/rerun'
+rerun_image_every_n: 3
+rerun_mode: 'save'
+rerun_overrun_frames: 8
+rerun_warmup_s: 15.0
+reseed_anchor_floor: 0.5
+search_dwell: true
+search_on_loss: true
+search_timeout: 8.0
+search_yaw: 0.3
+seed_frames: 3
+seed_near_frac: 0.25
+stall_seconds: 1.0
+stand_on_loss: true
+standoff_m: 1.2
+startup_frame_wait: 25.0
+stream: false
+stream_quality: 70
+topic: '/boostercamera/head/raw/rgb'
+track: true
+vx_max: 0.18
+vx_min: -0.06
+vx_slew: 0.06
+vyaw_max: 0.3
+vyaw_min: -0.3
+vyaw_slew: 0.1
+w_centroid: 1.0
+w_color: 1.0
+w_distractor: 0.5
+w_gallery: 0.3
+w_size: 0.3
+yolo_path: '/opt/booster/BoosterFaceDetection/src/detection/yolo11n.onnx'

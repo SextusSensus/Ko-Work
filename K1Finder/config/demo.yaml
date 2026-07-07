@@ -1,0 +1,14 @@
+# demo profile -- supervised indoor demo (PLACEHOLDER in P1.1).
+#
+# P1.2 populates this with the safe-demo surface (per IMPLEMENTATION_README.md P1.2):
+#   require_heartbeat: true      # operator deadman mandatory
+#   obstacle_brake: true         # depth forward-clearance reflex on
+#   max_follow_range: <m>        # geofence
+#   coast_frames: <n>
+#   max_seconds: <n>             # session watchdog
+# plus run_follow_demo.sh selecting this profile and pre-compiling the bridge.
+#
+# Until P1.2 lands this profile overlays NOTHING (== defaults), so selecting it is
+# byte-identical to today. Same profile rules as dev.yaml (no drive/preview here;
+# floors stay null; unknown keys refuse to start).
+{}
