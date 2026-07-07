@@ -1,13 +1,13 @@
-# field profile -- outdoor/field operation (PLACEHOLDER in P1.1).
-#
-# P1.2 populates this with the field-safety surface (stricter than demo where the
-# environment is less controlled): require_heartbeat: true, obstacle_brake: true,
-# max_follow_range/coast_frames/max_seconds tuned for open ground.
-#
-# NOTE: untethered operation remains FORBIDDEN until the UNTETHERED_FOLLOW.md gate
-# clears -- this profile does not unlock it; it only hardens the tethered config.
-#
-# Until P1.2 lands this profile overlays NOTHING (== defaults), so selecting it is
-# byte-identical to today. Same profile rules as dev.yaml (no drive/preview here;
-# floors stay null; unknown keys refuse to start).
-{}
+# field profile -- open-ground operation (P1.2). STARTING values, human-reviewed (DECISIONS.md P1.2b).
+# Stricter than demo where the environment is less controlled. Overlaid on defaults.yaml; CLI wins.
+# Selecting it satisfies the fail-closed drive gate (require_heartbeat: true). Does NOT unlock
+# untethered operation (still FORBIDDEN per UNTETHERED_FOLLOW.md); it only hardens the tethered config.
+require_heartbeat: true       # mandatory outdoors (same deadman contract)
+obstacle_brake: true          # real obstacles on open ground (curbs, poles, people)
+obstacle_brake_start: 2.0     # start grading vx down earlier (2.0 m vs 1.5 default): noisier depth at range
+max_follow_range: 4.0         # larger geofence than demo but finite (< 5 m depth-reliability ceiling)
+hb_stale_ms: 300              # stricter deadman staleness (300 ms vs 400): flakier field Wi-Fi
+coast_frames: 4               # shorter occlusion coast (~0.4 s): an unseen target outdoors is likelier a real loss
+max_seconds: 120.0            # keep the 120 s default but explicit; lower per-mission in review
+min_safe_range: 0.8           # wider close-range backoff (0.8 vs 0.6): more personal space on open ground
+vx_max: 0.15                  # cap top speed below 0.18 default for early field sessions (lower kinetic energy)
