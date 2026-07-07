@@ -6,6 +6,15 @@
 source /opt/ros/humble/setup.bash 2>/dev/null
 source /opt/booster/BoosterRos2/install/setup.bash 2>/dev/null
 cd /home/booster
+# Pre-flight (OPTIMIZATION_PLAN.md Phase 0.1): warn if the Orin GPU clocks aren't pinned. Pinning
+# (sudo jetson_clocks) measured a ~25% loop-p99 cut and an ~86% pose-latency-tail cut on 2026-07-06.
+# WARN-ONLY: this launcher never escalates privilege -- pin clocks deliberately (manual / NOPASSWD
+# sudoers / systemd boot service) as a power+thermal decision.
+_gmin=$(cat /sys/class/devfreq/17000000.gpu/min_freq 2>/dev/null)
+_gmax=$(cat /sys/class/devfreq/17000000.gpu/max_freq 2>/dev/null)
+if [ -n "$_gmin" ] && [ -n "$_gmax" ] && [ "$_gmin" != "$_gmax" ]; then
+  echo "[run_follow] WARN: Orin GPU clocks NOT pinned (${_gmin}/${_gmax} Hz). Run 'sudo jetson_clocks' before a session for ~25% lower loop p99 + far lower pose-latency tail." >&2
+fi
 MODE="${1:-preview}"
 TOPIC="${2:-/boostercamera/head/raw/rgb}"
 shift 2 2>/dev/null || true   # remaining args ("$@") pass through to the node

@@ -21,7 +21,7 @@ State machine (single rclpy node, ~10Hz loop, spin_once):
                   Pick lowest-cost person under a gate; follow its centroid:
                   bearing from centroid_x (pinhole), range from depth-at-centroid
                   (median of a small ROI ignoring zeros) else bbox-height pinhole.
-                  Same control law + HARD clamps as follow_marker_k1.py.
+                  Same control law + HARD clamps used throughout.
   REACQUIRE     : no person under the gate for LOST_GRACE frames -> stop (hold).
                   Keep YOLO running. RE-SEED only if the marker is shown again
                   (>=SEED_FRAMES) -> back to TRACK. After --reacquire-timeout with
@@ -34,7 +34,7 @@ Modes (argparse):
   --drive               spawn ./loco_follow_bridge, ping/prep/walk, then stream
                         'v vx vy vyaw' with HARD-clamped velocities.
 
-SAFETY (drive mode, identical bar to follow_marker_k1.py):
+SAFETY (drive mode):
   * 'ping' must return OK before anything moves (verifies loco WITHOUT walking).
   * Need at least one real camera frame before prep->walk.
   * prep -> wait ~3s -> walk -> wait ~2s, then per-frame velocity stream.
@@ -81,7 +81,7 @@ from sensor_msgs.msg import Image
 
 
 # ---------------------------------------------------------------------------
-# TUNABLES (control law mirrored from follow_marker_k1.py; person-track added)
+# TUNABLES (control law + person-track additions)
 # ---------------------------------------------------------------------------
 DEF_STANDOFF_M    = 1.2       # how far behind the target the robot holds
 DEF_DEADBAND_M    = 0.20      # don't fidget within +/- this of standoff
@@ -211,7 +211,7 @@ def gdbg(args, msg):
 
 
 # ---------------------------------------------------------------------------
-# NV12 -> BGR (verbatim from follow_marker_k1.py / stream_cam.py)
+# NV12 -> BGR (shared with stream_cam.py)
 # ---------------------------------------------------------------------------
 def to_bgr(msg):
     h, w, enc, step = msg.height, msg.width, msg.encoding.lower(), msg.step
@@ -352,6 +352,7 @@ class GestureTrigger(LockTrigger):
         self.ok = False
         self.ran_inference = False
         self.holds = {}            # track_id -> confirmed-raise frames (with miss forgiveness)
+        self._hold_since = {}      # Phase 2.1: track_id -> monotonic time of the FIRST raise of the dwell
         self._miss = {}            # track_id -> consecutive missed pose frames (field fix: one
                                    # blurry/low-conf frame used to HARD-RESET the whole hold)
         self._tick = 0
@@ -426,6 +427,31 @@ class GestureTrigger(LockTrigger):
         except Exception:  # noqa: BLE001
             return False
 
+    def _arm_owned(self, k, box, margin):
+        """OWNER-AUTHORITY (hardened 2026-07-05, wrong-person lock): the raised arm must belong to the
+        MATCHED body, not an overlapping neighbour. IoU box-overlap alone let a raiser's arm bind to a
+        bystander who never raised a hand. Require: both CONFIDENT shoulders inside the matched box
+        (the torso is this tracked person's) AND the RAISED wrist's X within the body column (the arm
+        rises from this body, not reaching in from the side). Never raises -> False on any fault."""
+        try:
+            kpc = float(self.a.gesture_kp_conf)
+            x1, y1, x2, y2 = box
+            padx = 0.12 * max(x2 - x1, 1.0)
+            def conf(idx): return float(k[idx][2]) >= kpc
+            def inx(idx): return (x1 - padx) <= float(k[idx][0]) <= (x2 + padx)
+            def iny(idx): return (y1 - 1.0) <= float(k[idx][1]) <= (y2 + 1.0)
+            def yv(idx): return float(k[idx][1])
+            # torso ownership: every CONFIDENT shoulder must sit inside the matched box
+            for sh in (KP_L_SHOULDER, KP_R_SHOULDER):
+                if conf(sh) and not (inx(sh) and iny(sh)):
+                    return False
+            # the RAISED wrist(s) must be in the body column (X inside the box, with pad)
+            lr = conf(KP_L_WRIST) and conf(KP_L_SHOULDER) and yv(KP_L_WRIST) < yv(KP_L_SHOULDER) - margin and inx(KP_L_WRIST)
+            rr = conf(KP_R_WRIST) and conf(KP_R_SHOULDER) and yv(KP_R_WRIST) < yv(KP_R_SHOULDER) - margin and inx(KP_R_WRIST)
+            return bool(lr or rr)
+        except Exception:  # noqa: BLE001
+            return False
+
     def _raisers(self, frame, persons):
         """Run pose, return (set of track_ids raising this frame, {track_id: owner_box}).
         Each pose detection is matched to a TRACKED YOLO person by IoU (a within-frame
@@ -433,6 +459,13 @@ class GestureTrigger(LockTrigger):
         tracker id). Empty on any fault. Sets ran_inference True only when the model ran."""
         owners = {}
         raisers = set()
+        # Phase 1.1 (OPTIMIZATION_PLAN.md): a raise can only bind to a TRACKED person (the pose->person
+        # IoU match below requires a person with a track_id), so with ZERO persons the pose run is
+        # guaranteed to yield no raisers -- pure waste (~56ms p50 / up to 279ms p99 in empty-scene SEARCH).
+        # Skip it. The control decision is unchanged (detect() returns None either way); only the wasted
+        # inference is removed -- byte-identical on the control/velocity path.
+        if not persons:
+            return raisers, owners
         try:
             _t0 = time.monotonic()
             res = self.model.predict(frame, verbose=False)
@@ -464,16 +497,27 @@ class GestureTrigger(LockTrigger):
                     except Exception:  # noqa: BLE001
                         continue
                     best_tid, best_iou, best_box = None, 0.0, None
+                    second_iou = 0.0
                     for p in persons:
                         tid = p.get("track_id")
                         if tid is None:
                             continue
                         iou = iou_xyxy(pb, p["box"])
                         if iou > best_iou:
+                            second_iou = best_iou
                             best_iou, best_tid, best_box = iou, tid, p["box"]
+                        elif iou > second_iou:
+                            second_iou = iou
                     if best_tid is None or best_iou < self.a.iou_min:
                         gdbg(self.a, "NOMATCH pose#%d best_tid=%s best_iou=%.2f < iou_min=%.2f"
                              % (i, best_tid, best_iou, self.a.iou_min))
+                        continue
+                    # HARDEN (wrong-person lock): an AMBIGUOUS pose overlaps two people similarly ->
+                    # refuse to bind (don't guess which one raised the hand). Refusing is safe; the
+                    # operator re-raises when the frame is clearer.
+                    if (best_iou - second_iou) < self.a.gesture_owner_margin:
+                        gdbg(self.a, "AMBIG pose#%d best=%.2f second=%.2f gap<%.2f -> refuse bind"
+                             % (i, best_iou, second_iou, self.a.gesture_owner_margin))
                         continue
                     bh = max(best_box[3] - best_box[1], 1.0)
                     margin = self.a.gesture_kp_margin_frac * bh
@@ -489,8 +533,15 @@ class GestureTrigger(LockTrigger):
                     except Exception:  # noqa: BLE001
                         pass
                     if raised:
-                        raisers.add(best_tid)
-                        owners[best_tid] = best_box
+                        # HARDEN (wrong-person lock): the raised arm must be OWNED by the matched body
+                        # (shoulders inside the box + raised wrist in the body column). Blocks binding
+                        # a raiser's arm onto an overlapping bystander who never raised a hand.
+                        if not self._arm_owned(k, best_box, margin):
+                            gdbg(self.a, "ARM-DISOWNED tid=%s -> refuse (raised arm not owned by "
+                                 "the matched body; likely an overlapping neighbour)" % best_tid)
+                        else:
+                            raisers.add(best_tid)
+                            owners[best_tid] = best_box
             self._last_pose_dets = dets
         except Exception:  # noqa: BLE001
             self._last_pose_dets = dets
@@ -521,17 +572,32 @@ class GestureTrigger(LockTrigger):
         # (the miss does NOT increment the hold); identity walls are untouched (two raisers
         # still refuse; the reseed anchor floor still gates re-seeds).
         _tol = int(getattr(self.a, "gesture_miss_tol", 0))
+        _now = time.monotonic()
         for tid in list(self.holds.keys()):
             if tid not in raisers:
                 self._miss[tid] = self._miss.get(tid, 0) + 1
                 if self._miss[tid] > _tol:
                     del self.holds[tid]
                     self._miss.pop(tid, None)
+                    self._hold_since.pop(tid, None)   # Phase 2.1: a miss RUN > tol resets the wall-clock dwell
         for tid in raisers:
+            if tid not in self.holds:
+                self._hold_since[tid] = _now          # Phase 2.1: stamp the first raise of a fresh dwell
             self.holds[tid] = self.holds.get(tid, 0) + 1
             self._miss.pop(tid, None)
+        # Phase 2.1 (deterministic confirm): gate on continuous wall-clock dwell (--gesture-hold-s) so the
+        # time-to-lock is loop-rate-independent, with a min FRAME floor (--gesture-hold-floor) so a single
+        # fluke frame that happens to span the window can't seed. --gesture-hold-s 0 = the legacy pure
+        # frame-count gate (holds >= --gesture-hold). The identity walls below (ambiguity / owner-authority
+        # / two-raiser refuse) are unchanged -> INV-4 held; pose runs only in stationary states.
         hold_n = int(self.a.gesture_hold)
-        confirmed = [tid for tid, c in self.holds.items() if c >= hold_n]
+        hold_s = float(getattr(self.a, "gesture_hold_s", 0.0))
+        if hold_s > 0.0:
+            _floor = max(1, int(getattr(self.a, "gesture_hold_floor", 3)))
+            confirmed = [tid for tid, c in self.holds.items()
+                         if c >= _floor and (_now - self._hold_since.get(tid, _now)) >= hold_s]
+        else:
+            confirmed = [tid for tid, c in self.holds.items() if c >= hold_n]
         gdbg(self.a, "FRAME persons=%d pose_dets=%d raisers=%s holds=%s need=%d confirmed=%s"
              % (len(persons), self._last_pose_dets, sorted(raisers), dict(self.holds),
                 hold_n, confirmed))
@@ -1439,7 +1505,7 @@ def low_light_boost(bgr, on=True, thresh=LL_DARK_THRESH):
 
 
 # ---------------------------------------------------------------------------
-# Bridge wrapper -- verbatim from follow_marker_k1.py. --drive only.
+# Bridge wrapper -- --drive only.
 # ---------------------------------------------------------------------------
 class Bridge:
     def __init__(self, path, extra_env=None):
@@ -1927,6 +1993,8 @@ class Follower:
         self._track_range_hist = []
         self._track_range_t = None
         self._reacq_range_streak = 0
+        self._idsw_pending = None    # Phase 2.4 ID-stability debounce: track_id of an unconfirmed id-switch
+        self._idsw_frames = 0        # Phase 2.4: consecutive frames the pending new track_id has persisted
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
         self._last_clr_log = 0.0     # 1Hz throttle for the CLEARANCE observability line
         self._reacq_range_id = None
@@ -2025,7 +2093,11 @@ class Follower:
         pixel at a raw min would FALSE-BRAKE (the relock-lunge failure class)."""
         if self.node is None:
             return None
-        d = self.node.latest_depth(self.a.depth_max_age)
+        # FIX (audit 2026-07-04): use latest_depth()'s default freshness (max_age=0.5 == DEPTH_FRESH_S),
+        # the SAME depth-staleness contract the main follow uses at its depth read. The prior code read
+        # a "depth_max_age" argparse attr that was never defined, so --obstacle-brake raised
+        # AttributeError on every tracked frame (this read is above the try) and bricked the follow.
+        d = self.node.latest_depth()
         if d is None:
             return None
         try:
@@ -2574,12 +2646,22 @@ class Follower:
                     # /diag/rr_track_ms shows whether Rerun was actually the cost. This is a backstop,
                     # NOT the primary gate -- the operator still runs the on-Orin probe before --drive.
                     if _RR.ok:
-                        self._rr_overrun_streak += 1
-                        if self._rr_overrun_streak >= self.a.rerun_overrun_frames:
-                            _RR.ok = False
-                            log("RERUN-DISABLED-SLOW %d frames over budget with --rerun -> Rerun OFF "
-                                "(follow safe + byte-identical from here)" % self._rr_overrun_streak)
+                        # WARMUP GRACE (fix 2026-07-06, "rerun cuts off mid-run"): the first seconds are
+                        # model/TensorRT warmup -- the loop is legitimately slow (p90 ~1s) AND the robot
+                        # is not walking yet (SEARCH, ARM-gated), so over-budget frames here are NO safety
+                        # risk. Counting them tripped the shed DURING warmup and killed the recording for
+                        # the whole run even after the loop recovered to healthy. Don't accumulate the
+                        # streak until warmup has elapsed; the shed still fires for a genuinely-overloaded
+                        # DRIVING loop after that.
+                        if (t0 - self.t_start) < self.a.rerun_warmup_s:
                             self._rr_overrun_streak = 0
+                        else:
+                            self._rr_overrun_streak += 1
+                            if self._rr_overrun_streak >= self.a.rerun_overrun_frames:
+                                _RR.ok = False
+                                log("RERUN-DISABLED-SLOW %d frames over budget with --rerun -> Rerun OFF "
+                                    "(follow safe + byte-identical from here)" % self._rr_overrun_streak)
+                                self._rr_overrun_streak = 0
                     # NET-NEW gesture overrun auto-disable (SCOPE §4.3): an INDEPENDENT counter
                     # that does NOT share the SLOW-LOOP reset above (which fires every 5 frames
                     # and could never accumulate to a larger K). Only blames frames where the
@@ -2609,6 +2691,12 @@ class Follower:
         except Exception as e:  # noqa: BLE001
             log("EXCEPTION %s -> stopping" % e)
         finally:
+            # Flush the --rerun .rrd tail on any clean exit (SIGINT/TERM/HUP -> stop -> here). No-op
+            # when Rerun is disabled; wrapped so a flush fault can never mask the real exit path.
+            try:
+                _RR.close()
+            except Exception:  # noqa: BLE001
+                pass
             self._gbind_session_log()   # A/B rollup (no-op unless --lock-trigger both)
             self._cleanup()
             try:
@@ -3397,13 +3485,13 @@ class Follower:
                 if f is not None:
                     any_valid = True
                 tid = persons[i].get("track_id")
-                if tid is not None and f is not None:
+                if n > 1 and tid is not None and f is not None:   # Phase 1.4: cache is only CONSULTED when n>1
                     self._reid_cache[tid] = (self._frame_idx, f)
             # ITEM 4 (mid-run fault watchdog): boxes was non-empty, so embed_batch was asked to embed
             # a real person set. All-None == the engine faulted this frame. Shared with the
             # _try_reacquire vote path so recovery is also observable during REACQUIRE.
             self._reid_watchdog(any_valid)
-        if self.tracker is not None:                 # bound the cache: drop retired track ids
+        if n > 1 and self.tracker is not None:        # Phase 1.4: bound the cache (only the n>1 path writes it)
             live = set(self.tracker.tracks.keys())
             for tid in list(self._reid_cache.keys()):
                 if tid not in live:
@@ -3491,6 +3579,28 @@ class Follower:
 
         # Accepted match -> update seed, follow.
         self.lost_count = 0
+        # Phase 2.4 (ID-stability debounce): a look-alike crossing can make ByteTrack hop the bound
+        # track id for a frame or two; the unconditional re-bind below would instantly re-point the
+        # follow at the wrong body. When the accepted candidate carries a DIFFERENT id than the held
+        # seed, require the new id to persist --idsw-debounce-frames before committing the switch; until
+        # then HOLD on the last-good centroid (never a new forward command -> INV-1) and keep the old
+        # binding (-> INV-4). Same-id frames clear the pending and proceed byte-identically.
+        _bid = best.get("track_id")
+        _sid = self.seed.track_id if self.seed is not None else None
+        if self.seed is not None and _bid is not None and _sid is not None and _bid != _sid:
+            self._idsw_frames = (self._idsw_frames + 1) if _bid == self._idsw_pending else 1
+            self._idsw_pending = _bid
+            if self._idsw_frames < max(1, int(self.a.idsw_debounce_frames)):
+                self._hold()   # hold last-good; do NOT re-point at an unconfirmed new id
+                log("ID-DEBOUNCE track_id %s->%s %d/%d -> hold last-good (anti wrong-person-lock)%s"
+                    % (_sid, _bid, self._idsw_frames, int(self.a.idsw_debounce_frames),
+                       "" if (self.drive and self.walking) else " [preview]"))
+                return
+            log("ID-DEBOUNCE track_id %s->%s confirmed after %d frames -> switch"
+                % (_sid, _bid, self._idsw_frames))
+        else:
+            self._idsw_pending = None
+            self._idsw_frames = 0
         # Stage 1: we have the anchored person in view again -> LOCKED. Keep the
         # track binding fresh (the candidate passed anchor_floor, so re-binding to
         # its id can never move identity off the frozen anchor).
@@ -3600,7 +3710,7 @@ class Follower:
                 log("GALLERY-ERR %s (anchor-only this frame)" % e)
 
         # Range + bearing were computed up-front (for the geofence) and are reused here.
-        # SAME control law + HARD clamps as follow_marker_k1.py.
+        # SAME control law + HARD clamps used throughout.
         vyaw = self._slew(self._prev_vyaw, -self.a.k_yaw * bearing, self.vyaw_slew)
         vyaw = clamp(vyaw, self.vyaw_min, self.vyaw_max)
         if rng is not None:
@@ -4125,6 +4235,10 @@ def parse_args(argv):
     p.add_argument("--rerun-overrun-frames", type=int, default=8,
                    help="auto-disable Rerun after this many CONSECUTIVE over-budget control-loop "
                         "frames while --rerun is on (loop-safety backstop; default 8)")
+    p.add_argument("--rerun-warmup-s", type=float, default=15.0,
+                   help="grace window (s from node start) during which over-budget frames do NOT count "
+                        "toward the RERUN-DISABLED-SLOW shed -- covers model/TensorRT warmup (robot not "
+                        "walking yet) so the backstop can't kill the recording during startup (default 15)")
 
     # --- OBSTACLE-BRAKE reflex (Phase 3 obstacle-avoidance). DEFAULT-OFF + byte-identical when off. ---
     p.add_argument("--obstacle-brake", action="store_true",
@@ -4178,6 +4292,11 @@ def parse_args(argv):
     p.add_argument("--max-coast", type=int, default=10,
                    help="frames a track survives with no detection before it is "
                         "retired (should be >= --coast-frames)")
+    p.add_argument("--idsw-debounce-frames", type=int, default=3,
+                   help="Phase 2.4 ID-stability debounce: when the accepted target carries a DIFFERENT "
+                        "ByteTrack id than the held lock, hold on the last-good centroid until the new id "
+                        "persists this many frames before committing the switch (anti wrong-person-lock on "
+                        "a crossing). 1 = switch on frame 1 (the pre-2.4 behavior).")
 
     # Stage 2: anchored appearance gallery + distractor bank (CPU; no new model).
     p.add_argument("--gallery-size", type=int, default=8,
@@ -4430,7 +4549,15 @@ def parse_args(argv):
     p.add_argument("--gesture-hold", type=int, default=6,
                    help="qualifying pose frames a raised hand must hold (keyed on tracker id, "
                         "with --gesture-miss-tol forgiveness) before it can seed; composes with "
-                        "--seed-frames. 6 @ every-n 3 ~= 1.8s of deliberate hand-up.")
+                        "--seed-frames. 6 @ every-n 3 ~= 1.8s of deliberate hand-up. Used only when "
+                        "--gesture-hold-s 0 (else the wall-clock gate governs, with the floor below).")
+    p.add_argument("--gesture-hold-s", type=float, default=0.9,
+                   help="Phase 2.1: continuous wall-clock SECONDS a hand must be up to seed -- makes "
+                        "time-to-lock loop-rate-independent (vs a raw frame count that stretches under a "
+                        "slow loop). 0 = disable and fall back to the pure --gesture-hold frame count.")
+    p.add_argument("--gesture-hold-floor", type=int, default=3,
+                   help="Phase 2.1: min qualifying pose frames required ALONGSIDE --gesture-hold-s, so a "
+                        "single fluke frame that spans the dwell window cannot seed (anti-fluke floor).")
     p.add_argument("--gesture-kp-conf", type=float, default=0.35,
                    help="min per-keypoint confidence for the wrist/shoulder raised-hand test "
                         "(0.35: nano-pose wrist confidence at 3-4m commonly sits 0.3-0.5, so the "
@@ -4442,6 +4569,10 @@ def parse_args(argv):
     p.add_argument("--gesture-miss-tol", type=int, default=1,
                    help="hold survives this many CONSECUTIVE missed pose frames before resetting "
                         "(a miss never increments the hold). 0 = the old hard-reset-on-any-miss.")
+    p.add_argument("--gesture-owner-margin", type=float, default=0.15,
+                   help="OWNER-AUTHORITY: min IoU gap the best pose->person match must beat the "
+                        "2nd-best by, else the bind is AMBIGUOUS and refused (prevents locking an "
+                        "overlapping bystander who never raised a hand). 0 = disable the ambiguity gate.")
     p.add_argument("--gesture-min-sep-frac", type=float, default=0.12,
                    help="refuse a gesture seed if another person is within this fraction of the "
                         "image diagonal of the lock point (bystander-adjacency guard, SCOPE G4)")
@@ -4516,6 +4647,15 @@ def parse_args(argv):
         if args.reseed_anchor_floor <= 0.0:
             p.error("--lock-trigger %s requires --reseed-anchor-floor > 0: it is the sticky-lock "
                     "stranger defense the gesture seed relies on" % args.lock_trigger)
+        # AMBIG owner-margin invariant (audit 2026-07-04): a LONE clear raiser has second_iou=0, so the
+        # ambiguity gate (best_iou - second_iou < owner_margin -> refuse) passes only if
+        # best_iou >= owner_margin. best_iou is already >= iou_min (the earlier match gate), so setting
+        # owner_margin > iou_min opens a dead-zone where a solo raiser with modest overlap is refused and
+        # gesture can NEVER lock. Clamp to iou_min and warn (fail loud) rather than silently trap.
+        if args.gesture_owner_margin > args.iou_min:
+            log("WARN --gesture-owner-margin %.2f > --iou-min %.2f can refuse a lone raiser -> "
+                "clamping owner-margin to %.2f" % (args.gesture_owner_margin, args.iou_min, args.iou_min))
+            args.gesture_owner_margin = args.iou_min
     # Normalize the depth-topic spelling ONCE so the subscription decision (run()) and the DRIVE
     # precondition (_need_depth) share one test: ""/whitespace/any-case-"none" == depth disabled.
     args.depth_topic = (args.depth_topic or "").strip()
