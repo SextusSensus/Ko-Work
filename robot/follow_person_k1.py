@@ -83,6 +83,7 @@ from sensor_msgs.msg import Image
 # P3.0: shared helpers + constants live in common.py (a sibling module -- /home/booster/common.py
 # on the robot; the eval harness adds the node dir to sys.path). Pure move, no logic change.
 import common  # noqa: E402  (module handle for the mutable common._STREAM flag, set on --stream)
+import rerun_sink  # noqa: E402  (P3.4: module handle -- rerun_sink._RR is rebound by init_rerun)
 from common import (  # noqa: E402
     HARD_VX_LIMIT, HARD_VYAW_LIMIT, DEPTH_WARMUP_S, DEPTH_FRESH_S, DEPTH_DOWN_S, PERSON_CLS,
     LockHint, KP_L_SHOULDER, KP_R_SHOULDER, KP_L_WRIST, KP_R_WRIST,
@@ -155,23 +156,7 @@ DEF_PERSON_H_M = 1.7          # assumed standing person height for bbox-height r
 
 # _STREAM / _MAGIC -> common.py (P3.0b). follow_person sets/reads common._STREAM.
 
-# --rerun (Phase 2): a crash-safe Rerun sink (k1_rerun.RerunSink), DEFAULT-OFF and fully inert
-# until init_rerun() flips it in main(). Every _RR.* call no-ops when disabled, so the follow is
-# byte-identical without --rerun. Images are logged ONLY on the cam-spin sensor thread; the control
-# loop logs cheap scalars/boxes/text. If k1_rerun.py is absent, _RR degrades to a permanent no-op.
-try:
-    from k1_rerun import RerunSink as _RerunSink
-    _RR = _RerunSink()                 # disabled-by-default -> _RR.ok is False, every method no-ops
-except Exception:                      # noqa: BLE001 -- a missing sink module must never stop the node
-    _RerunSink = None
-
-    class _NullRR:                     # permanent no-op stand-in (k1_rerun.py not importable)
-        ok = False
-
-        def __getattr__(self, _n):
-            return lambda *a, **k: None
-
-    _RR = _NullRR()
+# rerun _RR sink setup -> rerun_sink.py (P3.4).
 
 
 # log() + emit_frame() -> common.py (P3.0b)
@@ -915,10 +900,10 @@ class CamNode(Node):
             _seq_now = self._seq
         # Rerun RGB (Phase 2): log on THIS (cam-spin) thread, OUTSIDE the lock so the control loop's
         # take_if_new never waits on the batcher. sink.image() COPIES (BGR->RGB) + decimates 1/N, so
-        # it never aliases self._latest. Inert unless --rerun (_RR.ok False -> single branch skip).
-        if _RR.ok:
-            _RR.frame(_seq_now, time.time())
-            _RR.image("/camera/rgb", bgr, seq=_seq_now)
+        # it never aliases self._latest. Inert unless --rerun (rerun_sink._RR.ok False -> single branch skip).
+        if rerun_sink._RR.ok:
+            rerun_sink._RR.frame(_seq_now, time.time())
+            rerun_sink._RR.image("/camera/rgb", bgr, seq=_seq_now)
 
     def _depth_cb(self, msg):
         d = depth_to_meters(msg)
@@ -938,9 +923,9 @@ class CamNode(Node):
         # Rerun depth (Phase 2): cam-spin thread, OUTSIDE the lock; sink.depth() COPIES + casts +
         # decimates by depth count, never aliasing self._depth (which the control loop reads under
         # _depth_lock). frame_idx keyed best-effort to the current RGB seq (atomic int read).
-        if _RR.ok:
-            _RR.frame(self._seq, time.time())
-            _RR.depth("/camera/depth", d, seq=_dcount)
+        if rerun_sink._RR.ok:
+            rerun_sink._RR.frame(self._seq, time.time())
+            rerun_sink._RR.depth("/camera/depth", d, seq=_dcount)
 
     def take_if_new(self, last_seq):
         with self._lock:
@@ -1756,8 +1741,8 @@ class Follower:
                 # same self._seq the cam-spin image path uses -> a decision aligns to its frame).
                 # rerun time is per-thread, so this never collides with the cam-spin cursor. Inert
                 # unless --rerun.
-                if _RR.ok:
-                    _RR.frame(last_seq if last_seq >= 0 else 0, time.time())
+                if rerun_sink._RR.ok:
+                    rerun_sink._RR.frame(last_seq if last_seq >= 0 else 0, time.time())
 
                 # Tier-1 command drain: one token per tick, BEFORE _process_frame, every tick
                 # (so STOP/HOLD are honored even during a NO-FRAME stall). Microseconds; inert
@@ -1807,10 +1792,10 @@ class Follower:
                                 % (_dfps, _floor + max(self.a.depth_starved_margin, 0.0)))
                     # Rerun health series (Phase 2): the sensor-truthful fps EMAs + the depth-starved
                     # latch -- the exact signals whose misreading caused a whole session's misdiagnosis.
-                    if _RR.ok:
-                        _RR.scalar("/health/depth_fps", _dfps)
-                        _RR.scalar("/health/rgb_fps", self.node.rgb_fps())
-                        _RR.scalar("/health/depth_starved", 1.0 if self._depth_starved else 0.0)
+                    if rerun_sink._RR.ok:
+                        rerun_sink._RR.scalar("/health/depth_fps", _dfps)
+                        rerun_sink._RR.scalar("/health/rgb_fps", self.node.rgb_fps())
+                        rerun_sink._RR.scalar("/health/depth_starved", 1.0 if self._depth_starved else 0.0)
                 if frame is not None:
                     ever_framed = True
                     last_frame_mono = now
@@ -1850,16 +1835,16 @@ class Follower:
 
                 # Rerun FSM series (Phase 2): log state EVERY iteration (not just TRACK) so SEARCH/
                 # SEARCHING/REACQUIRE show on the scrubber -- the reacquire-spin lives in those states.
-                if _RR.ok:
-                    _RR.state("/fsm/state", self.state)
+                if rerun_sink._RR.ok:
+                    rerun_sink._RR.state("/fsm/state", self.state)
 
                 if self.drive and self.walking and not self.bridge.alive():
                     log("BRIDGE died -> exiting (loco safed by bridge)")
                     break
 
                 dt = time.monotonic() - t0
-                if _RR.ok:
-                    _RR.scalar("/diag/loop_ms", dt * 1000.0)   # true loop dt straight into the .rrd
+                if rerun_sink._RR.ok:
+                    rerun_sink._RR.scalar("/diag/loop_ms", dt * 1000.0)   # true loop dt straight into the .rrd
                 # Always-on loop-timing observability (autonomy-ops: observable by default). WORK-time
                 # per iteration (before the fill-sleep); a 10s p50/p99/max pulse tagged rerun on/off,
                 # so the --rerun loop-cost gate compares directly against the baseline in the logs.
@@ -1871,7 +1856,7 @@ class Follower:
                     _pct = lambda p: _xs[min(_n - 1, int(p * _n))]
                     log("LOOP-MS n=%d p50=%.0f p90=%.0f p99=%.0f max=%.0f budget=%.0f rerun=%s"
                         % (_n, _pct(0.5), _pct(0.9), _pct(0.99), _xs[-1], period * 1000.0,
-                           "on" if _RR.ok else "off"))
+                           "on" if rerun_sink._RR.ok else "off"))
                 # Stage 1 slow-frame guard: surface a perception overrun in the
                 # log (visible in --preview) before it ever matters under --drive.
                 if dt > period:
@@ -1883,12 +1868,12 @@ class Follower:
                         self._overrun_streak = 0
                     # Rerun auto-disable backstop (Phase 2 loop-safety gate item 4): if the loop is
                     # over budget for N consecutive frames WHILE --rerun is on, shed the OPTIONAL
-                    # Rerun load FIRST -- disabling _RR makes the follow byte-identical again, well
+                    # Rerun load FIRST -- disabling rerun_sink._RR makes the follow byte-identical again, well
                     # before the C++ staleness watchdog would have to safe. Conservative default (8)
                     # so a transient perception spike doesn't kill a useful recording; the .rrd's
                     # /diag/rr_track_ms shows whether Rerun was actually the cost. This is a backstop,
                     # NOT the primary gate -- the operator still runs the on-Orin probe before --drive.
-                    if _RR.ok:
+                    if rerun_sink._RR.ok:
                         # WARMUP GRACE (fix 2026-07-06, "rerun cuts off mid-run"): the first seconds are
                         # model/TensorRT warmup -- the loop is legitimately slow (p90 ~1s) AND the robot
                         # is not walking yet (SEARCH, ARM-gated), so over-budget frames here are NO safety
@@ -1901,7 +1886,7 @@ class Follower:
                         else:
                             self._rr_overrun_streak += 1
                             if self._rr_overrun_streak >= self.a.rerun_overrun_frames:
-                                _RR.ok = False
+                                rerun_sink._RR.ok = False
                                 log("RERUN-DISABLED-SLOW %d frames over budget with --rerun -> Rerun OFF "
                                     "(follow safe + byte-identical from here)" % self._rr_overrun_streak)
                                 self._rr_overrun_streak = 0
@@ -1937,7 +1922,7 @@ class Follower:
             # Flush the --rerun .rrd tail on any clean exit (SIGINT/TERM/HUP -> stop -> here). No-op
             # when Rerun is disabled; wrapped so a flush fault can never mask the real exit path.
             try:
-                _RR.close()
+                rerun_sink._RR.close()
             except Exception:  # noqa: BLE001
                 pass
             self._gbind_session_log()   # A/B rollup (no-op unless --lock-trigger both)
@@ -3014,9 +2999,9 @@ class Follower:
                 self._last_clr_log = _nowm
                 log("CLEARANCE %.2fm -> vx-cap %.2f (brake %.1f..%.1f)"
                     % (_clr, _obs_cap, self.a.obstacle_brake_stop, self.a.obstacle_brake_start))
-            if _RR.ok:
-                _RR.scalar("/reflex/clearance_m", _clr)
-                _RR.scalar("/reflex/vx_cap", _obs_cap if _obs_cap is not None else self.vx_max)
+            if rerun_sink._RR.ok:
+                rerun_sink._RR.scalar("/reflex/clearance_m", _clr)
+                rerun_sink._RR.scalar("/reflex/vx_cap", _obs_cap if _obs_cap is not None else self.vx_max)
 
         log("TRACK id=%s%s c=(%d,%d) range=%s[%s] bearing=%+05.1fdeg vx=%+.2f vyaw=%+.2f cost=%.2f/2nd=%s sim=%.2f conf=%.2f%s"
             % (best.get("track_id"), " LOCK" if track_locked else "",
@@ -3032,20 +3017,20 @@ class Follower:
         # REAL forbid_forward boolean (not the Phase-1 derivation). frame_idx/state are set once per
         # iteration in run(); this only adds the follow-specific series + the target box. Self-timed to
         # /diag/rr_track_ms so the on-Orin loop-cost gate can read p99 straight from the .rrd. Inert
-        # unless --rerun (single-branch skip when _RR.ok is False -> byte-identical).
-        if _RR.ok:
+        # unless --rerun (single-branch skip when rerun_sink._RR.ok is False -> byte-identical).
+        if rerun_sink._RR.ok:
             _rr_t0 = time.monotonic()
-            _RR.scalar("/follow/range", rng)
-            _RR.scalar("/follow/range_source", 2.0 if rsrc == "depth" else (1.0 if rsrc == "bboxH" else 0.0))
-            _RR.scalar("/follow/bearing", bearing_deg)
-            _RR.scalar("/cmd/vx", vx)
-            _RR.scalar("/cmd/vyaw", vyaw)
-            _RR.scalar("/cmd/forbid_forward", 1.0 if forbid_forward else 0.0)
-            _RR.scalar("/reid/sim", sim)
-            _RR.scalar("/track/conf", best["conf"])
-            _RR.scalar("/track/cost", cost)
-            _RR.boxes("/camera/rgb/target", best["box"], best.get("track_id"))
-            _RR.scalar("/diag/rr_track_ms", (time.monotonic() - _rr_t0) * 1000.0)
+            rerun_sink._RR.scalar("/follow/range", rng)
+            rerun_sink._RR.scalar("/follow/range_source", 2.0 if rsrc == "depth" else (1.0 if rsrc == "bboxH" else 0.0))
+            rerun_sink._RR.scalar("/follow/bearing", bearing_deg)
+            rerun_sink._RR.scalar("/cmd/vx", vx)
+            rerun_sink._RR.scalar("/cmd/vyaw", vyaw)
+            rerun_sink._RR.scalar("/cmd/forbid_forward", 1.0 if forbid_forward else 0.0)
+            rerun_sink._RR.scalar("/reid/sim", sim)
+            rerun_sink._RR.scalar("/track/conf", best["conf"])
+            rerun_sink._RR.scalar("/track/cost", cost)
+            rerun_sink._RR.boxes("/camera/rgb/target", best["box"], best.get("track_id"))
+            rerun_sink._RR.scalar("/diag/rr_track_ms", (time.monotonic() - _rr_t0) * 1000.0)
 
     # -- COASTING: follow the bound track's motion prediction through occlusion --
     def _try_coast(self, w_img, h_img):
@@ -4027,45 +4012,14 @@ def parse_args(argv):
     return args
 
 
-def init_rerun(args):
-    """Flip the module _RR sink on when --rerun is passed (Phase 2). Best-effort: a missing
-    k1_rerun.py or rerun-sdk logs a warning and the follow proceeds with Rerun disabled -- Rerun
-    is NEVER a safety dependency (same contract as the OSNet histogram fallback)."""
-    global _RR
-    if not getattr(args, "rerun", False):
-        return
-    if _RerunSink is None:
-        log("RERUN unavailable (k1_rerun.py not importable) -> disabled (follow proceeds)")
-        return
-    path = None
-    if args.rerun_mode == "save":
-        d = args.rerun_dir or "/home/booster/rerun"
-        try:
-            os.makedirs(d, exist_ok=True)
-        except Exception as e:  # noqa: BLE001
-            log("RERUN mkdir %s failed: %s -> disabled" % (d, e))
-            return
-        path = os.path.join(d, "k1_follow_%d.rrd" % int(time.time()))
-    _RR = _RerunSink(
-        enabled=True, mode=args.rerun_mode, path=path, addr=args.rerun_addr,
-        image_every_n=args.rerun_image_every_n,
-        min_safe=args.min_safe_range, standoff=args.standoff_m, max_follow=args.max_follow_range)
-    _RR.refs_once()
-    if _RR.ok:
-        log("RERUN active mode=%s -> %s (image 1/%d)"
-            % (args.rerun_mode, _RR.path, args.rerun_image_every_n))
-        if args.drive:
-            log("RERUN + --drive: ensure the on-Orin loop-cost gate PASSED (RERUN_PLAN.md); "
-                "an over-budget streak auto-disables Rerun (RERUN-DISABLED-SLOW).")
-    else:
-        log("RERUN init failed -> disabled (follow proceeds)")
+# init_rerun -> rerun_sink.py (P3.4).
 
 
 def main():
     args = parse_args(sys.argv[1:])
     if args.stream:
         common._STREAM = True   # status -> stderr, annotated frames -> stdout (P3.0b)
-    init_rerun(args)     # flips _RR on only when --rerun; inert otherwise
+    rerun_sink.init_rerun(args)     # flips rerun_sink._RR on only when --rerun; inert otherwise
     f = Follower(args)
     f.install_signal_handlers()
     f.run()
