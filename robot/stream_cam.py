@@ -6,6 +6,8 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
 
+from common import to_bgr  # P3.y: shared NV12->BGR (was duplicated verbatim here + in the follow node)
+
 TOPIC   = sys.argv[1] if len(sys.argv) > 1 else "/boostercamera/head/rgb"
 FPS     = float(sys.argv[2]) if len(sys.argv) > 2 else 15.0
 QUALITY = int(sys.argv[3]) if len(sys.argv) > 3 else 70
@@ -85,22 +87,7 @@ def annotate(bgr):
     return status, bgr
 
 
-def to_bgr(msg):
-    h, w, enc, step = msg.height, msg.width, msg.encoding.lower(), msg.step
-    buf = np.frombuffer(bytes(msg.data), dtype=np.uint8)
-    if enc == "nv12":
-        yuv = buf[: (h * 3 // 2) * w].reshape((h * 3 // 2, w))
-        return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_NV12)
-    if enc in ("yuv420", "i420"):
-        yuv = buf[: (h * 3 // 2) * w].reshape((h * 3 // 2, w))
-        return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
-    ch = step // w if w else 3
-    img = buf[: h * step].reshape((h, step))[:, : w * ch].reshape((h, w, ch))
-    if enc == "rgb8":  return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    if enc == "rgba8": return cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-    if enc == "bgra8": return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-    if enc in ("mono8", "8uc1"): return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    return img
+# to_bgr() -> common.py (P3.y; imported above -- was byte-identical here).
 
 # ---------------------------------------------------------------------------
 # Adaptive low-light enhancement (CLAHE on luma + gentle gamma). Auto-gated by

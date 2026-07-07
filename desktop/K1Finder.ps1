@@ -72,7 +72,7 @@ function Get-SshOptString {
 $script:Deployed = $false
 function Deploy-RobotFiles {
     param([string]$ip)
-    $files = @('stream_cam.py','run_stream.sh','run_loco.sh')
+    $files = @('stream_cam.py','common.py','run_stream.sh','run_loco.sh')  # common.py: stream_cam imports to_bgr (P3.y)
     foreach ($f in $files) {
         $src = Join-Path $ROBOT_DIR $f
         if (-not (Test-Path $src)) { return $false }
