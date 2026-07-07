@@ -11,6 +11,9 @@ reads S_SEARCH/S_REACQUIRE/S_PARKED, which used to be defined ~1200 lines AFTER 
 call-time global lookup); as a top-level import they resolve immediately.
 """
 import collections
+import struct
+import sys
+import time
 
 import numpy as np
 import cv2
@@ -99,3 +102,51 @@ def iou_xyxy(a, b):
     area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
     denom = area_a + area_b - inter
     return inter / denom if denom > 0.0 else 0.0
+
+
+# --- stream routing + logging (P3.0b) -------------------------------------------------------
+# --stream routes status text to stderr so stdout carries only the binary annotated-frame protocol
+# the Tracker page reads. follow_person_k1 sets common._STREAM = True when --stream is passed (and
+# reads common._STREAM where it decides whether to emit frames). Kept as a module global here so a
+# single flag is shared by log() and every importer.
+_STREAM = False
+_MAGIC = b"K1F1"
+
+
+def log(msg):
+    """One flushed status line. In --stream mode it goes to STDERR so stdout
+    carries only the binary annotated-frame protocol the Tracker page reads."""
+    f = sys.stderr if _STREAM else sys.stdout
+    f.write(msg + "\n")
+    f.flush()
+
+
+def emit_frame(status, bgr, quality=70):
+    """Write one annotated frame to stdout: MAGIC(4)+status(1)+len(4 BE)+jpeg.
+    Same wire protocol as stream_cam.py so the app's frame reader is reused."""
+    try:
+        ok, jpg = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+        if not ok:
+            return
+        b = jpg.tobytes()
+        out = sys.stdout.buffer
+        out.write(_MAGIC + bytes([status & 0xFF]) + struct.pack(">I", len(b)) + b)
+        out.flush()
+    except Exception:
+        pass
+
+
+# Per-tag-throttled gesture-debug logger (~1 Hz per first-word tag). No-op unless --gesture-debug,
+# so it costs one getattr when off. Makes the whole gesture acquisition chain visible on demand.
+_GDBG_LAST = {}
+
+
+def gdbg(args, msg):
+    if not getattr(args, "gesture_debug", False):
+        return
+    tag = msg.split(" ", 1)[0]
+    now = time.monotonic()
+    if now - _GDBG_LAST.get(tag, 0.0) < 1.0:
+        return
+    _GDBG_LAST[tag] = now
+    log("GDBG " + msg)

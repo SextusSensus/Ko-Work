@@ -82,11 +82,12 @@ from sensor_msgs.msg import Image
 
 # P3.0: shared helpers + constants live in common.py (a sibling module -- /home/booster/common.py
 # on the robot; the eval harness adds the node dir to sys.path). Pure move, no logic change.
+import common  # noqa: E402  (module handle for the mutable common._STREAM flag, set on --stream)
 from common import (  # noqa: E402
     HARD_VX_LIMIT, HARD_VYAW_LIMIT, DEPTH_WARMUP_S, DEPTH_FRESH_S, DEPTH_DOWN_S, PERSON_CLS,
     LockHint, KP_L_SHOULDER, KP_R_SHOULDER, KP_L_WRIST, KP_R_WRIST,
     S_SEARCH, S_TRACK, S_REACQUIRE, S_PARKED, S_SEARCHING, TS_LOCKED, TS_COASTING, TS_RELOCALIZING,
-    clamp, to_bgr, depth_to_meters, iou_xyxy,
+    clamp, to_bgr, depth_to_meters, iou_xyxy, log, emit_frame, gdbg,
 )
 from bridge import Bridge  # noqa: E402  (P3.1: loco_follow_bridge process wrapper)
 from tracking import MultiTracker, max_iou_other, _point_box_dist  # noqa: E402  (P3.2)
@@ -149,8 +150,7 @@ DEF_HICONF     = 0.55         # only update appearance when assoc this confident
 DEF_PERSON_H_M = 1.7          # assumed standing person height for bbox-height range
 
 
-_STREAM = False           # --stream: status text -> stderr, annotated JPEG frames -> stdout
-_MAGIC = b"K1F1"
+# _STREAM / _MAGIC -> common.py (P3.0b). follow_person sets/reads common._STREAM.
 
 # --rerun (Phase 2): a crash-safe Rerun sink (k1_rerun.RerunSink), DEFAULT-OFF and fully inert
 # until init_rerun() flips it in main(). Every _RR.* call no-ops when disabled, so the follow is
@@ -171,46 +171,13 @@ except Exception:                      # noqa: BLE001 -- a missing sink module m
     _RR = _NullRR()
 
 
-def log(msg):
-    """One flushed status line. In --stream mode it goes to STDERR so stdout
-    carries only the binary annotated-frame protocol the Tracker page reads."""
-    f = sys.stderr if _STREAM else sys.stdout
-    f.write(msg + "\n")
-    f.flush()
-
-
-def emit_frame(status, bgr, quality=70):
-    """Write one annotated frame to stdout: MAGIC(4)+status(1)+len(4 BE)+jpeg.
-    Same wire protocol as stream_cam.py so the app's frame reader is reused."""
-    try:
-        ok, jpg = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
-        if not ok:
-            return
-        b = jpg.tobytes()
-        out = sys.stdout.buffer
-        out.write(_MAGIC + bytes([status & 0xFF]) + struct.pack(">I", len(b)) + b)
-        out.flush()
-    except Exception:
-        pass
+# log() + emit_frame() -> common.py (P3.0b)
 
 
 # clamp() -> common.py (P3.0)
 
 
-# Per-tag-throttled gesture-debug logger (~1 Hz per first-word tag). No-op unless --gesture-debug,
-# so it costs one getattr when off. Makes the whole gesture acquisition chain visible on demand.
-_GDBG_LAST = {}
-
-
-def gdbg(args, msg):
-    if not getattr(args, "gesture_debug", False):
-        return
-    tag = msg.split(" ", 1)[0]
-    now = time.monotonic()
-    if now - _GDBG_LAST.get(tag, 0.0) < 1.0:
-        return
-    _GDBG_LAST[tag] = now
-    log("GDBG " + msg)
+# _GDBG_LAST + gdbg() -> common.py (P3.0b)
 
 
 # NV12 -> BGR: to_bgr() -> common.py (P3.0; shared with stream_cam.py)
@@ -2248,7 +2215,7 @@ class Follower:
                     frame = low_light_boost(frame, self.a.low_light, self.a.ll_dark_thresh)
                     try:
                         self._process_frame(frame)
-                        if _STREAM:
+                        if common._STREAM:
                             self._stream_frame(frame)
                     except Exception as e:  # noqa: BLE001 -- loop must never die
                         log("FRAME-ERR %s" % e)
@@ -4491,10 +4458,9 @@ def init_rerun(args):
 
 
 def main():
-    global _STREAM
     args = parse_args(sys.argv[1:])
     if args.stream:
-        _STREAM = True   # status -> stderr, annotated frames -> stdout
+        common._STREAM = True   # status -> stderr, annotated frames -> stdout (P3.0b)
     init_rerun(args)     # flips _RR on only when --rerun; inert otherwise
     f = Follower(args)
     f.install_signal_handlers()
