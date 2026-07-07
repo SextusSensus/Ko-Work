@@ -91,8 +91,27 @@ in P1.2); decision-stream `COMPARE-OK`; `config_selftest` OK; `--profile dev` ==
 `K1Finder.ps1` parses clean. The heartbeat-writer question was RESOLVED (armed soft deadman
 ~25 Hz — see DECISIONS.md P1.2).
 
+## Phase 2 — Restructure + build  ✅
+
+Plan in `PHASES_2-3_PLAN.md`. `SAFE` (moves + build only); byte-identity held throughout.
+
+- **P2.1** (`fef82e7`) — reorganized by deploy target: `git mv` (history preserved) into
+  `robot/` (node, bridge, scripts, config), `desktop/` (app + launchers), `eval/`
+  (replay harness), `docs/` (design docs), `models/` (blobs + wheels). The robot layout is
+  unchanged — scp DEST stays flat `/home/booster/`, only the app's SOURCE paths moved
+  (`$ROBOT_DIR`/`$MODELS_DIR`). Fixed the `_gate` harness, doc-path comments, `.gitignore`,
+  and the README map. Model blobs untracked (fetch-script, `models/fetch_models.sh`).
+  Gate: config-parity 21/21 + decision-stream + config_selftest all byte-identical after
+  the move.
+- **P2.2** (`18de845`) — `robot/bridge_cpp/CMakeLists.txt` mirrors the verified g++ recipe
+  exactly (safety floor unweakened). `run_follow.sh` unchanged — its guard already consumes
+  a pre-staged binary. `VERIFY ON ROBOT` for the aarch64 build.
+- **P2.3** (`8fad451`) — `robot/pyproject.toml` (`pip install -e .`) + `requirements.txt`:
+  numpy<2 ABI pin, rerun/eval optional extras, rclpy/sensor_msgs as system deps. TOML
+  parses; `pip install -e .` is `VERIFY ON ROBOT` (heavy GPU deps).
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
 - P1.2b demo/field profile values — populated with STARTING values; awaiting final sign-off.
-- P2.1 model/wheels location + blob strategy — **open**, needed before the reorg.
+- P2.1 model/wheels location — **resolved** (models/ via fetch-script; wheels → models/wheels/).
