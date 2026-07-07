@@ -35,9 +35,14 @@ stub packages on `PYTHONPATH` (the harness never instantiates a real node —
     never the marker node; the `.pt` is only auto-downloaded by `stage_pose.py`.
   - Gates: `git grep follow_marker_k1` empty (tracked files); decision stream
     byte-identical vs pre-change.
-- **P0.2** (`917369b`) — added `DECISIONS.md` (no deletions). Records the two
-  human-confirmation items (keep `follow_marker.png`? / remove the WPF scaffold +
-  `_redesign/`?) with evidence + recommendations, plus a P1.2 placeholder.
+- **P0.2** — added `DECISIONS.md` (`917369b`), then actioned both items once
+  confirmed (2026-07-07):
+  - **P0.2b** (`3e0b3ab`) — `git rm` the WPF app scaffold (`K1Finder.wpf.ps1`,
+    `K1 Finder (WPF).bat`, `Launch K1 Finder WPF (no console).vbs`) + `_redesign/`;
+    WinForms `K1Finder.ps1` is the shipping UI. Dropped the `_redesign/` doc ref.
+  - **P0.2a** (`f817be4`) — `git rm follow_marker.png` (ArUco asset retired for the
+    gesture trigger); de-referenced it in both READMEs. The ArUco *code path* is
+    untouched (out of scope).
 - **P0.3** (`d06c3f8`) — `.gitignore` for the generated manifests
   (`k1_tree.txt`, `k1_paths.json`, `k1_paths_list.txt`) + `.claude/settings.local.json`;
   `git rm --cached` those (kept on disk). (`__pycache__/`, `*.pyc`, `*.pt` already
@@ -57,5 +62,5 @@ stub packages on `PYTHONPATH` (the harness never instantiates a real node —
   are now stale until regenerated on the robot; they are untracked, so this is moot.
 
 ## Pending human decisions (see DECISIONS.md)
-- P0.2a — keep/remove `follow_marker.png`
-- P0.2b — remove the WPF app stack + `_redesign/`, or keep it as the intended UI
+- P0.2a / P0.2b — **resolved** (see above).
+- P1.2 heartbeat writer — open, to be resolved when Phase 1 is executed.
