@@ -44,6 +44,7 @@ drive: false
 drive_min_fps: 8.0
 drive_ready_secs: 2.0
 ema_max_jump: 0.12
+fault_stand_k: 5
 gallery_size: 8
 gate: 0.85
 gesture_debug: false

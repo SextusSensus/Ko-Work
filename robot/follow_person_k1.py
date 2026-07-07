@@ -304,6 +304,7 @@ class Follower:
         self.tracker = MultiTracker(args.iou_min, args.max_coast) if args.track else None
         self._overrun_streak = 0    # consecutive frames the loop ran over its period
         self._rr_overrun_streak = 0  # consecutive over-budget frames with --rerun on (auto-disable)
+        self._frame_err_streak = 0   # P4.6: consecutive _process_frame throws (persistent-fault STAND escalator)
         self._loop_ms_hist = collections.deque(maxlen=600)  # ~60s of loop WORK-time @ 10Hz
         self._last_loopms_log = 0.0  # 10s cadence for the LOOP-MS observability line
 
@@ -917,6 +918,23 @@ class Follower:
                 log("REID-DEGRADED all-none streak=%d k=%d -> armed re-lock forced audit-only"
                     % (self._reid_none_streak, _k))
 
+    def _on_frame_error(self, e):
+        """P4.6 per-frame processing-fault handler + persistent-fault escalator. Immediate safe
+        response (STAND per --stand-on-loss, else HOLD). Then: after --fault-stand-k CONSECUTIVE
+        throws, FORCE a stand even with --no-stand-on-loss -- a chronically-throwing loop must not
+        keep walking on _hold alone (that case was previously caught only by the loose C++ bridge tier)."""
+        log("FRAME-ERR %s" % e)
+        self._frame_err_streak += 1
+        _fk = int(getattr(self.a, "fault_stand_k", 0))
+        forced = _fk > 0 and self._frame_err_streak >= _fk
+        if self.a.stand_on_loss or forced:
+            if forced and not self.a.stand_on_loss and self._frame_err_streak == _fk:
+                log("FRAME-ERR persistent streak=%d >= fault-stand-k=%d -> FORCED STAND"
+                    % (self._frame_err_streak, _fk))
+            self._stand()   # perception/processing error -> stable stand
+        else:
+            self._hold()
+
     # -- main run -----------------------------------------------------------
     def run(self):
         rclpy.init(args=None)
@@ -1048,12 +1066,9 @@ class Follower:
                         self._process_frame(frame)
                         if common._STREAM:
                             self._stream_frame(frame)
+                        self._frame_err_streak = 0   # P4.6: clean frame -> reset the persistent-fault counter
                     except Exception as e:  # noqa: BLE001 -- loop must never die
-                        log("FRAME-ERR %s" % e)
-                        if self.a.stand_on_loss:
-                            self._stand()   # perception/processing error -> stable stand
-                        else:
-                            self._hold()
+                        self._on_frame_error(e)
                 else:
                     # F4: throttle BOTH NO-FRAME emissions to ~1/s -- they used to fire every 10Hz
                     # tick, flooding the log through the whole camera warmup / any stall. The
@@ -2956,6 +2971,13 @@ def parse_args(argv):
                         "embed returns all-None over a NON-EMPTY person set, latch REID-DEGRADED and "
                         "force any ARMED markerless re-lock to audit-only until a valid embedding "
                         "returns. 0 disables the mid-run watchdog (today's behavior).")
+    p.add_argument("--fault-stand-k", type=int, default=5,
+                   help="P4.6 persistent-fault escalator: after this many CONSECUTIVE per-frame "
+                        "processing exceptions, FORCE a fail-safe STAND even when --no-stand-on-loss "
+                        "(a chronically-throwing loop must not keep walking on _hold alone; today "
+                        "that case is caught only by the loose C++ bridge tier). With --stand-on-loss "
+                        "(default) each throw already stands, so this only bites the off case. "
+                        "0 disables (no forced escalation).")
     p.add_argument("--audit-cosine", action=argparse.BooleanOptionalAction, default=False,
                    help="log a per-frame AUDIT line: cosine of the bound target vs the best other "
                         "person to the frozen anchor -- to tune --anchor-floor/--bank-floor for cosine")
