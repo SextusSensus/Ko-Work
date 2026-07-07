@@ -109,8 +109,6 @@ manifest = {
     "app_run_stream": HOME + "/run_stream.sh",
     "app_run_loco": HOME + "/run_loco.sh",
     "app_enable_camera": HOME + "/enable_camera",
-    "follow_marker_py": HOME + "/follow_marker.py",
-    "follow_marker_png": HOME + "/follow_marker.png",
     "camera_topic_head_rgb": "/boostercamera/head/rgb",
 }
 manifest_exists = {k: (os.path.exists(v) if v and v.startswith("/") else False) for k, v in manifest.items()}

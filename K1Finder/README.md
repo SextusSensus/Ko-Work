@@ -87,9 +87,9 @@ that moves the robot is disabled until you ARM. To wave: `Prepare` -> `Walking` 
 The Control tab has a **Follow Marker (QR)** toggle that makes the K1 track a
 printed `follow_marker.png` (DICT_4X4_50 ArUco marker).
 
-- **Toggle ON (PREVIEW, default):** runs `follow_marker_k1.py` on the robot -
-  subscribes to the live head camera, detects the marker, and prints
-  `range`/`bearing` to the log. **Never moves the robot.**
+- **Toggle ON (PREVIEW, default):** runs `follow_person_k1.py` on the robot -
+  subscribes to the live head camera, detects the marker (the one-time lock
+  trigger), and prints status to the log. **Never moves the robot.**
 - Tick **DRIVE (walk the robot)** + **ARM MOTION**, then toggle ON: the K1
   physically walks to hold a standoff behind the marker, driven by a compiled
   `loco_follow_bridge` (`MoveCommand(vx,vy,vyaw)`).
@@ -103,7 +103,7 @@ a session watchdog (~120s), toggle-off, app close, or SSH drop - every exit path
 ends in `MoveCommand(0,0,0) + ChangeMode(kPrepare)`. The compiled bridge is the
 backstop: it safes the robot on its own EOF/SIGINT/SIGTERM.
 
-Robot-side files (deployed automatically): `follow_marker_k1.py`,
+Robot-side files (deployed automatically): `follow_person_k1.py`,
 `loco_follow_bridge.cpp` (compiled on first DRIVE), `run_follow.sh`. The marker
 image is `follow_marker.png`. The camera is bursty/subscriber-gated (~10s warmup).
 

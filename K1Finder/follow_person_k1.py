@@ -21,7 +21,7 @@ State machine (single rclpy node, ~10Hz loop, spin_once):
                   Pick lowest-cost person under a gate; follow its centroid:
                   bearing from centroid_x (pinhole), range from depth-at-centroid
                   (median of a small ROI ignoring zeros) else bbox-height pinhole.
-                  Same control law + HARD clamps as follow_marker_k1.py.
+                  Same control law + HARD clamps used throughout.
   REACQUIRE     : no person under the gate for LOST_GRACE frames -> stop (hold).
                   Keep YOLO running. RE-SEED only if the marker is shown again
                   (>=SEED_FRAMES) -> back to TRACK. After --reacquire-timeout with
@@ -34,7 +34,7 @@ Modes (argparse):
   --drive               spawn ./loco_follow_bridge, ping/prep/walk, then stream
                         'v vx vy vyaw' with HARD-clamped velocities.
 
-SAFETY (drive mode, identical bar to follow_marker_k1.py):
+SAFETY (drive mode):
   * 'ping' must return OK before anything moves (verifies loco WITHOUT walking).
   * Need at least one real camera frame before prep->walk.
   * prep -> wait ~3s -> walk -> wait ~2s, then per-frame velocity stream.
@@ -81,7 +81,7 @@ from sensor_msgs.msg import Image
 
 
 # ---------------------------------------------------------------------------
-# TUNABLES (control law mirrored from follow_marker_k1.py; person-track added)
+# TUNABLES (control law + person-track additions)
 # ---------------------------------------------------------------------------
 DEF_STANDOFF_M    = 1.2       # how far behind the target the robot holds
 DEF_DEADBAND_M    = 0.20      # don't fidget within +/- this of standoff
@@ -211,7 +211,7 @@ def gdbg(args, msg):
 
 
 # ---------------------------------------------------------------------------
-# NV12 -> BGR (verbatim from follow_marker_k1.py / stream_cam.py)
+# NV12 -> BGR (shared with stream_cam.py)
 # ---------------------------------------------------------------------------
 def to_bgr(msg):
     h, w, enc, step = msg.height, msg.width, msg.encoding.lower(), msg.step
@@ -1505,7 +1505,7 @@ def low_light_boost(bgr, on=True, thresh=LL_DARK_THRESH):
 
 
 # ---------------------------------------------------------------------------
-# Bridge wrapper -- verbatim from follow_marker_k1.py. --drive only.
+# Bridge wrapper -- --drive only.
 # ---------------------------------------------------------------------------
 class Bridge:
     def __init__(self, path, extra_env=None):
@@ -3710,7 +3710,7 @@ class Follower:
                 log("GALLERY-ERR %s (anchor-only this frame)" % e)
 
         # Range + bearing were computed up-front (for the geofence) and are reused here.
-        # SAME control law + HARD clamps as follow_marker_k1.py.
+        # SAME control law + HARD clamps used throughout.
         vyaw = self._slew(self._prev_vyaw, -self.a.k_yaw * bearing, self.vyaw_slew)
         vyaw = clamp(vyaw, self.vyaw_min, self.vyaw_max)
         if rng is not None:
