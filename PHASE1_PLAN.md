@@ -135,18 +135,58 @@ The post-parse resolution runs **once** on the merged namespace — never per-la
 
 ---
 
-## P1.2 — fail-closed drive gate (BEHAVIOR-CHANGE by design)
-Not byte-identical (a new refusal). Plan:
-- In `Follower.__init__`/startup: if `drive` and **not** `require_heartbeat`, **refuse to start** unless
-  an explicit `allow_untethered_unsafe` override is present (log the reason).
-- `demo.yaml`/`field.yaml` set `require_heartbeat: true`, `obstacle_brake: true`, `max_follow_range`,
-  `coast_frames`, `max_seconds`. Add `run_follow_demo.sh` (selects `demo.yaml`, **pre-compiles the
-  bridge**).
-- **Test:** a new `selftest` variant asserting `--drive` without heartbeat/override exits with a clear
-  message; `VERIFY ON ROBOT` that killing the heartbeat relay stands the robot in the HB tier.
-- **Open item (DECISIONS.md P1.2):** confirm a heartbeat **writer** touches `/tmp/k1_hb` at ~10 Hz —
-  `Start-HbRelay` in `K1Finder.ps1` is the candidate (started by `Start-Tracker` when `--require-heartbeat`
-  is set); verify it actually writes at rate, else the deadman is inert. To resolve before P1.2 lands.
+## P1.2 — fail-closed drive gate + safe profiles (BEHAVIOR-CHANGE by design)
+
+Not byte-identical (a new startup refusal + non-default profiles). Lands **after** P1.1.
+
+### Fail-closed drive gate
+- **New key:** `allow_untethered_unsafe` (`--allow-untethered-unsafe`, `BooleanOptionalAction`, default
+  `False`); add `allow_untethered_unsafe: false` to `defaults.yaml` so the exact-key-set loader stays happy.
+- **Insertion point:** in `parse_args`, just before `return args` (L4661, after depth-topic normalization)
+  — the earliest point all three flags resolve and strictly **before** `Follower(args)`/`rclpy.init`/CamNode/
+  YOLO/any bridge spawn. Use `p.error(...)` (exit 2, clean CLI message), mirroring the sibling lock-trigger
+  refusals at L4645-4649. (Not `__init__`/`run()` — those spin up CamNode+YOLO first.)
+- **Condition:** `if args.drive and not args.require_heartbeat and not args.allow_untethered_unsafe: p.error(...)`.
+- **Truth table:** drive+require_heartbeat → RUN (deadman armed); drive+override → RUN (+loud WARN in
+  `__init__` ~L1965 so the .rrd records the bypass); drive+neither → **REFUSE** (exit 2); drive+both → RUN
+  (require_heartbeat wins). Preview unaffected (drive-only gate).
+- **Defense-in-depth:** optional redundant assert in `start_drive_chain` (L2291) before `Bridge()` (L2303).
+- **Test (BEHAVIOR-CHANGE):** headless argparse-level cases in the committed `config_selftest.py` — default
+  `--drive` → `SystemExit(2)`; `--drive --require-heartbeat` → OK; `--drive --allow-untethered-unsafe` → OK.
+  `VERIFY ON ROBOT`: killing the HB relay stands the robot in the HB tier.
+
+### Heartbeat deadman — RESOLVED (was the DECISIONS.md P1.2 open item)
+Static verification of the writer→node→bridge chain: **ARMED AND FUNCTIONAL as a soft/software deadman**
+when the "Deadman HB" box is ticked (all three links fail-closed):
+- **WRITER:** `Start-HbRelay` (`K1Finder.ps1:1267`) = ssh child running `while read -r _; do touch /tmp/k1_hb; done`,
+  pumped by the 40 ms `$mediaTimer` `WriteLine('h')` → **~25 Hz** (not the ~10 Hz assumed — faster, with
+  margin); started only when `--require-heartbeat`. Any WiFi drop / UI-thread freeze / laptop sleep / kill
+  stops the touches within ~one tick.
+- **NODE:** `_drive_vel` zeroes all velocity before `send_velocity` when `/tmp/k1_hb` is stale/missing
+  (`getmtime` fail-closed; `hb_stale_ms 400`).
+- **BRIDGE:** env-armed `K1_REQUIRE_HB` ~50 Hz watchdog: zero @400 ms, stand+kPrepare @1500 ms.
+- Default OFF → byte-identical tethered; trips within ~400 ms of any loss.
+- **CAVEAT (carry into P1.2 + UNTETHERED_FOLLOW.md):** this is a *soft* stand, **not** an independent
+  hardware power cutoff, and was **not** on-robot arm-validated here (static only). Correctly fail-closed
+  today, but do not treat as sufficient to authorize untethered operation until robot-armed and paired with
+  the hardware backstop.
+
+### Safe demo/field profiles — STARTING values (human review; DECISIONS.md)
+BEHAVIOR-CHANGE for those profiles; `dev`/no-profile stays byte-identical. Both set `require_heartbeat: true`
+so selecting them satisfies the fail-closed gate; neither unlocks untethered (still FORBIDDEN).
+- **demo.yaml** (supervised indoor): `require_heartbeat: true`, `obstacle_brake: true`, `max_follow_range: 3.0`,
+  `coast_frames: 6`, `max_seconds: 90.0`, `obstacle_target_margin: 0.4`.
+- **field.yaml** (open ground, stricter): `require_heartbeat: true`, `obstacle_brake: true`,
+  `obstacle_brake_start: 2.0`, `max_follow_range: 4.0`, `hb_stale_ms: 300`, `coast_frames: 4`,
+  `max_seconds: 120.0`, `min_safe_range: 0.8`, `vx_max: 0.15`.
+
+### run_follow_demo.sh + the config deploy gap
+- **`run_follow_demo.sh`:** mirror `run_follow.sh` but hoist the compile block OUT of the drive branch
+  (pre-compile unconditionally — same verified g++ recipe + exit-3/`k1_compile.err`/`BRIDGE`-marker contract)
+  and add `--profile demo` **before** `"$@"` on both exec lines (CLI still overrides). `run_follow_field.sh`
+  (`--profile field`) is the natural sibling. Requires P1.1b's `--profile` loader.
+- **Deploy gap (shared with P1.1b, see below):** the app deploys a *hardcoded* file list; `config/` and
+  `run_follow_demo.sh` must be added to `Deploy-FollowFiles`.
 
 ---
 

@@ -51,16 +51,45 @@ retired in favor of the raised-hand gesture).
 
 ---
 
-## P1.2 — Does a heartbeat *writer* exist? (pending — resolved in Phase 1)
+## P1.2 — Does a heartbeat *writer* exist? (RESOLVED — yes, ~25 Hz)
 
 **What:** the untethered operator-deadman (`--require-heartbeat`) reads a heartbeat
 file/signal; the deadman is inert unless something *writes* it at ~10 Hz.
 
-**Status:** candidate writer identified, rate not yet verified. `Start-HbRelay` in
-`K1Finder.ps1` is started by `Start-Tracker` when `--require-heartbeat` is set and is
-the app-side heartbeat relay that should touch `/tmp/k1_hb`. Before P1.2 lands, confirm
-it actually writes at ~10 Hz (both the node's `--hb-stale-ms 400` gate and the bridge's
-`HB_STALE_MS` tier assume a fresh mtime at that rate); if it doesn't, the untethered
-deadman is inert and must be flagged. See PHASE1_PLAN.md → P1.2.
+**Status: RESOLVED (static verification 2026-07-07).** The deadman is **armed and functional
+as a soft/software deadman** — NOT inert. `Start-HbRelay` (`K1Finder.ps1:1267`) runs a remote
+`while read -r _; do touch /tmp/k1_hb; done`, pumped by the 40 ms `$mediaTimer` `WriteLine('h')`
+at **~25 Hz** (faster than the ~10 Hz assumed). Node zeroes velocity when the mtime is stale
+(`hb_stale_ms 400`); the C++ bridge independently stands the robot via `K1_REQUIRE_HB` (zero @400 ms,
+kPrepare @1500 ms). All three links fail-closed; default OFF = byte-identical tethered.
 
-- [ ] (pending P1.2 implementation — verify Start-HbRelay write rate)
+- [x] Writer verified (Start-HbRelay ~25 Hz).
+- ⚠️ **CAVEAT (still open):** this is a *soft* stand, **not** an independent hardware power cutoff
+  (per [[k1-hardware-backstop]]), and it was **not** on-robot arm-validated. Do not treat it as
+  sufficient to authorize untethered operation until robot-armed + paired with the hardware backstop
+  the `UNTETHERED_FOLLOW.md` gate requires.
+
+---
+
+## P1.2b — demo/field profile safety values (human review)
+
+**What:** the `demo.yaml`/`field.yaml` values are STARTING recommendations that change behavior for
+those profiles (dev/no-profile stays byte-identical). Review before P1.2 lands.
+
+- **demo:** require_heartbeat true, obstacle_brake true, max_follow_range 3.0, coast_frames 6,
+  max_seconds 90.0, obstacle_target_margin 0.4.
+- **field:** require_heartbeat true, obstacle_brake true, obstacle_brake_start 2.0, max_follow_range 4.0,
+  hb_stale_ms 300, coast_frames 4, max_seconds 120.0, min_safe_range 0.8, vx_max 0.15.
+
+- [ ] Approve / adjust the demo + field values (see PHASE1_PLAN.md → P1.2).
+
+---
+
+## P2.1 — model/wheels location + blob strategy (human review)
+
+**What:** the reorg can move `yolo11n-pose.onnx` / OSNet / `wheels/*.whl` into `models/`, or leave them at
+root. Also whether model blobs go via git-lfs or a fetch script (brief P2.1/P2.3). Affects the app's
+`Ensure-*` source paths.
+
+- [ ] Decide models/wheels location + git-lfs vs fetch-script (default rec: `models/` for onnx, keep
+  `wheels/` recipe; models via fetch-script not raw git). Pending Phase 2.
