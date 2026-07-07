@@ -100,6 +100,9 @@ function Deploy-FollowFiles {
     $null = $mk.WaitForExit(10000)
     $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($defaults, ("{0}@{1}:/home/booster/config/defaults.yaml" -f $script:SshUser, $ip))) -NoNewWindow -PassThru
     $null = $p.WaitForExit(20000)
+    # defaults.yaml is hard-required (node fail-closes without it): a failed/timed-out push must
+    # abort the launch, not leave a stale config in place and report success.
+    if (($null -eq $p.ExitCode) -or ($p.ExitCode -ne 0)) { return $false }
     foreach ($prof in @('dev.yaml', 'demo.yaml', 'field.yaml')) {
         $ps = Join-Path $cfgDir $prof
         if (Test-Path $ps) {

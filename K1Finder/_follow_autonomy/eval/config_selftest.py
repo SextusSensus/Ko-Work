@@ -57,6 +57,9 @@ def main():
     assert type(d["max_follow_range"]) is float and type(d["standoff_m"]) is float
     assert type(d["stream_quality"]) is int and type(d["coast_frames"]) is int
 
+    # 2b. the profile branch: an empty profile (dev) is byte-identical to no profile
+    assert vars(pa(["--profile", "dev"])) == d, "--profile dev must equal no-profile"
+
     with tempfile.TemporaryDirectory() as tmp:
         # 3. precedence: CLI wins over a conflicting profile; profile still applies where CLI absent
         prof = write(tmp, "standoff_m: 9.9\nvx_max: 0.01\nmax_follow_range: 3\n")
@@ -69,10 +72,16 @@ def main():
         r2 = vars(pa(["--profile", prof, "--vx-max", "0.18"]))
         assert r2["vx_max"] == 0.18, r2["vx_max"]
 
-        # 5-7. fail-closed rejections
+        # 5-10. fail-closed rejections (incl. the adversarial-review hardening)
         expect_exit(lambda: pa(["--profile", write(tmp, "vx_maxx: 0.1\n")]), "unknown key")
         expect_exit(lambda: pa(["--profile", write(tmp, "appearance: foo\n")]), "bad choice")
         expect_exit(lambda: pa(["--profile", os.path.join(tmp, "nope.yaml")]), "missing profile")
+        expect_exit(lambda: pa(["--profile", write(tmp, "stream_quality: 70.5\n")]),
+                    "non-integer float for an int key (argparse would reject, not truncate)")
+        expect_exit(lambda: pa(["--profile", write(tmp, "track: 'false'\n")]),
+                    "non-bool YAML scalar for a bool flag (truthy-string trap)")
+        expect_exit(lambda: pa(["--profile", write(tmp, "anchor_floor: 0.5\n")]),
+                    "baked appearance-floor in a profile")
 
     print("CONFIG-SELFTEST-OK (defaults+floors, types, precedence, fail-closed)")
     return 0

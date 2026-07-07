@@ -4216,15 +4216,32 @@ def _merged_config(parser, profile):
         if bad:
             raise SystemExit("CONFIG-ERROR: profile %s has unknown key(s) %s"
                              % (prof_path, sorted(bad)))
-        for k, v in overlay.items():
-            act = dests[k]
-            if v is not None and getattr(act, "type", None) is not None:
-                try:
-                    v = act.type(v)
-                except Exception as e:  # noqa: BLE001
-                    raise SystemExit("CONFIG-ERROR: profile %s: '%s'=%r not %s (%s)"
-                                     % (prof_path, k, overlay[k], act.type.__name__, e))
-            base[k] = v
+        for k in _FLOOR_KEYS:                           # floors stay appearance-resolved in EVERY layer
+            if overlay.get(k) is not None:
+                raise SystemExit("CONFIG-ERROR: profile %s must leave '%s' null (appearance-resolved); "
+                                 "got %r" % (prof_path, k, overlay[k]))
+        base.update(overlay)
+
+    # Coerce every value to the arg type the SAME way argparse coerces a CLI token -- via the
+    # STRING (act.type(str(v))) -- so defaults.yaml and profiles are symmetric and type-robust:
+    # an int-written float becomes float (byte-identical), and a non-integer float for an int key
+    # RAISES like argparse rather than silently truncating. Bool flags must be real YAML bools.
+    bool_dests = {d for d, a in dests.items()
+                  if isinstance(a, argparse.BooleanOptionalAction) or getattr(a, "nargs", None) == 0}
+    for k, act in dests.items():
+        v = base.get(k)
+        if v is None:
+            continue
+        if k in bool_dests:
+            if not isinstance(v, bool):
+                raise SystemExit("CONFIG-ERROR: '%s' must be a YAML bool (true/false), got %r" % (k, v))
+        elif getattr(act, "type", None) is not None:
+            try:
+                base[k] = act.type(str(v))
+            except Exception as e:  # noqa: BLE001
+                raise SystemExit("CONFIG-ERROR: '%s'=%r not %s (%s)" % (k, v, act.type.__name__, e))
+        else:
+            base[k] = str(v)                           # plain string args -> match a CLI string token
 
     for k, act in dests.items():                       # choices parity (YAML bypasses argparse)
         ch = getattr(act, "choices", None)
