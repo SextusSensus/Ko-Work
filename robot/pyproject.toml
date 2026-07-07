@@ -1,0 +1,37 @@
+# Robot-side follow stack packaging (P2.3). `pip install -e .` from robot/ installs the
+# node + helpers as importable modules with pinned deps. EDITABLE install is intended so the
+# config loader's __file__-relative robot/config/ path resolves (a non-editable install would
+# need config/ shipped as package_data).
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "k1-follow"
+version = "0.1.0"
+description = "Booster K1 lock-and-handoff person-follow (robot-side node + C++ bridge)"
+requires-python = ">=3.8"
+dependencies = [
+    # numpy is ABI-LOAD-BEARING: the validated stack (onnxruntime-TRT EP, opencv, rclpy) is
+    # bound to numpy 1.x on the robot. NEVER let numpy 2 in for an optional feature.
+    "numpy>=1.23,<2",
+    "opencv-python",
+    "ultralytics",
+    "onnxruntime-gpu",
+    "scipy",
+    "PyYAML",
+]
+# NOTE: rclpy + sensor_msgs are SYSTEM packages (ROS2 Humble via /opt/ros), NOT pip-installable
+# -- they are provided by the robot's ROS2 install and are intentionally excluded here.
+
+[project.optional-dependencies]
+# Rerun observability (default-off feature). Pinned: 0.23.1 is the newest release allowing
+# numpy 1.x; 0.23.2+ require numpy>=2 which would break the follow stack. Offline wheelhouse
+# in models/wheels/ (see its README) is the on-robot install path.
+rerun = ["rerun-sdk==0.23.1"]
+# Eval-only heavy deps (labeling / LeRobot export) -- kept OFF the robot runtime.
+eval  = ["torch", "transformers", "lerobot", "imageio", "onnx"]
+
+[tool.setuptools]
+# Flat top-level modules (no package dir). follow_person_k1 imports k1_rerun as a sibling.
+py-modules = ["follow_person_k1", "k1_rerun", "stream_cam", "stage_pose", "tree_manifest"]

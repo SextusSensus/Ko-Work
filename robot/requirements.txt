@@ -1,0 +1,17 @@
+# Pinned robot runtime deps -- match the validated K1 stack. Install with:
+#   pip install -e .            (uses pyproject.toml; editable so config/ resolves)
+# or  pip install -r requirements.txt
+#
+# rclpy + sensor_msgs are SYSTEM packages (ROS2 Humble, /opt/ros) -- NOT here (see pyproject.toml).
+#
+# Load-bearing exact pins:
+numpy==1.26.3            # ABI floor: onnxruntime-TRT / opencv / rclpy are bound to numpy 1.x
+# --- the rest: pin exactly from the robot with `pip freeze` (VERIFY ON ROBOT); known-good majors: ---
+opencv-python>=4.11,<4.12
+onnxruntime-gpu>=1.22,<1.23
+scipy
+ultralytics
+PyYAML>=6,<7
+
+# Optional (Rerun observability; default-off). Pinned -- newest allowing numpy 1.x:
+# rerun-sdk==0.23.1        # install from the offline models/wheels/ closure on the robot
