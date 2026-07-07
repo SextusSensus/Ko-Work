@@ -30,7 +30,9 @@ $script:VoiceRec = $null                                            # System.Spe
 # --- Rerun (rerun.io) observability (Phase 3) ---
 $script:RerunDir       = '/home/booster/rerun'                      # on-robot .rrd output dir (--rerun-dir)
 $script:RerunWheelDir  = '/home/booster/wheels'                     # offline pip --find-links dir for the rerun-sdk closure
-$script:RerunViewerExe = $null                                      # laptop viewer exe (auto-detected by Find-RerunViewer; falls back to `python -m rerun`)
+$script:RerunViewerExe = $null                                      # laptop viewer exe (auto-detected by Find-RerunViewer; falls back to `python -m rerun`, then the web viewer)
+$script:RerunWebViewerVer = '0.23.1'                                # MUST match the robot's pinned rerun-sdk (the .rrd format is version-locked)
+$script:RerunWebViewer    = ('https://app.rerun.io/version/{0}/' -f $script:RerunWebViewerVer)  # no-install 'Open .rrd' fallback: loads the .rrd LOCALLY in-browser (nothing uploaded), so SmartScreen/Defender have nothing to block
 $K1_SSH_USER      = 'booster'
 $K1_SSH_PASS      = '123456'
 $K1_LOCO_IFACE    = '127.0.0.1'
@@ -268,17 +270,28 @@ function Open-RerunRecording([string]$path){
     if(-not ($path -and (Test-Path $path))){ Add-LogTrack ('No .rrd to open.') $amber; return }
     $exe = Find-RerunViewer
     if($exe){ try{ Start-Process $exe -ArgumentList ('"{0}"' -f $path); Add-LogTrack ('Opened in Rerun viewer: {0}' -f (Split-Path $path -Leaf)) $accent }catch{ Add-LogTrack ('viewer launch failed: {0}' -f $_) $red } ; return }
-    # Review fix: pre-verify the module imports -- Start-Process 'python' succeeds even when
-    # rerun-sdk is absent (console flashes 'No module named rerun'), which used to log a false
-    # 'Opened' and made the actionable pip-install hint unreachable.
-    $imp=$false
-    try{ $q=Start-Process 'python' -ArgumentList '-c "import rerun"' -WindowStyle Hidden -PassThru; if($q.WaitForExit(15000) -and $q.ExitCode -eq 0){ $imp=$true } }catch{}
-    if($imp){
-        try{ Start-Process 'python' -ArgumentList ('-m rerun "{0}"' -f $path); Add-LogTrack 'Opened via python -m rerun.' $accent }
-        catch{ Add-LogTrack ('viewer launch failed: {0}' -f $_) $red }
-    } else {
-        Add-LogTrack 'Rerun viewer not found. pip install rerun-sdk on the laptop, or set $script:RerunViewerExe.' $amber
+    # No native viewer. Try `python -m rerun` ONLY if a REAL python (not the WindowsApps Store stub,
+    # which would pop the Store) has rerun-sdk importable. Pre-verify the import -- Start-Process
+    # 'python' succeeds even when rerun-sdk is absent (console flashes 'No module named rerun').
+    $py=$null
+    try{ $g=(Get-Command python.exe -ErrorAction SilentlyContinue); if($g -and ($g.Source -notmatch 'WindowsApps')){ $py=$g.Source } }catch{}
+    if($py){
+        $imp=$false
+        try{ $q=Start-Process $py -ArgumentList '-c "import rerun"' -WindowStyle Hidden -PassThru; if($q.WaitForExit(15000) -and $q.ExitCode -eq 0){ $imp=$true } }catch{}
+        if($imp){
+            try{ Start-Process $py -ArgumentList ('-m rerun "{0}"' -f $path); Add-LogTrack 'Opened via python -m rerun.' $accent; return }
+            catch{ Add-LogTrack ('viewer launch failed: {0}' -f $_) $red }
+        }
     }
+    # FINAL fallback (no native viewer, no python+rerun -- this laptop): the version-matched WEB viewer.
+    # No install => nothing for SmartScreen/Defender to block; the .rrd loads LOCALLY in the browser.
+    # The web viewer can't take a local file path via ?url= (that needs an http-served file), so we open
+    # the viewer AND reveal the pulled .rrd in Explorer for a one-drag load.
+    try{
+        Start-Process $script:RerunWebViewer
+        try{ Start-Process explorer.exe -ArgumentList ('/select,"{0}"' -f $path) }catch{}
+        Add-LogTrack ('No local viewer -> opened the Rerun {0} WEB viewer. DRAG the highlighted {1} from Explorer onto the browser tab (loads locally; no install/upload).' -f $script:RerunWebViewerVer,(Split-Path $path -Leaf)) $accent
+    }catch{ Add-LogTrack ('web viewer launch failed: {0} -- open {1} in a browser and drag in {2}.' -f $_,$script:RerunWebViewer,$path) $red }
 }
 # ---- Reachability helper ----------------------------------------------------
 function Test-K1Reachable {
