@@ -458,6 +458,13 @@ class GestureTrigger(LockTrigger):
         tracker id). Empty on any fault. Sets ran_inference True only when the model ran."""
         owners = {}
         raisers = set()
+        # Phase 1.1 (OPTIMIZATION_PLAN.md): a raise can only bind to a TRACKED person (the pose->person
+        # IoU match below requires a person with a track_id), so with ZERO persons the pose run is
+        # guaranteed to yield no raisers -- pure waste (~56ms p50 / up to 279ms p99 in empty-scene SEARCH).
+        # Skip it. The control decision is unchanged (detect() returns None either way); only the wasted
+        # inference is removed -- byte-identical on the control/velocity path.
+        if not persons:
+            return raisers, owners
         try:
             _t0 = time.monotonic()
             res = self.model.predict(frame, verbose=False)
@@ -2621,12 +2628,22 @@ class Follower:
                     # /diag/rr_track_ms shows whether Rerun was actually the cost. This is a backstop,
                     # NOT the primary gate -- the operator still runs the on-Orin probe before --drive.
                     if _RR.ok:
-                        self._rr_overrun_streak += 1
-                        if self._rr_overrun_streak >= self.a.rerun_overrun_frames:
-                            _RR.ok = False
-                            log("RERUN-DISABLED-SLOW %d frames over budget with --rerun -> Rerun OFF "
-                                "(follow safe + byte-identical from here)" % self._rr_overrun_streak)
+                        # WARMUP GRACE (fix 2026-07-06, "rerun cuts off mid-run"): the first seconds are
+                        # model/TensorRT warmup -- the loop is legitimately slow (p90 ~1s) AND the robot
+                        # is not walking yet (SEARCH, ARM-gated), so over-budget frames here are NO safety
+                        # risk. Counting them tripped the shed DURING warmup and killed the recording for
+                        # the whole run even after the loop recovered to healthy. Don't accumulate the
+                        # streak until warmup has elapsed; the shed still fires for a genuinely-overloaded
+                        # DRIVING loop after that.
+                        if (t0 - self.t_start) < self.a.rerun_warmup_s:
                             self._rr_overrun_streak = 0
+                        else:
+                            self._rr_overrun_streak += 1
+                            if self._rr_overrun_streak >= self.a.rerun_overrun_frames:
+                                _RR.ok = False
+                                log("RERUN-DISABLED-SLOW %d frames over budget with --rerun -> Rerun OFF "
+                                    "(follow safe + byte-identical from here)" % self._rr_overrun_streak)
+                                self._rr_overrun_streak = 0
                     # NET-NEW gesture overrun auto-disable (SCOPE §4.3): an INDEPENDENT counter
                     # that does NOT share the SLOW-LOOP reset above (which fires every 5 frames
                     # and could never accumulate to a larger K). Only blames frames where the
@@ -3450,13 +3467,13 @@ class Follower:
                 if f is not None:
                     any_valid = True
                 tid = persons[i].get("track_id")
-                if tid is not None and f is not None:
+                if n > 1 and tid is not None and f is not None:   # Phase 1.4: cache is only CONSULTED when n>1
                     self._reid_cache[tid] = (self._frame_idx, f)
             # ITEM 4 (mid-run fault watchdog): boxes was non-empty, so embed_batch was asked to embed
             # a real person set. All-None == the engine faulted this frame. Shared with the
             # _try_reacquire vote path so recovery is also observable during REACQUIRE.
             self._reid_watchdog(any_valid)
-        if self.tracker is not None:                 # bound the cache: drop retired track ids
+        if n > 1 and self.tracker is not None:        # Phase 1.4: bound the cache (only the n>1 path writes it)
             live = set(self.tracker.tracks.keys())
             for tid in list(self._reid_cache.keys()):
                 if tid not in live:
@@ -4178,6 +4195,10 @@ def parse_args(argv):
     p.add_argument("--rerun-overrun-frames", type=int, default=8,
                    help="auto-disable Rerun after this many CONSECUTIVE over-budget control-loop "
                         "frames while --rerun is on (loop-safety backstop; default 8)")
+    p.add_argument("--rerun-warmup-s", type=float, default=15.0,
+                   help="grace window (s from node start) during which over-budget frames do NOT count "
+                        "toward the RERUN-DISABLED-SLOW shed -- covers model/TensorRT warmup (robot not "
+                        "walking yet) so the backstop can't kill the recording during startup (default 15)")
 
     # --- OBSTACLE-BRAKE reflex (Phase 3 obstacle-avoidance). DEFAULT-OFF + byte-identical when off. ---
     p.add_argument("--obstacle-brake", action="store_true",
