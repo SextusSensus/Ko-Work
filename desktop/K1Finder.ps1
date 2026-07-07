@@ -1200,7 +1200,7 @@ function Start-Tracker([bool]$drive){
     # camera) so the K1 only ever streams the camera once.
     if($script:LiveOn){ Add-LogTrack 'Stopping Live View (single camera consumer)...' $amber; Stop-Live }
     Add-LogTrack ("Deploying follow helpers to {0} ..." -f $ip) $accent
-    if(-not (Deploy-FollowFiles $ip)){ Add-LogTrack 'Deploy failed (follow helper files missing next to the app).' $red; return $false }
+    if(-not (Deploy-FollowFiles $ip)){ Add-LogTrack 'Deploy failed: a robot/ helper file or robot/config/defaults.yaml is missing. If you just upgraded the layout, fully CLOSE and relaunch the app from desktop/ (a stale pre-reorg instance still looks in the old K1Finder/ folder).' $red; return $false }
     # Gesture / A-B selected -> make sure the pose model is on the robot first (auto-stage). On failure
     # the node still runs and falls back to the ArUco marker, so offer to continue rather than block.
     if(($chkGesture -and $chkGesture.Checked) -or ($chkAB -and $chkAB.Checked)){
@@ -1466,7 +1466,7 @@ function Start-Follow([bool]$drive){
     # camera) so the camera is only ever streamed once.
     if($script:LiveOn){ Add-LogCtrl 'Stopping Live View (single camera consumer)...' $amber; Stop-Live }
     Add-LogCtrl ("Deploying follow helpers to {0} ..." -f $ip) $accent
-    if(-not (Deploy-FollowFiles $ip)){ Add-LogCtrl 'Deploy failed (follow helper files missing next to the app).' $red; return $false }
+    if(-not (Deploy-FollowFiles $ip)){ Add-LogCtrl 'Deploy failed: a robot/ helper file or robot/config/defaults.yaml is missing. If you just upgraded the layout, fully CLOSE and relaunch the app from desktop/ (a stale pre-reorg instance still looks in the old K1Finder/ folder).' $red; return $false }
     $followSync.Stop=$false; $followSync.Log.Clear()
     $mode = if($drive){'drive'}else{'preview'}
     $remote="bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb"
