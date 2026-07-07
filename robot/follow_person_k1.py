@@ -88,6 +88,7 @@ from common import (  # noqa: E402
     S_SEARCH, S_TRACK, S_REACQUIRE, S_PARKED, S_SEARCHING, TS_LOCKED, TS_COASTING, TS_RELOCALIZING,
     clamp, to_bgr, depth_to_meters, iou_xyxy,
 )
+from bridge import Bridge  # noqa: E402  (P3.1: loco_follow_bridge process wrapper)
 
 
 # ---------------------------------------------------------------------------
@@ -1454,111 +1455,7 @@ def low_light_boost(bgr, on=True, thresh=LL_DARK_THRESH):
         return bgr
 
 
-# ---------------------------------------------------------------------------
-# Bridge wrapper -- --drive only.
-# ---------------------------------------------------------------------------
-class Bridge:
-    def __init__(self, path, extra_env=None):
-        self.path = path
-        self.proc = None
-        self._lock = threading.Lock()
-        self.extra_env = extra_env or None
-
-    def start(self):
-        env = None
-        if self.extra_env:
-            env = dict(os.environ); env.update(self.extra_env)
-        self.proc = subprocess.Popen(
-            [self.path],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            bufsize=1,
-            universal_newlines=True,
-            env=env,
-        )
-
-    def _send(self, cmd):
-        with self._lock:
-            if self.proc is None or self.proc.poll() is not None:
-                return None
-            try:
-                self.proc.stdin.write(cmd + "\n")
-                self.proc.stdin.flush()
-            except (BrokenPipeError, ValueError, OSError):
-                return None
-            return cmd
-
-    def command_expect_ok(self, cmd, timeout=4.0):
-        with self._lock:
-            if self.proc is None or self.proc.poll() is not None:
-                return False, "<bridge-dead>"
-            try:
-                self.proc.stdin.write(cmd + "\n")
-                self.proc.stdin.flush()
-            except (BrokenPipeError, ValueError, OSError) as e:
-                return False, "<write-failed:%s>" % e
-        reply_box = {}
-
-        def _read():
-            try:
-                reply_box["line"] = self.proc.stdout.readline()
-            except Exception as e:  # noqa: BLE001
-                reply_box["err"] = str(e)
-
-        t = threading.Thread(target=_read, daemon=True)
-        t.start()
-        t.join(timeout)
-        if "line" not in reply_box:
-            return False, "<no-reply/timeout>"
-        line = (reply_box["line"] or "").strip()
-        if not line:
-            return False, "<eof>"
-        parts = line.split()
-        ok = len(parts) >= 3 and parts[0] == "OK" and parts[-1] == "0"
-        return ok, line
-
-    def send_velocity(self, vx, vy, vyaw):
-        self._send("v %.4f %.4f %.4f" % (vx, vy, vyaw))
-
-    def stop(self):
-        self._send("stop")
-
-    def prep(self):
-        self._send("prep")      # ChangeMode(kPrepare) -- stable stand
-
-    def walk(self):
-        self._send("walk")      # ChangeMode(kWalking)
-
-    def quit(self):
-        self._send("quit")
-
-    def alive(self):
-        return self.proc is not None and self.proc.poll() is None
-
-    def shutdown(self, join_timeout=3.0):
-        try:
-            if self.alive():
-                self.stop()
-                self.quit()
-                t0 = time.time()
-                while self.alive() and (time.time() - t0) < join_timeout:
-                    time.sleep(0.05)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            if self.alive():
-                self.proc.terminate()
-                t0 = time.time()
-                while self.alive() and (time.time() - t0) < 1.0:
-                    time.sleep(0.05)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            if self.alive():
-                self.proc.kill()
-        except Exception:  # noqa: BLE001
-            pass
+# Bridge (the loco_follow_bridge process wrapper) -> bridge.py (P3.1).
 
 
 # ---------------------------------------------------------------------------
