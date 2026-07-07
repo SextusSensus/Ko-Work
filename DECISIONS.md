@@ -56,8 +56,11 @@ retired in favor of the raised-hand gesture).
 **What:** the untethered operator-deadman (`--require-heartbeat`) reads a heartbeat
 file/signal; the deadman is inert unless something *writes* it at ~10 Hz.
 
-**Status:** to be verified when Phase 1 is executed. `k1_hb` / heartbeat references
-exist in 13 files (node + app + docs); whether a live ~10 Hz *writer* is present is
-not yet confirmed. Will be filled in here with the finding (and flagged if none).
+**Status:** candidate writer identified, rate not yet verified. `Start-HbRelay` in
+`K1Finder.ps1` is started by `Start-Tracker` when `--require-heartbeat` is set and is
+the app-side heartbeat relay that should touch `/tmp/k1_hb`. Before P1.2 lands, confirm
+it actually writes at ~10 Hz (both the node's `--hb-stale-ms 400` gate and the bridge's
+`HB_STALE_MS` tier assume a fresh mtime at that rate); if it doesn't, the untethered
+deadman is inert and must be flagged. See PHASE1_PLAN.md → P1.2.
 
-- [ ] (pending Phase 1)
+- [ ] (pending P1.2 implementation — verify Start-HbRelay write rate)
