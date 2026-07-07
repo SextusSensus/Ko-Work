@@ -90,6 +90,23 @@ function Deploy-FollowFiles {
         $p = Start-Process scp.exe -ArgumentList $args -NoNewWindow -PassThru
         $null = $p.WaitForExit(20000)
     }
+    # Config layer (P1.1): the node loads /home/booster/config/defaults.yaml and FAIL-CLOSES
+    # without it, so defaults.yaml is hard-required like the files above; the profiles are
+    # best-effort. mkdir the flat config dir first (mirrors the reid/ mkdir pattern).
+    $cfgDir = Join-Path $SCRIPT_DIR 'config'
+    $defaults = Join-Path $cfgDir 'defaults.yaml'
+    if (-not (Test-Path $defaults)) { return $false }
+    $mk = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser, $ip), 'mkdir -p /home/booster/config')) -NoNewWindow -PassThru
+    $null = $mk.WaitForExit(10000)
+    $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($defaults, ("{0}@{1}:/home/booster/config/defaults.yaml" -f $script:SshUser, $ip))) -NoNewWindow -PassThru
+    $null = $p.WaitForExit(20000)
+    foreach ($prof in @('dev.yaml', 'demo.yaml', 'field.yaml')) {
+        $ps = Join-Path $cfgDir $prof
+        if (Test-Path $ps) {
+            $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($ps, ("{0}@{1}:/home/booster/config/{2}" -f $script:SshUser, $ip, $prof))) -NoNewWindow -PassThru
+            $null = $p.WaitForExit(20000)
+        }
+    }
     # k1_rerun.py is BEST-EFFORT (review fix): Rerun is never a launch dependency -- the node
     # degrades to a no-op sink when the module is absent (follow_person_k1.py _NullRR), so a
     # missing local copy must not block the follow like the hard-required files above do.

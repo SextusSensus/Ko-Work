@@ -72,6 +72,7 @@ import collections
 
 import numpy as np
 import cv2
+import yaml
 
 import rclpy
 from rclpy.node import Node
@@ -4154,6 +4155,85 @@ class Follower:
             self.bridge.shutdown()
 
 
+# ---------------------------------------------------------------------------
+# Config layer (P1.1): YAML defaults + optional --profile overlay, then CLI wins.
+# The node FAIL-CLOSES (refuses to start) on a missing/invalid config -- a config
+# error must never silently degrade to a weaker set of safety knobs. The 7 floors
+# stay null in defaults.yaml so the appearance-resolution below still runs.
+# ---------------------------------------------------------------------------
+_FLOOR_KEYS = ("hiconf", "anchor_floor", "bank_floor", "reloc_floor",
+               "reloc_view_floor", "reloc_iso_bypass_anchor", "reloc_anchor_backstop")
+
+
+def _config_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
+
+
+def _load_yaml(path):
+    try:
+        with open(path, "r") as f:
+            data = yaml.safe_load(f)
+    except Exception as e:  # noqa: BLE001
+        raise SystemExit("CONFIG-ERROR: cannot read %s (%s)" % (path, e))
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise SystemExit("CONFIG-ERROR: %s must be a YAML mapping (got %s)"
+                         % (path, type(data).__name__))
+    return data
+
+
+def _merged_config(parser, profile):
+    """defaults.yaml <- optional profile overlay. Validates the key set (defaults must
+    EXACTLY match the parser dests; a profile must be a subset), enforces choices parity
+    with argparse, keeps the appearance floors null, and coerces overlay values to the
+    argument type. Fail-closed on any mismatch."""
+    dests = {a.dest: a for a in parser._actions if a.dest not in ("help", "profile")}
+    valid = set(dests)
+
+    defaults_path = os.path.join(_config_dir(), "defaults.yaml")
+    if not os.path.isfile(defaults_path):
+        raise SystemExit("CONFIG-ERROR: missing %s -- cannot start (fail-closed). "
+                         "Deploy config/ next to the node." % defaults_path)
+    base = _load_yaml(defaults_path)
+    missing, unknown = valid - set(base), set(base) - valid
+    if missing or unknown:
+        raise SystemExit("CONFIG-ERROR: %s key set mismatch -- missing=%s unknown=%s"
+                         % (defaults_path, sorted(missing), sorted(unknown)))
+    for k in _FLOOR_KEYS:
+        if base.get(k) is not None:
+            raise SystemExit("CONFIG-ERROR: %s must leave '%s' null (appearance-resolved); "
+                             "got %r" % (defaults_path, k, base[k]))
+
+    if profile:
+        prof_path = profile if (os.sep in profile or profile.endswith((".yaml", ".yml"))) \
+            else os.path.join(_config_dir(), profile + ".yaml")
+        if not os.path.isfile(prof_path):
+            raise SystemExit("CONFIG-ERROR: --profile %s: no such config file %s"
+                             % (profile, prof_path))
+        overlay = _load_yaml(prof_path)
+        bad = set(overlay) - valid
+        if bad:
+            raise SystemExit("CONFIG-ERROR: profile %s has unknown key(s) %s"
+                             % (prof_path, sorted(bad)))
+        for k, v in overlay.items():
+            act = dests[k]
+            if v is not None and getattr(act, "type", None) is not None:
+                try:
+                    v = act.type(v)
+                except Exception as e:  # noqa: BLE001
+                    raise SystemExit("CONFIG-ERROR: profile %s: '%s'=%r not %s (%s)"
+                                     % (prof_path, k, overlay[k], act.type.__name__, e))
+            base[k] = v
+
+    for k, act in dests.items():                       # choices parity (YAML bypasses argparse)
+        ch = getattr(act, "choices", None)
+        if ch is not None and base.get(k) not in ch:
+            raise SystemExit("CONFIG-ERROR: '%s'=%r not in choices %s"
+                             % (k, base.get(k), list(ch)))
+    return base
+
+
 def parse_args(argv):
     p = argparse.ArgumentParser(
         description="K1 lock-and-handoff person-follow (preview by default; --drive to walk).")
@@ -4604,8 +4684,20 @@ def parse_args(argv):
                         "slice). DEFAULT OFF = byte-identical (no drain, no commanded_hold).")
     p.add_argument("--cmd-file", type=str, default="/tmp/k1_cmd",
                    help="path the host writes one command token to (drained once per tick)")
+    p.add_argument("--profile",
+                   help="config profile name (config/<name>.yaml) or a path, overlaid on "
+                        "defaults.yaml; CLI flags still override. Omit = defaults only.")
 
-    args = p.parse_args(argv)
+    # --- P1.1 config layer: defaults.yaml <- --profile <- CLI (CLI wins). Parse CLI with
+    # SUPPRESS defaults so ONLY explicitly-passed flags land in the namespace -- that lets a
+    # CLI value equal to the node default still beat a profile-set value. -------------------
+    for _a in p._actions:
+        if _a.dest != "help":
+            _a.default = argparse.SUPPRESS
+    cli = vars(p.parse_args(argv))
+    cfg = _merged_config(p, cli.pop("profile", None))
+    cfg.update(cli)                                    # CLI overrides defaults/profile
+    args = argparse.Namespace(**cfg)
     if not args.drive:
         args.preview = True
     # Appearance-aware similarity floors. striped/osnet use COSINE, not the histogram
