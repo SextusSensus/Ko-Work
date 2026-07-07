@@ -41,12 +41,11 @@ lock trigger, and it's tiny (~43 KB).
   top-level README names it the main entry point and documents its six tabs.
 
 **Recommendation: REMOVE the WPF stack + `_redesign/`** — the WinForms
-`K1Finder.ps1` is the shipping UI. But per the brief, *"one of the two app stacks
-is the intended final UI"* — so **confirm the direction** before I `git rm`.
+`K1Finder.ps1` is the shipping UI.
 
-- [ ] **Remove** the WPF stack + `_redesign/` (WinForms `K1Finder.ps1` is final)
-- [ ] **Keep both** for now (WPF redesign is still intended)
-- [ ] **Other** (e.g. keep `_redesign/` docs, remove only the WPF `.ps1`/launchers)
+- [x] **Remove** the WPF stack + `_redesign/` (WinForms `K1Finder.ps1` is final)
+  — **RESOLVED 2026-07-07:** `git rm`'d `K1Finder.wpf.ps1`, `K1 Finder (WPF).bat`,
+  `Launch K1 Finder WPF (no console).vbs`, and `K1Finder/_redesign/`.
 
 ---
 
