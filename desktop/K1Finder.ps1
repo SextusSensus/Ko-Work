@@ -36,12 +36,25 @@ $script:RerunWebViewer    = ('https://app.rerun.io/version/{0}/' -f $script:Reru
 $K1_SSH_USER      = 'booster'
 $K1_SSH_PASS      = '123456'
 $K1_LOCO_IFACE    = '127.0.0.1'
-$SCRIPT_DIR       = Split-Path -Parent $MyInvocation.MyCommand.Path
-# P2.1 reorg: the app lives in desktop/; its deploy SOURCES moved to sibling dirs. The scp DEST
-# stays flat /home/booster/... (the robot layout is unchanged). last_target.txt is per-machine
-# runtime state and stays next to the app.
-$REPO_ROOT        = Split-Path -Parent $SCRIPT_DIR
-$ROBOT_DIR        = Join-Path $REPO_ROOT 'robot'
+$SCRIPT_DIR       = if ($PSScriptRoot) { $PSScriptRoot }
+                    elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path }
+                    else { (Get-Location).Path }
+# P2.1 reorg: the app lives in desktop/; its deploy SOURCES moved to robot/ (scp DEST stays flat
+# /home/booster/...). ROBUSTLY locate robot/ (contains follow_person_k1.py + common.py) by walking
+# up from the app dir and trying <dir>/robot and <dir> at each level -- resilient to the launch CWD,
+# a copied app, or a still-flat layout, so the deploy doesn't false-fail on a path quirk.
+$ROBOT_DIR = $null
+$__d = $SCRIPT_DIR
+for ($__i = 0; ($__i -lt 5) -and $__d -and (-not $ROBOT_DIR); $__i++) {
+    foreach ($__c in @((Join-Path $__d 'robot'), $__d)) {
+        if ((Test-Path (Join-Path $__c 'follow_person_k1.py')) -and (Test-Path (Join-Path $__c 'common.py'))) {
+            $ROBOT_DIR = $__c; break
+        }
+    }
+    $__d = Split-Path -Parent $__d
+}
+if (-not $ROBOT_DIR) { $ROBOT_DIR = Join-Path (Split-Path -Parent $SCRIPT_DIR) 'robot' }   # best-effort default
+$REPO_ROOT        = Split-Path -Parent $ROBOT_DIR
 $MODELS_DIR       = Join-Path $REPO_ROOT 'models'
 $LAST_TARGET_FILE = Join-Path $SCRIPT_DIR 'last_target.txt'
 $WORK             = Join-Path $env:TEMP 'k1finder'
@@ -1200,7 +1213,7 @@ function Start-Tracker([bool]$drive){
     # camera) so the K1 only ever streams the camera once.
     if($script:LiveOn){ Add-LogTrack 'Stopping Live View (single camera consumer)...' $amber; Stop-Live }
     Add-LogTrack ("Deploying follow helpers to {0} ..." -f $ip) $accent
-    if(-not (Deploy-FollowFiles $ip)){ Add-LogTrack 'Deploy failed: a robot/ helper file or robot/config/defaults.yaml is missing. If you just upgraded the layout, fully CLOSE and relaunch the app from desktop/ (a stale pre-reorg instance still looks in the old K1Finder/ folder).' $red; return $false }
+    if(-not (Deploy-FollowFiles $ip)){ Add-LogTrack ("Deploy failed: a helper file is missing under '{0}' (or its config\defaults.yaml). If you upgraded the layout, fully CLOSE + relaunch from desktop/. Copy this exact path to Claude." -f $ROBOT_DIR) $red; return $false }
     # Gesture / A-B selected -> make sure the pose model is on the robot first (auto-stage). On failure
     # the node still runs and falls back to the ArUco marker, so offer to continue rather than block.
     if(($chkGesture -and $chkGesture.Checked) -or ($chkAB -and $chkAB.Checked)){
@@ -1466,7 +1479,7 @@ function Start-Follow([bool]$drive){
     # camera) so the camera is only ever streamed once.
     if($script:LiveOn){ Add-LogCtrl 'Stopping Live View (single camera consumer)...' $amber; Stop-Live }
     Add-LogCtrl ("Deploying follow helpers to {0} ..." -f $ip) $accent
-    if(-not (Deploy-FollowFiles $ip)){ Add-LogCtrl 'Deploy failed: a robot/ helper file or robot/config/defaults.yaml is missing. If you just upgraded the layout, fully CLOSE and relaunch the app from desktop/ (a stale pre-reorg instance still looks in the old K1Finder/ folder).' $red; return $false }
+    if(-not (Deploy-FollowFiles $ip)){ Add-LogCtrl ("Deploy failed: a helper file is missing under '{0}' (or its config\defaults.yaml). If you upgraded the layout, fully CLOSE + relaunch from desktop/. Copy this exact path to Claude." -f $ROBOT_DIR) $red; return $false }
     $followSync.Stop=$false; $followSync.Log.Clear()
     $mode = if($drive){'drive'}else{'preview'}
     $remote="bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb"
