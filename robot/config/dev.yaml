@@ -1,0 +1,12 @@
+# dev profile -- CURRENT BEHAVIOR, byte-for-byte (P1.1).
+#
+# Deliberately empty: overlays nothing on defaults.yaml, so
+#   follow_person_k1.py --profile dev  ==  follow_person_k1.py
+# is the no-op-profile equivalence the replay gate asserts (COMPARE-OK).
+#
+# Profile rules (enforced by the loader, fail-closed):
+#  - keys are argparse dest names (underscores); unknown keys refuse to start
+#  - values are overrides on defaults.yaml; CLI flags still override everything
+#  - NEVER set drive/preview here (mode comes from run_follow.sh / the app)
+#  - leave the 7 appearance-resolved floors null/unset (see defaults.yaml header)
+{}

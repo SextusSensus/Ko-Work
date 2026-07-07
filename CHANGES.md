@@ -63,6 +63,55 @@ before/after refactor gate can snapshot and diff any flag-set.
 - The generated manifests (`k1_tree.txt` etc.) still list `follow_marker.py/png` and
   are now stale until regenerated on the robot; they are untracked, so this is moot.
 
+## Phase 1 — Config + fail-closed profiles  ✅
+
+Plan + test design in `PHASE1_PLAN.md`; test harness (`_gate/config_parity.ps1`,
+`dump_args.py`, `config_matrix`) built pre-refactor. `BEHAVIOR-CHANGE` in the config
+**source** only for P1.1 (byte-identical decisions); P1.2 is a deliberate new refusal.
+
+- **P1.1a** (`68059e2`) — `config/defaults.yaml` generated from the pristine `parse_args`
+  (types preserved, the 7 appearance floors kept `null`) + empty dev/demo/field overlays.
+- **P1.1b** (`388fc2e`) — YAML loader in `parse_args`: `defaults.yaml ← --profile ← CLI`
+  (CLI wins via an `argparse.SUPPRESS` parse, so a CLI value == the node default still
+  beats a profile). Fail-closed on missing/mismatched/baked-floor/unknown-key/bad-choice.
+  App deploys `config/` (defaults hard-required). Committed `config_selftest.py`.
+- **P1.1b-fix** (`a2ea198`) — hardened per an adversarial review (6 CONFIRMED latent
+  footguns): symmetric `type(str(v))` coercion so an int-written float stays float and a
+  non-int float for an int key raises like argparse; bool-flag enforcement; floor-null on
+  profiles too; deploy checks the scp exit code on `defaults.yaml`.
+- **P1.2a** (`d45aac5`) — fail-closed drive gate + `--allow-untethered-unsafe` (default
+  flip): `--drive` without `--require-heartbeat` now REFUSES (exit 2) unless the explicit
+  override; refusal fires in `parse_args` before any bridge/CamNode/YOLO spawn; loud WARN
+  on the override path.
+- **P1.2b** (`9280701`) — populated demo/field safety profiles (both `require_heartbeat:
+  true`) + `run_follow_demo.sh` (pre-compiles the bridge, forces `--profile demo`).
+
+**Gates (every commit):** config-parity byte-identical (20/20, then 21/21 after the +1 key
+in P1.2); decision-stream `COMPARE-OK`; `config_selftest` OK; `--profile dev` == no-profile;
+`K1Finder.ps1` parses clean. The heartbeat-writer question was RESOLVED (armed soft deadman
+~25 Hz — see DECISIONS.md P1.2).
+
+## Phase 2 — Restructure + build  ✅
+
+Plan in `PHASES_2-3_PLAN.md`. `SAFE` (moves + build only); byte-identity held throughout.
+
+- **P2.1** (`fef82e7`) — reorganized by deploy target: `git mv` (history preserved) into
+  `robot/` (node, bridge, scripts, config), `desktop/` (app + launchers), `eval/`
+  (replay harness), `docs/` (design docs), `models/` (blobs + wheels). The robot layout is
+  unchanged — scp DEST stays flat `/home/booster/`, only the app's SOURCE paths moved
+  (`$ROBOT_DIR`/`$MODELS_DIR`). Fixed the `_gate` harness, doc-path comments, `.gitignore`,
+  and the README map. Model blobs untracked (fetch-script, `models/fetch_models.sh`).
+  Gate: config-parity 21/21 + decision-stream + config_selftest all byte-identical after
+  the move.
+- **P2.2** (`18de845`) — `robot/bridge_cpp/CMakeLists.txt` mirrors the verified g++ recipe
+  exactly (safety floor unweakened). `run_follow.sh` unchanged — its guard already consumes
+  a pre-staged binary. `VERIFY ON ROBOT` for the aarch64 build.
+- **P2.3** (`8fad451`) — `robot/pyproject.toml` (`pip install -e .`) + `requirements.txt`:
+  numpy<2 ABI pin, rerun/eval optional extras, rclpy/sensor_msgs as system deps. TOML
+  parses; `pip install -e .` is `VERIFY ON ROBOT` (heavy GPU deps).
+
 ## Pending human decisions (see DECISIONS.md)
-- P0.2a / P0.2b — **resolved** (see above).
-- P1.2 heartbeat writer — open, to be resolved when Phase 1 is executed.
+- P0.2a / P0.2b — **resolved**.
+- P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
+- P1.2b demo/field profile values — populated with STARTING values; awaiting final sign-off.
+- P2.1 model/wheels location — **resolved** (models/ via fetch-script; wheels → models/wheels/).

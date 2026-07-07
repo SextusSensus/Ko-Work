@@ -18,18 +18,22 @@ last_target.txt
 frame.jpg
 
 # Session archive (moved backups + scratch; see _backups/README.txt)
-K1Finder/_backups/
+**/_backups/
 
-# Offline pip wheel closures (large binaries; regenerate per K1Finder/wheels/README.md)
-K1Finder/wheels/*.whl
+# Offline pip wheel closures (large binaries; regenerate per models/wheels/README.md)
+models/wheels/*.whl
+
+# Model blobs -- fetched/exported on demand, not tracked raw in git (see models/README.md)
+models/*.onnx
+models/*.engine
 
 # Auto-downloaded YOLO / ultralytics model weights (regenerated on first use)
 *.pt
 
 # Generated file-tree manifests (regenerated on the robot by tree_manifest.py)
-K1Finder/k1_tree.txt
-K1Finder/k1_paths.json
-K1Finder/k1_paths_list.txt
+k1_tree.txt
+k1_paths.json
+k1_paths_list.txt
 
 # Local Claude Code settings (per-machine)
 .claude/settings.local.json

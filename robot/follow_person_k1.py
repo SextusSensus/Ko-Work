@@ -72,6 +72,7 @@ import collections
 
 import numpy as np
 import cv2
+import yaml
 
 import rclpy
 from rclpy.node import Node
@@ -288,7 +289,7 @@ def marker_center(frame):
 # single funnel _try_seed consumes. ArUco is the DEFAULT and stays byte-identical;
 # gesture is opt-in (--lock-trigger). A trigger fault degrades to "no lock this
 # frame", never to motion (fall risk stays perception-side). See
-# K1Finder/SCOPE_lock_trigger_gesture.md for the full design + safety rationale.
+# docs/SCOPE_lock_trigger_gesture.md for the full design + safety rationale.
 # ---------------------------------------------------------------------------
 LockHint = collections.namedtuple("LockHint", "point owner_box owner_tid source point_kind")
 
@@ -720,7 +721,7 @@ class CompositeTrigger(LockTrigger):
 # Drained once per tick, non-blocking, crash-safe. NEVER the node's PTY stdin
 # (which carries the Ctrl-C e-stop) and NEVER the bridge stdin (raw velocity).
 # The brain selects only a member of a FROZEN enum -- never a velocity, never an
-# identity. See K1Finder/SCOPE_nl_command_layer.md.
+# identity. See docs/SCOPE_nl_command_layer.md.
 # ---------------------------------------------------------------------------
 class CommandChannel:
     def __init__(self, path):
@@ -1966,6 +1967,12 @@ class Follower:
         self.hb_file = args.hb_file
         self.hb_stale_s = max(0.05, args.hb_stale_ms / 1000.0)
         self._hb_lost_logged = False
+        # P1.2: record when drive is running via the unsafe override (the parse_args gate let it
+        # through only because --allow-untethered-unsafe was passed) so the log/.rrd captures that
+        # the operator deadman was deliberately bypassed.
+        if self.drive and getattr(args, "allow_untethered_unsafe", False) and not self.require_hb:
+            log("WARN UNTETHERED-UNSAFE override active: driving with NO operator deadman "
+                "(--allow-untethered-unsafe). Keep a hand on the gamepad e-stop.")
 
         self.vx_min = max(args.vx_min, -HARD_VX_LIMIT)
         self.vx_max = min(args.vx_max,  HARD_VX_LIMIT)
@@ -4154,6 +4161,102 @@ class Follower:
             self.bridge.shutdown()
 
 
+# ---------------------------------------------------------------------------
+# Config layer (P1.1): YAML defaults + optional --profile overlay, then CLI wins.
+# The node FAIL-CLOSES (refuses to start) on a missing/invalid config -- a config
+# error must never silently degrade to a weaker set of safety knobs. The 7 floors
+# stay null in defaults.yaml so the appearance-resolution below still runs.
+# ---------------------------------------------------------------------------
+_FLOOR_KEYS = ("hiconf", "anchor_floor", "bank_floor", "reloc_floor",
+               "reloc_view_floor", "reloc_iso_bypass_anchor", "reloc_anchor_backstop")
+
+
+def _config_dir():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
+
+
+def _load_yaml(path):
+    try:
+        with open(path, "r") as f:
+            data = yaml.safe_load(f)
+    except Exception as e:  # noqa: BLE001
+        raise SystemExit("CONFIG-ERROR: cannot read %s (%s)" % (path, e))
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise SystemExit("CONFIG-ERROR: %s must be a YAML mapping (got %s)"
+                         % (path, type(data).__name__))
+    return data
+
+
+def _merged_config(parser, profile):
+    """defaults.yaml <- optional profile overlay. Validates the key set (defaults must
+    EXACTLY match the parser dests; a profile must be a subset), enforces choices parity
+    with argparse, keeps the appearance floors null, and coerces overlay values to the
+    argument type. Fail-closed on any mismatch."""
+    dests = {a.dest: a for a in parser._actions if a.dest not in ("help", "profile")}
+    valid = set(dests)
+
+    defaults_path = os.path.join(_config_dir(), "defaults.yaml")
+    if not os.path.isfile(defaults_path):
+        raise SystemExit("CONFIG-ERROR: missing %s -- cannot start (fail-closed). "
+                         "Deploy config/ next to the node." % defaults_path)
+    base = _load_yaml(defaults_path)
+    missing, unknown = valid - set(base), set(base) - valid
+    if missing or unknown:
+        raise SystemExit("CONFIG-ERROR: %s key set mismatch -- missing=%s unknown=%s"
+                         % (defaults_path, sorted(missing), sorted(unknown)))
+    for k in _FLOOR_KEYS:
+        if base.get(k) is not None:
+            raise SystemExit("CONFIG-ERROR: %s must leave '%s' null (appearance-resolved); "
+                             "got %r" % (defaults_path, k, base[k]))
+
+    if profile:
+        prof_path = profile if (os.sep in profile or profile.endswith((".yaml", ".yml"))) \
+            else os.path.join(_config_dir(), profile + ".yaml")
+        if not os.path.isfile(prof_path):
+            raise SystemExit("CONFIG-ERROR: --profile %s: no such config file %s"
+                             % (profile, prof_path))
+        overlay = _load_yaml(prof_path)
+        bad = set(overlay) - valid
+        if bad:
+            raise SystemExit("CONFIG-ERROR: profile %s has unknown key(s) %s"
+                             % (prof_path, sorted(bad)))
+        for k in _FLOOR_KEYS:                           # floors stay appearance-resolved in EVERY layer
+            if overlay.get(k) is not None:
+                raise SystemExit("CONFIG-ERROR: profile %s must leave '%s' null (appearance-resolved); "
+                                 "got %r" % (prof_path, k, overlay[k]))
+        base.update(overlay)
+
+    # Coerce every value to the arg type the SAME way argparse coerces a CLI token -- via the
+    # STRING (act.type(str(v))) -- so defaults.yaml and profiles are symmetric and type-robust:
+    # an int-written float becomes float (byte-identical), and a non-integer float for an int key
+    # RAISES like argparse rather than silently truncating. Bool flags must be real YAML bools.
+    bool_dests = {d for d, a in dests.items()
+                  if isinstance(a, argparse.BooleanOptionalAction) or getattr(a, "nargs", None) == 0}
+    for k, act in dests.items():
+        v = base.get(k)
+        if v is None:
+            continue
+        if k in bool_dests:
+            if not isinstance(v, bool):
+                raise SystemExit("CONFIG-ERROR: '%s' must be a YAML bool (true/false), got %r" % (k, v))
+        elif getattr(act, "type", None) is not None:
+            try:
+                base[k] = act.type(str(v))
+            except Exception as e:  # noqa: BLE001
+                raise SystemExit("CONFIG-ERROR: '%s'=%r not %s (%s)" % (k, v, act.type.__name__, e))
+        else:
+            base[k] = str(v)                           # plain string args -> match a CLI string token
+
+    for k, act in dests.items():                       # choices parity (YAML bypasses argparse)
+        ch = getattr(act, "choices", None)
+        if ch is not None and base.get(k) not in ch:
+            raise SystemExit("CONFIG-ERROR: '%s'=%r not in choices %s"
+                             % (k, base.get(k), list(ch)))
+    return base
+
+
 def parse_args(argv):
     p = argparse.ArgumentParser(
         description="K1 lock-and-handoff person-follow (preview by default; --drive to walk).")
@@ -4454,6 +4557,10 @@ def parse_args(argv):
     p.add_argument("--hb-stale-ms", type=int, default=400,
                    help="heartbeat older than this (ms) = operator absent -> stop (this node's gate; "
                         "the bridge applies its own HB_STALE_MS/HB_PREP_MS tiers independently)")
+    p.add_argument("--allow-untethered-unsafe", action=argparse.BooleanOptionalAction, default=False,
+                   help="DANGEROUS override: permit --drive WITHOUT --require-heartbeat (no operator "
+                        "deadman). Default off -> such a config is REFUSED at startup. Only for a "
+                        "tethered bench/demo with a human on the gamepad e-stop.")
 
     # low-light enhancement
     p.add_argument("--low-light", action=argparse.BooleanOptionalAction, default=True,
@@ -4604,8 +4711,20 @@ def parse_args(argv):
                         "slice). DEFAULT OFF = byte-identical (no drain, no commanded_hold).")
     p.add_argument("--cmd-file", type=str, default="/tmp/k1_cmd",
                    help="path the host writes one command token to (drained once per tick)")
+    p.add_argument("--profile",
+                   help="config profile name (config/<name>.yaml) or a path, overlaid on "
+                        "defaults.yaml; CLI flags still override. Omit = defaults only.")
 
-    args = p.parse_args(argv)
+    # --- P1.1 config layer: defaults.yaml <- --profile <- CLI (CLI wins). Parse CLI with
+    # SUPPRESS defaults so ONLY explicitly-passed flags land in the namespace -- that lets a
+    # CLI value equal to the node default still beat a profile-set value. -------------------
+    for _a in p._actions:
+        if _a.dest != "help":
+            _a.default = argparse.SUPPRESS
+    cli = vars(p.parse_args(argv))
+    cfg = _merged_config(p, cli.pop("profile", None))
+    cfg.update(cli)                                    # CLI overrides defaults/profile
+    args = argparse.Namespace(**cfg)
     if not args.drive:
         args.preview = True
     # Appearance-aware similarity floors. striped/osnet use COSINE, not the histogram
@@ -4659,6 +4778,16 @@ def parse_args(argv):
     # Normalize the depth-topic spelling ONCE so the subscription decision (run()) and the DRIVE
     # precondition (_need_depth) share one test: ""/whitespace/any-case-"none" == depth disabled.
     args.depth_topic = (args.depth_topic or "").strip()
+
+    # P1.2 FAIL-CLOSED drive gate: --drive without the operator deadman is refused unless an
+    # explicit unsafe override. Fires HERE (parse_args) before Follower/rclpy.init/CamNode/YOLO/
+    # bridge -- so no motion path is ever spawned for an untethered-unsafe config. Inverts today's
+    # dangerous default (drive silently ran with the deadman OFF). Preview is unaffected.
+    if args.drive and not args.require_heartbeat and not args.allow_untethered_unsafe:
+        p.error("REFUSING TO DRIVE: --drive without --require-heartbeat is untethered-unsafe "
+                "(no operator deadman -- a lost operator cannot stop the robot). Add "
+                "--require-heartbeat to arm the deadman, or pass --allow-untethered-unsafe to "
+                "drive with NO deadman on a tethered bench (human on the gamepad e-stop).")
     return args
 
 

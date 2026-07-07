@@ -1,0 +1,10 @@
+# demo profile -- supervised indoor demo (P1.2). STARTING values, human-reviewed (DECISIONS.md P1.2b).
+# Overlaid on defaults.yaml; CLI flags still override. Selecting this profile satisfies the
+# fail-closed drive gate (require_heartbeat: true). Profile rules: never set drive/preview here,
+# leave the 7 appearance floors null, unknown keys refuse to start.
+require_heartbeat: true       # operator deadman mandatory even indoors (active-consent tether)
+obstacle_brake: true          # depth forward-clearance reflex on (only ever reduces vx)
+max_follow_range: 3.0         # geofence: stand if depth-range to target > 3.0 m (> standoff 1.2)
+coast_frames: 6               # coast ~0.6 s (yaw-only) through brief occlusions before loss
+max_seconds: 90.0             # session watchdog: bound a demo take at 90 s (< 120 s default)
+obstacle_target_margin: 0.4   # (= default) don't brake on the operator being followed
