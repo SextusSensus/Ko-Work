@@ -352,6 +352,7 @@ class GestureTrigger(LockTrigger):
         self.ok = False
         self.ran_inference = False
         self.holds = {}            # track_id -> confirmed-raise frames (with miss forgiveness)
+        self._hold_since = {}      # Phase 2.1: track_id -> monotonic time of the FIRST raise of the dwell
         self._miss = {}            # track_id -> consecutive missed pose frames (field fix: one
                                    # blurry/low-conf frame used to HARD-RESET the whole hold)
         self._tick = 0
@@ -571,17 +572,32 @@ class GestureTrigger(LockTrigger):
         # (the miss does NOT increment the hold); identity walls are untouched (two raisers
         # still refuse; the reseed anchor floor still gates re-seeds).
         _tol = int(getattr(self.a, "gesture_miss_tol", 0))
+        _now = time.monotonic()
         for tid in list(self.holds.keys()):
             if tid not in raisers:
                 self._miss[tid] = self._miss.get(tid, 0) + 1
                 if self._miss[tid] > _tol:
                     del self.holds[tid]
                     self._miss.pop(tid, None)
+                    self._hold_since.pop(tid, None)   # Phase 2.1: a miss RUN > tol resets the wall-clock dwell
         for tid in raisers:
+            if tid not in self.holds:
+                self._hold_since[tid] = _now          # Phase 2.1: stamp the first raise of a fresh dwell
             self.holds[tid] = self.holds.get(tid, 0) + 1
             self._miss.pop(tid, None)
+        # Phase 2.1 (deterministic confirm): gate on continuous wall-clock dwell (--gesture-hold-s) so the
+        # time-to-lock is loop-rate-independent, with a min FRAME floor (--gesture-hold-floor) so a single
+        # fluke frame that happens to span the window can't seed. --gesture-hold-s 0 = the legacy pure
+        # frame-count gate (holds >= --gesture-hold). The identity walls below (ambiguity / owner-authority
+        # / two-raiser refuse) are unchanged -> INV-4 held; pose runs only in stationary states.
         hold_n = int(self.a.gesture_hold)
-        confirmed = [tid for tid, c in self.holds.items() if c >= hold_n]
+        hold_s = float(getattr(self.a, "gesture_hold_s", 0.0))
+        if hold_s > 0.0:
+            _floor = max(1, int(getattr(self.a, "gesture_hold_floor", 3)))
+            confirmed = [tid for tid, c in self.holds.items()
+                         if c >= _floor and (_now - self._hold_since.get(tid, _now)) >= hold_s]
+        else:
+            confirmed = [tid for tid, c in self.holds.items() if c >= hold_n]
         gdbg(self.a, "FRAME persons=%d pose_dets=%d raisers=%s holds=%s need=%d confirmed=%s"
              % (len(persons), self._last_pose_dets, sorted(raisers), dict(self.holds),
                 hold_n, confirmed))
@@ -1977,6 +1993,8 @@ class Follower:
         self._track_range_hist = []
         self._track_range_t = None
         self._reacq_range_streak = 0
+        self._idsw_pending = None    # Phase 2.4 ID-stability debounce: track_id of an unconfirmed id-switch
+        self._idsw_frames = 0        # Phase 2.4: consecutive frames the pending new track_id has persisted
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
         self._last_clr_log = 0.0     # 1Hz throttle for the CLEARANCE observability line
         self._reacq_range_id = None
@@ -3561,6 +3579,28 @@ class Follower:
 
         # Accepted match -> update seed, follow.
         self.lost_count = 0
+        # Phase 2.4 (ID-stability debounce): a look-alike crossing can make ByteTrack hop the bound
+        # track id for a frame or two; the unconditional re-bind below would instantly re-point the
+        # follow at the wrong body. When the accepted candidate carries a DIFFERENT id than the held
+        # seed, require the new id to persist --idsw-debounce-frames before committing the switch; until
+        # then HOLD on the last-good centroid (never a new forward command -> INV-1) and keep the old
+        # binding (-> INV-4). Same-id frames clear the pending and proceed byte-identically.
+        _bid = best.get("track_id")
+        _sid = self.seed.track_id if self.seed is not None else None
+        if self.seed is not None and _bid is not None and _sid is not None and _bid != _sid:
+            self._idsw_frames = (self._idsw_frames + 1) if _bid == self._idsw_pending else 1
+            self._idsw_pending = _bid
+            if self._idsw_frames < max(1, int(self.a.idsw_debounce_frames)):
+                self._hold()   # hold last-good; do NOT re-point at an unconfirmed new id
+                log("ID-DEBOUNCE track_id %s->%s %d/%d -> hold last-good (anti wrong-person-lock)%s"
+                    % (_sid, _bid, self._idsw_frames, int(self.a.idsw_debounce_frames),
+                       "" if (self.drive and self.walking) else " [preview]"))
+                return
+            log("ID-DEBOUNCE track_id %s->%s confirmed after %d frames -> switch"
+                % (_sid, _bid, self._idsw_frames))
+        else:
+            self._idsw_pending = None
+            self._idsw_frames = 0
         # Stage 1: we have the anchored person in view again -> LOCKED. Keep the
         # track binding fresh (the candidate passed anchor_floor, so re-binding to
         # its id can never move identity off the frozen anchor).
@@ -4252,6 +4292,11 @@ def parse_args(argv):
     p.add_argument("--max-coast", type=int, default=10,
                    help="frames a track survives with no detection before it is "
                         "retired (should be >= --coast-frames)")
+    p.add_argument("--idsw-debounce-frames", type=int, default=3,
+                   help="Phase 2.4 ID-stability debounce: when the accepted target carries a DIFFERENT "
+                        "ByteTrack id than the held lock, hold on the last-good centroid until the new id "
+                        "persists this many frames before committing the switch (anti wrong-person-lock on "
+                        "a crossing). 1 = switch on frame 1 (the pre-2.4 behavior).")
 
     # Stage 2: anchored appearance gallery + distractor bank (CPU; no new model).
     p.add_argument("--gallery-size", type=int, default=8,
@@ -4504,7 +4549,15 @@ def parse_args(argv):
     p.add_argument("--gesture-hold", type=int, default=6,
                    help="qualifying pose frames a raised hand must hold (keyed on tracker id, "
                         "with --gesture-miss-tol forgiveness) before it can seed; composes with "
-                        "--seed-frames. 6 @ every-n 3 ~= 1.8s of deliberate hand-up.")
+                        "--seed-frames. 6 @ every-n 3 ~= 1.8s of deliberate hand-up. Used only when "
+                        "--gesture-hold-s 0 (else the wall-clock gate governs, with the floor below).")
+    p.add_argument("--gesture-hold-s", type=float, default=0.9,
+                   help="Phase 2.1: continuous wall-clock SECONDS a hand must be up to seed -- makes "
+                        "time-to-lock loop-rate-independent (vs a raw frame count that stretches under a "
+                        "slow loop). 0 = disable and fall back to the pure --gesture-hold frame count.")
+    p.add_argument("--gesture-hold-floor", type=int, default=3,
+                   help="Phase 2.1: min qualifying pose frames required ALONGSIDE --gesture-hold-s, so a "
+                        "single fluke frame that spans the dwell window cannot seed (anti-fluke floor).")
     p.add_argument("--gesture-kp-conf", type=float, default=0.35,
                    help="min per-keypoint confidence for the wrist/shoulder raised-hand test "
                         "(0.35: nano-pose wrist confidence at 3-4m commonly sits 0.3-0.5, so the "
