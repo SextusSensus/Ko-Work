@@ -80,6 +80,15 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
 
+# P3.0: shared helpers + constants live in common.py (a sibling module -- /home/booster/common.py
+# on the robot; the eval harness adds the node dir to sys.path). Pure move, no logic change.
+from common import (  # noqa: E402
+    HARD_VX_LIMIT, HARD_VYAW_LIMIT, DEPTH_WARMUP_S, DEPTH_FRESH_S, DEPTH_DOWN_S, PERSON_CLS,
+    LockHint, KP_L_SHOULDER, KP_R_SHOULDER, KP_L_WRIST, KP_R_WRIST,
+    S_SEARCH, S_TRACK, S_REACQUIRE, S_PARKED, S_SEARCHING, TS_LOCKED, TS_COASTING, TS_RELOCALIZING,
+    clamp, to_bgr, depth_to_meters, iou_xyxy,
+)
+
 
 # ---------------------------------------------------------------------------
 # TUNABLES (control law + person-track additions)
@@ -94,9 +103,7 @@ DEF_K_VX  = 0.35              # speed gain (m/s per m of range error)
 # HARD clamps -- intentionally smaller than the bridge's own ceilings.
 DEF_VX_MIN, DEF_VX_MAX     = -0.06, 0.18
 DEF_VYAW_MIN, DEF_VYAW_MAX = -0.30, 0.30
-# Absolute ceilings the args can NEVER exceed (defence in depth).
-HARD_VX_LIMIT   = 0.30
-HARD_VYAW_LIMIT = 0.40
+# HARD_VX_LIMIT / HARD_VYAW_LIMIT (the absolute ceilings) now live in common.py.
 # Accel limiter (slew). Max change in commanded velocity PER CONTROL TICK -- the
 # command may not step 0->max in one frame (humanoid balance, esp. the first frames
 # after a relock/resume where vx/vyaw would otherwise jump straight to the clamp).
@@ -110,12 +117,7 @@ DEF_VYAW_SLEW = 0.10
 # never trip it. 0 restores today's disabled behaviour byte-for-byte.
 DEF_MIN_SAFE_RANGE = 0.6
 
-# Depth-health thresholds (safe-floor + operator badge + diagnosis). STARTING points
-# -- tune from the DEPTH heartbeat (state/fps/age) once measured on-robot.
-DEPTH_WARMUP_S = 15.0   # subscriber-gated spin-up grace before "never seen depth" == DOWN
-DEPTH_FRESH_S  = 0.5    # depth age <= this == FRESH (matches latest_depth() default max_age)
-DEPTH_DOWN_S   = 2.0    # depth age >  this == DOWN (between FRESH_S and DOWN_S == STALE)
-
+# Depth-health thresholds (DEPTH_WARMUP_S/FRESH_S/DOWN_S) now live in common.py.
 DEF_LOST_GRACE     = 8        # frames with no gated person before we stop+REACQUIRE
 DEF_RATE_HZ        = 10.0
 DEF_STALL_SECONDS  = 1.0      # no NEW frame for this long -> stop
@@ -126,8 +128,7 @@ DEF_TOPIC          = "/boostercamera/head/raw/rgb"
 
 # --- YOLO person detection -------------------------------------------------
 DEF_YOLO_PATH = "/opt/booster/BoosterFaceDetection/src/detection/yolo11n.onnx"
-PERSON_CLS    = 0             # COCO person class id
-DEF_CONF      = 0.35
+DEF_CONF      = 0.35          # PERSON_CLS now lives in common.py
 
 # --- ArUco one-shot seed trigger ------------------------------------------
 ARUCO_DICT    = cv2.aruco.DICT_4X4_50
@@ -191,8 +192,7 @@ def emit_frame(status, bgr, quality=70):
         pass
 
 
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
+# clamp() -> common.py (P3.0)
 
 
 # Per-tag-throttled gesture-debug logger (~1 Hz per first-word tag). No-op unless --gesture-debug,
@@ -211,44 +211,10 @@ def gdbg(args, msg):
     log("GDBG " + msg)
 
 
-# ---------------------------------------------------------------------------
-# NV12 -> BGR (shared with stream_cam.py)
-# ---------------------------------------------------------------------------
-def to_bgr(msg):
-    h, w, enc, step = msg.height, msg.width, msg.encoding.lower(), msg.step
-    buf = np.frombuffer(bytes(msg.data), dtype=np.uint8)
-    if enc == "nv12":
-        yuv = buf[: (h * 3 // 2) * w].reshape((h * 3 // 2, w))
-        return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_NV12)
-    if enc in ("yuv420", "i420"):
-        yuv = buf[: (h * 3 // 2) * w].reshape((h * 3 // 2, w))
-        return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
-    ch = step // w if w else 3
-    img = buf[: h * step].reshape((h, step))[:, : w * ch].reshape((h, w, ch))
-    if enc == "rgb8":  return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    if enc == "rgba8": return cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-    if enc == "bgra8": return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-    if enc in ("mono8", "8uc1"): return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    return img
+# NV12 -> BGR: to_bgr() -> common.py (P3.0; shared with stream_cam.py)
 
 
-# ---------------------------------------------------------------------------
-# Depth image -> float meters array (best-effort; tolerant of encodings)
-# ---------------------------------------------------------------------------
-def depth_to_meters(msg):
-    """Return an (h,w) float32 array of depth in METERS, or None.
-    16UC1 is millimeters; 32FC1 is already meters. Zeros = no data."""
-    try:
-        h, w, enc = msg.height, msg.width, msg.encoding.lower()
-        if enc in ("16uc1", "mono16", "z16"):
-            d = np.frombuffer(bytes(msg.data), dtype=np.uint16)[: h * w].reshape((h, w))
-            return d.astype(np.float32) / 1000.0  # mm -> m
-        if enc in ("32fc1", "32f"):
-            d = np.frombuffer(bytes(msg.data), dtype=np.float32)[: h * w].reshape((h, w))
-            return d.astype(np.float32)
-        return None
-    except Exception:  # noqa: BLE001 -- never let a bad depth frame matter
-        return None
+# Depth image -> float meters array: depth_to_meters() -> common.py (P3.0)
 
 
 # ---------------------------------------------------------------------------
@@ -291,11 +257,7 @@ def marker_center(frame):
 # frame", never to motion (fall risk stays perception-side). See
 # docs/SCOPE_lock_trigger_gesture.md for the full design + safety rationale.
 # ---------------------------------------------------------------------------
-LockHint = collections.namedtuple("LockHint", "point owner_box owner_tid source point_kind")
-
-# COCO-17 keypoint indices used by the raised-hand test.
-KP_L_SHOULDER, KP_R_SHOULDER = 5, 6
-KP_L_WRIST, KP_R_WRIST = 9, 10
+# LockHint + the COCO-17 KP_* keypoint indices now live in common.py (P3.0).
 
 
 class LockTrigger:
@@ -888,20 +850,7 @@ except Exception:  # noqa: BLE001 -- scipy is optional; greedy fallback below
     _HAVE_LSA = False
 
 
-def iou_xyxy(a, b):
-    """IoU of two (x1,y1,x2,y2) boxes. 0.0 when disjoint or degenerate."""
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    ix1 = max(ax1, bx1); iy1 = max(ay1, by1)
-    ix2 = min(ax2, bx2); iy2 = min(ay2, by2)
-    iw = max(0.0, ix2 - ix1); ih = max(0.0, iy2 - iy1)
-    inter = iw * ih
-    if inter <= 0.0:
-        return 0.0
-    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-    denom = area_a + area_b - inter
-    return inter / denom if denom > 0.0 else 0.0
+# iou_xyxy() -> common.py (P3.0)
 
 
 def _point_box_dist(px, py, box):
@@ -1754,9 +1703,7 @@ class CamNode(Node):
 # Stage 1 sub-states of S_TRACK, carried on Seed.track_state. The node-level
 # state stays S_SEARCH / S_TRACK / S_REACQUIRE; these only refine what the
 # tracker is doing while we hold the lock inside S_TRACK.
-TS_LOCKED   = "LOCKED"      # anchored person detected + accepted this frame
-TS_COASTING = "COASTING"    # briefly occluded -> following the motion prediction
-TS_RELOCALIZING = "RELOCALIZING"  # Stage 3: passive appearance re-acquire while STOOD
+# TS_LOCKED / TS_COASTING / TS_RELOCALIZING now live in common.py (P3.0).
 
 
 # ---------------------------------------------------------------------------
@@ -1786,11 +1733,7 @@ class Seed:
 # ---------------------------------------------------------------------------
 # Main controller -- the lock-and-handoff state machine.
 # ---------------------------------------------------------------------------
-S_SEARCH    = "SEARCH_MARKER"
-S_TRACK     = "TRACK"
-S_REACQUIRE = "REACQUIRE"
-S_PARKED    = "PARKED"      # give-up: stood, watching for the marker, with a bounded clean-exit
-S_SEARCHING = "SEARCHING"   # DRIVE-only: yaw-only rotate toward the last bearing to re-find a lost target
+# S_SEARCH / S_TRACK / S_REACQUIRE / S_PARKED / S_SEARCHING now live in common.py (P3.0).
 
 
 class Follower:

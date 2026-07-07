@@ -61,6 +61,9 @@ class StubNode:
 
 
 def load_follow(node_path):
+    # The node imports sibling modules (P3: common.py, and later bridge/tracking/... ) -- add its
+    # dir to sys.path so exec_module resolves them, mirroring how the robot runs it as a script.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(node_path)))
     spec = importlib.util.spec_from_file_location("follow_person_k1", node_path)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
