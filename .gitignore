@@ -33,3 +33,8 @@ K1Finder/k1_paths_list.txt
 
 # Local Claude Code settings (per-machine)
 .claude/settings.local.json
+
+# Local behavior-diff gate harness (ROS/onnxruntime stubs + synthetic clip; machine-
+# specific, must never ship). Persistent dev aid for the IMPLEMENTATION_README refactor;
+# rebuildable from the k1finder-local-gate memory note. See _gate/README.md.
+_gate/

@@ -10,11 +10,13 @@ The eval gate does **not** run out-of-the-box here: `follow_person_k1.py` import
 box (ROS2-only), and `onnxruntime` is absent. Python (anaconda 3.13.9) with
 ultralytics/torch/cv2/numpy/scipy is present.
 
-To run the behavior-preserving gate locally, an **uncommitted** test shim is used
-(kept in the session scratchpad, outside the repo): minimal `rclpy` + `sensor_msgs`
-stub packages on `PYTHONPATH` (the harness never instantiates a real node —
-`StubNode` replaces it) + the eval `yolo11n.pt` (torch backend, no onnxruntime).
-`replay_eval compare` then runs on a no-person synthetic clip.
+To run the behavior-preserving gate locally, an **uncommitted, gitignored** test
+harness lives in `_gate/` (persistent across sessions; see `_gate/README.md`):
+minimal `rclpy` + `sensor_msgs` stub packages on `PYTHONPATH` (the harness never
+instantiates a real node — `StubNode` replaces it) + the eval `yolo11n.pt` (torch
+backend, no onnxruntime). `_gate/gate.ps1 {selftest|baseline|diff|run}` drives
+`replay_eval` on a no-person synthetic clip; `-Flags` passes extra node args so the
+before/after refactor gate can snapshot and diff any flag-set.
 
 - **Coverage:** determinism + no-op-flag + import/config regressions on the
   SEARCH/config paths. **Not** covered locally: live person TRACK/LOCK/REACQUIRE
