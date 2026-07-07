@@ -93,3 +93,30 @@ root. Also whether model blobs go via git-lfs or a fetch script (brief P2.1/P2.3
 
 - [ ] Decide models/wheels location + git-lfs vs fetch-script (default rec: `models/` for onnx, keep
   `wheels/` recipe; models via fetch-script not raw git). Pending Phase 2.
+
+---
+
+## P3.7 — fsm/control extraction: pure move vs injected interfaces (RESOLVED by default)
+
+**What:** the brief's P3.7 says extract `fsm.py` + `control.py` "with perception/ID/bridge passed
+in as **injected interfaces**." That is a **dependency-injection restructure of `Follower`** — a
+BEHAVIOR-CHANGE, not a pure move, and it can only be fully verified with person-path clips (the
+local gate is no-person).
+
+**Decision (2026-07-07, my call — you were unsure):** **leave `Follower` (+`Seed`+`CommandChannel`)
+as the thin orchestrator in `follow_person_k1.py`.** This honors the §2 invariant *"if a seam can't
+be cut without a logic change, stop and flag it — do not improve while moving,"* keeps every P3
+commit byte-identical, and matches the plan doc's own "leaves a thin orchestrator" phrasing. The
+seam extractions (P3.0–P3.6) already deliver the testable-core goal.
+
+- [ ] **Opt in** to the injected-interfaces refactor later as a deliberate BEHAVIOR-CHANGE (needs
+  person-path clips / robot validation), or leave as-is.
+
+## P3.x — dataclass grouping (DEFERRED)
+
+**What:** fold `Follower`'s ~77 `self._` fields into `SafetyState`/`RelockState`/`TrackState`/
+`VizState`/`Other`. Field-for-field, no semantic change — but it rewrites *hundreds* of
+`self.X → self.group.X` attribute accesses across the orchestrator (large, error-prone; marginal
+value now that the seams are out).
+
+- [ ] Deferred — do it if the orchestrator's state sprawl becomes a real maintenance problem.

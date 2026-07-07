@@ -110,8 +110,35 @@ Plan in `PHASES_2-3_PLAN.md`. `SAFE` (moves + build only); byte-identity held th
   numpy<2 ABI pin, rerun/eval optional extras, rclpy/sensor_msgs as system deps. TOML
   parses; `pip install -e .` is `VERIFY ON ROBOT` (heavy GPU deps).
 
+## Phase 3 — Decompose the monolith  ✅ (seams) / deferred (dataclasses + fsm-injection)
+
+One seam per commit, **decision-stream diff empty after every commit**. `follow_person_k1.py`
+went from ~4,830 → 3,271 lines; 921+ lines now live in focused, importable modules.
+
+- **P3.0** (`2f55895`) + **P3.0b** (`9c95c65`) — `common.py`: shared constants (`HARD_*`,
+  `DEPTH_*`, `PERSON_CLS`, `LL_DARK_THRESH`, `KP_*`, `LockHint`, and the `S_*/TS_*` FSM states)
+  + pure helpers (`clamp`/`to_bgr`/`depth_to_meters`/`iou_xyxy`) + the stream/logging helpers
+  (`log`/`emit_frame`/`gdbg` with `_STREAM`/`_MAGIC`/`_GDBG_LAST`). Fixed the `S_*` forward-ref
+  landmine; handled the runtime-mutated `_STREAM` via `common._STREAM`.
+- **P3.1** (`ef85674`) `bridge.py`; **P3.2** (`b7ff70c`) `tracking.py`; **P3.3** (`d1747f6`)
+  `identity.py`; **P3.4** (`43cf446`) `rerun_sink.py` (the `_RR` singleton — provably shared,
+  `node.rerun_sink._RR is rerun_sink._RR`); **P3.5** (`2809699`) `perception.py`; **P3.6**
+  (`de64886`) `triggers.py`.
+- **P3.y** (`7198245`) — `stream_cam` now imports `common.to_bgr` (AST-verified identical); the
+  Python↔C++ clamp duplication is intentionally left alone.
+
+Harness wiring: `replay_eval.load_follow` / `config_selftest.load` / `_gate/dump_args` add the
+node dir to `sys.path` so the modular imports resolve (mirrors the robot running it as a script);
+`K1Finder.ps1` deploys each new module.
+
+**Deferred (flagged, see DECISIONS.md):** P3.x dataclass grouping and the P3.7 fsm/control
+**injected-interfaces** refactor — the latter is a BEHAVIOR-CHANGE (not a pure move), so `Follower`
+stays as the thin orchestrator per the "don't improve while moving" invariant.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
 - P1.2b demo/field profile values — populated with STARTING values; awaiting final sign-off.
 - P2.1 model/wheels location — **resolved** (models/ via fetch-script; wheels → models/wheels/).
+- P3.x / P3.7 — **deferred** (dataclass grouping is a large attribute rewrite; fsm-injection is a
+  behavior-change) — opt in deliberately if wanted.
