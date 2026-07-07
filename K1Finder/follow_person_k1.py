@@ -1967,6 +1967,12 @@ class Follower:
         self.hb_file = args.hb_file
         self.hb_stale_s = max(0.05, args.hb_stale_ms / 1000.0)
         self._hb_lost_logged = False
+        # P1.2: record when drive is running via the unsafe override (the parse_args gate let it
+        # through only because --allow-untethered-unsafe was passed) so the log/.rrd captures that
+        # the operator deadman was deliberately bypassed.
+        if self.drive and getattr(args, "allow_untethered_unsafe", False) and not self.require_hb:
+            log("WARN UNTETHERED-UNSAFE override active: driving with NO operator deadman "
+                "(--allow-untethered-unsafe). Keep a hand on the gamepad e-stop.")
 
         self.vx_min = max(args.vx_min, -HARD_VX_LIMIT)
         self.vx_max = min(args.vx_max,  HARD_VX_LIMIT)
@@ -4551,6 +4557,10 @@ def parse_args(argv):
     p.add_argument("--hb-stale-ms", type=int, default=400,
                    help="heartbeat older than this (ms) = operator absent -> stop (this node's gate; "
                         "the bridge applies its own HB_STALE_MS/HB_PREP_MS tiers independently)")
+    p.add_argument("--allow-untethered-unsafe", action=argparse.BooleanOptionalAction, default=False,
+                   help="DANGEROUS override: permit --drive WITHOUT --require-heartbeat (no operator "
+                        "deadman). Default off -> such a config is REFUSED at startup. Only for a "
+                        "tethered bench/demo with a human on the gamepad e-stop.")
 
     # low-light enhancement
     p.add_argument("--low-light", action=argparse.BooleanOptionalAction, default=True,
@@ -4768,6 +4778,16 @@ def parse_args(argv):
     # Normalize the depth-topic spelling ONCE so the subscription decision (run()) and the DRIVE
     # precondition (_need_depth) share one test: ""/whitespace/any-case-"none" == depth disabled.
     args.depth_topic = (args.depth_topic or "").strip()
+
+    # P1.2 FAIL-CLOSED drive gate: --drive without the operator deadman is refused unless an
+    # explicit unsafe override. Fires HERE (parse_args) before Follower/rclpy.init/CamNode/YOLO/
+    # bridge -- so no motion path is ever spawned for an untethered-unsafe config. Inverts today's
+    # dangerous default (drive silently ran with the deadman OFF). Preview is unaffected.
+    if args.drive and not args.require_heartbeat and not args.allow_untethered_unsafe:
+        p.error("REFUSING TO DRIVE: --drive without --require-heartbeat is untethered-unsafe "
+                "(no operator deadman -- a lost operator cannot stop the robot). Add "
+                "--require-heartbeat to arm the deadman, or pass --allow-untethered-unsafe to "
+                "drive with NO deadman on a tethered bench (human on the gamepad e-stop).")
     return args
 
 

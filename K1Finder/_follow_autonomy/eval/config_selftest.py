@@ -83,7 +83,13 @@ def main():
         expect_exit(lambda: pa(["--profile", write(tmp, "anchor_floor: 0.5\n")]),
                     "baked appearance-floor in a profile")
 
-    print("CONFIG-SELFTEST-OK (defaults+floors, types, precedence, fail-closed)")
+    # 11. P1.2 fail-closed drive gate: --drive without the deadman is refused; two explicit hatches run
+    expect_exit(lambda: pa(["--drive"]), "drive without --require-heartbeat / override")
+    assert vars(pa(["--drive", "--require-heartbeat"]))["drive"] is True      # safe hatch: deadman armed
+    assert vars(pa(["--drive", "--allow-untethered-unsafe"]))["drive"] is True  # unsafe explicit override
+    assert vars(pa([]))["allow_untethered_unsafe"] is False                   # default off (in defaults.yaml)
+
+    print("CONFIG-SELFTEST-OK (defaults+floors, types, precedence, fail-closed, drive-gate)")
     return 0
 
 

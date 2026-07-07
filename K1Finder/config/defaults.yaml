@@ -17,6 +17,7 @@
 # the code's shipped defaults so `no profile` == today's behavior byte-for-byte.
 admit_conf: 0.6
 admit_spacing: 5
+allow_untethered_unsafe: false
 anchor_floor: null
 appearance: 'global'
 arm_reacquire: false
