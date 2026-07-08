@@ -38,24 +38,36 @@ class FakeClock:
 
 
 class StubNode:
-    """Serves exactly the accessor surface Follower._process_frame touches. Depth is OFF
-    (latest_depth None -> rsrc='bboxH' -> forward drive impossible), so the gate scores the
-    identity/FSM layer -- which is what the OPS_BEHAVIOR_EVAL clips are about."""
+    """Serves exactly the accessor surface Follower._process_frame touches. By DEFAULT depth is OFF
+    (latest_depth None -> rsrc='bboxH' -> forward drive impossible), so the identity/FSM layer is
+    scored in isolation -- byte-identical to the original stub. P5.2: set _depth_range (metres) to
+    inject a uniform synthetic depth PLANE so the depth-dependent paths run OFFLINE -- forward-drive-
+    on-depth, the obstacle brake (_corridor_clearance), and the ARMED-relock range-admission gate
+    (the 9 m-lunge class). A uniform plane makes both the corridor band and the target box read that
+    range; the replay loop updates _frame_hw + _depth_range per frame from a schedule (glitch-able)."""
     def __init__(self, clock, fps):
         self.clock = clock
         self.fps = float(fps)
         self.frames_total = 0
         self._depth_count = 0
+        self._depth_range = None       # None -> depth OFF (original byte-inert behavior)
+        self._frame_hw = (480, 640)    # HxW of the current frame; set per-frame when depth is on
     def latest_depth(self, max_age=0.5):
-        return None
+        if self._depth_range is None:
+            return None
+        import numpy as np
+        h, w = self._frame_hw
+        return np.full((int(h), int(w)), float(self._depth_range), dtype=np.float32)
     def depth_health(self, now=None):
-        return "WARMING", 0.0     # WARMING => the depth-starved latch stays byte-inert
+        if self._depth_range is None:
+            return "WARMING", 0.0     # WARMING => the depth-starved latch stays byte-inert
+        return "FRESH", self.fps      # injected depth -> the depth paths activate
     def rgb_fps(self):
         return self.fps
     def rgb_stamp(self):
         return self.clock.now     # always 'fresh' relative to the fake clock
     def depth_stamp(self):
-        return 0.0
+        return self.clock.now if self._depth_range is not None else 0.0
     def destroy_node(self):
         pass
 
@@ -111,8 +123,12 @@ def _make_sink(node_path, args, rerun_out, image_every):
         max_follow=getattr(args, "max_follow_range", 0.0))
 
 
-def replay(node_path, clip, flags, fps=10.0, rerun_out=None, rerun_image_every=3):
+def replay(node_path, clip, flags, fps=10.0, rerun_out=None, rerun_image_every=3, depth=None):
     """Run one clip through the follow stack; return the captured decision-log lines.
+
+    depth (P5.2): None -> depth OFF (original). Else a callable(frame_idx)->range_m|None that
+    injects a synthetic depth plane per frame, so the depth-dependent paths run offline (feed a
+    glitch range at chosen frames to exercise the relock range-admission gate).
 
     When rerun_out is set, also build a scrubbable .rrd via k1_rerun.RerunSink (Phase 1): RGB +
     target box + FSM state per frame, plus every TRACK/RANGE-GATE/AUTO-RELOCK line parsed into
@@ -142,6 +158,9 @@ def replay(node_path, clip, flags, fps=10.0, rerun_out=None, rerun_image_every=3
         for frame in frames_from(clip):
             clock.tick(1.0 / fps)
             f.node.frames_total += 1
+            if depth is not None:                       # P5.2: inject this frame's synthetic depth
+                f.node._frame_hw = frame.shape[:2]
+                f.node._depth_range = depth(n)
             prev = len(decisions)
             f._process_frame(frame)
             if sink is not None:
@@ -207,6 +226,21 @@ def make_selftest_clip(path, n=40, w=640, h=480):
     return path
 
 
+def _depth_schedule(base_range, glitch_spec):
+    """P5.2: build a per-frame depth-range function from a base range + optional per-frame glitches
+    ('i=G,i=G', e.g. '30=9.0' injects a 9 m read at frame 30 to trip the relock range gate). Returns
+    None (depth OFF) when base_range is None -- so the harness default is byte-identical."""
+    if base_range is None:
+        return None
+    glitches = {}
+    for tok in (glitch_spec or "").split(","):
+        tok = tok.strip()
+        if "=" in tok:
+            i, g = tok.split("=", 1)
+            glitches[int(i.strip())] = float(g.strip())
+    return lambda i: glitches.get(i, float(base_range))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("mode", choices=["run", "compare", "expect", "selftest"])
@@ -222,13 +256,20 @@ def main():
                                     "(needs k1_rerun.py next to the node + rerun-sdk)")
     ap.add_argument("--rerun-image-every", type=int, default=3,
                     help="log 1 in N RGB frames to the .rrd (default 3)")
+    ap.add_argument("--depth-range", type=float, default=None,
+                    help="P5.2: inject a uniform depth plane at R metres so the depth paths run "
+                         "offline (default: depth OFF, original identity/FSM-only scoring)")
+    ap.add_argument("--depth-glitch", default="",
+                    help="P5.2: override the depth range at frames 'i=G,i=G' (e.g. 30=9.0 -> a 9 m "
+                         "glitch at frame 30, to exercise the ARMED-relock range-admission gate)")
     a = ap.parse_args()
+    cli_depth = _depth_schedule(a.depth_range, a.depth_glitch)
 
     if a.mode == "run":
         if not a.clip:
             ap.error("run needs --clip")
         lines = replay(a.node, a.clip, a.flags, a.fps,
-                       rerun_out=a.rerun, rerun_image_every=a.rerun_image_every)
+                       rerun_out=a.rerun, rerun_image_every=a.rerun_image_every, depth=cli_depth)
         for ln in lines:
             print(ln)
         if a.dump:
@@ -260,7 +301,8 @@ def main():
         man = json.load(open(a.manifest))
         results = []
         for c in man["clips"]:
-            lines = replay(a.node, c["clip"], c.get("flags", a.flags), a.fps)
+            cdepth = _depth_schedule(c.get("depth_range", a.depth_range), c.get("depth_glitch", a.depth_glitch))
+            lines = replay(a.node, c["clip"], c.get("flags", a.flags), a.fps, depth=cdepth)
             ok, fails = check_clip(lines, c.get("checks", []))
             results.append(ok)
             print("%s  %s" % ("PASS" if ok else "FAIL", c["clip"]))
@@ -285,7 +327,20 @@ def main():
         if la != lc:
             print("SELFTEST-FAIL --reid-fault-k 0 changed a no-person decision stream")
             return 1
-        print("SELFTEST-OK deterministic (%d lines) + no-op-flag equivalence hold" % len(la))
+        # P5.2: depth injection must be deterministic AND actually served (so the depth-dependent
+        # paths -- obstacle brake, relock range gate -- can run offline). The no-person clip has no
+        # target, so this asserts the MECHANISM (determinism + a served plane), not a follow outcome;
+        # the full relock-glitch reproduction needs a labeled person clip (VERIFY-with-clips).
+        ld = replay(a.node, clip, "--obstacle-brake", a.fps, depth=lambda i: 1.5)
+        le = replay(a.node, clip, "--obstacle-brake", a.fps, depth=lambda i: 1.5)
+        if ld != le:
+            print("SELFTEST-FAIL depth-injected replay nondeterministic")
+            return 1
+        _sn = StubNode(FakeClock(), a.fps); _sn._depth_range = 1.5; _sn._frame_hw = (8, 8)
+        if _sn.latest_depth() is None or _sn.latest_depth().shape != (8, 8) or _sn.depth_health()[0] != "FRESH":
+            print("SELFTEST-FAIL depth stub did not serve an injected 1.5m plane")
+            return 1
+        print("SELFTEST-OK deterministic (%d lines) + no-op-flag + depth-inject hold" % len(la))
         return 0
 
 
