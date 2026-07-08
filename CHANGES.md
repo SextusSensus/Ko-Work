@@ -110,8 +110,67 @@ Plan in `PHASES_2-3_PLAN.md`. `SAFE` (moves + build only); byte-identity held th
   numpy<2 ABI pin, rerun/eval optional extras, rclpy/sensor_msgs as system deps. TOML
   parses; `pip install -e .` is `VERIFY ON ROBOT` (heavy GPU deps).
 
+## Phase 3 — Decompose the monolith  ✅ (seams) / deferred (dataclasses + fsm-injection)
+
+One seam per commit, **decision-stream diff empty after every commit**. `follow_person_k1.py`
+went from ~4,830 → 3,271 lines; 921+ lines now live in focused, importable modules.
+
+- **P3.0** (`2f55895`) + **P3.0b** (`9c95c65`) — `common.py`: shared constants (`HARD_*`,
+  `DEPTH_*`, `PERSON_CLS`, `LL_DARK_THRESH`, `KP_*`, `LockHint`, and the `S_*/TS_*` FSM states)
+  + pure helpers (`clamp`/`to_bgr`/`depth_to_meters`/`iou_xyxy`) + the stream/logging helpers
+  (`log`/`emit_frame`/`gdbg` with `_STREAM`/`_MAGIC`/`_GDBG_LAST`). Fixed the `S_*` forward-ref
+  landmine; handled the runtime-mutated `_STREAM` via `common._STREAM`.
+- **P3.1** (`ef85674`) `bridge.py`; **P3.2** (`b7ff70c`) `tracking.py`; **P3.3** (`d1747f6`)
+  `identity.py`; **P3.4** (`43cf446`) `rerun_sink.py` (the `_RR` singleton — provably shared,
+  `node.rerun_sink._RR is rerun_sink._RR`); **P3.5** (`2809699`) `perception.py`; **P3.6**
+  (`de64886`) `triggers.py`.
+- **P3.y** (`7198245`) — `stream_cam` now imports `common.to_bgr` (AST-verified identical); the
+  Python↔C++ clamp duplication is intentionally left alone.
+
+Harness wiring: `replay_eval.load_follow` / `config_selftest.load` / `_gate/dump_args` add the
+node dir to `sys.path` so the modular imports resolve (mirrors the robot running it as a script);
+`K1Finder.ps1` deploys each new module.
+
+**Deferred (flagged, see DECISIONS.md):** P3.x dataclass grouping and the P3.7 fsm/control
+**injected-interfaces** refactor — the latter is a BEHAVIOR-CHANGE (not a pure move), so `Follower`
+stays as the thin orchestrator per the "don't improve while moving" invariant.
+
+## Phase 4 — Runtime & perf  ✅ (P4.1/P4.2/P4.4 ROBOT-VERIFIED; P4.3 evaluated; P4.5/P4.6 done)
+- **P4.1** loop baselines captured: unpinned p99 ~149 ms, pinned (jetson_clocks) ~122 ms
+  (`docs/LOOP_BASELINE.md`, `eval/loop_stats.py`).
+- **P4.2a** warm up `PersonDetector` at construction -> first-frame spike 826->316 ms. SAFE, byte-identical.
+- **P4.2b** pose model on a TRT engine (`stage_pose_engine.py`, FP16): 21.3->9.3 ms; the app prefers
+  `yolo11n-pose.engine` when built (`Resolve-GestureModel`), reverts to `.onnx`. BEHAVIOR-CHANGE (FP16).
+  Detection-TRT deferred (Booster `.onnx`, no `.pt`).
+- **P4.3** collapse detect+pose: EVALUATED (on-Orin detect 19.1 ms vs pose-engine 9.3 ms -> collapse
+  would HELP, not regress); merge deferred pending P5.1 detection-quality parity (DECISIONS.md).
+- **P4.4** command-staleness tiers `800/3000 -> 400/1000` (the ONLY permitted C++ floor edit); halves the
+  tier-1 runaway window (14.4->7.2 cm @ 0.18 m/s). HB tiers untouched.
+- **P4.5** clamp the ReID embed batch to pre-warmed sizes {1,2,4} (no on-the-fly TRT build mid-follow);
+  decision-preserving. demo cost-gating confirmed (rerun + JPEG-emit off in the headless path).
+- **P4.6** persistent-fault -> STAND escalator + headless `fault_selftest.py`.
+- **ROBOT-VERIFIED 2026-07-08** (`k1_follow_1783541380.rrd`, clean drive follow): P4.2a spike gone
+  (max 316 ms), gesture LOCK held under the FP16 engine, **P4.4 zero `WATCHDOG stale`**; loop p50
+  61-67 / p99 103-109 ms.
+
+## Phase 5 — Eval & observability  ✅ (mechanisms built + PC-verified; real numbers need labeled clips)
+- **P5.1** objective task-success scorer (`replay_eval.score_outcome` + `expect`): standoff-in-band,
+  forbidden-forward (fwd vx with no depth), geofence breach, id-switches, operator retention ->
+  `TASK-SUCCESS k/n` + Wilson95. `clips.json` gains the `outcome` schema. Real numbers need labeled
+  person clips (`operator_id`) -- the remaining manual input.
+- **P5.2** depth-injecting replay `StubNode` (`--depth-range`/`--depth-glitch`, per-clip in the manifest)
+  -> the depth paths (obstacle brake, relock range-admission gate) run offline. Default OFF = byte-identical.
+- **P5.3** always-on JSONL event log (`common.EventLog`): per-tick cmd_vel/fsm/loop_ms/lock forensics
+  alongside the text log (`--event-log`). SAFE, byte-identical.
+- **Infra** (arose on-robot, not in the numbered brief): `cam_health.sh` camera-stall detect ->
+  perception-restart -> escalate; DRIVE-ABORT operator guidance in the app; `.gitattributes` forcing LF
+  on robot files (a CRLF deploy had crashed `run_follow.sh`); `robot/systemd/k1-jetson-clocks.service`
+  (pin persistence -- enabling is a power/thermal decision).
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
 - P1.2b demo/field profile values — populated with STARTING values; awaiting final sign-off.
 - P2.1 model/wheels location — **resolved** (models/ via fetch-script; wheels → models/wheels/).
+- P3.x / P3.7 — **deferred** (dataclass grouping is a large attribute rewrite; fsm-injection is a
+  behavior-change) — opt in deliberately if wanted.

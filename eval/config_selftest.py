@@ -15,6 +15,8 @@ NODE_DEFAULT = "/home/booster/follow_person_k1.py"
 
 
 def load(node_path):
+    # P3: the node imports sibling modules (common.py, ...) -- add its dir to sys.path.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(node_path)))
     spec = importlib.util.spec_from_file_location("follow_person_k1", node_path)
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)

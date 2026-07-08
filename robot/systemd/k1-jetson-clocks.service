@@ -1,0 +1,16 @@
+[Unit]
+Description=Pin Orin clocks to max for the K1 follow (jetson_clocks) -- restores the pin after reboot
+Documentation=man:jetson_clocks K1Finder:docs/LOOP_BASELINE.md
+# nvpmodel selects the power MODE; jetson_clocks then pins frequencies to THAT mode's max, so it must
+# run after nvpmodel has applied the mode (else it pins to a lower mode's ceiling).
+After=nvpmodel.service multi-user.target
+Wants=nvpmodel.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/bin/jetson_clocks
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

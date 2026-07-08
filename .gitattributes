@@ -1,0 +1,26 @@
+# Line-ending policy. WHY: robot-deployed files run on Linux (bash / python3 / g++) and MUST be LF.
+# On 2026-07-08 a git branch re-checkout on Windows (core.autocrlf=true, no .gitattributes) rewrote
+# the working tree to CRLF; the app then scp'd a CRLF run_follow.sh to the robot and bash died with a
+# syntax error (exit 2) on the \r bytes -- before the node ever started. Enforcing eol here makes the
+# checkout deterministic on every machine, so a deploy can never ship CRLF again.
+
+# Robot-deployed / Linux-executed sources -> always LF (autocrlf cannot override an explicit attr).
+*.sh     text eol=lf
+*.py     text eol=lf
+*.yaml   text eol=lf
+*.yml    text eol=lf
+*.cpp    text eol=lf
+*.h      text eol=lf
+*.md     text eol=lf
+
+# Windows desktop app + launchers -> CRLF (native PowerShell / cmd / WSH tooling).
+*.ps1    text eol=crlf
+*.bat    text eol=crlf
+*.vbs    text eol=crlf
+
+# Model / recording blobs -> never apply text or eol conversion.
+*.onnx   binary
+*.engine binary
+*.pt     binary
+*.rrd    binary
+*.zip    binary

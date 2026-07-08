@@ -80,6 +80,26 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
 
+# P3.0: shared helpers + constants live in common.py (a sibling module -- /home/booster/common.py
+# on the robot; the eval harness adds the node dir to sys.path). Pure move, no logic change.
+import common  # noqa: E402  (module handle for the mutable common._STREAM flag, set on --stream)
+import rerun_sink  # noqa: E402  (P3.4: module handle -- rerun_sink._RR is rebound by init_rerun)
+from common import (  # noqa: E402
+    HARD_VX_LIMIT, HARD_VYAW_LIMIT, DEPTH_WARMUP_S, DEPTH_FRESH_S, DEPTH_DOWN_S, PERSON_CLS, LL_DARK_THRESH,
+    LockHint, KP_L_SHOULDER, KP_R_SHOULDER, KP_L_WRIST, KP_R_WRIST,
+    S_SEARCH, S_TRACK, S_REACQUIRE, S_PARKED, S_SEARCHING, TS_LOCKED, TS_COASTING, TS_RELOCALIZING,
+    clamp, to_bgr, depth_to_meters, iou_xyxy, log, emit_frame, gdbg, EventLog,
+)
+from bridge import Bridge  # noqa: E402  (P3.1: loco_follow_bridge process wrapper)
+from tracking import MultiTracker, max_iou_other, _point_box_dist  # noqa: E402  (P3.2)
+from identity import (  # noqa: E402  (P3.3)
+    TargetGallery, ReidEngine, color_hist, hist_similarity, striped_feat, striped_sim,
+)
+from perception import (  # noqa: E402  (P3.5)
+    PersonDetector, CamNode, bearing_from_x, range_from_bbox_height, target_point_from_box, low_light_boost,
+)
+from triggers import ArucoTrigger, GestureTrigger, CompositeTrigger, marker_center  # noqa: E402  (P3.6)
+
 
 # ---------------------------------------------------------------------------
 # TUNABLES (control law + person-track additions)
@@ -94,9 +114,7 @@ DEF_K_VX  = 0.35              # speed gain (m/s per m of range error)
 # HARD clamps -- intentionally smaller than the bridge's own ceilings.
 DEF_VX_MIN, DEF_VX_MAX     = -0.06, 0.18
 DEF_VYAW_MIN, DEF_VYAW_MAX = -0.30, 0.30
-# Absolute ceilings the args can NEVER exceed (defence in depth).
-HARD_VX_LIMIT   = 0.30
-HARD_VYAW_LIMIT = 0.40
+# HARD_VX_LIMIT / HARD_VYAW_LIMIT (the absolute ceilings) now live in common.py.
 # Accel limiter (slew). Max change in commanded velocity PER CONTROL TICK -- the
 # command may not step 0->max in one frame (humanoid balance, esp. the first frames
 # after a relock/resume where vx/vyaw would otherwise jump straight to the clamp).
@@ -110,12 +128,7 @@ DEF_VYAW_SLEW = 0.10
 # never trip it. 0 restores today's disabled behaviour byte-for-byte.
 DEF_MIN_SAFE_RANGE = 0.6
 
-# Depth-health thresholds (safe-floor + operator badge + diagnosis). STARTING points
-# -- tune from the DEPTH heartbeat (state/fps/age) once measured on-robot.
-DEPTH_WARMUP_S = 15.0   # subscriber-gated spin-up grace before "never seen depth" == DOWN
-DEPTH_FRESH_S  = 0.5    # depth age <= this == FRESH (matches latest_depth() default max_age)
-DEPTH_DOWN_S   = 2.0    # depth age >  this == DOWN (between FRESH_S and DOWN_S == STALE)
-
+# Depth-health thresholds (DEPTH_WARMUP_S/FRESH_S/DOWN_S) now live in common.py.
 DEF_LOST_GRACE     = 8        # frames with no gated person before we stop+REACQUIRE
 DEF_RATE_HZ        = 10.0
 DEF_STALL_SECONDS  = 1.0      # no NEW frame for this long -> stop
@@ -126,11 +139,10 @@ DEF_TOPIC          = "/boostercamera/head/raw/rgb"
 
 # --- YOLO person detection -------------------------------------------------
 DEF_YOLO_PATH = "/opt/booster/BoosterFaceDetection/src/detection/yolo11n.onnx"
-PERSON_CLS    = 0             # COCO person class id
-DEF_CONF      = 0.35
+DEF_CONF      = 0.35          # PERSON_CLS now lives in common.py
 
 # --- ArUco one-shot seed trigger ------------------------------------------
-ARUCO_DICT    = cv2.aruco.DICT_4X4_50
+# ARUCO_DICT -> triggers.py (P3.6).
 DEF_SEED_FRAMES = 3           # consecutive marker frames for a stable lock
 
 # --- target association weights / gate ------------------------------------
@@ -146,583 +158,27 @@ DEF_HICONF     = 0.55         # only update appearance when assoc this confident
 DEF_PERSON_H_M = 1.7          # assumed standing person height for bbox-height range
 
 
-_STREAM = False           # --stream: status text -> stderr, annotated JPEG frames -> stdout
-_MAGIC = b"K1F1"
+# _STREAM / _MAGIC -> common.py (P3.0b). follow_person sets/reads common._STREAM.
 
-# --rerun (Phase 2): a crash-safe Rerun sink (k1_rerun.RerunSink), DEFAULT-OFF and fully inert
-# until init_rerun() flips it in main(). Every _RR.* call no-ops when disabled, so the follow is
-# byte-identical without --rerun. Images are logged ONLY on the cam-spin sensor thread; the control
-# loop logs cheap scalars/boxes/text. If k1_rerun.py is absent, _RR degrades to a permanent no-op.
-try:
-    from k1_rerun import RerunSink as _RerunSink
-    _RR = _RerunSink()                 # disabled-by-default -> _RR.ok is False, every method no-ops
-except Exception:                      # noqa: BLE001 -- a missing sink module must never stop the node
-    _RerunSink = None
-
-    class _NullRR:                     # permanent no-op stand-in (k1_rerun.py not importable)
-        ok = False
-
-        def __getattr__(self, _n):
-            return lambda *a, **k: None
-
-    _RR = _NullRR()
+# rerun _RR sink setup -> rerun_sink.py (P3.4).
 
 
-def log(msg):
-    """One flushed status line. In --stream mode it goes to STDERR so stdout
-    carries only the binary annotated-frame protocol the Tracker page reads."""
-    f = sys.stderr if _STREAM else sys.stdout
-    f.write(msg + "\n")
-    f.flush()
+# log() + emit_frame() -> common.py (P3.0b)
 
 
-def emit_frame(status, bgr, quality=70):
-    """Write one annotated frame to stdout: MAGIC(4)+status(1)+len(4 BE)+jpeg.
-    Same wire protocol as stream_cam.py so the app's frame reader is reused."""
-    try:
-        ok, jpg = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
-        if not ok:
-            return
-        b = jpg.tobytes()
-        out = sys.stdout.buffer
-        out.write(_MAGIC + bytes([status & 0xFF]) + struct.pack(">I", len(b)) + b)
-        out.flush()
-    except Exception:
-        pass
+# clamp() -> common.py (P3.0)
 
 
-def clamp(v, lo, hi):
-    return max(lo, min(hi, v))
+# _GDBG_LAST + gdbg() -> common.py (P3.0b)
 
 
-# Per-tag-throttled gesture-debug logger (~1 Hz per first-word tag). No-op unless --gesture-debug,
-# so it costs one getattr when off. Makes the whole gesture acquisition chain visible on demand.
-_GDBG_LAST = {}
+# NV12 -> BGR: to_bgr() -> common.py (P3.0; shared with stream_cam.py)
 
 
-def gdbg(args, msg):
-    if not getattr(args, "gesture_debug", False):
-        return
-    tag = msg.split(" ", 1)[0]
-    now = time.monotonic()
-    if now - _GDBG_LAST.get(tag, 0.0) < 1.0:
-        return
-    _GDBG_LAST[tag] = now
-    log("GDBG " + msg)
+# Depth image -> float meters array: depth_to_meters() -> common.py (P3.0)
 
 
-# ---------------------------------------------------------------------------
-# NV12 -> BGR (shared with stream_cam.py)
-# ---------------------------------------------------------------------------
-def to_bgr(msg):
-    h, w, enc, step = msg.height, msg.width, msg.encoding.lower(), msg.step
-    buf = np.frombuffer(bytes(msg.data), dtype=np.uint8)
-    if enc == "nv12":
-        yuv = buf[: (h * 3 // 2) * w].reshape((h * 3 // 2, w))
-        return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_NV12)
-    if enc in ("yuv420", "i420"):
-        yuv = buf[: (h * 3 // 2) * w].reshape((h * 3 // 2, w))
-        return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
-    ch = step // w if w else 3
-    img = buf[: h * step].reshape((h, step))[:, : w * ch].reshape((h, w, ch))
-    if enc == "rgb8":  return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-    if enc == "rgba8": return cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-    if enc == "bgra8": return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-    if enc in ("mono8", "8uc1"): return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    return img
-
-
-# ---------------------------------------------------------------------------
-# Depth image -> float meters array (best-effort; tolerant of encodings)
-# ---------------------------------------------------------------------------
-def depth_to_meters(msg):
-    """Return an (h,w) float32 array of depth in METERS, or None.
-    16UC1 is millimeters; 32FC1 is already meters. Zeros = no data."""
-    try:
-        h, w, enc = msg.height, msg.width, msg.encoding.lower()
-        if enc in ("16uc1", "mono16", "z16"):
-            d = np.frombuffer(bytes(msg.data), dtype=np.uint16)[: h * w].reshape((h, w))
-            return d.astype(np.float32) / 1000.0  # mm -> m
-        if enc in ("32fc1", "32f"):
-            d = np.frombuffer(bytes(msg.data), dtype=np.float32)[: h * w].reshape((h, w))
-            return d.astype(np.float32)
-        return None
-    except Exception:  # noqa: BLE001 -- never let a bad depth frame matter
-        return None
-
-
-# ---------------------------------------------------------------------------
-# ArUco detector (works across cv2 >=4.7 and older API). Verbatim approach.
-# ---------------------------------------------------------------------------
-_adict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
-try:
-    _detector = cv2.aruco.ArucoDetector(_adict, cv2.aruco.DetectorParameters())  # >=4.7
-
-    def detect_markers(gray):
-        corners, ids, _ = _detector.detectMarkers(gray)
-        return corners, ids
-except AttributeError:
-    def detect_markers(gray):
-        corners, ids, _ = cv2.aruco.detectMarkers(gray, _adict)                  # older
-        return corners, ids
-
-
-def marker_center(frame):
-    """Return (mx, my) pixel center of the first marker, or None. Defensive."""
-    try:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        corners, ids = detect_markers(gray)
-        if ids is None or len(ids) == 0:
-            return None
-        c = corners[0].reshape(4, 2)
-        return float(c[:, 0].mean()), float(c[:, 1].mean())
-    except Exception:  # noqa: BLE001
-        return None
-
-
-# ---------------------------------------------------------------------------
-# LOCK TRIGGER abstraction. A lock trigger is the ACQUISITION primitive: each
-# frame it returns an optional LockHint -- a lock POINT (the role mc plays at the
-# marker-detection site today) plus, for gesture, the OWNER it points at (box +
-# tracker id, so _try_seed never has to re-derive the person from an anonymous
-# point). A trigger NEVER creates identity: it produces a point/owner that the
-# single funnel _try_seed consumes. ArUco is the DEFAULT and stays byte-identical;
-# gesture is opt-in (--lock-trigger). A trigger fault degrades to "no lock this
-# frame", never to motion (fall risk stays perception-side). See
-# docs/SCOPE_lock_trigger_gesture.md for the full design + safety rationale.
-# ---------------------------------------------------------------------------
-LockHint = collections.namedtuple("LockHint", "point owner_box owner_tid source point_kind")
-
-# COCO-17 keypoint indices used by the raised-hand test.
-KP_L_SHOULDER, KP_R_SHOULDER = 5, 6
-KP_L_WRIST, KP_R_WRIST = 9, 10
-
-
-class LockTrigger:
-    """Base trigger. Produces a lock point only; never seeds, never drives."""
-    name = "base"
-    ok = True                 # False -> disabled; the loop then produces no lock point
-    ran_inference = False     # True if this trigger ran a (heavy) model THIS tick
-
-    def detect(self, frame, persons, state, w_img, h_img):
-        return None
-
-    def on_overrun(self):
-        """Loop calls this after this trigger's inference ran over the loop budget for
-        too many consecutive frames. Base = no-op (nothing heavy to disable)."""
-        return
-
-
-class ArucoTrigger(LockTrigger):
-    """The marker trigger == today's marker_center() call, verbatim. The DEFAULT.
-    Pure OpenCV, no model load, so it never overruns and never disables."""
-    name = "aruco"
-
-    def detect(self, frame, persons, state, w_img, h_img):
-        mc = marker_center(frame)
-        if mc is None:
-            return None
-        return LockHint(mc, None, None, "aruco", "marker")
-
-
-class GestureTrigger(LockTrigger):
-    """Raised-hand acquisition via a YOLO11n-POSE model (a SECOND neural model --
-    loaded ONLY when --lock-trigger != aruco; see Follower.__init__). A person is a
-    'raiser' when one wrist keypoint is above the same-side shoulder by >= margin,
-    both keypoints confident. The raise must HOLD --gesture-hold consecutive frames,
-    counted PER tracker track_id (NOT a bespoke association map -- it rides the
-    validated Stage-1 tracker id stamped on each person). >=2 simultaneous confirmed
-    raisers -> REFUSE (never guess). The returned lock point is the owner-box lower-
-    centre; the authoritative owner (box + track_id) rides in the LockHint so _try_seed
-    selects the SAME person the pose model saw, not a re-derived anonymous point.
-
-    Runs ONLY in acquisition states (SEARCH/SEARCHING/REACQUIRE/PARKED); NEVER in
-    S_TRACK (a 2nd model per frame is unaffordable on the saturated Orin AND there is
-    no gesture re-seed of an active lock by construction). Crash-safe: any load/infer
-    fault -> ok=False / None, the loop degrades to no-lock. every_n>1 decimates the
-    pose inference (audit cadence) so it can never starve the live ArUco control loop."""
-    name = "gesture"
-
-    def __init__(self, model_path, args, every_n=1):
-        self.a = args
-        # The gesture hold rides the EXISTING tracker id stamped on each person (p['track_id']
-        # at tracker.update) -- NOT a bespoke association map -- so no tracker handle is needed
-        # here (SCOPE §2.2). Argparse refuses gesture together with --no-track.
-        self.every_n = max(1, int(every_n))
-        self.model = None
-        self.ok = False
-        self.ran_inference = False
-        self.holds = {}            # track_id -> confirmed-raise frames (with miss forgiveness)
-        self._hold_since = {}      # Phase 2.1: track_id -> monotonic time of the FIRST raise of the dwell
-        self._miss = {}            # track_id -> consecutive missed pose frames (field fix: one
-                                   # blurry/low-conf frame used to HARD-RESET the whole hold)
-        self._tick = 0
-        self._cmd_tick = 0         # separate decimation counter for the in-follow STOP gesture
-        self._stop_streak = 0      # consecutive STOP-gesture checks the seed held both hands up
-        self._ms = collections.deque(maxlen=200)   # rolling pose-inference ms (latency instrument)
-        self._ms_log_last = 0.0
-        self._head_logged = False  # one-time model-head shape log (detect-vs-pose export check)
-        self._last_pose_dets = 0   # #pose detections last inference (for the GDBG FRAME line)
-        # Always log the model path + existence -- the #1 silent failure is a wrong/missing file
-        # (load fails -> ArUco fallback). Visible in the app once stderr is captured.
-        log("GESTURE-MODEL path=%s exists=%s size=%s"
-            % (os.path.abspath(str(model_path)), os.path.exists(str(model_path)),
-               (os.path.getsize(model_path) if os.path.exists(str(model_path)) else "NA")))
-        try:
-            from ultralytics import YOLO
-            self.model = YOLO(model_path, task="pose")
-            # Warm up -- the FIRST inference is slow (alloc / JIT / TRT engine load); without this
-            # the first gesture frame can trip the overrun-disable or stall acquisition. Mirrors
-            # ReidEngine's warmup (policy-engineer: always warm up before going live). One-time
-            # cost at load, before any motion. Tolerant of a model that rejects a dummy frame.
-            try:
-                _dummy = np.zeros((480, 640, 3), dtype=np.uint8)
-                for _ in range(3):
-                    self.model.predict(_dummy, verbose=False)
-            except Exception:  # noqa: BLE001
-                pass
-            self.ok = True
-            log("GESTURE-TRIGGER ok model=%s hold=%d kp-conf=%.2f every-n=%d (warmed up)"
-                % (os.path.basename(str(model_path)), int(args.gesture_hold),
-                   float(args.gesture_kp_conf), self.every_n))
-        except Exception as e:  # noqa: BLE001 -- any failure -> caller falls back to ArUco
-            log("GESTURE-TRIGGER load FAILED (%s) -> gesture disabled" % e)
-            self.ok = False
-
-    def on_overrun(self):
-        if self.ok:
-            self.ok = False
-            log("GESTURE-DISABLED-SLOW: pose inference over loop budget %d frames -> gesture "
-                "trigger disabled (degrade before the C++ staleness watchdog must safe loco)"
-                % int(self.a.gesture_overrun_frames))
-
-    def _log_latency(self):
-        """Periodic rolling pose-inference p50/p99 (policy-engineer: measure end-to-end p99 in
-        deploy power mode). Satisfies the on-Orin measurement precondition from a preview run --
-        no separate harness. Pose runs ONLY while stationary, so this is acquisition-responsiveness
-        + auto-disable tuning, NOT a control deadline (no control command is pending while it runs)."""
-        now = time.monotonic()
-        if (now - self._ms_log_last) < 5.0 or len(self._ms) < 5:
-            return
-        self._ms_log_last = now
-        s = sorted(self._ms); n = len(s)
-        log("GESTURE-MS p50=%.0f p99=%.0f n=%d every-n=%d -- pose inference (stationary states "
-            "only; not a control-loop deadline)" % (s[n // 2], s[min(n - 1, int(n * 0.99))], n,
-                                                    self.every_n))
-
-    def _is_raised(self, k, margin):
-        """One wrist above the same-side shoulder by >= margin, both kp confident.
-        Image y grows downward so 'above' == smaller y. Never raises."""
-        try:
-            kpc = float(self.a.gesture_kp_conf)
-
-            def ok(idx):
-                return float(k[idx][2]) >= kpc
-
-            def y(idx):
-                return float(k[idx][1])
-
-            left = ok(KP_L_WRIST) and ok(KP_L_SHOULDER) and y(KP_L_WRIST) < y(KP_L_SHOULDER) - margin
-            right = ok(KP_R_WRIST) and ok(KP_R_SHOULDER) and y(KP_R_WRIST) < y(KP_R_SHOULDER) - margin
-            return bool(left or right)
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _arm_owned(self, k, box, margin):
-        """OWNER-AUTHORITY (hardened 2026-07-05, wrong-person lock): the raised arm must belong to the
-        MATCHED body, not an overlapping neighbour. IoU box-overlap alone let a raiser's arm bind to a
-        bystander who never raised a hand. Require: both CONFIDENT shoulders inside the matched box
-        (the torso is this tracked person's) AND the RAISED wrist's X within the body column (the arm
-        rises from this body, not reaching in from the side). Never raises -> False on any fault."""
-        try:
-            kpc = float(self.a.gesture_kp_conf)
-            x1, y1, x2, y2 = box
-            padx = 0.12 * max(x2 - x1, 1.0)
-            def conf(idx): return float(k[idx][2]) >= kpc
-            def inx(idx): return (x1 - padx) <= float(k[idx][0]) <= (x2 + padx)
-            def iny(idx): return (y1 - 1.0) <= float(k[idx][1]) <= (y2 + 1.0)
-            def yv(idx): return float(k[idx][1])
-            # torso ownership: every CONFIDENT shoulder must sit inside the matched box
-            for sh in (KP_L_SHOULDER, KP_R_SHOULDER):
-                if conf(sh) and not (inx(sh) and iny(sh)):
-                    return False
-            # the RAISED wrist(s) must be in the body column (X inside the box, with pad)
-            lr = conf(KP_L_WRIST) and conf(KP_L_SHOULDER) and yv(KP_L_WRIST) < yv(KP_L_SHOULDER) - margin and inx(KP_L_WRIST)
-            rr = conf(KP_R_WRIST) and conf(KP_R_SHOULDER) and yv(KP_R_WRIST) < yv(KP_R_SHOULDER) - margin and inx(KP_R_WRIST)
-            return bool(lr or rr)
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _raisers(self, frame, persons):
-        """Run pose, return (set of track_ids raising this frame, {track_id: owner_box}).
-        Each pose detection is matched to a TRACKED YOLO person by IoU (a within-frame
-        cross-detector match -- NOT a frame-to-frame association; that rides the existing
-        tracker id). Empty on any fault. Sets ran_inference True only when the model ran."""
-        owners = {}
-        raisers = set()
-        # Phase 1.1 (OPTIMIZATION_PLAN.md): a raise can only bind to a TRACKED person (the pose->person
-        # IoU match below requires a person with a track_id), so with ZERO persons the pose run is
-        # guaranteed to yield no raisers -- pure waste (~56ms p50 / up to 279ms p99 in empty-scene SEARCH).
-        # Skip it. The control decision is unchanged (detect() returns None either way); only the wasted
-        # inference is removed -- byte-identical on the control/velocity path.
-        if not persons:
-            return raisers, owners
-        try:
-            _t0 = time.monotonic()
-            res = self.model.predict(frame, verbose=False)
-            self._ms.append((time.monotonic() - _t0) * 1000.0)   # latency instrument
-        except Exception:  # noqa: BLE001
-            return raisers, owners
-        self.ran_inference = True
-        dets = 0
-        try:
-            for r in res:
-                kpts = getattr(r, "keypoints", None)
-                boxes = getattr(r, "boxes", None)
-                if not self._head_logged:
-                    # One-time: proves the ONNX is a POSE export (has keypoints, shape (N,17,3)).
-                    # A DETECT export loads fine but kpts is always None -> gesture can never fire.
-                    self._head_logged = True
-                    log("GESTURE-MODEL-HEAD dets=%s has_kpts=%s kpts_shape=%s"
-                        % ((0 if boxes is None else len(boxes)), kpts is not None,
-                           (None if (kpts is None or kpts.data is None) else tuple(kpts.data.shape))))
-                if kpts is None or boxes is None or kpts.data is None:
-                    continue
-                kd = kpts.data            # (N,17,3) x,y,conf
-                dets += len(kd)
-                for i in range(len(kd)):
-                    try:
-                        k = kd[i]
-                        pxy = boxes.xyxy[i].tolist()
-                        pb = (float(pxy[0]), float(pxy[1]), float(pxy[2]), float(pxy[3]))
-                    except Exception:  # noqa: BLE001
-                        continue
-                    best_tid, best_iou, best_box = None, 0.0, None
-                    second_iou = 0.0
-                    for p in persons:
-                        tid = p.get("track_id")
-                        if tid is None:
-                            continue
-                        iou = iou_xyxy(pb, p["box"])
-                        if iou > best_iou:
-                            second_iou = best_iou
-                            best_iou, best_tid, best_box = iou, tid, p["box"]
-                        elif iou > second_iou:
-                            second_iou = iou
-                    if best_tid is None or best_iou < self.a.iou_min:
-                        gdbg(self.a, "NOMATCH pose#%d best_tid=%s best_iou=%.2f < iou_min=%.2f"
-                             % (i, best_tid, best_iou, self.a.iou_min))
-                        continue
-                    # HARDEN (wrong-person lock): an AMBIGUOUS pose overlaps two people similarly ->
-                    # refuse to bind (don't guess which one raised the hand). Refusing is safe; the
-                    # operator re-raises when the frame is clearer.
-                    if (best_iou - second_iou) < self.a.gesture_owner_margin:
-                        gdbg(self.a, "AMBIG pose#%d best=%.2f second=%.2f gap<%.2f -> refuse bind"
-                             % (i, best_iou, second_iou, self.a.gesture_owner_margin))
-                        continue
-                    bh = max(best_box[3] - best_box[1], 1.0)
-                    margin = self.a.gesture_kp_margin_frac * bh
-                    raised = self._is_raised(k, margin)
-                    try:
-                        gdbg(self.a, "CAND tid=%s iou=%.2f margin=%.0f raised=%s "
-                             "Lw=(y%.0f,c%.2f) Ls=(y%.0f,c%.2f) Rw=(y%.0f,c%.2f) Rs=(y%.0f,c%.2f)"
-                             % (best_tid, best_iou, margin, raised,
-                                float(k[KP_L_WRIST][1]), float(k[KP_L_WRIST][2]),
-                                float(k[KP_L_SHOULDER][1]), float(k[KP_L_SHOULDER][2]),
-                                float(k[KP_R_WRIST][1]), float(k[KP_R_WRIST][2]),
-                                float(k[KP_R_SHOULDER][1]), float(k[KP_R_SHOULDER][2])))
-                    except Exception:  # noqa: BLE001
-                        pass
-                    if raised:
-                        # HARDEN (wrong-person lock): the raised arm must be OWNED by the matched body
-                        # (shoulders inside the box + raised wrist in the body column). Blocks binding
-                        # a raiser's arm onto an overlapping bystander who never raised a hand.
-                        if not self._arm_owned(k, best_box, margin):
-                            gdbg(self.a, "ARM-DISOWNED tid=%s -> refuse (raised arm not owned by "
-                                 "the matched body; likely an overlapping neighbour)" % best_tid)
-                        else:
-                            raisers.add(best_tid)
-                            owners[best_tid] = best_box
-            self._last_pose_dets = dets
-        except Exception:  # noqa: BLE001
-            self._last_pose_dets = dets
-            return raisers, owners
-        return raisers, owners
-
-    def detect(self, frame, persons, state, w_img, h_img):
-        self.ran_inference = False
-        if not self.ok:
-            return None
-        # Gesture inference runs ONLY in the STATIONARY acquisition states (tuple built at
-        # call-time so the module-level S_* constants are resolved). Excludes S_TRACK (following)
-        # AND S_SEARCHING (the yaw-scan) -- runtime-safety: never run a heavy model in the control
-        # path while the robot is driving. Gesture re-acquire after a loss defers to the stood
-        # S_REACQUIRE that follows the scan; the other three states command no motion.
-        if state not in (S_SEARCH, S_REACQUIRE, S_PARKED):
-            gdbg(self.a, "STATE-SKIP state=%s not in (SEARCH,REACQUIRE,PARKED) -> pose not run "
-                 "(raise a hand while stationary/searching, not while following or scanning)" % state)
-            return None
-        self._tick += 1
-        if self.every_n > 1 and (self._tick % self.every_n) != 0:
-            return None                     # decimated (audit cadence)
-        raisers, owners = self._raisers(frame, persons)
-        self._log_latency()
-        # MISS FORGIVENESS (field fix 2026-07-02): a single blurry / kp-conf-dip pose frame used
-        # to hard-reset the whole hold, which at kp-conf 0.5 made an 8-streak nearly impossible
-        # to complete. Now a hold survives up to --gesture-miss-tol consecutive missed frames
-        # (the miss does NOT increment the hold); identity walls are untouched (two raisers
-        # still refuse; the reseed anchor floor still gates re-seeds).
-        _tol = int(getattr(self.a, "gesture_miss_tol", 0))
-        _now = time.monotonic()
-        for tid in list(self.holds.keys()):
-            if tid not in raisers:
-                self._miss[tid] = self._miss.get(tid, 0) + 1
-                if self._miss[tid] > _tol:
-                    del self.holds[tid]
-                    self._miss.pop(tid, None)
-                    self._hold_since.pop(tid, None)   # Phase 2.1: a miss RUN > tol resets the wall-clock dwell
-        for tid in raisers:
-            if tid not in self.holds:
-                self._hold_since[tid] = _now          # Phase 2.1: stamp the first raise of a fresh dwell
-            self.holds[tid] = self.holds.get(tid, 0) + 1
-            self._miss.pop(tid, None)
-        # Phase 2.1 (deterministic confirm): gate on continuous wall-clock dwell (--gesture-hold-s) so the
-        # time-to-lock is loop-rate-independent, with a min FRAME floor (--gesture-hold-floor) so a single
-        # fluke frame that happens to span the window can't seed. --gesture-hold-s 0 = the legacy pure
-        # frame-count gate (holds >= --gesture-hold). The identity walls below (ambiguity / owner-authority
-        # / two-raiser refuse) are unchanged -> INV-4 held; pose runs only in stationary states.
-        hold_n = int(self.a.gesture_hold)
-        hold_s = float(getattr(self.a, "gesture_hold_s", 0.0))
-        if hold_s > 0.0:
-            _floor = max(1, int(getattr(self.a, "gesture_hold_floor", 3)))
-            confirmed = [tid for tid, c in self.holds.items()
-                         if c >= _floor and (_now - self._hold_since.get(tid, _now)) >= hold_s]
-        else:
-            confirmed = [tid for tid, c in self.holds.items() if c >= hold_n]
-        gdbg(self.a, "FRAME persons=%d pose_dets=%d raisers=%s holds=%s need=%d confirmed=%s"
-             % (len(persons), self._last_pose_dets, sorted(raisers), dict(self.holds),
-                hold_n, confirmed))
-        if not confirmed:
-            return None
-        if len(confirmed) >= 2:
-            log("GESTURE-AMBIGUOUS %d raisers held -> refusing (one person, raise one hand)"
-                % len(confirmed))
-            return None
-        tid = confirmed[0]
-        box = owners.get(tid)
-        if box is None:
-            return None
-        x1, y1, x2, y2 = box
-        bh = max(y2 - y1, 1.0)
-        point = ((x1 + x2) * 0.5, y1 + 0.6 * bh)   # owner-box lower-centre
-        return LockHint(point, box, tid, "gesture", "gesture")
-
-    def _both_hands(self, k, margin):
-        """True if BOTH wrists are above their same-side shoulders by >= margin (the 'stop' pose).
-        Distinct from the one-hand lock gesture. Never raises."""
-        try:
-            kpc = float(self.a.gesture_kp_conf)
-
-            def ok(idx):
-                return float(k[idx][2]) >= kpc
-
-            def y(idx):
-                return float(k[idx][1])
-
-            left = ok(KP_L_WRIST) and ok(KP_L_SHOULDER) and y(KP_L_WRIST) < y(KP_L_SHOULDER) - margin
-            right = ok(KP_R_WRIST) and ok(KP_R_SHOULDER) and y(KP_R_WRIST) < y(KP_R_SHOULDER) - margin
-            return bool(left and right)
-        except Exception:  # noqa: BLE001
-            return False
-
-    def stop_gesture(self, frame, persons, seed_tid):
-        """In-follow STOP gesture: returns True when the FOLLOWED person (seed_tid) has HELD both
-        hands up for --gesture-stop-hold checks. DECIMATED by --gesture-stop-every-n. Runs pose
-        (records ms, sets ran_inference) ONLY on a checked frame. De-escalating use only -- the
-        caller maps a True to a commanded WAIT (HOLD). Crash-safe -> False."""
-        self.ran_inference = False
-        if not self.ok or seed_tid is None:
-            self._stop_streak = 0
-            return False
-        self._cmd_tick += 1
-        if self._cmd_tick % max(1, int(self.a.gesture_stop_every_n)) != 0:
-            return False                          # decimated frame -> no check, streak unchanged
-        try:
-            _t0 = time.monotonic()
-            res = self.model.predict(frame, verbose=False)
-            self._ms.append((time.monotonic() - _t0) * 1000.0)
-        except Exception:  # noqa: BLE001
-            return False
-        self.ran_inference = True
-        up = False
-        try:
-            seed_box = None
-            for p in persons:
-                if p.get("track_id") == seed_tid:
-                    seed_box = p["box"]; break
-            if seed_box is not None:
-                margin = self.a.gesture_kp_margin_frac * max(seed_box[3] - seed_box[1], 1.0)
-                for r in res:
-                    kpts = getattr(r, "keypoints", None); boxes = getattr(r, "boxes", None)
-                    if kpts is None or boxes is None or kpts.data is None:
-                        continue
-                    kd = kpts.data
-                    for i in range(len(kd)):
-                        try:
-                            pxy = boxes.xyxy[i].tolist()
-                            pb = (float(pxy[0]), float(pxy[1]), float(pxy[2]), float(pxy[3]))
-                        except Exception:  # noqa: BLE001
-                            continue
-                        if iou_xyxy(pb, seed_box) >= self.a.iou_min and self._both_hands(kd[i], margin):
-                            up = True; break
-                    if up:
-                        break
-        except Exception:  # noqa: BLE001
-            return False
-        self._stop_streak = self._stop_streak + 1 if up else 0
-        return self._stop_streak >= int(self.a.gesture_stop_hold)
-
-
-class CompositeTrigger(LockTrigger):
-    """A/B substrate for --lock-trigger both: ArUco DRIVES (its hint is returned and is
-    the only point that reaches _try_seed); gesture runs AUDIT-ONLY (computed + stashed
-    for _gesture_audit, never returned, never seeds, never drives). Mirrors the repo's
-    audit-only relock vote. on_overrun disables only the gesture sub-trigger -- ArUco
-    keeps driving."""
-    name = "both"
-
-    def __init__(self, aruco, gesture):
-        self.aruco = aruco
-        self.gesture = gesture
-        self.ok = True
-        self.ran_inference = False
-        self.last_aruco_hint = None
-        self.last_gesture_hint = None
-
-    def detect(self, frame, persons, state, w_img, h_img):
-        a = self.aruco.detect(frame, persons, state, w_img, h_img)
-        g = self.gesture.detect(frame, persons, state, w_img, h_img)
-        self.ran_inference = self.gesture.ran_inference
-        self.last_aruco_hint = a
-        self.last_gesture_hint = g
-        if g is not None:
-            gdbg(self.gesture.a, "AUDIT-ONLY raised-hand confirmed (tid=%s) but lock-trigger=BOTH "
-                 "-> NOT seeding; use 'Gesture lock', not 'A/B (compare)'"
-                 % getattr(g, "owner_tid", None))
-        return a                            # ArUco drives; gesture is audit-only
-
-    def on_overrun(self):
-        self.gesture.on_overrun()
-
-
-# ---------------------------------------------------------------------------
-# Tier-1 command channel -- a WATCHED FILE the host writes one token to (the
-# K1Finder typed box / voice front-end -> a short-lived `ssh ... printf > file`).
-# Drained once per tick, non-blocking, crash-safe. NEVER the node's PTY stdin
-# (which carries the Ctrl-C e-stop) and NEVER the bridge stdin (raw velocity).
-# The brain selects only a member of a FROZEN enum -- never a velocity, never an
-# identity. See docs/SCOPE_nl_command_layer.md.
-# ---------------------------------------------------------------------------
+# ArUco setup + marker_center + the trigger classes -> triggers.py (P3.6).
 class CommandChannel:
     def __init__(self, path):
         self.path = path
@@ -772,996 +228,7 @@ class CommandChannel:
 # ---------------------------------------------------------------------------
 # Pinhole helpers (bearing>0 = target is to the RIGHT of image center)
 # ---------------------------------------------------------------------------
-def focal_px(w_img, hfov_deg):
-    return (w_img / 2.0) / math.tan(math.radians(hfov_deg) / 2.0)
-
-
-def bearing_from_x(cx, w_img, hfov_deg):
-    return math.atan2((cx - w_img / 2.0), focal_px(w_img, hfov_deg))
-
-
-def range_from_bbox_height(box_h_px, h_img, hfov_deg, person_h_m):
-    """Fallback range from apparent person height. The camera's vertical FOV
-    isn't published here, so we reuse the horizontal focal length (a fine
-    monocular proxy): range ~= person_h_m * focal_px / box_h_px."""
-    if box_h_px <= 1:
-        return None
-    f = focal_px(h_img, hfov_deg)
-    return (person_h_m * f) / box_h_px
-
-
-# ---------------------------------------------------------------------------
-# Person detection (YOLO11n ONNX). Loaded ONCE at startup. Never crashes loop.
-# ---------------------------------------------------------------------------
-class PersonDetector:
-    def __init__(self, model_path, conf):
-        self.model_path = model_path
-        self.conf = conf
-        self.model = None
-        self.ok = False
-        try:
-            from ultralytics import YOLO
-            self.model = YOLO(model_path, task="detect")
-            self.ok = True
-        except Exception as e:  # noqa: BLE001
-            log("YOLO-LOAD-FAIL %s (%s) -- person detection disabled" % (model_path, e))
-            self.ok = False
-
-    def detect(self, frame):
-        """Return list of dicts: {box:(x1,y1,x2,y2), cx, cy, conf, w, h}.
-        Person-class only. Never raises."""
-        if not self.ok or frame is None:
-            return []
-        try:
-            res = self.model.predict(frame, conf=self.conf, classes=[PERSON_CLS],
-                                     verbose=False)
-        except TypeError:
-            # Older ultralytics signature: filter manually below.
-            try:
-                res = self.model.predict(frame, conf=self.conf, verbose=False)
-            except Exception:  # noqa: BLE001
-                return []
-        except Exception:  # noqa: BLE001
-            return []
-        out = []
-        try:
-            for r in res:
-                boxes = getattr(r, "boxes", None)
-                if boxes is None:
-                    continue
-                for b in boxes:
-                    try:
-                        cls = int(b.cls[0]) if b.cls is not None else -1
-                    except Exception:  # noqa: BLE001
-                        cls = -1
-                    if cls != PERSON_CLS:
-                        continue
-                    try:
-                        conf = float(b.conf[0]) if b.conf is not None else 0.0
-                    except Exception:  # noqa: BLE001
-                        conf = 0.0
-                    if conf < self.conf:
-                        continue
-                    try:
-                        xy = b.xyxy[0].tolist()
-                        x1, y1, x2, y2 = [float(v) for v in xy[:4]]
-                    except Exception:  # noqa: BLE001
-                        continue
-                    if x2 <= x1 or y2 <= y1:
-                        continue
-                    out.append({
-                        "box": (x1, y1, x2, y2),
-                        "cx": (x1 + x2) * 0.5,
-                        "cy": (y1 + y2) * 0.5,
-                        "w": (x2 - x1),
-                        "h": (y2 - y1),
-                        "conf": conf,
-                    })
-        except Exception:  # noqa: BLE001
-            return out
-        return out
-
-
-def target_point_from_box(person):
-    """The single 'skeleton centroid' the controller follows. Currently the
-    bbox centroid; a pose/skeleton model would override this one function to
-    return e.g. the torso/hip midpoint instead. Everything downstream is
-    point-based, so the swap is local."""
-    return person["cx"], person["cy"]
-
-
-# ---------------------------------------------------------------------------
-# Stage 1 -- pixel-space multi-object tracker. A constant-velocity Kalman filter
-# per person in IMAGE space (cx, cy, scale, aspect) -- intentionally NOT metric:
-# the camera is monocular with no IMU fusion here, so a metric/world track would
-# be untrustworthy (scale ambiguity). The tracker gives every detection a stable
-# track_id and a motion prediction so the follower can (a) PREFER the same person
-# across frames and (b) COAST through brief occlusions instead of dropping the
-# lock. numpy-only (optional scipy for optimal assignment, else greedy). Every
-# entry point is wrapped by the caller so a tracker fault degrades to the
-# pre-Stage-1 stateless path -- it can never kill the control loop.
-# ---------------------------------------------------------------------------
-try:
-    from scipy.optimize import linear_sum_assignment as _linear_sum_assignment
-    _HAVE_LSA = True
-except Exception:  # noqa: BLE001 -- scipy is optional; greedy fallback below
-    _HAVE_LSA = False
-
-
-def iou_xyxy(a, b):
-    """IoU of two (x1,y1,x2,y2) boxes. 0.0 when disjoint or degenerate."""
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    ix1 = max(ax1, bx1); iy1 = max(ay1, by1)
-    ix2 = min(ax2, bx2); iy2 = min(ay2, by2)
-    iw = max(0.0, ix2 - ix1); ih = max(0.0, iy2 - iy1)
-    inter = iw * ih
-    if inter <= 0.0:
-        return 0.0
-    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-    denom = area_a + area_b - inter
-    return inter / denom if denom > 0.0 else 0.0
-
-
-def _point_box_dist(px, py, box):
-    """Euclidean distance from a point to the nearest edge of a box (0.0 if inside).
-    Used by the gesture bystander-adjacency gate (SCOPE §2.1 G4)."""
-    x1, y1, x2, y2 = box
-    dx = max(x1 - px, 0.0, px - x2)
-    dy = max(y1 - py, 0.0, py - y2)
-    return math.hypot(dx, dy)
-
-
-def max_iou_other(persons, idx, self_track_id=None):
-    """Max IoU of persons[idx]['box'] vs every OTHER person's box. Self-excluded
-    by INDEX (a copied tuple would self-match at IoU 1.0 and silently disable
-    isolation). When self_track_id is given, also skip persons sharing it
-    (split/duplicate detections of the SAME person). Returns 0.0 with no others;
-    on any fault returns 1.0 (treated as NOT isolated -> fail safe: no admit/bank)."""
-    try:
-        box = persons[idx]["box"]
-        m = 0.0
-        for j, q in enumerate(persons):
-            if j == idx:
-                continue
-            if self_track_id is not None and q.get("track_id") == self_track_id:
-                continue
-            m = max(m, iou_xyxy(box, q["box"]))
-        return m
-    except Exception:  # noqa: BLE001
-        return 1.0
-
-
-def _box_to_z(box):
-    """(x1,y1,x2,y2) -> measurement [cx, cy, s(area), r(aspect w/h)]."""
-    x1, y1, x2, y2 = box
-    w = max(x2 - x1, 1e-3); h = max(y2 - y1, 1e-3)
-    return np.array([x1 + w / 2.0, y1 + h / 2.0, w * h, w / h], dtype=np.float64)
-
-
-def _x_to_box(x):
-    """State -> (x1,y1,x2,y2) from [cx, cy, s, r, ...]."""
-    cx, cy, s, r = float(x[0]), float(x[1]), max(float(x[2]), 1e-6), max(float(x[3]), 1e-6)
-    w = math.sqrt(s * r); h = (s / w) if w > 0 else 1.0
-    return (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
-
-
-class Track:
-    """One constant-velocity Kalman track. State x = [cx, cy, s, r, vcx, vcy, vs].
-    Measurement z = [cx, cy, s, r] (SORT-style). All in pixel/image units."""
-    _F = None   # state transition (shared, constant)
-    _H = None   # measurement matrix (shared, constant)
-
-    def __init__(self, box, tid):
-        if Track._F is None:
-            F = np.eye(7)
-            F[0, 4] = F[1, 5] = F[2, 6] = 1.0        # cx+=vcx, cy+=vcy, s+=vs
-            Track._F = F
-            H = np.zeros((4, 7)); H[0, 0] = H[1, 1] = H[2, 2] = H[3, 3] = 1.0
-            Track._H = H
-        self.id = tid
-        self.x = np.zeros(7)
-        self.x[:4] = _box_to_z(box)
-        self.P = np.eye(7) * 10.0
-        self.P[4:, 4:] *= 1000.0                     # velocities start very uncertain
-        self.Q = np.eye(7); self.Q[4:, 4:] *= 0.01; self.Q[-1, -1] *= 0.01
-        self.R = np.eye(4); self.R[2:, 2:] *= 10.0   # area/aspect noisier than centre
-        self.time_since_update = 0
-        self.hits = 1
-        self.age = 0
-
-    def predict(self):
-        self.x = Track._F @ self.x
-        self.P = Track._F @ self.P @ Track._F.T + self.Q
-        self.age += 1
-        self.time_since_update += 1
-        return self.predicted_box()
-
-    def update(self, box):
-        z = _box_to_z(box)
-        H = Track._H
-        y = z - H @ self.x
-        S = H @ self.P @ H.T + self.R
-        try:
-            K = self.P @ H.T @ np.linalg.inv(S)
-        except np.linalg.LinAlgError:
-            return                                   # singular -> skip this update
-        self.x = self.x + K @ y
-        self.P = (np.eye(7) - K @ H) @ self.P
-        self.time_since_update = 0
-        self.hits += 1
-
-    def predicted_box(self):
-        return _x_to_box(self.x)
-
-    def centroid(self):
-        return float(self.x[0]), float(self.x[1])
-
-
-class MultiTracker:
-    """Tracking-by-detection over YOLO person boxes. Predicts every track, then
-    associates detections to predictions by IoU (optimal if scipy is present,
-    else greedy). Matched tracks are updated; UNMATCHED detections spawn FRESH,
-    monotonically-increasing ids that can never reuse a retired id (so a newcomer
-    can never inherit the anchored target's id); tracks unseen for > max_coast
-    frames are retired. Stamps p['track_id'] on every detection in place."""
-
-    def __init__(self, iou_min=0.2, max_coast=10):
-        self.iou_min = float(iou_min)
-        self.max_coast = int(max_coast)
-        self.tracks = {}        # id -> Track
-        self.next_id = 1
-
-    def update(self, persons):
-        for t in self.tracks.values():
-            t.predict()
-        track_ids = list(self.tracks.keys())
-        pred_boxes = [self.tracks[i].predicted_box() for i in track_ids]
-        det_boxes = [p["box"] for p in persons]
-
-        matches = {}            # det_idx -> track_id
-        if track_ids and det_boxes:
-            iou = np.zeros((len(det_boxes), len(track_ids)), dtype=np.float64)
-            for di, db in enumerate(det_boxes):
-                for ti, tb in enumerate(pred_boxes):
-                    iou[di, ti] = iou_xyxy(db, tb)
-            if _HAVE_LSA:
-                rows, cols = _linear_sum_assignment(-iou)
-                for di, ti in zip(rows, cols):
-                    if iou[di, ti] >= self.iou_min:
-                        matches[int(di)] = track_ids[int(ti)]
-            else:
-                pairs = [(iou[di, ti], di, ti)
-                         for di in range(len(det_boxes))
-                         for ti in range(len(track_ids))
-                         if iou[di, ti] >= self.iou_min]
-                pairs.sort(reverse=True)             # highest IoU first
-                used_d, used_t = set(), set()
-                for _, di, ti in pairs:
-                    if di in used_d or ti in used_t:
-                        continue
-                    used_d.add(di); used_t.add(ti)
-                    matches[di] = track_ids[ti]
-
-        for di, p in enumerate(persons):
-            if di in matches:
-                tid = matches[di]
-                self.tracks[tid].update(p["box"])
-                p["track_id"] = tid
-            else:
-                self.tracks[self.next_id] = Track(p["box"], self.next_id)
-                p["track_id"] = self.next_id
-                self.next_id += 1
-
-        for tid in list(self.tracks.keys()):
-            if self.tracks[tid].time_since_update > self.max_coast:
-                del self.tracks[tid]
-        return self.tracks
-
-    def get(self, tid):
-        return self.tracks.get(tid)
-
-
-# ---------------------------------------------------------------------------
-# Stage 2 -- anchored appearance gallery + distractor bank. Slot-0 is the FROZEN
-# anchor (immutable, never EMA'd, never evicted, held SEPARATELY from the bounded
-# deque so it can never be pushed out). gallery = confirmed same-person views
-# (only LOWER cost). distractors = confirmed other-people views (only RAISE cost).
-# feat_fn/sim_fn are the ONLY swap point for a Stage-4 embedding backend. Every
-# method is crash-safe -> degrade to anchor-only behavior; never kills the loop.
-# ---------------------------------------------------------------------------
-class TargetGallery:
-    def __init__(self, anchor_feat, feat_fn, sim_fn,
-                 gallery_size, distractor_size,
-                 anchor_floor, bank_floor, admit_conf, admit_spacing):
-        self.anchor_feat = anchor_feat          # may be None; tolerated
-        self.feat_fn = feat_fn
-        self.sim_fn = sim_fn
-        self.gallery = collections.deque(maxlen=max(0, gallery_size - 1))
-        self.distractors = collections.deque(maxlen=max(0, distractor_size))
-        self._anchor_floor = float(anchor_floor)
-        self._bank_floor = float(bank_floor)
-        self._admit_conf = float(admit_conf)
-        self._admit_spacing = int(admit_spacing)
-        self.last_admit_frame = -10**9
-
-    def anchor_pass(self, feat):
-        """Slot-0 HARD gate. Mirrors the legacy veto disable path: True when the
-        veto is disabled (anchor_floor <= 0) or no anchor exists."""
-        try:
-            if self.anchor_feat is None or self._anchor_floor <= 0.0:
-                return True
-            return self.sim_fn(self.anchor_feat, feat) >= self._anchor_floor
-        except Exception:  # noqa: BLE001
-            return False   # feature fault -> caller vetoes -> degrade safe
-
-    def score(self, feat):
-        """Return (anchor_sim, g_sim, d_sim). anchor_sim FIRST and SEPARATE so the
-        caller applies the AND-veto on anchor_sim ALONE (never on g_sim).
-        g_sim = max(anchor_sim, gallery sims) >= anchor_sim -> can only LOWER cost."""
-        try:
-            a = self.sim_fn(self.anchor_feat, feat) if self.anchor_feat is not None else 0.0
-            g = a
-            for v in self.gallery:
-                s = self.sim_fn(v, feat)
-                if s > g:
-                    g = s
-            d = 0.0
-            for v in self.distractors:
-                s = self.sim_fn(v, feat)
-                if s > d:
-                    d = s
-            return a, g, d
-        except Exception:  # noqa: BLE001
-            return 0.0, 0.0, 0.0
-
-    def relock_score(self, feat, view_floor, dedup_ceiling):
-        """Multi-shot re-ID primitive for ARMED markerless re-lock. Returns
-        (anchor_sim, g_sim, d_sim, k); a/g/d are IDENTICAL to score(), and k = the count
-        of MUTUALLY-DISSIMILAR admitted gallery views that are BOTH (i) strong frozen-anchor
-        matches (their own anchor sim >= view_floor -- recomputed, deterministic since both
-        feats are immutable) AND (ii) match the candidate >= view_floor. anchor_feat is
-        READ-ONLY here. Fails CLOSED -> (0,0,0,0): a fault can only DENY a re-lock, never
-        grant one. k is the independent-evidence count the caller needs to relax the anchor
-        slot-0 gate WITHOUT relying on g_sim (which collapses anchor+gallery into one max)."""
-        try:
-            a = self.sim_fn(self.anchor_feat, feat) if self.anchor_feat is not None else 0.0
-            g = a
-            for v in self.gallery:
-                s = self.sim_fn(v, feat)
-                if s > g:
-                    g = s
-            d = 0.0
-            for v in self.distractors:
-                s = self.sim_fn(v, feat)
-                if s > d:
-                    d = s
-            matched = []                      # STRONG admits that also match the candidate
-            for v in self.gallery:
-                if self.anchor_feat is not None and self.sim_fn(self.anchor_feat, v) < view_floor:
-                    continue                  # weak admit (banked near bank_floor) cannot vouch
-                if self.sim_fn(v, feat) >= view_floor:
-                    matched.append(v)
-            kept = []                         # collapse near-duplicate viewpoints -> independence
-            for vf in matched:
-                if all(self.sim_fn(vf, kf) < dedup_ceiling for kf in kept):
-                    kept.append(vf)
-            return a, g, d, len(kept)
-        except Exception:  # noqa: BLE001
-            return 0.0, 0.0, 0.0, 0
-
-    def admit(self, feat, conf, jump, ema_max_jump, isolated, frame_idx):
-        """Append a same-person view. NEVER touches anchor_feat. Isolation is
-        necessary, NOT sufficient (conf + non-teleport + spacing + bank_floor too)."""
-        try:
-            if feat is None or not isolated:
-                return False
-            if conf < self._admit_conf:
-                return False
-            if jump > ema_max_jump:
-                return False
-            if (frame_idx - self.last_admit_frame) < self._admit_spacing:
-                return False
-            if self.anchor_feat is not None and self.sim_fn(self.anchor_feat, feat) < self._bank_floor:
-                return False
-            if self.gallery.maxlen == 0:      # --gallery-size 1 -> anchor-only
-                return False
-            self.gallery.append(feat)
-            self.last_admit_frame = frame_idx
-            return True
-        except Exception:  # noqa: BLE001
-            return False
-
-    def add_distractor(self, feat, isolated):
-        """Bank a confidently-other-person view. Require sim < anchor_floor (NOT
-        just < bank_floor) so a color-shifted target view that still clears the
-        follow-veto can never be banked against itself. Caller ALSO guards on
-        track_id != seed.track_id."""
-        try:
-            if feat is None or not isolated:
-                return False
-            if self.distractors.maxlen == 0:
-                return False
-            if self.anchor_feat is not None:
-                s = self.sim_fn(self.anchor_feat, feat)
-                if s >= self._bank_floor or s >= self._anchor_floor:
-                    return False
-            self.distractors.append(feat)
-            return True
-        except Exception:  # noqa: BLE001
-            return False
-
-
-# ---------------------------------------------------------------------------
-# Color signature: normalized HS histogram of the bbox (HSV). cv2.calcHist.
-# ---------------------------------------------------------------------------
-def color_hist(frame, box):
-    try:
-        h_img, w_img = frame.shape[:2]
-        x1, y1, x2, y2 = box
-        x1 = int(clamp(x1, 0, w_img - 1)); x2 = int(clamp(x2, 1, w_img))
-        y1 = int(clamp(y1, 0, h_img - 1)); y2 = int(clamp(y2, 1, h_img))
-        if x2 <= x1 or y2 <= y1:
-            return None
-        roi = frame[y1:y2, x1:x2]
-        if roi.size == 0:
-            return None
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        hist = cv2.calcHist([hsv], [0, 1], None, [30, 32], [0, 180, 0, 256])
-        cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
-        return hist
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def hist_similarity(h1, h2):
-    """Correlation similarity in [0,1] (clamped). 1 = identical color profile."""
-    if h1 is None or h2 is None:
-        return 0.0
-    try:
-        s = cv2.compareHist(h1, h2, cv2.HISTCMP_CORREL)
-        if math.isnan(s):
-            return 0.0
-        return clamp(s, 0.0, 1.0)
-    except Exception:  # noqa: BLE001
-        return 0.0
-
-
-# ---------------------------------------------------------------------------
-# Stage 4 (MODEL-FREE) -- PART-BASED appearance descriptor. The single global HS
-# histogram (color_hist) is blind to color LAYOUT: a red-top/blue-bottom person and
-# a blue-top/red-bottom one hash to nearly the same global histogram, so they tie
-# (failure mode A). Splitting the bbox into vertical bands and histogramming each
-# captures the layout that separates similarly-coloured people. Pure OpenCV/numpy --
-# NO new model file. Side-background leak is suppressed by keeping only a central
-# horizontal slab. The feature is ONE flat float32 vector, so it EMA-blends and
-# stores exactly like the global hist; similarity is cosine in [0,1] -- a drop-in for
-# the feat_fn/sim_fn swap point built in Stage 2. (A learned embedding (OSNet) would
-# be strictly stronger, but that is the "new model" this stage deliberately avoids;
-# identical-uniform crowds therefore stay hard -- see --arm-reacquire.)
-# ---------------------------------------------------------------------------
-STRIPE_BANDS  = 3      # vertical bands (head+shoulders / torso / legs)
-STRIPE_HBINS  = 16     # H bins per band
-STRIPE_SBINS  = 16     # S bins per band
-STRIPE_KEEP_W = 0.7    # central width fraction kept (drops side-background)
-
-
-def striped_feat(frame, box):
-    """Vertical-band HS histogram over a central slab, returned as one L1-normalized
-    float32 vector (STRIPE_BANDS*STRIPE_HBINS*STRIPE_SBINS long). None on failure --
-    callers already treat None as 'no signature this frame' (safe)."""
-    try:
-        h_img, w_img = frame.shape[:2]
-        x1, y1, x2, y2 = box
-        x1 = int(clamp(x1, 0, w_img - 1)); x2 = int(clamp(x2, 1, w_img))
-        y1 = int(clamp(y1, 0, h_img - 1)); y2 = int(clamp(y2, 1, h_img))
-        if (x2 - x1) < 4 or (y2 - y1) < STRIPE_BANDS * 4:
-            return None
-        # Drop the side margins (most likely background) before histogramming.
-        mx = int((x2 - x1) * (1.0 - STRIPE_KEEP_W) * 0.5)
-        cx1, cx2 = x1 + mx, x2 - mx
-        if (cx2 - cx1) < 2:
-            cx1, cx2 = x1, x2
-        roi = frame[y1:y2, cx1:cx2]
-        if roi.size == 0:
-            return None
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        bh = hsv.shape[0]
-        parts = []
-        for b in range(STRIPE_BANDS):
-            ya = (bh * b) // STRIPE_BANDS
-            yb = (bh * (b + 1)) // STRIPE_BANDS
-            band = hsv[ya:yb]
-            if band.size == 0:
-                parts.append(np.zeros(STRIPE_HBINS * STRIPE_SBINS, dtype=np.float32))
-                continue
-            hbnd = cv2.calcHist([band], [0, 1], None,
-                                [STRIPE_HBINS, STRIPE_SBINS], [0, 180, 0, 256])
-            parts.append(hbnd.flatten())
-        feat = np.concatenate(parts).astype(np.float32)
-        s = float(feat.sum())
-        if s > 0.0:
-            feat /= s                      # L1-normalize (area / exposure invariant)
-        return feat
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def striped_sim(f1, f2):
-    """Cosine similarity in [0,1] over two striped feature vectors. 0.0 on None /
-    shape-mismatch / degenerate. Computes the norms internally, so it stays correct
-    on an EMA-blended (no longer unit-norm) vector."""
-    if f1 is None or f2 is None:
-        return 0.0
-    try:
-        if f1.shape != f2.shape:
-            return 0.0
-        n1 = float(np.linalg.norm(f1)); n2 = float(np.linalg.norm(f2))
-        if n1 <= 0.0 or n2 <= 0.0:
-            return 0.0
-        c = float(np.dot(f1, f2) / (n1 * n2))
-        if math.isnan(c):
-            return 0.0
-        return clamp(c, 0.0, 1.0)
-    except Exception:  # noqa: BLE001
-        return 0.0
-
-
-# ---------------------------------------------------------------------------
-# Stage 4 (DEEP / OPTIONAL) -- person-ReID embedding backend (e.g. OSNet-x0.25).
-# Runs an ONNX model through onnxruntime's TensorRT execution provider at FP16
-# (== TRT FP16, the requested acceleration) with CUDA then CPU fallback, reusing
-# the onnxruntime dep already present for YOLO -- no pycuda / raw-TRT requirement.
-# The TRT EP builds + caches the FP16 engine ON the device on first run (slow once,
-# cached after). A learned embedding separates identities a colour histogram cannot
-# (failure mode A) and is what makes armed markerless re-acquire (E) trustworthy in
-# crowds. Loaded ONCE, warmed up, CRASH-SAFE: if onnxruntime / the model / the
-# providers are unavailable, ok=False and the caller falls back to the histogram.
-# embed() never raises into the control loop. Similarity is cosine (striped_sim),
-# so it drops straight into the feat_fn/sim_fn swap point.
-#
-# Get an OSNet ONNX (e.g. osnet_x0_25_msmt17.onnx from torchreid / BoxMOT), put it on
-# the robot, and run: --appearance osnet --reid-engine /path/to/osnet.onnx
-# ---------------------------------------------------------------------------
-REID_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
-REID_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
-
-
-class ReidEngine:
-    """ONNX person-ReID embedder via onnxruntime (TensorRT EP, FP16). ok=False on any
-    load failure so the caller degrades to the histogram/striped descriptor."""
-
-    def __init__(self, model_path, input_hw=(256, 128), fp16=True, cache_dir=None,
-                 letterbox=True, batch=True):
-        self.ok = False
-        self.session = None
-        self.input_name = None
-        self.in_h, self.in_w = int(input_hw[0]), int(input_hw[1])
-        self.letterbox = bool(letterbox)
-        self._batch_ok = bool(batch)
-        self._dyn_batch = False        # True only if the model's batch axis is dynamic AND batch on
-        self.providers_active = []
-        # ITEM 3: True iff a GPU EP (TensorRT/CUDA) was AVAILABLE but onnxruntime fell back to the
-        # CPU EP as the active provider. OSNet re-ID on CPU is far too slow to be trustworthy for an
-        # ARMED (driving) re-lock, so the node folds this into forcing re-lock -> audit-only.
-        self.cpu_ep_degraded = False
-        try:
-            if not model_path or not os.path.exists(model_path):
-                raise FileNotFoundError("reid model not found: %s" % model_path)
-            import onnxruntime as ort
-            avail = ort.get_available_providers()
-            providers = []
-            if "TensorrtExecutionProvider" in avail:
-                trt_opts = {"trt_fp16_enable": bool(fp16), "trt_engine_cache_enable": True}
-                if cache_dir:
-                    trt_opts["trt_engine_cache_path"] = cache_dir
-                providers.append(("TensorrtExecutionProvider", trt_opts))
-            if "CUDAExecutionProvider" in avail:
-                providers.append("CUDAExecutionProvider")
-            providers.append("CPUExecutionProvider")
-            so = ort.SessionOptions()
-            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            so.log_severity_level = 3
-            self.session = ort.InferenceSession(model_path, sess_options=so, providers=providers)
-            _in0 = self.session.get_inputs()[0]
-            self.input_name = _in0.name
-            # A FIXED batch axis (the standard OSNet export is batch=1) forces a per-row loop
-            # in embed_batch; a dynamic/symbolic axis lets us run all crops in one inference.
-            _b0 = _in0.shape[0] if _in0.shape else 1
-            self._dyn_batch = (not (isinstance(_b0, int) and _b0 >= 1)) and self._batch_ok
-            self.providers_active = list(self.session.get_providers())
-            # ITEM 3 (EP assertion): a GPU EP was AVAILABLE but the ACTIVE first provider is the CPU
-            # EP == onnxruntime silently fell back (missing TRT/CUDA runtime, engine-build failure,
-            # etc.). Flag it so the node can refuse ARMED (driving) re-lock. avail was computed above.
-            _gpu_avail = ("TensorrtExecutionProvider" in avail or "CUDAExecutionProvider" in avail)
-            _active0 = self.providers_active[0] if self.providers_active else ""
-            # An OSNet running on the CPU EP is too slow to trust for a DRIVING re-lock -- refuse arming
-            # whether it FELL BACK from an available GPU EP or is a CPU-only ORT build (both cases). Only
-            # ever DENIES arming (audit-only); TRACK/COAST identity is unaffected. On a GPU host that keeps
-            # a GPU EP active this stays False (byte-identical).
-            if _active0 == "CPUExecutionProvider":
-                self.cpu_ep_degraded = True
-                _why = "cpu-ep fell-back" if _gpu_avail else "cpu-ep cpu-only-build"
-                log("REID-DEGRADED %s active=%s avail=%s -> armed re-lock refused (audit-only)"
-                    % (_why, _active0, ",".join(avail)))
-            # Warm up -- the FIRST infer builds/loads the TRT engine (slow, once).
-            dummy = np.zeros((1, 3, self.in_h, self.in_w), dtype=np.float32)
-            for _ in range(3):
-                self.session.run(None, {self.input_name: dummy})
-            self.ok = True
-            log("REID-ENGINE ok model=%s providers=%s in=%dx%d"
-                % (os.path.basename(model_path), ",".join(self.providers_active),
-                   self.in_h, self.in_w))
-        except Exception as e:  # noqa: BLE001 -- any failure -> safe histogram fallback
-            log("REID-ENGINE load FAILED (%s) -> appearance falls back to histogram" % e)
-            self.ok = False
-
-    def _preprocess(self, frame, box):
-        h_img, w_img = frame.shape[:2]
-        x1, y1, x2, y2 = box
-        x1 = int(clamp(x1, 0, w_img - 1)); x2 = int(clamp(x2, 1, w_img))
-        y1 = int(clamp(y1, 0, h_img - 1)); y2 = int(clamp(y2, 1, h_img))
-        if x2 - x1 < 2 or y2 - y1 < 2:
-            return None
-        crop = frame[y1:y2, x1:x2]
-        if crop.size == 0:
-            return None
-        if self.letterbox:
-            # Aspect-preserving resize + gray(114) pad. Person crops are tall/narrow, so a
-            # straight stretch to 256x128 distorts the body OSNet was trained on -> low
-            # same-person cosine. Letterboxing keeps proportions -> stronger, separable embeddings.
-            ch, cw = crop.shape[:2]
-            s = min(self.in_w / float(cw), self.in_h / float(ch))
-            nw = max(1, int(round(cw * s))); nh = max(1, int(round(ch * s)))
-            resized = cv2.resize(crop, (nw, nh), interpolation=cv2.INTER_LINEAR)
-            canvas = np.full((self.in_h, self.in_w, 3), 114, dtype=np.uint8)
-            ox = (self.in_w - nw) // 2; oy = (self.in_h - nh) // 2
-            canvas[oy:oy + nh, ox:ox + nw] = resized
-            crop = canvas
-        else:
-            crop = cv2.resize(crop, (self.in_w, self.in_h), interpolation=cv2.INTER_LINEAR)
-        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        chw = np.transpose(rgb, (2, 0, 1))             # HWC -> CHW
-        chw = (chw - REID_MEAN) / REID_STD             # ImageNet normalize
-        return chw.astype(np.float32)
-
-    @staticmethod
-    def _l2(v):
-        v = np.asarray(v, dtype=np.float32).reshape(-1)
-        n = float(np.linalg.norm(v))
-        if n <= 0.0 or not np.isfinite(n):
-            return None
-        return v / n
-
-    def embed(self, frame, box):
-        """L2-normalized embedding for one box, or None on any failure (safe)."""
-        return self.embed_batch(frame, [box])[0]
-
-    def embed_batch(self, frame, boxes):
-        """Return a list (len == len(boxes)) of L2-normalized embeddings, None per failed box.
-        ONE session.run((M,3,H,W)) when the model's batch axis is DYNAMIC, else a per-row loop
-        (the standard OSNet export is fixed batch=1). NEVER raises -- a fault yields all-None so
-        the caller vetoes those candidates (fail-CLOSED, the safe direction). Scatters results
-        back by the valid-input index so candidate k can never inherit another crop's vector."""
-        out = [None] * len(boxes)
-        if not self.ok or not boxes:
-            return out
-        try:
-            tensors = []; idx = []
-            for i, b in enumerate(boxes):
-                x = self._preprocess(frame, b)
-                if x is not None:
-                    tensors.append(x); idx.append(i)
-            if not tensors:
-                return out
-            if self._dyn_batch and len(tensors) > 1:
-                batch = np.stack(tensors, axis=0)                  # (M,3,H,W) -- one inference
-                res = self.session.run(None, {self.input_name: batch})[0]
-                res = np.asarray(res, dtype=np.float32).reshape(len(tensors), -1)
-                for k, i in enumerate(idx):
-                    out[i] = self._l2(res[k])
-            else:
-                for k, i in enumerate(idx):                        # fixed-batch export -> per row
-                    r = self.session.run(None, {self.input_name: tensors[k][None, ...]})[0]
-                    out[i] = self._l2(r)
-            return out
-        except Exception:  # noqa: BLE001 -- never raise into the control loop
-            return [None] * len(boxes)
-
-
-# ---------------------------------------------------------------------------
-# Adaptive low-light enhancement. When a frame is dim, lift shadow detail
-# (CLAHE on the luma channel) + a gentle gamma so YOLO/ArUco can still find the
-# subject. Auto-gated by mean brightness, so a normally-lit frame passes through
-# untouched. A few ms/frame on the Jetson; never raises.
-# ---------------------------------------------------------------------------
-LL_DARK_THRESH = 90.0      # mean luma (0-255) below this -> treat as low light
-LL_CLAHE_CLIP  = 2.5
-LL_GAMMA       = 0.7       # < 1 brightens midtones / shadows
-_ll_clahe = None
-_ll_gamma_lut = np.array([((i / 255.0) ** LL_GAMMA) * 255 for i in range(256)],
-                         dtype=np.uint8)
-
-
-def low_light_boost(bgr, on=True, thresh=LL_DARK_THRESH):
-    """Return an enhanced BGR frame when the scene is dark, else the input
-    unchanged. Preserves color (works on the luma channel only). Never raises."""
-    if not on or bgr is None:
-        return bgr
-    try:
-        ycrcb = cv2.cvtColor(bgr, cv2.COLOR_BGR2YCrCb)
-        y = ycrcb[:, :, 0]
-        if float(y.mean()) >= thresh:
-            return bgr                       # bright enough -> leave it alone
-        global _ll_clahe
-        if _ll_clahe is None:
-            _ll_clahe = cv2.createCLAHE(clipLimit=LL_CLAHE_CLIP, tileGridSize=(8, 8))
-        y = _ll_clahe.apply(y)               # local-contrast lift (recovers shadows)
-        y = cv2.LUT(y, _ll_gamma_lut)        # gentle gamma brighten
-        ycrcb[:, :, 0] = y
-        return cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2BGR)
-    except Exception:                        # noqa: BLE001 -- never break the loop
-        return bgr
-
-
-# ---------------------------------------------------------------------------
-# Bridge wrapper -- --drive only.
-# ---------------------------------------------------------------------------
-class Bridge:
-    def __init__(self, path, extra_env=None):
-        self.path = path
-        self.proc = None
-        self._lock = threading.Lock()
-        self.extra_env = extra_env or None
-
-    def start(self):
-        env = None
-        if self.extra_env:
-            env = dict(os.environ); env.update(self.extra_env)
-        self.proc = subprocess.Popen(
-            [self.path],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            bufsize=1,
-            universal_newlines=True,
-            env=env,
-        )
-
-    def _send(self, cmd):
-        with self._lock:
-            if self.proc is None or self.proc.poll() is not None:
-                return None
-            try:
-                self.proc.stdin.write(cmd + "\n")
-                self.proc.stdin.flush()
-            except (BrokenPipeError, ValueError, OSError):
-                return None
-            return cmd
-
-    def command_expect_ok(self, cmd, timeout=4.0):
-        with self._lock:
-            if self.proc is None or self.proc.poll() is not None:
-                return False, "<bridge-dead>"
-            try:
-                self.proc.stdin.write(cmd + "\n")
-                self.proc.stdin.flush()
-            except (BrokenPipeError, ValueError, OSError) as e:
-                return False, "<write-failed:%s>" % e
-        reply_box = {}
-
-        def _read():
-            try:
-                reply_box["line"] = self.proc.stdout.readline()
-            except Exception as e:  # noqa: BLE001
-                reply_box["err"] = str(e)
-
-        t = threading.Thread(target=_read, daemon=True)
-        t.start()
-        t.join(timeout)
-        if "line" not in reply_box:
-            return False, "<no-reply/timeout>"
-        line = (reply_box["line"] or "").strip()
-        if not line:
-            return False, "<eof>"
-        parts = line.split()
-        ok = len(parts) >= 3 and parts[0] == "OK" and parts[-1] == "0"
-        return ok, line
-
-    def send_velocity(self, vx, vy, vyaw):
-        self._send("v %.4f %.4f %.4f" % (vx, vy, vyaw))
-
-    def stop(self):
-        self._send("stop")
-
-    def prep(self):
-        self._send("prep")      # ChangeMode(kPrepare) -- stable stand
-
-    def walk(self):
-        self._send("walk")      # ChangeMode(kWalking)
-
-    def quit(self):
-        self._send("quit")
-
-    def alive(self):
-        return self.proc is not None and self.proc.poll() is None
-
-    def shutdown(self, join_timeout=3.0):
-        try:
-            if self.alive():
-                self.stop()
-                self.quit()
-                t0 = time.time()
-                while self.alive() and (time.time() - t0) < join_timeout:
-                    time.sleep(0.05)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            if self.alive():
-                self.proc.terminate()
-                t0 = time.time()
-                while self.alive() and (time.time() - t0) < 1.0:
-                    time.sleep(0.05)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            if self.alive():
-                self.proc.kill()
-        except Exception:  # noqa: BLE001
-            pass
-
-
-# ---------------------------------------------------------------------------
-# ROS node -- BEST_EFFORT camera (both head topics, deduped) + depth.
-# ---------------------------------------------------------------------------
-class CamNode(Node):
-    def __init__(self, topics, depth_topic):
-        super().__init__("k1_follow_person")
-        qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1,
-            durability=DurabilityPolicy.VOLATILE,
-        )
-        # The K1 camera is flaky about WHICH topic it publishes on (sometimes
-        # /head/rgb, sometimes /head/raw/rgb), so subscribe to all candidates and
-        # process whichever delivers a frame.
-        for t in topics:
-            self.create_subscription(Image, t, self._cb, qos)
-        if depth_topic:
-            self.create_subscription(Image, depth_topic, self._depth_cb, qos)
-        self._lock = threading.Lock()
-        self._latest = None        # newest BGR frame
-        self._stamp = 0.0          # monotonic time it arrived
-        self._seq = 0              # increments on every NEW frame
-        self.frames_total = 0
-        self._depth_lock = threading.Lock()
-        self._depth = None         # newest depth-in-meters array
-        self._depth_stamp = 0.0
-        self._depth_count = 0      # total depth frames received (0 == never seen -> still WARMING)
-        self._depth_fps = 0.0      # EMA of depth publish rate, for health + diagnosis
-        # ITEM 7(c): RGB fps EMA, mirroring the depth fps above -- for the DRIVE precondition (d)
-        # and observability. Stamped under _lock in _cb. 0 == no RGB frame pair seen yet.
-        self._rgb_fps = 0.0
-        self._t0 = time.monotonic()  # node start, for the depth warm-up grace window
-
-    def _cb(self, msg):
-        try:
-            bgr = to_bgr(msg)
-        except Exception:  # noqa: BLE001 -- never let a bad frame kill the node
-            return
-        if bgr is None:
-            return
-        with self._lock:
-            # ITEM 7(c): RGB fps EMA (same 0.8/0.2 smoothing as the depth EMA in _depth_cb).
-            # BOTH RGB topics (raw/rgb + rgb) deliver the SAME camera frames into this one callback,
-            # so each frame can arrive twice ~ms apart; without a dt floor the EMA blends those
-            # inter-pair bursts (inst ~200-500) with real frame gaps and reads 10x high (observed
-            # 130-203 on a 13fps camera). Ignore dt < 20ms so the EMA tracks UNIQUE-frame rate
-            # (a real camera never exceeds ~50fps here; twin-topic pairs are always < 20ms apart).
-            _now = time.monotonic()
-            if self._stamp > 0.0:
-                _dt = _now - self._stamp
-                if _dt >= 0.02:
-                    _inst = 1.0 / _dt
-                    self._rgb_fps = _inst if self._rgb_fps <= 0.0 else (0.8 * self._rgb_fps + 0.2 * _inst)
-            self._latest = bgr
-            self._stamp = _now
-            self._seq += 1
-            self.frames_total += 1
-            _seq_now = self._seq
-        # Rerun RGB (Phase 2): log on THIS (cam-spin) thread, OUTSIDE the lock so the control loop's
-        # take_if_new never waits on the batcher. sink.image() COPIES (BGR->RGB) + decimates 1/N, so
-        # it never aliases self._latest. Inert unless --rerun (_RR.ok False -> single branch skip).
-        if _RR.ok:
-            _RR.frame(_seq_now, time.time())
-            _RR.image("/camera/rgb", bgr, seq=_seq_now)
-
-    def _depth_cb(self, msg):
-        d = depth_to_meters(msg)
-        if d is None:
-            return
-        now = time.monotonic()
-        with self._depth_lock:
-            if self._depth_stamp > 0.0:
-                dt = now - self._depth_stamp
-                if dt > 0.0:
-                    inst = 1.0 / dt
-                    self._depth_fps = inst if self._depth_fps <= 0.0 else (0.8 * self._depth_fps + 0.2 * inst)
-            self._depth = d
-            self._depth_stamp = now
-            self._depth_count += 1
-            _dcount = self._depth_count
-        # Rerun depth (Phase 2): cam-spin thread, OUTSIDE the lock; sink.depth() COPIES + casts +
-        # decimates by depth count, never aliasing self._depth (which the control loop reads under
-        # _depth_lock). frame_idx keyed best-effort to the current RGB seq (atomic int read).
-        if _RR.ok:
-            _RR.frame(self._seq, time.time())
-            _RR.depth("/camera/depth", d, seq=_dcount)
-
-    def take_if_new(self, last_seq):
-        with self._lock:
-            if self._seq != last_seq and self._latest is not None:
-                return self._latest, self._seq, self._stamp
-            return None, last_seq, self._stamp
-
-    def latest_depth(self, max_age=0.5):
-        with self._depth_lock:
-            if self._depth is None:
-                return None
-            if (time.monotonic() - self._depth_stamp) > max_age:
-                return None
-            return self._depth
-
-    def depth_health(self, now=None):
-        """Coarse depth liveness for the safe-floor + operator badge + diagnosis.
-        Returns (state, fps). WARMING = subscriber-gated ~10-15s spin-up, never seen
-        depth yet (NOT a fault). FRESH = publishing. STALE = a short gap. DOWN = no
-        depth -> follow must not drive forward on the bbox-height pinhole. Pure
-        arithmetic on the already-stamped depth state; safe to call every tick."""
-        now = now if now is not None else time.monotonic()
-        with self._depth_lock:
-            stamp = self._depth_stamp
-            count = self._depth_count
-            fps = self._depth_fps
-            t0 = self._t0
-        if count == 0:
-            return ("WARMING" if (now - t0) < DEPTH_WARMUP_S else "DOWN"), fps
-        age = now - stamp
-        if age <= DEPTH_FRESH_S:
-            return "FRESH", fps
-        if age <= DEPTH_DOWN_S:
-            return "STALE", fps
-        return "DOWN", fps
-
-    def rgb_fps(self):
-        """ITEM 7(c): current RGB publish-rate EMA (0.0 until a frame pair is seen)."""
-        with self._lock:
-            return self._rgb_fps
-
-    def rgb_stamp(self):
-        """ITEM 7(b): monotonic time the newest RGB frame arrived (0.0 == none yet)."""
-        with self._lock:
-            return self._stamp
-
-    def depth_stamp(self):
-        """ITEM 7(b): monotonic time the newest depth frame arrived (0.0 == none yet)."""
-        with self._depth_lock:
-            return self._depth_stamp
-
-
-# Stage 1 sub-states of S_TRACK, carried on Seed.track_state. The node-level
-# state stays S_SEARCH / S_TRACK / S_REACQUIRE; these only refine what the
-# tracker is doing while we hold the lock inside S_TRACK.
-TS_LOCKED   = "LOCKED"      # anchored person detected + accepted this frame
-TS_COASTING = "COASTING"    # briefly occluded -> following the motion prediction
-TS_RELOCALIZING = "RELOCALIZING"  # Stage 3: passive appearance re-acquire while STOOD
-
-
-# ---------------------------------------------------------------------------
-# Seed -- the locked target's identity. Created once at SEEDED, updated in TRACK.
-# ---------------------------------------------------------------------------
+# perception (pinhole helpers / PersonDetector / low_light_boost / CamNode) -> perception.py (P3.5).
 class Seed:
     def __init__(self, box, centroid, hist, conf):
         self.box = box                 # last bbox (x1,y1,x2,y2)
@@ -1786,11 +253,7 @@ class Seed:
 # ---------------------------------------------------------------------------
 # Main controller -- the lock-and-handoff state machine.
 # ---------------------------------------------------------------------------
-S_SEARCH    = "SEARCH_MARKER"
-S_TRACK     = "TRACK"
-S_REACQUIRE = "REACQUIRE"
-S_PARKED    = "PARKED"      # give-up: stood, watching for the marker, with a bounded clean-exit
-S_SEARCHING = "SEARCHING"   # DRIVE-only: yaw-only rotate toward the last bearing to re-find a lost target
+# S_SEARCH / S_TRACK / S_REACQUIRE / S_PARKED / S_SEARCHING now live in common.py (P3.0).
 
 
 class Follower:
@@ -1841,8 +304,13 @@ class Follower:
         self.tracker = MultiTracker(args.iou_min, args.max_coast) if args.track else None
         self._overrun_streak = 0    # consecutive frames the loop ran over its period
         self._rr_overrun_streak = 0  # consecutive over-budget frames with --rerun on (auto-disable)
+        self._frame_err_streak = 0   # P4.6: consecutive _process_frame throws (persistent-fault STAND escalator)
         self._loop_ms_hist = collections.deque(maxlen=600)  # ~60s of loop WORK-time @ 10Hz
         self._last_loopms_log = 0.0  # 10s cadence for the LOOP-MS observability line
+        # P5.3: always-on JSONL of safety-relevant per-tick signals (machine-readable post-incident
+        # forensics, alongside the text log). Inert if the path can't be opened (e.g. the replay gate).
+        self.events = EventLog(getattr(self.a, "event_log", None))
+        self._ev_cmd = (0.0, 0.0, 0.0)   # last control-law velocity (vx,vy,vyaw), for the event log
 
         # Stage 2/4: appearance-feature backend -- the single swap point. 'global' =
         # the original single HS histogram (default; Stages 1-3 behavior verbatim);
@@ -2075,6 +543,7 @@ class Follower:
         elif self.require_hb and self._hb_lost_logged:
             log("HB-OK operator heartbeat restored")
             self._hb_lost_logged = False
+        self._ev_cmd = (vx, vy, vyaw)   # P5.3: post-deadman commanded velocity, for the event log
         if self.drive and self.walking and self.bridge is not None:
             self.bridge.send_velocity(vx, vy, vyaw)
             # FIX C: baseline = what we ACTUALLY sent (post-deadman, post-clamp). On any
@@ -2454,6 +923,23 @@ class Follower:
                 log("REID-DEGRADED all-none streak=%d k=%d -> armed re-lock forced audit-only"
                     % (self._reid_none_streak, _k))
 
+    def _on_frame_error(self, e):
+        """P4.6 per-frame processing-fault handler + persistent-fault escalator. Immediate safe
+        response (STAND per --stand-on-loss, else HOLD). Then: after --fault-stand-k CONSECUTIVE
+        throws, FORCE a stand even with --no-stand-on-loss -- a chronically-throwing loop must not
+        keep walking on _hold alone (that case was previously caught only by the loose C++ bridge tier)."""
+        log("FRAME-ERR %s" % e)
+        self._frame_err_streak += 1
+        _fk = int(getattr(self.a, "fault_stand_k", 0))
+        forced = _fk > 0 and self._frame_err_streak >= _fk
+        if self.a.stand_on_loss or forced:
+            if forced and not self.a.stand_on_loss and self._frame_err_streak == _fk:
+                log("FRAME-ERR persistent streak=%d >= fault-stand-k=%d -> FORCED STAND"
+                    % (self._frame_err_streak, _fk))
+            self._stand()   # perception/processing error -> stable stand
+        else:
+            self._hold()
+
     # -- main run -----------------------------------------------------------
     def run(self):
         rclpy.init(args=None)
@@ -2520,8 +1006,8 @@ class Follower:
                 # same self._seq the cam-spin image path uses -> a decision aligns to its frame).
                 # rerun time is per-thread, so this never collides with the cam-spin cursor. Inert
                 # unless --rerun.
-                if _RR.ok:
-                    _RR.frame(last_seq if last_seq >= 0 else 0, time.time())
+                if rerun_sink._RR.ok:
+                    rerun_sink._RR.frame(last_seq if last_seq >= 0 else 0, time.time())
 
                 # Tier-1 command drain: one token per tick, BEFORE _process_frame, every tick
                 # (so STOP/HOLD are honored even during a NO-FRAME stall). Microseconds; inert
@@ -2571,10 +1057,10 @@ class Follower:
                                 % (_dfps, _floor + max(self.a.depth_starved_margin, 0.0)))
                     # Rerun health series (Phase 2): the sensor-truthful fps EMAs + the depth-starved
                     # latch -- the exact signals whose misreading caused a whole session's misdiagnosis.
-                    if _RR.ok:
-                        _RR.scalar("/health/depth_fps", _dfps)
-                        _RR.scalar("/health/rgb_fps", self.node.rgb_fps())
-                        _RR.scalar("/health/depth_starved", 1.0 if self._depth_starved else 0.0)
+                    if rerun_sink._RR.ok:
+                        rerun_sink._RR.scalar("/health/depth_fps", _dfps)
+                        rerun_sink._RR.scalar("/health/rgb_fps", self.node.rgb_fps())
+                        rerun_sink._RR.scalar("/health/depth_starved", 1.0 if self._depth_starved else 0.0)
                 if frame is not None:
                     ever_framed = True
                     last_frame_mono = now
@@ -2583,14 +1069,11 @@ class Follower:
                     frame = low_light_boost(frame, self.a.low_light, self.a.ll_dark_thresh)
                     try:
                         self._process_frame(frame)
-                        if _STREAM:
+                        if common._STREAM:
                             self._stream_frame(frame)
+                        self._frame_err_streak = 0   # P4.6: clean frame -> reset the persistent-fault counter
                     except Exception as e:  # noqa: BLE001 -- loop must never die
-                        log("FRAME-ERR %s" % e)
-                        if self.a.stand_on_loss:
-                            self._stand()   # perception/processing error -> stable stand
-                        else:
-                            self._hold()
+                        self._on_frame_error(e)
                 else:
                     # F4: throttle BOTH NO-FRAME emissions to ~1/s -- they used to fire every 10Hz
                     # tick, flooding the log through the whole camera warmup / any stall. The
@@ -2614,16 +1097,22 @@ class Follower:
 
                 # Rerun FSM series (Phase 2): log state EVERY iteration (not just TRACK) so SEARCH/
                 # SEARCHING/REACQUIRE show on the scrubber -- the reacquire-spin lives in those states.
-                if _RR.ok:
-                    _RR.state("/fsm/state", self.state)
+                if rerun_sink._RR.ok:
+                    rerun_sink._RR.state("/fsm/state", self.state)
 
                 if self.drive and self.walking and not self.bridge.alive():
                     log("BRIDGE died -> exiting (loco safed by bridge)")
                     break
 
                 dt = time.monotonic() - t0
-                if _RR.ok:
-                    _RR.scalar("/diag/loop_ms", dt * 1000.0)   # true loop dt straight into the .rrd
+                if rerun_sink._RR.ok:
+                    rerun_sink._RR.scalar("/diag/loop_ms", dt * 1000.0)   # true loop dt straight into the .rrd
+                # P5.3: always-on per-tick forensic record (cmd_vel, fsm, loop timing, lock). Inert
+                # when the sink couldn't open (off-robot); never raises (EventLog swallows write errors).
+                self.events.tick(t=round(time.time(), 3), fsm=self.state, walk=bool(self.walking),
+                                 vx=round(self._ev_cmd[0], 4), vy=round(self._ev_cmd[1], 4),
+                                 vyaw=round(self._ev_cmd[2], 4), loop_ms=round(dt * 1000.0, 1),
+                                 seed=(self.seed is not None), hb_req=bool(self.require_hb))
                 # Always-on loop-timing observability (autonomy-ops: observable by default). WORK-time
                 # per iteration (before the fill-sleep); a 10s p50/p99/max pulse tagged rerun on/off,
                 # so the --rerun loop-cost gate compares directly against the baseline in the logs.
@@ -2635,7 +1124,7 @@ class Follower:
                     _pct = lambda p: _xs[min(_n - 1, int(p * _n))]
                     log("LOOP-MS n=%d p50=%.0f p90=%.0f p99=%.0f max=%.0f budget=%.0f rerun=%s"
                         % (_n, _pct(0.5), _pct(0.9), _pct(0.99), _xs[-1], period * 1000.0,
-                           "on" if _RR.ok else "off"))
+                           "on" if rerun_sink._RR.ok else "off"))
                 # Stage 1 slow-frame guard: surface a perception overrun in the
                 # log (visible in --preview) before it ever matters under --drive.
                 if dt > period:
@@ -2647,12 +1136,12 @@ class Follower:
                         self._overrun_streak = 0
                     # Rerun auto-disable backstop (Phase 2 loop-safety gate item 4): if the loop is
                     # over budget for N consecutive frames WHILE --rerun is on, shed the OPTIONAL
-                    # Rerun load FIRST -- disabling _RR makes the follow byte-identical again, well
+                    # Rerun load FIRST -- disabling rerun_sink._RR makes the follow byte-identical again, well
                     # before the C++ staleness watchdog would have to safe. Conservative default (8)
                     # so a transient perception spike doesn't kill a useful recording; the .rrd's
                     # /diag/rr_track_ms shows whether Rerun was actually the cost. This is a backstop,
                     # NOT the primary gate -- the operator still runs the on-Orin probe before --drive.
-                    if _RR.ok:
+                    if rerun_sink._RR.ok:
                         # WARMUP GRACE (fix 2026-07-06, "rerun cuts off mid-run"): the first seconds are
                         # model/TensorRT warmup -- the loop is legitimately slow (p90 ~1s) AND the robot
                         # is not walking yet (SEARCH, ARM-gated), so over-budget frames here are NO safety
@@ -2665,7 +1154,7 @@ class Follower:
                         else:
                             self._rr_overrun_streak += 1
                             if self._rr_overrun_streak >= self.a.rerun_overrun_frames:
-                                _RR.ok = False
+                                rerun_sink._RR.ok = False
                                 log("RERUN-DISABLED-SLOW %d frames over budget with --rerun -> Rerun OFF "
                                     "(follow safe + byte-identical from here)" % self._rr_overrun_streak)
                                 self._rr_overrun_streak = 0
@@ -2701,10 +1190,14 @@ class Follower:
             # Flush the --rerun .rrd tail on any clean exit (SIGINT/TERM/HUP -> stop -> here). No-op
             # when Rerun is disabled; wrapped so a flush fault can never mask the real exit path.
             try:
-                _RR.close()
+                rerun_sink._RR.close()
             except Exception:  # noqa: BLE001
                 pass
             self._gbind_session_log()   # A/B rollup (no-op unless --lock-trigger both)
+            try:
+                self.events.close()     # P5.3: flush + close the forensic JSONL
+            except Exception:  # noqa: BLE001
+                pass
             self._cleanup()
             try:
                 self.node.destroy_node()
@@ -3778,9 +2271,9 @@ class Follower:
                 self._last_clr_log = _nowm
                 log("CLEARANCE %.2fm -> vx-cap %.2f (brake %.1f..%.1f)"
                     % (_clr, _obs_cap, self.a.obstacle_brake_stop, self.a.obstacle_brake_start))
-            if _RR.ok:
-                _RR.scalar("/reflex/clearance_m", _clr)
-                _RR.scalar("/reflex/vx_cap", _obs_cap if _obs_cap is not None else self.vx_max)
+            if rerun_sink._RR.ok:
+                rerun_sink._RR.scalar("/reflex/clearance_m", _clr)
+                rerun_sink._RR.scalar("/reflex/vx_cap", _obs_cap if _obs_cap is not None else self.vx_max)
 
         log("TRACK id=%s%s c=(%d,%d) range=%s[%s] bearing=%+05.1fdeg vx=%+.2f vyaw=%+.2f cost=%.2f/2nd=%s sim=%.2f conf=%.2f%s"
             % (best.get("track_id"), " LOCK" if track_locked else "",
@@ -3796,20 +2289,20 @@ class Follower:
         # REAL forbid_forward boolean (not the Phase-1 derivation). frame_idx/state are set once per
         # iteration in run(); this only adds the follow-specific series + the target box. Self-timed to
         # /diag/rr_track_ms so the on-Orin loop-cost gate can read p99 straight from the .rrd. Inert
-        # unless --rerun (single-branch skip when _RR.ok is False -> byte-identical).
-        if _RR.ok:
+        # unless --rerun (single-branch skip when rerun_sink._RR.ok is False -> byte-identical).
+        if rerun_sink._RR.ok:
             _rr_t0 = time.monotonic()
-            _RR.scalar("/follow/range", rng)
-            _RR.scalar("/follow/range_source", 2.0 if rsrc == "depth" else (1.0 if rsrc == "bboxH" else 0.0))
-            _RR.scalar("/follow/bearing", bearing_deg)
-            _RR.scalar("/cmd/vx", vx)
-            _RR.scalar("/cmd/vyaw", vyaw)
-            _RR.scalar("/cmd/forbid_forward", 1.0 if forbid_forward else 0.0)
-            _RR.scalar("/reid/sim", sim)
-            _RR.scalar("/track/conf", best["conf"])
-            _RR.scalar("/track/cost", cost)
-            _RR.boxes("/camera/rgb/target", best["box"], best.get("track_id"))
-            _RR.scalar("/diag/rr_track_ms", (time.monotonic() - _rr_t0) * 1000.0)
+            rerun_sink._RR.scalar("/follow/range", rng)
+            rerun_sink._RR.scalar("/follow/range_source", 2.0 if rsrc == "depth" else (1.0 if rsrc == "bboxH" else 0.0))
+            rerun_sink._RR.scalar("/follow/bearing", bearing_deg)
+            rerun_sink._RR.scalar("/cmd/vx", vx)
+            rerun_sink._RR.scalar("/cmd/vyaw", vyaw)
+            rerun_sink._RR.scalar("/cmd/forbid_forward", 1.0 if forbid_forward else 0.0)
+            rerun_sink._RR.scalar("/reid/sim", sim)
+            rerun_sink._RR.scalar("/track/conf", best["conf"])
+            rerun_sink._RR.scalar("/track/cost", cost)
+            rerun_sink._RR.boxes("/camera/rgb/target", best["box"], best.get("track_id"))
+            rerun_sink._RR.scalar("/diag/rr_track_ms", (time.monotonic() - _rr_t0) * 1000.0)
 
     # -- COASTING: follow the bound track's motion prediction through occlusion --
     def _try_coast(self, w_img, h_img):
@@ -4273,6 +2766,9 @@ def parse_args(argv):
                    help="path to compiled loco_follow_bridge (drive mode)")
     p.add_argument("--yolo-path", default=DEF_YOLO_PATH,
                    help="YOLO11n ONNX person-detection model")
+    p.add_argument("--event-log", default="/home/booster/k1_events.jsonl",
+                   help="P5.3: always-on JSONL of per-tick safety signals (cmd_vel/fsm/loop_ms/lock) "
+                        "for post-incident forensics; set '' to disable")
 
     # control law / geometry
     p.add_argument("--standoff-m", type=float, default=DEF_STANDOFF_M)
@@ -4493,6 +2989,13 @@ def parse_args(argv):
                         "embed returns all-None over a NON-EMPTY person set, latch REID-DEGRADED and "
                         "force any ARMED markerless re-lock to audit-only until a valid embedding "
                         "returns. 0 disables the mid-run watchdog (today's behavior).")
+    p.add_argument("--fault-stand-k", type=int, default=5,
+                   help="P4.6 persistent-fault escalator: after this many CONSECUTIVE per-frame "
+                        "processing exceptions, FORCE a fail-safe STAND even when --no-stand-on-loss "
+                        "(a chronically-throwing loop must not keep walking on _hold alone; today "
+                        "that case is caught only by the loose C++ bridge tier). With --stand-on-loss "
+                        "(default) each throw already stands, so this only bites the off case. "
+                        "0 disables (no forced escalation).")
     p.add_argument("--audit-cosine", action=argparse.BooleanOptionalAction, default=False,
                    help="log a per-frame AUDIT line: cosine of the bound target vs the best other "
                         "person to the frozen anchor -- to tune --anchor-floor/--bank-floor for cosine")
@@ -4791,46 +3294,14 @@ def parse_args(argv):
     return args
 
 
-def init_rerun(args):
-    """Flip the module _RR sink on when --rerun is passed (Phase 2). Best-effort: a missing
-    k1_rerun.py or rerun-sdk logs a warning and the follow proceeds with Rerun disabled -- Rerun
-    is NEVER a safety dependency (same contract as the OSNet histogram fallback)."""
-    global _RR
-    if not getattr(args, "rerun", False):
-        return
-    if _RerunSink is None:
-        log("RERUN unavailable (k1_rerun.py not importable) -> disabled (follow proceeds)")
-        return
-    path = None
-    if args.rerun_mode == "save":
-        d = args.rerun_dir or "/home/booster/rerun"
-        try:
-            os.makedirs(d, exist_ok=True)
-        except Exception as e:  # noqa: BLE001
-            log("RERUN mkdir %s failed: %s -> disabled" % (d, e))
-            return
-        path = os.path.join(d, "k1_follow_%d.rrd" % int(time.time()))
-    _RR = _RerunSink(
-        enabled=True, mode=args.rerun_mode, path=path, addr=args.rerun_addr,
-        image_every_n=args.rerun_image_every_n,
-        min_safe=args.min_safe_range, standoff=args.standoff_m, max_follow=args.max_follow_range)
-    _RR.refs_once()
-    if _RR.ok:
-        log("RERUN active mode=%s -> %s (image 1/%d)"
-            % (args.rerun_mode, _RR.path, args.rerun_image_every_n))
-        if args.drive:
-            log("RERUN + --drive: ensure the on-Orin loop-cost gate PASSED (RERUN_PLAN.md); "
-                "an over-budget streak auto-disables Rerun (RERUN-DISABLED-SLOW).")
-    else:
-        log("RERUN init failed -> disabled (follow proceeds)")
+# init_rerun -> rerun_sink.py (P3.4).
 
 
 def main():
-    global _STREAM
     args = parse_args(sys.argv[1:])
     if args.stream:
-        _STREAM = True   # status -> stderr, annotated frames -> stdout
-    init_rerun(args)     # flips _RR on only when --rerun; inert otherwise
+        common._STREAM = True   # status -> stderr, annotated frames -> stdout (P3.0b)
+    rerun_sink.init_rerun(args)     # flips rerun_sink._RR on only when --rerun; inert otherwise
     f = Follower(args)
     f.install_signal_handlers()
     f.run()

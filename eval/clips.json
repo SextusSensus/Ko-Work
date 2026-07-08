@@ -1,5 +1,5 @@
 {
-  "_readme": "Replay-eval manifest (replay_eval.py expect --manifest clips.json). Clips come from runbook sessions: save the annotated stream or a phone video of each loss->relock sequence, scp to /home/booster/clips/. checks = python regexes over the node's decision-log lines. The four OPS_BEHAVIOR_EVAL clip families are stubbed below -- fill in real clip paths as they are recorded.",
+  "_readme": "Replay-eval manifest (replay_eval.py expect --manifest clips.json). Clips come from runbook sessions: save the annotated stream or a phone video of each loss->relock sequence, scp to /home/booster/clips/. checks = python regexes over the node's decision-log lines (necessary, not sufficient). outcome (P5.1) = OBJECTIVE task-success from the decision stream: standoff-in-band frac, forbidden-forward (forward vx with no depth), geofence breach, id-switches, and operator retention (needs operator_id = the labeled operator track). depth_range/depth_glitch (P5.2) inject synthetic depth so range-based metrics score offline. `expect` prints TASK-SUCCESS k/n + Wilson95. Fill in real clip paths + operator_id labels as clips are recorded.",
   "clips": [
     {
       "_family": "A: look-alike bystander -- the lock must never migrate",
@@ -38,6 +38,20 @@
         { "max": { "pattern": "GALLERY-ADMIT.*anchor_sim=0\\.[0-4]", "n": 0 } },
         { "forbid": "RELOC-REJECT-TELEPORT" }
       ]
+    },
+    {
+      "_family": "D: standoff hold -- OBJECTIVE task-success scoring (P5.1)",
+      "clip": "/home/booster/clips/D_standoff.mp4",
+      "flags": "--appearance osnet --reid-engine /home/booster/reid/osnet_x0_25_msmt17.onnx --standoff-m 1.2 --auto-reacquire",
+      "depth_range": 1.2,
+      "checks": [ { "require": "LOCKED person seeded" } ],
+      "outcome": {
+        "_doc": "operator_id = the track that IS the operator in this labeled clip; omit it to score id STABILITY (no swaps) instead of RETENTION. depth_range above feeds synthetic depth so the range metrics score offline (P5.2).",
+        "standoff_m": 1.2, "standoff_band_m": 0.4, "min_standoff_in_band_frac": 0.7,
+        "min_track_frac": 0.6, "max_forbidden_forward": 0,
+        "geofence_m": 3.0, "max_geofence_breach": 0,
+        "operator_id": 1, "min_operator_retention": 0.95
+      }
     }
   ]
 }

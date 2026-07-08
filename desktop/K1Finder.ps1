@@ -36,12 +36,25 @@ $script:RerunWebViewer    = ('https://app.rerun.io/version/{0}/' -f $script:Reru
 $K1_SSH_USER      = 'booster'
 $K1_SSH_PASS      = '123456'
 $K1_LOCO_IFACE    = '127.0.0.1'
-$SCRIPT_DIR       = Split-Path -Parent $MyInvocation.MyCommand.Path
-# P2.1 reorg: the app lives in desktop/; its deploy SOURCES moved to sibling dirs. The scp DEST
-# stays flat /home/booster/... (the robot layout is unchanged). last_target.txt is per-machine
-# runtime state and stays next to the app.
-$REPO_ROOT        = Split-Path -Parent $SCRIPT_DIR
-$ROBOT_DIR        = Join-Path $REPO_ROOT 'robot'
+$SCRIPT_DIR       = if ($PSScriptRoot) { $PSScriptRoot }
+                    elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path }
+                    else { (Get-Location).Path }
+# P2.1 reorg: the app lives in desktop/; its deploy SOURCES moved to robot/ (scp DEST stays flat
+# /home/booster/...). ROBUSTLY locate robot/ (contains follow_person_k1.py + common.py) by walking
+# up from the app dir and trying <dir>/robot and <dir> at each level -- resilient to the launch CWD,
+# a copied app, or a still-flat layout, so the deploy doesn't false-fail on a path quirk.
+$ROBOT_DIR = $null
+$__d = $SCRIPT_DIR
+for ($__i = 0; ($__i -lt 5) -and $__d -and (-not $ROBOT_DIR); $__i++) {
+    foreach ($__c in @((Join-Path $__d 'robot'), $__d)) {
+        if ((Test-Path (Join-Path $__c 'follow_person_k1.py')) -and (Test-Path (Join-Path $__c 'common.py'))) {
+            $ROBOT_DIR = $__c; break
+        }
+    }
+    $__d = Split-Path -Parent $__d
+}
+if (-not $ROBOT_DIR) { $ROBOT_DIR = Join-Path (Split-Path -Parent $SCRIPT_DIR) 'robot' }   # best-effort default
+$REPO_ROOT        = Split-Path -Parent $ROBOT_DIR
 $MODELS_DIR       = Join-Path $REPO_ROOT 'models'
 $LAST_TARGET_FILE = Join-Path $SCRIPT_DIR 'last_target.txt'
 $WORK             = Join-Path $env:TEMP 'k1finder'
@@ -68,11 +81,26 @@ function Get-SshOptString {
     '-o StrictHostKeyChecking=accept-new -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=8 -o ServerAliveInterval=5'
 }
 
+# Start a process and RELIABLY return its exit code. GOTCHA: Start-Process -PassThru leaves
+# $p.ExitCode = $null after WaitForExit(<ms>) UNLESS the OS handle is cached before the process
+# exits -- so touch $p.Handle first. Without this, every exit-code decision silently reads $null
+# and fail-closes even on success (this is exactly what broke the deploy). Returns the exit code,
+# or -1 if the process hangs past $TimeoutMs (then killed).
+function Invoke-Proc {
+    param([string]$Exe, [string[]]$ProcArgs, [int]$TimeoutMs = 20000)
+    $p = Start-Process $Exe -ArgumentList $ProcArgs -NoNewWindow -PassThru
+    try { $null = $p.Handle } catch {}
+    if ($p.WaitForExit($TimeoutMs)) { return [int]$p.ExitCode }
+    try { $p.Kill() } catch {}
+    return -1
+}
+
 # ---- Deploy robot-side helper scripts (idempotent) --------------------------
 $script:Deployed = $false
+$script:DeployErr = $null   # last deploy failure reason (honest message: local-missing vs push-failed)
 function Deploy-RobotFiles {
     param([string]$ip)
-    $files = @('stream_cam.py','run_stream.sh','run_loco.sh')
+    $files = @('stream_cam.py','common.py','run_stream.sh','run_loco.sh')  # common.py: stream_cam imports to_bgr (P3.y)
     foreach ($f in $files) {
         $src = Join-Path $ROBOT_DIR $f
         if (-not (Test-Path $src)) { return $false }
@@ -89,55 +117,68 @@ function Deploy-RobotFiles {
 # follow_person_k1.py = lock-and-handoff: marker is a one-time lock onto the person, then YOLO-follows that person.
 function Deploy-FollowFiles {
     param([string]$ip)
-    foreach ($f in @('follow_person_k1.py','loco_follow_bridge.cpp','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
+    $script:DeployErr = $null
+    # Hard-required helpers: the follow node imports every one of these, so a local-missing OR a
+    # failed push must abort the launch (fail-closed) with an HONEST reason. Invoke-Proc gives a
+    # reliable exit code (Start-Process -PassThru does not -- see helper). A non-zero here means
+    # the robot refused/timed-out the copy, NOT that a local file is missing -- name which case.
+    foreach ($f in @('follow_person_k1.py','common.py','bridge.py','tracking.py','identity.py','rerun_sink.py','perception.py','triggers.py','loco_follow_bridge.cpp','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
         $src = Join-Path $ROBOT_DIR $f
-        if (-not (Test-Path $src)) { return $false }
-        $args = $SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f))
-        $p = Start-Process scp.exe -ArgumentList $args -NoNewWindow -PassThru
-        $null = $p.WaitForExit(20000)
+        if (-not (Test-Path $src)) { $script:DeployErr = ("local helper file not found: {0}" -f $src); return $false }
+        $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f)))
+        if ($rc -ne 0) { $script:DeployErr = ("scp of {0} to {1} failed (exit {2}) -- is the robot booted and reachable over SSH?" -f $f, $ip, $rc); return $false }
     }
     # Config layer (P1.1): the node loads /home/booster/config/defaults.yaml and FAIL-CLOSES
     # without it, so defaults.yaml is hard-required like the files above; the profiles are
     # best-effort. mkdir the flat config dir first (mirrors the reid/ mkdir pattern).
     $cfgDir = Join-Path $ROBOT_DIR 'config'
     $defaults = Join-Path $cfgDir 'defaults.yaml'
-    if (-not (Test-Path $defaults)) { return $false }
-    $mk = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser, $ip), 'mkdir -p /home/booster/config')) -NoNewWindow -PassThru
-    $null = $mk.WaitForExit(10000)
-    $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($defaults, ("{0}@{1}:/home/booster/config/defaults.yaml" -f $script:SshUser, $ip))) -NoNewWindow -PassThru
-    $null = $p.WaitForExit(20000)
+    if (-not (Test-Path $defaults)) { $script:DeployErr = ("local config not found: {0}" -f $defaults); return $false }
+    $null = Invoke-Proc ssh.exe ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser, $ip), 'mkdir -p /home/booster/config')) 10000
     # defaults.yaml is hard-required (node fail-closes without it): a failed/timed-out push must
     # abort the launch, not leave a stale config in place and report success.
-    if (($null -eq $p.ExitCode) -or ($p.ExitCode -ne 0)) { return $false }
+    $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($defaults, ("{0}@{1}:/home/booster/config/defaults.yaml" -f $script:SshUser, $ip)))
+    if ($rc -ne 0) { $script:DeployErr = ("scp of config/defaults.yaml to {0} failed (exit {1}) -- the node fail-closes without it." -f $ip, $rc); return $false }
     foreach ($prof in @('dev.yaml', 'demo.yaml', 'field.yaml')) {
         $ps = Join-Path $cfgDir $prof
-        if (Test-Path $ps) {
-            $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($ps, ("{0}@{1}:/home/booster/config/{2}" -f $script:SshUser, $ip, $prof))) -NoNewWindow -PassThru
-            $null = $p.WaitForExit(20000)
-        }
+        if (Test-Path $ps) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($ps, ("{0}@{1}:/home/booster/config/{2}" -f $script:SshUser, $ip, $prof))) }
     }
     # k1_rerun.py is BEST-EFFORT (review fix): Rerun is never a launch dependency -- the node
     # degrades to a no-op sink when the module is absent (follow_person_k1.py _NullRR), so a
-    # missing local copy must not block the follow like the hard-required files above do.
+    # missing local copy or failed push must not block the follow like the hard-required files do.
     $rr = Join-Path $ROBOT_DIR 'k1_rerun.py'
-    if (Test-Path $rr) {
-        $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($rr, ("{0}@{1}:/home/booster/k1_rerun.py" -f $script:SshUser, $ip))) -NoNewWindow -PassThru
-        $null = $p.WaitForExit(20000)
-    }
+    if (Test-Path $rr) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($rr, ("{0}@{1}:/home/booster/k1_rerun.py" -f $script:SshUser, $ip))) }
+    # cam_health.sh is BEST-EFFORT too: it's the camera-stall detect/recover aid (Ensure-Cameras /
+    # the "Fix Cameras" action run it), NOT a follow import, so a missing copy must not block a launch.
+    $ch = Join-Path $ROBOT_DIR 'cam_health.sh'
+    if (Test-Path $ch) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($ch, ("{0}@{1}:/home/booster/cam_health.sh" -f $script:SshUser, $ip))) }
     return $true
 }
 
 # ---- Gesture pose-model staging (auto, idempotent) --------------------------
 # True iff the robot has $path. Uses a single-quoted remote test (no embedded double quotes -> safe
 # through Start-Process arg quoting). Output captured to a temp file.
+# ROBUST (2026-07-08): only a DEFINITIVE completed 'MISSING' returns $false. The old version ignored
+# the WaitForExit result and read the temp file unconditionally, so a slow/stalled ssh (robot under
+# load -- observed at load ~8.5 with SSH connect stalls) left stdout EMPTY within the timeout and
+# read as MISSING -- spuriously tripping "ReID engine unavailable" / gesture re-staging even though
+# the file was present (and REID-ENGINE ok had already logged that session). Ambiguous/timed-out
+# attempts are RETRIED, never trusted as absence.
 function Test-RobotFile([string]$ip,[string]$path){
     $tmp = Join-Path $env:TEMP 'k1_rf_chk.txt'
-    try{
-        Remove-Item $tmp -ErrorAction SilentlyContinue
-        $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("test -f '{0}' && echo PRESENT || echo MISSING" -f $path))) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
-        $null = $p.WaitForExit(10000)
-        return ((Get-Content $tmp -Raw -ErrorAction SilentlyContinue) -match 'PRESENT')
-    }catch{ return $false }
+    for($i=0; $i -lt 3; $i++){
+        try{
+            Remove-Item $tmp -ErrorAction SilentlyContinue
+            $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("test -f '{0}' && echo PRESENT || echo MISSING" -f $path))) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
+            try{ $null = $p.Handle }catch{}
+            if(-not $p.WaitForExit(12000)){ try{$p.Kill()}catch{}; continue }   # slow/hung -> retry, don't conclude MISSING
+            $out = (Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
+            if($out -match 'PRESENT'){ return $true }
+            if($out -match 'MISSING'){ return $false }
+            # empty/garbled (ssh errored to stderr, which we don't capture) -> retry
+        }catch{}
+    }
+    return $false   # 3 ambiguous attempts: report absent (node still fail-closes correctly at runtime)
 }
 
 # Make the YOLO11n-pose model exist on the robot before a gesture / A-B follow. Priority:
@@ -166,6 +207,22 @@ function Ensure-GestureModel([string]$ip){
     if(Test-RobotFile $ip $remote){ Add-LogTrack 'Gesture model exported on robot.' $green; return $true }
     Add-LogTrack 'Gesture model unavailable -> follow uses the ArUco marker (safe). Stage yolo11n-pose.onnx on the robot to enable gesture.' $amber
     return $false
+}
+
+# P4.2b: prefer the TRT engine for the gesture pose model WHEN it is on the robot. Its presence is
+# the deliberate opt-in (built once by stage_pose_engine.py on the Orin -- engines are device-specific
+# so they can't ship from here). Ultralytics runs the .engine with pre/post processing IDENTICAL to the
+# .onnx; only the forward pass moves to TRT FP16 (~2x faster pose: 21->10ms measured 2026-07-08). This
+# is re-resolved every launch, so deleting the engine cleanly reverts to the .onnx. Called BEFORE
+# Ensure-GestureModel + Get-TrackExtraArgs so both the staging check and the launch flag see the choice.
+function Resolve-GestureModel([string]$ip){
+    $engine = '/home/booster/yolo11n-pose.engine'
+    if(Test-RobotFile $ip $engine){
+        $script:GestureModel = $engine
+        Add-LogTrack 'Gesture model: TRT engine (yolo11n-pose.engine, FP16 ~2x faster pose).' $green
+    } else {
+        $script:GestureModel = '/home/booster/yolo11n-pose.onnx'
+    }
 }
 
 # Make the OSNet ReID ONNX exist on the robot before an --appearance osnet follow. Priority:
@@ -303,7 +360,7 @@ function Open-RerunRecording([string]$path){
     try{ $g=(Get-Command python.exe -ErrorAction SilentlyContinue); if($g -and ($g.Source -notmatch 'WindowsApps')){ $py=$g.Source } }catch{}
     if($py){
         $imp=$false
-        try{ $q=Start-Process $py -ArgumentList '-c "import rerun"' -WindowStyle Hidden -PassThru; if($q.WaitForExit(15000) -and $q.ExitCode -eq 0){ $imp=$true } }catch{}
+        try{ $q=Start-Process $py -ArgumentList '-c "import rerun"' -WindowStyle Hidden -PassThru; try{$null=$q.Handle}catch{}; if($q.WaitForExit(15000) -and $q.ExitCode -eq 0){ $imp=$true } }catch{}
         if($imp){
             try{ Start-Process $py -ArgumentList ('-m rerun "{0}"' -f $path); Add-LogTrack 'Opened via python -m rerun.' $accent; return }
             catch{ Add-LogTrack ('viewer launch failed: {0}' -f $_) $red }
@@ -748,8 +805,11 @@ $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Ar
 # K1_REQUIRE_HB watchdog) and starts the app-side heartbeat relay. The remote loop touches the hb
 # file ONLY on bytes RECEIVED from this app, so mtime freshness == end-to-end connectivity: WiFi
 # drop / app freeze / laptop death -> touches stop -> node zeroes (400ms) + bridge kPrepares (1.5s).
-# Default OFF (tethered byte-identical). One pillar of the untethered gate (UNTETHERED_FOLLOW.md).
-$trackHbChk=New-Object System.Windows.Forms.CheckBox; $trackHbChk.Text='Deadman HB'; $trackHbChk.AutoSize=$true; $trackHbChk.Location='610,110'; $trackHbChk.ForeColor=$red; $trackHbChk.Font=$fontBold; $grpTrackCtl.Controls.Add($trackHbChk)
+# Default ON (P1.2): the node now REFUSES --drive without --require-heartbeat (fail-closed gate),
+# so an unchecked box = guaranteed launch abort, not the old silent-degrade. Safe flag is the
+# default; untick only for a tethered bench run WITH --allow-untethered-unsafe intent.
+# One pillar of the untethered gate (UNTETHERED_FOLLOW.md).
+$trackHbChk=New-Object System.Windows.Forms.CheckBox; $trackHbChk.Text='Deadman HB'; $trackHbChk.AutoSize=$true; $trackHbChk.Location='610,110'; $trackHbChk.ForeColor=$red; $trackHbChk.Font=$fontBold; $trackHbChk.Checked=$true; $grpTrackCtl.Controls.Add($trackHbChk)
 
 # --- Acquisition + command-surface toggles (LAUNCH-time for gesture/A-B; runtime for voice) ---
 # Gesture lock = --lock-trigger gesture (raised hand seeds instead of the marker). A/B = --lock-trigger
@@ -1200,10 +1260,11 @@ function Start-Tracker([bool]$drive){
     # camera) so the K1 only ever streams the camera once.
     if($script:LiveOn){ Add-LogTrack 'Stopping Live View (single camera consumer)...' $amber; Stop-Live }
     Add-LogTrack ("Deploying follow helpers to {0} ..." -f $ip) $accent
-    if(-not (Deploy-FollowFiles $ip)){ Add-LogTrack 'Deploy failed (follow helper files missing next to the app).' $red; return $false }
+    if(-not (Deploy-FollowFiles $ip)){ Add-LogTrack ("Deploy failed: " + $(if($script:DeployErr){$script:DeployErr}else{"a helper under '$ROBOT_DIR' could not be deployed"})) $red; return $false }
     # Gesture / A-B selected -> make sure the pose model is on the robot first (auto-stage). On failure
     # the node still runs and falls back to the ArUco marker, so offer to continue rather than block.
     if(($chkGesture -and $chkGesture.Checked) -or ($chkAB -and $chkAB.Checked)){
+        Resolve-GestureModel $ip   # P4.2b: prefer the TRT engine when built (else .onnx)
         if(-not (Ensure-GestureModel $ip)){
             $r=[System.Windows.Forms.MessageBox]::Show("The gesture pose model isn't on the robot and couldn't be auto-staged. Gesture will FALL BACK to the ArUco marker (safe). Start anyway?",'Gesture model missing',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
             if($r -ne 'OK'){ return $false }
@@ -1466,7 +1527,7 @@ function Start-Follow([bool]$drive){
     # camera) so the camera is only ever streamed once.
     if($script:LiveOn){ Add-LogCtrl 'Stopping Live View (single camera consumer)...' $amber; Stop-Live }
     Add-LogCtrl ("Deploying follow helpers to {0} ..." -f $ip) $accent
-    if(-not (Deploy-FollowFiles $ip)){ Add-LogCtrl 'Deploy failed (follow helper files missing next to the app).' $red; return $false }
+    if(-not (Deploy-FollowFiles $ip)){ Add-LogCtrl ("Deploy failed: " + $(if($script:DeployErr){$script:DeployErr}else{"a helper under '$ROBOT_DIR' could not be deployed"})) $red; return $false }
     $followSync.Stop=$false; $followSync.Log.Clear()
     $mode = if($drive){'drive'}else{'preview'}
     $remote="bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb"
@@ -1578,7 +1639,14 @@ $mediaTimer.Add_Tick({
                 # (DRIVE-ABORT, deliberate); anything else = crash.
                 $tailFile = '/home/booster/k1_follow.err'
                 if($ec -eq 3){ $tailFile='/home/booster/k1_compile.err'; Add-LogTrack 'Follow process exited 3 = COMPILE FAILED (run_follow.sh). See k1_compile.err tail below.' $red }
-                elseif($ec -eq 4){ Add-LogTrack 'Follow process exited 4 = DRIVE-ABORT (node refused to walk -- see the amber DRIVE-ABORT line above and the tail below).' $amber }
+                elseif($ec -eq 4){
+                    Add-LogTrack 'Follow process exited 4 = DRIVE-ABORT (node refused to walk -- see the amber DRIVE-ABORT line above and the tail below).' $amber
+                    # Most DRIVE-ABORTs are stalled cameras (sensors not sustained-fresh). Point the
+                    # operator at the recovery tool rather than auto-running it: this handler is on the
+                    # UI thread and cam_health.sh --recover takes ~60-90s (would freeze the app), and a
+                    # safe background+relaunch version needs async UI work + on-robot testing (deferred).
+                    Add-LogTrack ('If the tail shows rgb/depth fps ~0 -> cameras stalled. Recover:  ssh {0}@{1} "bash /home/booster/cam_health.sh --recover"  then toggle Follow again.' -f $script:SshUser, $(try{$ipTrack.Text.Trim()}catch{'<ip>'})) $accent
+                }
                 else{ Add-LogTrack "Follow process exited $ec (crash). See k1_follow.err tail below." $red }
                 # Bounded ssh tail of the remote stderr log into the Tracker log (red). Own System.Diagnostics.Process
                 # with RedirectStandardOutput + WaitForExit(4000)+Kill so the UI thread can never hang. Reuses

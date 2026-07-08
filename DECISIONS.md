@@ -93,3 +93,62 @@ root. Also whether model blobs go via git-lfs or a fetch script (brief P2.1/P2.3
 
 - [ ] Decide models/wheels location + git-lfs vs fetch-script (default rec: `models/` for onnx, keep
   `wheels/` recipe; models via fetch-script not raw git). Pending Phase 2.
+
+---
+
+## P3.7 — fsm/control extraction: pure move vs injected interfaces (RESOLVED by default)
+
+**What:** the brief's P3.7 says extract `fsm.py` + `control.py` "with perception/ID/bridge passed
+in as **injected interfaces**." That is a **dependency-injection restructure of `Follower`** — a
+BEHAVIOR-CHANGE, not a pure move, and it can only be fully verified with person-path clips (the
+local gate is no-person).
+
+**Decision (2026-07-07, my call — you were unsure):** **leave `Follower` (+`Seed`+`CommandChannel`)
+as the thin orchestrator in `follow_person_k1.py`.** This honors the §2 invariant *"if a seam can't
+be cut without a logic change, stop and flag it — do not improve while moving,"* keeps every P3
+commit byte-identical, and matches the plan doc's own "leaves a thin orchestrator" phrasing. The
+seam extractions (P3.0–P3.6) already deliver the testable-core goal.
+
+- [ ] **Opt in** to the injected-interfaces refactor later as a deliberate BEHAVIOR-CHANGE (needs
+  person-path clips / robot validation), or leave as-is.
+
+## P3.x — dataclass grouping (DEFERRED)
+
+**What:** fold `Follower`'s ~77 `self._` fields into `SafetyState`/`RelockState`/`TrackState`/
+`VizState`/`Other`. Field-for-field, no semantic change — but it rewrites *hundreds* of
+`self.X → self.group.X` attribute accesses across the orchestrator (large, error-prone; marginal
+value now that the seams are out).
+
+- [ ] Deferred — do it if the orchestrator's state sprawl becomes a real maintenance problem.
+
+## P4.3 — collapse detect + pose into one model (EVALUATED, merge PENDING P5.1)
+
+**What:** the brief asks whether to drop the separate detection model and use the YOLO-pose model's
+person boxes for detection too (it yields boxes **and** keypoints in one pass) — "evaluate, don't
+assume; only merge if success holds."
+
+**Data (on-Orin per-inference, dummy 480×640, median of 15, 2026-07-08):**
+
+| model | backend | ms |
+|---|---|---|
+| `yolo11n.onnx` (detection, current) | ONNX/CUDA | **19.1** |
+| `yolo11n-pose.onnx` | ONNX/CUDA | 19.7 |
+| `yolo11n-pose.engine` (P4.2b) | TensorRT FP16 | **9.3** |
+
+**Finding (corrects the intuition that pose is "heavier"):** pose ≈ detect on the same backend (the
+keypoint head is nearly free on yolo11n), and the pose **TRT engine is ~half** the current detect
+cost. So routing detection through the pose engine would cut the driving-loop neural cost
+**19.1 → 9.3 ms (~51%)** — a win in **both** TRACK (1 pass, cheaper) and acquisition (2 passes → 1).
+Not the regression I first assumed.
+
+**Decision: do NOT merge yet — record the path, gate on P5.1.** The collapse swaps the (Booster-tuned)
+`yolo11n.onnx` person boxes for the pose model's boxes; the brief requires **detection-quality parity
+on the labeled suite before committing**, and P5.1 (the task-success scorer) is not built. Cost is
+resolved (favorable); *quality* is the open risk. Also note a lower-risk alternative that needs no
+model swap: TRT the **existing** detect model (same person-box quality, just FP16 → ~9–10 ms) — but
+it's a Booster `.onnx` with no `.pt`, so that needs a raw ORT-TRT-EP runner (YOLO pre/post reimpl) or
+a `trtexec` engine + runner (deferred with P4.2b detection-TRT).
+
+- [ ] After P5.1 exists: A/B the pose-engine-for-detection path vs the detect model on the labeled
+  suite; merge only if person-box success holds. Else keep both (current split is fine) and/or take
+  the TRT-the-detect-model route instead.

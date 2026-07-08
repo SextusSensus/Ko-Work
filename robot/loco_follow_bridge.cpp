@@ -93,13 +93,21 @@ static std::atomic<bool> g_cleaned{false};
 // Defaults are CONSERVATIVE -- tune on-robot to the measured inter-'v' jitter (too
 // tight a STALE_MS stutter-stops a healthy follow; too loose lengthens the runaway).
 // ---------------------------------------------------------------------------
-static const int64_t STALE_MS      = 800;    // no fresh 'v' this long while moving -> zero velocity
-static const int64_t STALE_PREP_MS = 3000;   // sustained stale -> stop + kPrepare (RECOVERABLE: a
+static const int64_t STALE_MS      = 400;    // no fresh 'v' this long while moving -> zero velocity
+static const int64_t STALE_PREP_MS = 1000;   // sustained stale -> stop + kPrepare (RECOVERABLE: a
                                              // fresh 'v' re-enters kWalking -- see the 'v' handler).
-                                             // Raised from 400/1000 after an on-robot standby: the real
-                                             // Jetson loop (YOLO + per-person feat/embed) is slower than
-                                             // the blind initial guess. Tune ABOVE the max SLOW-LOOP dt
-                                             // reported in k1_follow.err.
+                                             // P4.4 (2026-07-08): LOWERED 800/3000 -> 400/1000. These
+                                             // were RAISED to 800/3000 when the un-pinned, un-warmed
+                                             // Jetson loop was slow; P4.2 fixed both -- GPU pinned
+                                             // (jetson_clocks) + YOLO first-inference warmup moved OFF
+                                             // the loop (P4.2a) -- so the driving loop now measures
+                                             // p99~122ms / steady max~155ms (docs/LOOP_BASELINE.md).
+                                             // 400ms keeps ~2.6x margin over the steady max (no healthy
+                                             // stutter-stop) while HALVING the tier-1 runaway window:
+                                             // 800->400ms = 14.4->7.2cm at vx_max 0.18 m/s. Still tune
+                                             // ABOVE the max in-loop dt in k1_follow.err. VERIFY ON
+                                             // ROBOT: ZERO 'WATCHDOG stale' lines on a healthy follow;
+                                             // if any fire, the loop tail exceeds 400ms -> loosen.
 
 static std::mutex g_loco_mutex;              // serialises every MoveCommand/ChangeMode
 static std::atomic<int64_t> g_last_v_ms{0};  // steady-clock ms of the last accepted 'v'
