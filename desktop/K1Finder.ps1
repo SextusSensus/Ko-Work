@@ -205,6 +205,22 @@ function Ensure-GestureModel([string]$ip){
     return $false
 }
 
+# P4.2b: prefer the TRT engine for the gesture pose model WHEN it is on the robot. Its presence is
+# the deliberate opt-in (built once by stage_pose_engine.py on the Orin -- engines are device-specific
+# so they can't ship from here). Ultralytics runs the .engine with pre/post processing IDENTICAL to the
+# .onnx; only the forward pass moves to TRT FP16 (~2x faster pose: 21->10ms measured 2026-07-08). This
+# is re-resolved every launch, so deleting the engine cleanly reverts to the .onnx. Called BEFORE
+# Ensure-GestureModel + Get-TrackExtraArgs so both the staging check and the launch flag see the choice.
+function Resolve-GestureModel([string]$ip){
+    $engine = '/home/booster/yolo11n-pose.engine'
+    if(Test-RobotFile $ip $engine){
+        $script:GestureModel = $engine
+        Add-LogTrack 'Gesture model: TRT engine (yolo11n-pose.engine, FP16 ~2x faster pose).' $green
+    } else {
+        $script:GestureModel = '/home/booster/yolo11n-pose.onnx'
+    }
+}
+
 # Make the OSNet ReID ONNX exist on the robot before an --appearance osnet follow. Priority:
 #   1) already present;  2) a local copy (matching basename) next to the app -> scp it (OFFLINE-safe).
 # NO robot-side export branch (OSNet has no ultralytics one-liner -> pre-stage the .onnx). Returns $true
@@ -1244,6 +1260,7 @@ function Start-Tracker([bool]$drive){
     # Gesture / A-B selected -> make sure the pose model is on the robot first (auto-stage). On failure
     # the node still runs and falls back to the ArUco marker, so offer to continue rather than block.
     if(($chkGesture -and $chkGesture.Checked) -or ($chkAB -and $chkAB.Checked)){
+        Resolve-GestureModel $ip   # P4.2b: prefer the TRT engine when built (else .onnx)
         if(-not (Ensure-GestureModel $ip)){
             $r=[System.Windows.Forms.MessageBox]::Show("The gesture pose model isn't on the robot and couldn't be auto-staged. Gesture will FALL BACK to the ArUco marker (safe). Start anyway?",'Gesture model missing',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
             if($r -ne 'OK'){ return $false }
