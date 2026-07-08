@@ -167,6 +167,18 @@ stays as the thin orchestrator per the "don't improve while moving" invariant.
   on robot files (a CRLF deploy had crashed `run_follow.sh`); `robot/systemd/k1-jetson-clocks.service`
   (pin persistence -- enabling is a power/thermal decision).
 
+## Phase 6 — Run-offload substrate  (in progress)
+- **P6.1** audited what a run actually records (`docs/RUN_ARTIFACTS.md`): always-on `k1_events.jsonl`
+  (per-tick decision/safety signals) vs opt-in `.rrd` (RGB + depth + scalars, `--rerun` only —
+  `demo`/`field` keep it off for loop-cost). Key gaps found: **no camera intrinsics** and **no
+  odometry** were recorded, and pixels/depth are not always-on. Closed the intrinsics gap — the node
+  now emits a derived pinhole model **once per capture run**: `rr.Pinhole` into the `.rrd` **and** an
+  `intrinsics.json` sidecar beside it (`perception.pinhole_intrinsics` from `--hfov-deg`, marked
+  `approximate` for P8.1 to recalibrate). Gated on the default-off Rerun sink → **byte-identical when
+  recording is off**. SAFE / recording-only; on-robot capture-bundle checks are the gate
+  (`VERIFY ON ROBOT`, no Python off-robot). Odometry + a `capture.yaml` profile deferred to
+  `DECISIONS.md` (P6.1a/P6.1b).
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).

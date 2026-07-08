@@ -152,3 +152,40 @@ a `trtexec` engine + runner (deferred with P4.2b detection-TRT).
 - [ ] After P5.1 exists: A/B the pose-engine-for-detection path vs the detect model on the labeled
   suite; merge only if person-box success holds. Else keep both (current split is fine) and/or take
   the TRT-the-detect-model route instead.
+
+---
+
+## P6.1a — Record SDK odometry (`/odometer_state`)?
+
+**What:** P8 (cross-run stitching) wants a trajectory prior and P7 could use odometry as an extra
+observation. The C++ bridge exposes **no** pose feedback (velocity-out only), so odometry would come
+from the ROS topic the K1 reportedly publishes (`/odometer_state`, planar x/y/θ).
+
+**Why not wired in P6.1:** the exact ROS **message type** can't be confirmed off-robot, and adding a
+live subscription with a guessed type is not a mechanical, verifiable change (§0 of the brief: "when
+unsure, stop and ask"). It is also **not** part of the P6.1 gate (RGB + depth + intrinsics + JSONL).
+
+**To action (small follow-up commit), confirm on-robot first:**
+```
+ros2 topic info /odometer_state     # exact type + publisher present?
+ros2 topic hz   /odometer_state     # publish rate
+```
+Then add a guarded BEST_EFFORT subscription (topic configurable, default `''` = disabled → inert) that
+logs `x/y/θ` to the `.rrd` and an `odom_x/odom_y/odom_theta` triple into the JSONL. Fail-safe: a
+missing or mismatched topic records nothing and never touches the follow.
+
+- [ ] Confirm `/odometer_state` type/rate on-robot, then wire the guarded odometry recorder.
+
+## P6.1b — A `capture.yaml` profile for P7/P8 runs?
+
+**What:** pixels + depth + intrinsics record **only** under `--rerun` (save mode), which `demo`/`field`
+leave **off** for loop-cost (P4.5). So P7/P8 data collection needs a distinct capture-enabled profile.
+
+**Recommendation:** add `config/capture.yaml` (inherits `field`/`demo` safety, then sets
+`rerun: true`, `rerun_mode: save`, and a chosen `rerun_image_every_n` trading fidelity vs loop-cost).
+A profile changes nothing unless selected, so this is SAFE recording-config — but the fidelity/N and
+whether capture piggybacks on a demo or is operator-selected is a call worth making deliberately
+(and the `--rerun`+`--drive` loop-cost gate in `RERUN_PLAN.md` must pass at the chosen N).
+
+- [ ] Decide capture-run mechanism: standalone `capture.yaml` vs a `--capture` flag on an existing
+  profile; set `rerun_image_every_n` for P8 fidelity within the loop-cost budget.

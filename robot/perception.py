@@ -37,6 +37,27 @@ def range_from_bbox_height(box_h_px, h_img, hfov_deg, person_h_m):
     return (person_h_m * f) / box_h_px
 
 
+def pinhole_intrinsics(w_img, h_img, hfov_deg):
+    """Derived pinhole intrinsics for the recorded run (P6.1). This rig publishes NO CameraInfo
+    (see focal_px above / range_from_bbox_height), so fx is derived from the configured --hfov-deg
+    and fy is set equal to it (square-pixel monocular proxy); the principal point is the image
+    centre. Marked approximate=True: P8.1 replaces this with a calibrated/CameraInfo intrinsic
+    before any RGBD reconstruction trusts it. Returns a plain dict (JSON-serialisable, no numpy)."""
+    f = focal_px(w_img, hfov_deg)
+    return {
+        "model": "pinhole_from_hfov",
+        "approximate": True,
+        "width": int(w_img),
+        "height": int(h_img),
+        "hfov_deg": float(hfov_deg),
+        "fx": float(f),
+        "fy": float(f),
+        "cx": w_img / 2.0,
+        "cy": h_img / 2.0,
+        "note": "fx from --hfov-deg; fy:=fx (no vertical FOV published); calibrate in P8.1",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Person detection (YOLO11n ONNX). Loaded ONCE at startup. Never crashes loop.
 # ---------------------------------------------------------------------------

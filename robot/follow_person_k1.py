@@ -97,6 +97,7 @@ from identity import (  # noqa: E402  (P3.3)
 )
 from perception import (  # noqa: E402  (P3.5)
     PersonDetector, CamNode, bearing_from_x, range_from_bbox_height, target_point_from_box, low_light_boost,
+    pinhole_intrinsics,
 )
 from triggers import ArucoTrigger, GestureTrigger, CompositeTrigger, marker_center  # noqa: E402  (P3.6)
 
@@ -987,6 +988,7 @@ class Follower:
         last_seq = -1
         last_frame_mono = 0.0
         ever_framed = False
+        intr_logged = False       # P6.1: emit camera intrinsics once, on the first framed tick
         last_depth_state = None   # depth-health heartbeat (log on transition + 10s pulse)
         last_depth_hb = 0.0
 
@@ -1064,6 +1066,17 @@ class Follower:
                 if frame is not None:
                     ever_framed = True
                     last_frame_mono = now
+                    # P6.1: log camera intrinsics ONCE, now that a frame's true (w,h) is known.
+                    # Gated on the (default-off) Rerun sink -> strictly part of a capture bundle and
+                    # byte-identical when recording is off. No CameraInfo on this rig, so the model is
+                    # derived from --hfov-deg and marked approximate (calibrated in P8.1).
+                    if not intr_logged and rerun_sink._RR.ok:
+                        intr_logged = True
+                        _fh, _fw = frame.shape[:2]
+                        _intr = pinhole_intrinsics(_fw, _fh, self.a.hfov_deg)
+                        rerun_sink._RR.pinhole("/camera/rgb", _intr["width"], _intr["height"],
+                                               _intr["fx"], _intr["fy"], _intr["cx"], _intr["cy"])
+                        rerun_sink._RR.write_intrinsics(_intr)
                     # Low-light boost ONCE here so detection (YOLO/ArUco/color) and
                     # the annotated --stream view all use the same enhanced frame.
                     frame = low_light_boost(frame, self.a.low_light, self.a.ll_dark_thresh)
