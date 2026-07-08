@@ -120,3 +120,35 @@ seam extractions (P3.0–P3.6) already deliver the testable-core goal.
 value now that the seams are out).
 
 - [ ] Deferred — do it if the orchestrator's state sprawl becomes a real maintenance problem.
+
+## P4.3 — collapse detect + pose into one model (EVALUATED, merge PENDING P5.1)
+
+**What:** the brief asks whether to drop the separate detection model and use the YOLO-pose model's
+person boxes for detection too (it yields boxes **and** keypoints in one pass) — "evaluate, don't
+assume; only merge if success holds."
+
+**Data (on-Orin per-inference, dummy 480×640, median of 15, 2026-07-08):**
+
+| model | backend | ms |
+|---|---|---|
+| `yolo11n.onnx` (detection, current) | ONNX/CUDA | **19.1** |
+| `yolo11n-pose.onnx` | ONNX/CUDA | 19.7 |
+| `yolo11n-pose.engine` (P4.2b) | TensorRT FP16 | **9.3** |
+
+**Finding (corrects the intuition that pose is "heavier"):** pose ≈ detect on the same backend (the
+keypoint head is nearly free on yolo11n), and the pose **TRT engine is ~half** the current detect
+cost. So routing detection through the pose engine would cut the driving-loop neural cost
+**19.1 → 9.3 ms (~51%)** — a win in **both** TRACK (1 pass, cheaper) and acquisition (2 passes → 1).
+Not the regression I first assumed.
+
+**Decision: do NOT merge yet — record the path, gate on P5.1.** The collapse swaps the (Booster-tuned)
+`yolo11n.onnx` person boxes for the pose model's boxes; the brief requires **detection-quality parity
+on the labeled suite before committing**, and P5.1 (the task-success scorer) is not built. Cost is
+resolved (favorable); *quality* is the open risk. Also note a lower-risk alternative that needs no
+model swap: TRT the **existing** detect model (same person-box quality, just FP16 → ~9–10 ms) — but
+it's a Booster `.onnx` with no `.pt`, so that needs a raw ORT-TRT-EP runner (YOLO pre/post reimpl) or
+a `trtexec` engine + runner (deferred with P4.2b detection-TRT).
+
+- [ ] After P5.1 exists: A/B the pose-engine-for-detection path vs the detect model on the labeled
+  suite; merge only if person-box success holds. Else keep both (current split is fine) and/or take
+  the TRT-the-detect-model route instead.
