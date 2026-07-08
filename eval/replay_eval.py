@@ -213,6 +213,80 @@ def check_clip(log_lines, checks):
     return (not fails), fails
 
 
+# TRACK line -> (id, range_m, range_src, vx). Format:
+#   "TRACK id=1 LOCK c=(273,231) range=1.40[depth] bearing=+00.3deg vx=+0.00 vyaw=... sim=..."
+_TRACK_RE = re.compile(r"TRACK id=(\d+)\s+LOCK\s+.*?range=([\d.]+)\[(\w+)\].*?\svx=([+-]?[\d.]+)")
+
+
+def score_outcome(log_lines, oc):
+    """P5.1: score TASK OUTCOME from the decision stream (not log-pattern predicates). Returns
+    (passed, metrics). Metrics over TRACK/LOCK frames:
+      - track_frac            : TRACK frames / total frames                (>= min_track_frac)
+      - standoff_in_band_frac : |range - standoff_m| <= standoff_band_m    (>= min_standoff_in_band_frac)
+      - forbidden_forward     : forward vx (> forward_eps) with NO depth range (bboxH) -> lunge risk  (<= max_forbidden_forward)
+      - geofence_breach       : range > geofence_m while locked            (<= max_geofence_breach)
+      - id_switches           : locked track_id changes frame-to-frame     (<= max_id_switches)
+      - operator_retention    : frac of TRACK frames on the labeled operator_id (>= min_operator_retention)
+    ID CORRECTNESS through crossings needs a labeled operator_id; without it only ID STABILITY
+    (no churn) is scored -- the honest split between what the log proves and what a label proves."""
+    total = 0
+    for ln in log_lines:
+        m = re.search(r"REPLAY-END frames=(\d+)", ln)
+        if m:
+            total = int(m.group(1))
+    tracks = [(int(m.group(1)), float(m.group(2)), m.group(3), float(m.group(4)))
+              for ln in log_lines for m in [_TRACK_RE.search(ln)] if m]
+    n = len(tracks)
+    metrics = {"frames": total, "track_frames": n}
+    fails = []
+    if n == 0:
+        if oc.get("min_track_frac", 0.0) > 0.0:
+            fails.append("no TRACK/LOCK frames (min_track_frac=%.2f)" % oc["min_track_frac"])
+        metrics["fails"] = fails
+        return (not fails), metrics
+
+    if total > 0 and "min_track_frac" in oc:
+        tf = n / total
+        metrics["track_frac"] = round(tf, 3)
+        if tf < oc["min_track_frac"]:
+            fails.append("track_frac %.2f < %.2f" % (tf, oc["min_track_frac"]))
+
+    so, band = oc.get("standoff_m"), oc.get("standoff_band_m")
+    if so is not None and band is not None:
+        frac = sum(1 for (_, r, _, _) in tracks if abs(r - so) <= band) / n
+        metrics["standoff_in_band_frac"] = round(frac, 3)
+        if frac < oc.get("min_standoff_in_band_frac", 0.0):
+            fails.append("standoff_in_band %.2f < %.2f" % (frac, oc.get("min_standoff_in_band_frac", 0.0)))
+
+    eps = oc.get("forward_eps", 0.02)
+    ff = sum(1 for (_, _, src, vx) in tracks if vx > eps and src != "depth")
+    metrics["forbidden_forward"] = ff
+    if ff > oc.get("max_forbidden_forward", 10 ** 9):
+        fails.append("forbidden_forward %d > %d" % (ff, oc["max_forbidden_forward"]))
+
+    gf = oc.get("geofence_m")
+    if gf is not None:
+        gb = sum(1 for (_, r, _, _) in tracks if r > gf)
+        metrics["geofence_breach"] = gb
+        if gb > oc.get("max_geofence_breach", 0):
+            fails.append("geofence_breach %d > %d" % (gb, oc.get("max_geofence_breach", 0)))
+
+    ids = [t[0] for t in tracks]
+    switches = sum(1 for i in range(1, len(ids)) if ids[i] != ids[i - 1])
+    metrics["id_switches"] = switches
+    op = oc.get("operator_id")
+    if op is not None:
+        ret = sum(1 for i in ids if i == op) / n
+        metrics["operator_retention"] = round(ret, 3)
+        if ret < oc.get("min_operator_retention", 1.0):
+            fails.append("operator_retention %.2f < %.2f" % (ret, oc.get("min_operator_retention", 1.0)))
+    elif "max_id_switches" in oc and switches > oc["max_id_switches"]:
+        fails.append("id_switches %d > %d" % (switches, oc["max_id_switches"]))
+
+    metrics["fails"] = fails
+    return (not fails), metrics
+
+
 def make_selftest_clip(path, n=40, w=640, h=480):
     """No-person synthetic frames (noise + a moving box): exactly deterministic decisions."""
     import numpy as np, cv2
@@ -304,13 +378,20 @@ def main():
             cdepth = _depth_schedule(c.get("depth_range", a.depth_range), c.get("depth_glitch", a.depth_glitch))
             lines = replay(a.node, c["clip"], c.get("flags", a.flags), a.fps, depth=cdepth)
             ok, fails = check_clip(lines, c.get("checks", []))
+            metrics = None
+            if "outcome" in c:                     # P5.1: objective task-success on top of patterns
+                ook, metrics = score_outcome(lines, c["outcome"])
+                ok = ok and ook
+                fails += ["outcome: " + f for f in metrics.get("fails", [])]
             results.append(ok)
             print("%s  %s" % ("PASS" if ok else "FAIL", c["clip"]))
+            if metrics is not None:
+                print("    metrics: " + json.dumps({k2: v for k2, v in metrics.items() if k2 != "fails"}))
             for fmsg in fails:
                 print("    " + fmsg)
         k, n = sum(results), len(results)
         lo, hi = wilson(k, n)
-        print("SCORE %d/%d  wilson95=[%.2f, %.2f]" % (k, n, lo, hi))
+        print("TASK-SUCCESS %d/%d = %.1f%%  wilson95=[%.2f, %.2f]" % (k, n, (100.0 * k / n if n else 0.0), lo, hi))
         return 0 if k == n else 1
 
     if a.mode == "selftest":
