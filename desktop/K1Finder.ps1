@@ -154,14 +154,27 @@ function Deploy-FollowFiles {
 # ---- Gesture pose-model staging (auto, idempotent) --------------------------
 # True iff the robot has $path. Uses a single-quoted remote test (no embedded double quotes -> safe
 # through Start-Process arg quoting). Output captured to a temp file.
+# ROBUST (2026-07-08): only a DEFINITIVE completed 'MISSING' returns $false. The old version ignored
+# the WaitForExit result and read the temp file unconditionally, so a slow/stalled ssh (robot under
+# load -- observed at load ~8.5 with SSH connect stalls) left stdout EMPTY within the timeout and
+# read as MISSING -- spuriously tripping "ReID engine unavailable" / gesture re-staging even though
+# the file was present (and REID-ENGINE ok had already logged that session). Ambiguous/timed-out
+# attempts are RETRIED, never trusted as absence.
 function Test-RobotFile([string]$ip,[string]$path){
     $tmp = Join-Path $env:TEMP 'k1_rf_chk.txt'
-    try{
-        Remove-Item $tmp -ErrorAction SilentlyContinue
-        $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("test -f '{0}' && echo PRESENT || echo MISSING" -f $path))) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
-        $null = $p.WaitForExit(10000)
-        return ((Get-Content $tmp -Raw -ErrorAction SilentlyContinue) -match 'PRESENT')
-    }catch{ return $false }
+    for($i=0; $i -lt 3; $i++){
+        try{
+            Remove-Item $tmp -ErrorAction SilentlyContinue
+            $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("test -f '{0}' && echo PRESENT || echo MISSING" -f $path))) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
+            try{ $null = $p.Handle }catch{}
+            if(-not $p.WaitForExit(12000)){ try{$p.Kill()}catch{}; continue }   # slow/hung -> retry, don't conclude MISSING
+            $out = (Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
+            if($out -match 'PRESENT'){ return $true }
+            if($out -match 'MISSING'){ return $false }
+            # empty/garbled (ssh errored to stderr, which we don't capture) -> retry
+        }catch{}
+    }
+    return $false   # 3 ambiguous attempts: report absent (node still fail-closes correctly at runtime)
 }
 
 # Make the YOLO11n-pose model exist on the robot before a gesture / A-B follow. Priority:
