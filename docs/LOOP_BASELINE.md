@@ -96,6 +96,25 @@ the numbers on this page. Do not change a knob without a before/after against th
   Make pinning durable (boot service / NOPASSWD sudoers) — tracked in DECISIONS.md — or every
   session silently regresses ~20–28%. `run_follow.sh` already warns when unpinned.
 
+## P4.2 outcome (2026-07-08)
+
+- **P4.2a — PersonDetector warm-up (SAFE, shipped `451d364`, deployed):** YOLO detect was the only
+  model not warmed at construction, so its first predict built CUDA kernels *in* the loop = the
+  ~826/1052 ms first-window spike. Now 3 dummy predicts run at construction. Byte-identical
+  (COMPARE-OK ×2). VERIFY ON ROBOT: first-window `LOOP-MS max` should fall from ~826 ms toward steady.
+- **P4.2b — pose model on TRT (BEHAVIOR-CHANGE, shipped `ba67283`+`4130083`):** built
+  `yolo11n-pose.engine` (FP16) on the Orin from the local `.pt` via `stage_pose_engine.py`. Measured
+  A/B (same ultralytics pipeline, dummy 480×640, median of 12): **onnx/CUDA 21.3 ms → engine/TRT
+  9.8 ms (~54% faster)**. App now prefers the engine when present (`Resolve-GestureModel`), reverts
+  to `.onnx` if deleted. Pose runs in acquisition states only, so this does **not** move the driving
+  loop p50/p99 — it cuts acquisition-frame cost and the `GESTURE-DISABLED-SLOW` risk. VERIFY ON ROBOT:
+  hand-raise still locks reliably (FP16 gesture quality).
+- **Detection TRT — deferred by design:** the detection model is a Booster-shipped `.onnx` with no
+  matching `.pt` on the offline robot, so a clean ultralytics `.pt→.engine` isn't available and a raw
+  ORT-TRT reimplementation of YOLO pre/post is high-risk with no P5.1 to validate. Detection is the
+  only model that runs every driving frame, but the loop already holds budget at pinned clocks, so
+  this waits for a provenance/parity check + P5.1.
+
 ### P4.4 implication (still gated behind P4.2)
 
 Healthy pinned p99 ≤ 122 ms → 1.5× ≤ ~185 ms, comfortably under the brief's 400 ms goal. Do NOT
