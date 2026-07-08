@@ -135,6 +135,38 @@ node dir to `sys.path` so the modular imports resolve (mirrors the robot running
 **injected-interfaces** refactor — the latter is a BEHAVIOR-CHANGE (not a pure move), so `Follower`
 stays as the thin orchestrator per the "don't improve while moving" invariant.
 
+## Phase 4 — Runtime & perf  ✅ (P4.1/P4.2/P4.4 ROBOT-VERIFIED; P4.3 evaluated; P4.5/P4.6 done)
+- **P4.1** loop baselines captured: unpinned p99 ~149 ms, pinned (jetson_clocks) ~122 ms
+  (`docs/LOOP_BASELINE.md`, `eval/loop_stats.py`).
+- **P4.2a** warm up `PersonDetector` at construction -> first-frame spike 826->316 ms. SAFE, byte-identical.
+- **P4.2b** pose model on a TRT engine (`stage_pose_engine.py`, FP16): 21.3->9.3 ms; the app prefers
+  `yolo11n-pose.engine` when built (`Resolve-GestureModel`), reverts to `.onnx`. BEHAVIOR-CHANGE (FP16).
+  Detection-TRT deferred (Booster `.onnx`, no `.pt`).
+- **P4.3** collapse detect+pose: EVALUATED (on-Orin detect 19.1 ms vs pose-engine 9.3 ms -> collapse
+  would HELP, not regress); merge deferred pending P5.1 detection-quality parity (DECISIONS.md).
+- **P4.4** command-staleness tiers `800/3000 -> 400/1000` (the ONLY permitted C++ floor edit); halves the
+  tier-1 runaway window (14.4->7.2 cm @ 0.18 m/s). HB tiers untouched.
+- **P4.5** clamp the ReID embed batch to pre-warmed sizes {1,2,4} (no on-the-fly TRT build mid-follow);
+  decision-preserving. demo cost-gating confirmed (rerun + JPEG-emit off in the headless path).
+- **P4.6** persistent-fault -> STAND escalator + headless `fault_selftest.py`.
+- **ROBOT-VERIFIED 2026-07-08** (`k1_follow_1783541380.rrd`, clean drive follow): P4.2a spike gone
+  (max 316 ms), gesture LOCK held under the FP16 engine, **P4.4 zero `WATCHDOG stale`**; loop p50
+  61-67 / p99 103-109 ms.
+
+## Phase 5 — Eval & observability  ✅ (mechanisms built + PC-verified; real numbers need labeled clips)
+- **P5.1** objective task-success scorer (`replay_eval.score_outcome` + `expect`): standoff-in-band,
+  forbidden-forward (fwd vx with no depth), geofence breach, id-switches, operator retention ->
+  `TASK-SUCCESS k/n` + Wilson95. `clips.json` gains the `outcome` schema. Real numbers need labeled
+  person clips (`operator_id`) -- the remaining manual input.
+- **P5.2** depth-injecting replay `StubNode` (`--depth-range`/`--depth-glitch`, per-clip in the manifest)
+  -> the depth paths (obstacle brake, relock range-admission gate) run offline. Default OFF = byte-identical.
+- **P5.3** always-on JSONL event log (`common.EventLog`): per-tick cmd_vel/fsm/loop_ms/lock forensics
+  alongside the text log (`--event-log`). SAFE, byte-identical.
+- **Infra** (arose on-robot, not in the numbered brief): `cam_health.sh` camera-stall detect ->
+  perception-restart -> escalate; DRIVE-ABORT operator guidance in the app; `.gitattributes` forcing LF
+  on robot files (a CRLF deploy had crashed `run_follow.sh`); `robot/systemd/k1-jetson-clocks.service`
+  (pin persistence -- enabling is a power/thermal decision).
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
