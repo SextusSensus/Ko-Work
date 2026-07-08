@@ -6,6 +6,9 @@
 # and OVERRIDE the profile (precedence: defaults <- profile <- CLI).
 source /opt/ros/humble/setup.bash 2>/dev/null
 source /opt/booster/BoosterRos2/install/setup.bash 2>/dev/null
+# P6.1a: also source the Booster interface workspace so booster_interface/msg/Odometer imports for the
+# OPTIONAL odometry recorder (--odom-topic). Best-effort; a guarded import means absence just disables it.
+source /opt/booster/BoosterRos2Interface/install/setup.bash 2>/dev/null
 cd /home/booster
 # Pre-flight (OPTIMIZATION_PLAN.md Phase 0.1): warn if the Orin GPU clocks aren't pinned. Pinning
 # (sudo jetson_clocks) measured a ~25% loop-p99 cut and an ~86% pose-latency-tail cut on 2026-07-06.

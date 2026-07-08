@@ -952,7 +952,10 @@ class Follower:
         # diverge (an empty-string topic used to subscribe nothing yet still be "required").
         depth_topic = self.a.depth_topic if (self.a.depth_topic
                                              and self.a.depth_topic.lower() != "none") else None
-        self.node = CamNode(topics, depth_topic)
+        _odom_topic = getattr(self.a, "odom_topic", "") or ""
+        if _odom_topic.lower() == "none":
+            _odom_topic = ""
+        self.node = CamNode(topics, depth_topic, odom_topic=_odom_topic)
         # FR-1 (CRITICAL): service CamNode on a DEDICATED background executor thread. The old
         # one-spin_once-per-10Hz-tick pattern measured the LOOP's callback-servicing rate, not the
         # sensor: with 2 RGB subs + depth at KEEP_LAST 1, depth was serviced at <=3.3-5Hz on a
@@ -1122,10 +1125,19 @@ class Follower:
                     rerun_sink._RR.scalar("/diag/loop_ms", dt * 1000.0)   # true loop dt straight into the .rrd
                 # P5.3: always-on per-tick forensic record (cmd_vel, fsm, loop timing, lock). Inert
                 # when the sink couldn't open (off-robot); never raises (EventLog swallows write errors).
-                self.events.tick(t=round(time.time(), 3), fsm=self.state, walk=bool(self.walking),
-                                 vx=round(self._ev_cmd[0], 4), vy=round(self._ev_cmd[1], 4),
-                                 vyaw=round(self._ev_cmd[2], 4), loop_ms=round(dt * 1000.0, 1),
-                                 seed=(self.seed is not None), hb_req=bool(self.require_hb))
+                _ev = dict(t=round(time.time(), 3), fsm=self.state, walk=bool(self.walking),
+                           vx=round(self._ev_cmd[0], 4), vy=round(self._ev_cmd[1], 4),
+                           vyaw=round(self._ev_cmd[2], 4), loop_ms=round(dt * 1000.0, 1),
+                           seed=(self.seed is not None), hb_req=bool(self.require_hb))
+                # P6.1a: attach planar odometry when recorded (odom_topic set + fresh) -- P8 trajectory
+                # prior. Absent by default -> the line is unchanged (byte-identical forensic contract).
+                _latest_odom = getattr(self.node, "latest_odom", None)
+                if callable(_latest_odom):
+                    _od = _latest_odom()
+                    if _od is not None:
+                        _ev["odom_x"], _ev["odom_y"], _ev["odom_theta"] = (
+                            round(_od[0], 4), round(_od[1], 4), round(_od[2], 5))
+                self.events.tick(**_ev)
                 # Always-on loop-timing observability (autonomy-ops: observable by default). WORK-time
                 # per iteration (before the fill-sleep); a 10s p50/p99/max pulse tagged rerun on/off,
                 # so the --rerun loop-cost gate compares directly against the baseline in the logs.
@@ -2775,6 +2787,11 @@ def parse_args(argv):
     p.add_argument("--topic", default=DEF_TOPIC)
     p.add_argument("--depth-topic", default="/boostercamera/head/depth",
                    help="depth image topic ('none' to disable)")
+    p.add_argument("--odom-topic", default="",
+                   help="P6.1a: planar base odometry topic (booster_interface/msg/Odometer {x,y,theta}); "
+                        "'' disables (default -> no subscription, byte-identical). Recording only -- feeds "
+                        "the .rrd + JSONL for P8 map stitching, never the control law. The capture profile "
+                        "sets '/odometer_state'; needs BoosterRos2Interface sourced (run_follow*.sh do).")
     p.add_argument("--bridge", default="./loco_follow_bridge",
                    help="path to compiled loco_follow_bridge (drive mode)")
     p.add_argument("--yolo-path", default=DEF_YOLO_PATH,

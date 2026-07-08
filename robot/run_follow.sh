@@ -5,6 +5,10 @@
 # Compiles loco_follow_bridge from source on first drive (verified g++ recipe).
 source /opt/ros/humble/setup.bash 2>/dev/null
 source /opt/booster/BoosterRos2/install/setup.bash 2>/dev/null
+# P6.1a: also source the Booster interface workspace so booster_interface/msg/Odometer imports for the
+# OPTIONAL odometry recorder (--odom-topic). Best-effort: absent -> odom recording self-disables, the
+# follow is unaffected (the import is guarded in perception.CamNode).
+source /opt/booster/BoosterRos2Interface/install/setup.bash 2>/dev/null
 cd /home/booster
 # Pre-flight (OPTIMIZATION_PLAN.md Phase 0.1): warn if the Orin GPU clocks aren't pinned. Pinning
 # (sudo jetson_clocks) measured a ~25% loop-p99 cut and an ~86% pose-latency-tail cut on 2026-07-06.
