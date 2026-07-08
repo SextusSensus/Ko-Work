@@ -115,9 +115,30 @@ the numbers on this page. Do not change a knob without a before/after against th
   only model that runs every driving frame, but the loop already holds budget at pinned clocks, so
   this waits for a provenance/parity check + P5.1.
 
-### P4.4 implication (still gated behind P4.2)
+## P4.4 — staleness-tier retune (BEHAVIOR-CHANGE to the C++ floor, staged 2026-07-08)
 
-Healthy pinned p99 ≤ 122 ms → 1.5× ≤ ~185 ms, comfortably under the brief's 400 ms goal. Do NOT
-retune the C++ tiers yet: (a) P4.2 (TRT + warm-up) should first cut the tail and kill the 826 ms
-first-inference spike, and (b) get a pinned **rerun-off** capture as the clean reference. The warmup
-spike still argues for arming any tighter tier only *after* the first-frame settle.
+The ONLY permitted edit to `loco_follow_bridge.cpp` in this brief. The command-staleness watchdog
+keys on `age = now - last 'v'`, which IS the follow loop's inter-iteration dt (`LOOP-MS`): tier-1
+(`STALE_MS`) zeroes velocity, tier-2 (`STALE_PREP_MS`) stands. The tier must sit ABOVE the worst
+healthy loop dt (or it stutter-stops a good follow) yet as low as possible to shrink runaway.
+
+**Change:** `STALE_MS 800 → 400`, `STALE_PREP_MS 3000 → 1000` (returning to the pre-pin goal).
+Basis: pinned p99 ~122 ms, steady max ~155 ms, warmup spike moved off-loop by P4.2a. 400 ms keeps
+~2.6× margin over the steady max while halving the tier-1 runaway window — **14.4 cm → 7.2 cm** at
+`vx_max` 0.18 m/s. HB deadman tiers (400/1500) untouched. Deployed: recompiled clean on the Orin,
+binary newer than source (run_follow.sh won't rebuild).
+
+**NOT YET VERIFIED — VERIFY ON ROBOT (the gate):** run a normal healthy follow (person in view,
+walking) for 1–2 min, then check the log:
+```
+grep -c "WATCHDOG stale" /home/booster/k1_follow.err   # MUST be 0
+```
+Zero `WATCHDOG stale` lines = no healthy-loop stutter-stop → pass. If any fire, the loop tail exceeds
+400 ms on this robot → loosen `STALE_MS` toward the observed max and re-verify. (Tier-1 is only a
+brief velocity-zero-in-gait, so a stutter during the test is safe, not a fall.)
+
+### Reference numbers this was set against
+
+Healthy pinned p99 ≤ 122 ms → 1.5× ≤ ~185 ms; the 400 ms chosen is more conservative than the
+1.5×-p99 floor, deliberately, because a safety tier should clear the worst-case transient (crowded
+ReID frame, depth glitch), not just p99. A pinned **rerun-off** capture would refine this further.
