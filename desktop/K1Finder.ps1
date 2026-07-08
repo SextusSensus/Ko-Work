@@ -160,6 +160,16 @@ function Deploy-FollowFiles {
     # the "Fix Cameras" action run it), NOT a follow import, so a missing copy must not block a launch.
     $ch = Join-Path $ROBOT_DIR 'cam_health.sh'
     if (Test-Path $ch) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($ch, ("{0}@{1}:/home/booster/cam_health.sh" -f $script:SshUser, $ip))) }
+    # P6.2a: stamp the deploying repo's short SHA to /home/booster/DEPLOY_VERSION so run-offload
+    # manifests (offload_run.sh) carry a real git_version instead of 'nogit' -- dataset/run provenance
+    # for P7. BEST-EFFORT: git absent, not a repo, or a failed push just leaves the manifest 'nogit';
+    # the deploy still succeeds. No 2>redirect on the native git call (PS 5.1 wraps native stderr).
+    try {
+        $sha = (git -C $ROBOT_DIR rev-parse --short HEAD | Select-Object -First 1)
+        if ($sha -and ($sha -match '^[0-9a-fA-F]{4,40}$')) {
+            $null = Invoke-Proc ssh.exe ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser, $ip), ("printf '%s' '{0}' > /home/booster/DEPLOY_VERSION" -f $sha)))
+        }
+    } catch { }
     return $true
 }
 
