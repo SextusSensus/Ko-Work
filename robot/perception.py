@@ -40,6 +40,9 @@ def range_from_bbox_height(box_h_px, h_img, hfov_deg, person_h_m):
 # ---------------------------------------------------------------------------
 # Person detection (YOLO11n ONNX). Loaded ONCE at startup. Never crashes loop.
 # ---------------------------------------------------------------------------
+YOLO_WARMUP_N = 3   # dummy predicts at construction (mirror ReidEngine's 3) -- see __init__
+
+
 class PersonDetector:
     def __init__(self, model_path, conf):
         self.model_path = model_path
@@ -49,6 +52,18 @@ class PersonDetector:
         try:
             from ultralytics import YOLO
             self.model = YOLO(model_path, task="detect")
+            # Warm up (P4.2): the FIRST predict lazily builds the CUDA/engine kernels -- a ~0.8s
+            # spike that landed in the control loop's first LOOP-MS window at BOTH stock and pinned
+            # clocks (docs/LOOP_BASELINE.md, max=1052/826ms). Run a few dummy predicts HERE, at
+            # construction (before run()'s loop), so the one-time build cost lands off the control
+            # loop. Mirrors ReidEngine + GestureTrigger. Dummy frame -> zero decision effect
+            # (byte-identical); tolerant of a model/version that rejects the dummy.
+            try:
+                _dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+                for _ in range(YOLO_WARMUP_N):
+                    self.model.predict(_dummy, verbose=False)
+            except Exception:  # noqa: BLE001
+                pass
             self.ok = True
         except Exception as e:  # noqa: BLE001
             log("YOLO-LOAD-FAIL %s (%s) -- person detection disabled" % (model_path, e))
