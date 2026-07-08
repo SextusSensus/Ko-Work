@@ -142,3 +142,20 @@ brief velocity-zero-in-gait, so a stutter during the test is safe, not a fall.)
 Healthy pinned p99 ≤ 122 ms → 1.5× ≤ ~185 ms; the 400 ms chosen is more conservative than the
 1.5×-p99 floor, deliberately, because a safety tier should clear the worst-case transient (crowded
 ReID frame, depth glitch), not just p99. A pinned **rerun-off** capture would refine this further.
+
+## ✅ ON-ROBOT VERIFICATION — P4.2 + P4.4 (2026-07-08, `k1_follow_1783541380.rrd`)
+
+One healthy drive follow (pinned clocks, gesture lock → OSNet track, ~40 s, rerun on) verified all
+three, in one run:
+
+| check | criterion | result |
+|---|---|---|
+| **P4.2a** warm-up | first-window `LOOP-MS max` drops from ~826 ms | **316 ms** (~−62%); single first-frame blip, stays **under** the 400 ms tier |
+| **P4.2b** pose TRT engine | `.engine` loads + hand-raise still locks (FP16) | `GESTURE-TRIGGER ok model=yolo11n-pose.engine` → `LOCKED ... conf=0.90`, 295 clean TRACK frames sim 0.96–0.98 |
+| **P4.4** staleness tiers | **zero** `WATCHDOG stale` on a healthy follow | **0** — no stutter-stop at 400/1000 |
+
+Verified loop (pinned + warm-up + TRT-engine, rerun on): p50 **61–67 ms**, p90 **81–84**, p99
+**103–109**, first-frame blip 316. Best numbers yet — comfortably under the 100 ms / 10 Hz budget.
+Follow ended on a clean operator stop (no crash, no abort, no watchdog). **Phase-4 perf work is
+on-robot verified.** (Open items remain infra, not perf: `jetson_clocks` pin persistence across
+reboot, and the camera-stall auto-recovery gate `cam_health.sh`.)
