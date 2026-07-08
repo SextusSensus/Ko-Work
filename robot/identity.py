@@ -281,6 +281,7 @@ class ReidEngine:
         self.letterbox = bool(letterbox)
         self._batch_ok = bool(batch)
         self._dyn_batch = False        # True only if the model's batch axis is dynamic AND batch on
+        self._warm_batches = (1, 2, 4)  # P4.5: batch sizes with pre-built TRT engines (match onnx_dynamic_batch.py)
         self.providers_active = []
         # ITEM 3: True iff a GPU EP (TensorRT/CUDA) was AVAILABLE but onnxruntime fell back to the
         # CPU EP as the active provider. OSNet re-ID on CPU is far too slow to be trustworthy for an
@@ -325,10 +326,16 @@ class ReidEngine:
                 _why = "cpu-ep fell-back" if _gpu_avail else "cpu-ep cpu-only-build"
                 log("REID-DEGRADED %s active=%s avail=%s -> armed re-lock refused (audit-only)"
                     % (_why, _active0, ",".join(avail)))
-            # Warm up -- the FIRST infer builds/loads the TRT engine (slow, once).
-            dummy = np.zeros((1, 3, self.in_h, self.in_w), dtype=np.float32)
-            for _ in range(3):
-                self.session.run(None, {self.input_name: dummy})
+            # Warm up -- the FIRST infer at each batch SHAPE builds/loads its TRT engine (slow, once).
+            # P4.5: when the batch axis is dynamic, pre-build the engines for every batch size
+            # embed_batch will actually use (self._warm_batches) so a multi-person frame in the field
+            # never stalls the control loop on an on-the-fly build. A fixed-batch export only ever runs
+            # batch=1, so warm just that. Tolerant of a shape the model rejects.
+            _warm = self._warm_batches if self._dyn_batch else (1,)
+            for _bs in _warm:
+                dummy = np.zeros((_bs, 3, self.in_h, self.in_w), dtype=np.float32)
+                for _ in range(3 if _bs == 1 else 2):
+                    self.session.run(None, {self.input_name: dummy})
             self.ok = True
             log("REID-ENGINE ok model=%s providers=%s in=%dx%d"
                 % (os.path.basename(model_path), ",".join(self.providers_active),
@@ -367,6 +374,19 @@ class ReidEngine:
         return chw.astype(np.float32)
 
     @staticmethod
+    def _chunk_sizes(n, warm):
+        """Split n crops into a sum of PRE-WARMED batch sizes (warm, e.g. (1,2,4)), greedy
+        largest-first, so every session.run uses an engine shape that was pre-built at load --
+        a 5+-person frame never triggers an on-the-fly TRT build mid-follow (P4.5). e.g. 5->[4,1],
+        7->[4,2,1], 3->[2,1]. Falls back to 1s if warm lacks a size that fits."""
+        sizes = sorted(set(int(s) for s in warm if int(s) >= 1), reverse=True) or [1]
+        out = []
+        while n > 0:
+            pick = next((s for s in sizes if s <= n), 1)
+            out.append(pick); n -= pick
+        return out
+
+    @staticmethod
     def _l2(v):
         v = np.asarray(v, dtype=np.float32).reshape(-1)
         n = float(np.linalg.norm(v))
@@ -396,11 +416,17 @@ class ReidEngine:
             if not tensors:
                 return out
             if self._dyn_batch and len(tensors) > 1:
-                batch = np.stack(tensors, axis=0)                  # (M,3,H,W) -- one inference
-                res = self.session.run(None, {self.input_name: batch})[0]
-                res = np.asarray(res, dtype=np.float32).reshape(len(tensors), -1)
-                for k, i in enumerate(idx):
-                    out[i] = self._l2(res[k])
+                # P4.5: run in PRE-WARMED chunks (self._warm_batches) rather than one (M,3,H,W)
+                # batch, so a batch size with no cached TRT engine never stalls the loop on an
+                # on-the-fly build. Per-crop embeddings are independent -> byte-identical result.
+                pos = 0
+                for cs in self._chunk_sizes(len(tensors), self._warm_batches):
+                    chunk = np.stack(tensors[pos:pos + cs], axis=0)
+                    res = self.session.run(None, {self.input_name: chunk})[0]
+                    res = np.asarray(res, dtype=np.float32).reshape(cs, -1)
+                    for j in range(cs):
+                        out[idx[pos + j]] = self._l2(res[j])
+                    pos += cs
             else:
                 for k, i in enumerate(idx):                        # fixed-batch export -> per row
                     r = self.session.run(None, {self.input_name: tensors[k][None, ...]})[0]
