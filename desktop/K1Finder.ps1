@@ -772,8 +772,11 @@ $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Ar
 # K1_REQUIRE_HB watchdog) and starts the app-side heartbeat relay. The remote loop touches the hb
 # file ONLY on bytes RECEIVED from this app, so mtime freshness == end-to-end connectivity: WiFi
 # drop / app freeze / laptop death -> touches stop -> node zeroes (400ms) + bridge kPrepares (1.5s).
-# Default OFF (tethered byte-identical). One pillar of the untethered gate (UNTETHERED_FOLLOW.md).
-$trackHbChk=New-Object System.Windows.Forms.CheckBox; $trackHbChk.Text='Deadman HB'; $trackHbChk.AutoSize=$true; $trackHbChk.Location='610,110'; $trackHbChk.ForeColor=$red; $trackHbChk.Font=$fontBold; $grpTrackCtl.Controls.Add($trackHbChk)
+# Default ON (P1.2): the node now REFUSES --drive without --require-heartbeat (fail-closed gate),
+# so an unchecked box = guaranteed launch abort, not the old silent-degrade. Safe flag is the
+# default; untick only for a tethered bench run WITH --allow-untethered-unsafe intent.
+# One pillar of the untethered gate (UNTETHERED_FOLLOW.md).
+$trackHbChk=New-Object System.Windows.Forms.CheckBox; $trackHbChk.Text='Deadman HB'; $trackHbChk.AutoSize=$true; $trackHbChk.Location='610,110'; $trackHbChk.ForeColor=$red; $trackHbChk.Font=$fontBold; $trackHbChk.Checked=$true; $grpTrackCtl.Controls.Add($trackHbChk)
 
 # --- Acquisition + command-surface toggles (LAUNCH-time for gesture/A-B; runtime for voice) ---
 # Gesture lock = --lock-trigger gesture (raised hand seeds instead of the marker). A/B = --lock-trigger

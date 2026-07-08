@@ -1,10 +1,13 @@
 """Bridge -- the process wrapper around the compiled loco_follow_bridge (P3.1, --drive only).
 
-Extracted verbatim from follow_person_k1.py (pure move, no logic change). Zero coupling: only
-stdlib (subprocess/threading/os/time), no follow globals/helpers/sibling classes. The C++ bridge
-it wraps is the safety floor; this Python side only frames commands to it and reaps it cleanly.
+Extracted from follow_person_k1.py (P3.1 pure move), then FIXED 2026-07-08 after the first
+armed-heartbeat drive on the robot exposed two latent protocol bugs (see command_expect_ok /
+_drain_stdout). Zero coupling: only stdlib (subprocess/threading/queue/os/time), no follow
+globals/helpers/sibling classes. The C++ bridge it wraps is the safety floor; this Python side
+only frames commands to it and reaps it cleanly.
 """
 import os
+import queue
 import subprocess
 import threading
 import time
@@ -16,6 +19,7 @@ class Bridge:
         self.proc = None
         self._lock = threading.Lock()
         self.extra_env = extra_env or None
+        self._rx = queue.Queue(maxsize=1000)   # bridge stdout lines (drained continuously)
 
     def start(self):
         env = None
@@ -30,6 +34,30 @@ class Bridge:
             universal_newlines=True,
             env=env,
         )
+        threading.Thread(target=self._drain_stdout, daemon=True).start()
+
+    def _drain_stdout(self):
+        """Continuously read bridge stdout into _rx. TWO jobs: (a) feed command_expect_ok's
+        reply matcher; (b) keep the pipe empty -- the bridge echoes 'OK v ...' for EVERY 10Hz
+        velocity tick, and with no reader the 64KB pipe fills in ~3.5 min, blocking the C++
+        emit() and freezing the follow (the C++ watchdog then stands the robot: fail-safe,
+        but the run dies). Drop-oldest on overflow: newest lines are the ones a live
+        command_expect_ok could be waiting for."""
+        try:
+            for line in self.proc.stdout:
+                try:
+                    self._rx.put_nowait(line)
+                except queue.Full:
+                    try:
+                        self._rx.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        self._rx.put_nowait(line)
+                    except queue.Full:
+                        pass
+        except Exception:  # noqa: BLE001  (pipe closed at shutdown)
+            pass
 
     def _send(self, cmd):
         with self._lock:
@@ -51,25 +79,29 @@ class Bridge:
                 self.proc.stdin.flush()
             except (BrokenPipeError, ValueError, OSError) as e:
                 return False, "<write-failed:%s>" % e
-        reply_box = {}
-
-        def _read():
+        # Scan for THIS command's reply line ('OK <cmd> ... 0' / 'ERR <cmd> ...'), SKIPPING
+        # unsolicited lines: the startup handshake 'OK ready 0', the armed-deadman banner
+        # 'OK hb-required 1 file=... stale=... prep=...', HB-STALE notices, and 'OK v' echoes.
+        # The old reader took the FIRST line and required last-token '0', so with the hb banner
+        # present every reply was off-by-one ('ping' consumed the handshake, 'prep' consumed the
+        # banner -> 'prep=1500' != '0' -> DRIVE-ABORT, first armed drive 2026-07-08). In the
+        # tethered path the misalignment was invisible (every line starts OK and ends 0).
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False, "<no-reply/timeout>"
             try:
-                reply_box["line"] = self.proc.stdout.readline()
-            except Exception as e:  # noqa: BLE001
-                reply_box["err"] = str(e)
-
-        t = threading.Thread(target=_read, daemon=True)
-        t.start()
-        t.join(timeout)
-        if "line" not in reply_box:
-            return False, "<no-reply/timeout>"
-        line = (reply_box["line"] or "").strip()
-        if not line:
-            return False, "<eof>"
-        parts = line.split()
-        ok = len(parts) >= 3 and parts[0] == "OK" and parts[-1] == "0"
-        return ok, line
+                line = self._rx.get(timeout=remaining)
+            except queue.Empty:
+                return False, "<no-reply/timeout>"
+            line = (line or "").strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] in ("OK", "ERR") and parts[1] == cmd:
+                ok = len(parts) >= 3 and parts[0] == "OK" and parts[-1] == "0"
+                return ok, line
 
     def send_velocity(self, vx, vy, vyaw):
         self._send("v %.4f %.4f %.4f" % (vx, vy, vyaw))
