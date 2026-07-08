@@ -3,6 +3,10 @@
 [A/B]). A trigger returns an optional LockHint -- a lock point/owner the single _try_seed funnel
 consumes; it never creates identity or drives. Extracted verbatim (pure move).
 """
+import collections
+import os
+import time
+
 import numpy as np
 import cv2
 

@@ -3,6 +3,8 @@ target point, adaptive low-light boost, and the BEST_EFFORT camera ROS node (Cam
 verbatim (pure move). CamNode logs frames/depth to the shared rerun sink (rerun_sink._RR).
 """
 import math
+import threading
+import time
 
 import numpy as np
 import cv2

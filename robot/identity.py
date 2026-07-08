@@ -2,7 +2,9 @@
 (TargetGallery), the model-free colour/striped descriptors, and the OSNet deep-ReID engine
 (ReidEngine, onnxruntime TensorRT EP, lazily imported). Extracted verbatim (pure move).
 """
+import collections
 import math
+import os
 
 import numpy as np
 import cv2
