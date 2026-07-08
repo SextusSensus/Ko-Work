@@ -88,7 +88,7 @@ from common import (  # noqa: E402
     HARD_VX_LIMIT, HARD_VYAW_LIMIT, DEPTH_WARMUP_S, DEPTH_FRESH_S, DEPTH_DOWN_S, PERSON_CLS, LL_DARK_THRESH,
     LockHint, KP_L_SHOULDER, KP_R_SHOULDER, KP_L_WRIST, KP_R_WRIST,
     S_SEARCH, S_TRACK, S_REACQUIRE, S_PARKED, S_SEARCHING, TS_LOCKED, TS_COASTING, TS_RELOCALIZING,
-    clamp, to_bgr, depth_to_meters, iou_xyxy, log, emit_frame, gdbg,
+    clamp, to_bgr, depth_to_meters, iou_xyxy, log, emit_frame, gdbg, EventLog,
 )
 from bridge import Bridge  # noqa: E402  (P3.1: loco_follow_bridge process wrapper)
 from tracking import MultiTracker, max_iou_other, _point_box_dist  # noqa: E402  (P3.2)
@@ -307,6 +307,10 @@ class Follower:
         self._frame_err_streak = 0   # P4.6: consecutive _process_frame throws (persistent-fault STAND escalator)
         self._loop_ms_hist = collections.deque(maxlen=600)  # ~60s of loop WORK-time @ 10Hz
         self._last_loopms_log = 0.0  # 10s cadence for the LOOP-MS observability line
+        # P5.3: always-on JSONL of safety-relevant per-tick signals (machine-readable post-incident
+        # forensics, alongside the text log). Inert if the path can't be opened (e.g. the replay gate).
+        self.events = EventLog(getattr(self.a, "event_log", None))
+        self._ev_cmd = (0.0, 0.0, 0.0)   # last control-law velocity (vx,vy,vyaw), for the event log
 
         # Stage 2/4: appearance-feature backend -- the single swap point. 'global' =
         # the original single HS histogram (default; Stages 1-3 behavior verbatim);
@@ -539,6 +543,7 @@ class Follower:
         elif self.require_hb and self._hb_lost_logged:
             log("HB-OK operator heartbeat restored")
             self._hb_lost_logged = False
+        self._ev_cmd = (vx, vy, vyaw)   # P5.3: post-deadman commanded velocity, for the event log
         if self.drive and self.walking and self.bridge is not None:
             self.bridge.send_velocity(vx, vy, vyaw)
             # FIX C: baseline = what we ACTUALLY sent (post-deadman, post-clamp). On any
@@ -1102,6 +1107,12 @@ class Follower:
                 dt = time.monotonic() - t0
                 if rerun_sink._RR.ok:
                     rerun_sink._RR.scalar("/diag/loop_ms", dt * 1000.0)   # true loop dt straight into the .rrd
+                # P5.3: always-on per-tick forensic record (cmd_vel, fsm, loop timing, lock). Inert
+                # when the sink couldn't open (off-robot); never raises (EventLog swallows write errors).
+                self.events.tick(t=round(time.time(), 3), fsm=self.state, walk=bool(self.walking),
+                                 vx=round(self._ev_cmd[0], 4), vy=round(self._ev_cmd[1], 4),
+                                 vyaw=round(self._ev_cmd[2], 4), loop_ms=round(dt * 1000.0, 1),
+                                 seed=(self.seed is not None), hb_req=bool(self.require_hb))
                 # Always-on loop-timing observability (autonomy-ops: observable by default). WORK-time
                 # per iteration (before the fill-sleep); a 10s p50/p99/max pulse tagged rerun on/off,
                 # so the --rerun loop-cost gate compares directly against the baseline in the logs.
@@ -1183,6 +1194,10 @@ class Follower:
             except Exception:  # noqa: BLE001
                 pass
             self._gbind_session_log()   # A/B rollup (no-op unless --lock-trigger both)
+            try:
+                self.events.close()     # P5.3: flush + close the forensic JSONL
+            except Exception:  # noqa: BLE001
+                pass
             self._cleanup()
             try:
                 self.node.destroy_node()
@@ -2751,6 +2766,9 @@ def parse_args(argv):
                    help="path to compiled loco_follow_bridge (drive mode)")
     p.add_argument("--yolo-path", default=DEF_YOLO_PATH,
                    help="YOLO11n ONNX person-detection model")
+    p.add_argument("--event-log", default="/home/booster/k1_events.jsonl",
+                   help="P5.3: always-on JSONL of per-tick safety signals (cmd_vel/fsm/loop_ms/lock) "
+                        "for post-incident forensics; set '' to disable")
 
     # control law / geometry
     p.add_argument("--standoff-m", type=float, default=DEF_STANDOFF_M)

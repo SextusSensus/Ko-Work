@@ -11,6 +11,7 @@ reads S_SEARCH/S_REACQUIRE/S_PARKED, which used to be defined ~1200 lines AFTER 
 call-time global lookup); as a top-level import they resolve immediately.
 """
 import collections
+import json
 import struct
 import sys
 import time
@@ -151,3 +152,34 @@ def gdbg(args, msg):
         return
     _GDBG_LAST[tag] = now
     log("GDBG " + msg)
+
+
+class EventLog:
+    """Always-on lightweight JSONL of safety-relevant per-tick signals for post-incident forensics
+    (P5.3): one compact JSON object per line, LINE-BUFFERED so the last ticks survive a hard crash,
+    and it NEVER raises into the control loop. A bad/unwritable path just disables the sink
+    (self.f is None -> every tick is a no-op), so it is inert off-robot -- e.g. the replay gate can't
+    open the robot path, so decisions stay byte-identical. Cheap: one text line (~10/s), no ROS bag."""
+    def __init__(self, path):
+        self.f = None
+        try:
+            if path:
+                self.f = open(path, "a", buffering=1)   # line-buffered: each tick durably flushed
+        except Exception:  # noqa: BLE001 -- missing dir / read-only fs just disables the sink
+            self.f = None
+
+    def tick(self, **fields):
+        if self.f is None:
+            return
+        try:
+            self.f.write(json.dumps(fields, separators=(",", ":")) + "\n")
+        except Exception:  # noqa: BLE001 -- never break the control loop for a log write
+            pass
+
+    def close(self):
+        try:
+            if self.f is not None:
+                self.f.flush(); self.f.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self.f = None
