@@ -60,8 +60,45 @@ the numbers on this page. Do not change a knob without a before/after against th
   1.5× ≈ 225 ms. The 400 ms goal in the brief looks reachable once clocks are pinned and
   TRT is in; retune only against a **pinned + P4.2** capture, not this one.
 
-## Capture B — pinned clocks (`sudo jetson_clocks`) — **TBD**
+## Capture B — 2026-07-07, PINNED clocks (`sudo jetson_clocks`), rerun ON
 
-Pending a 1–2 min follow with the GPU pinned. This is the state P4.2/P4.4 must be compared
-against, since pinning is already the shipped Phase-0 recommendation (`run_follow.sh` warns
-when unpinned; persistence across reboot is an open decision in DECISIONS.md).
+- **Run:** full DRIVE follow (armed heartbeat, gesture lock → `LOCKED ... conf=0.92`), ~40 s
+  (4 LOOP-MS windows, run ended clean). Same launch line as Capture A.
+- **Clock state:** GPU **pinned** — cur=max=min=**1173 MHz** (confirmed before and after the run).
+- **Rerun:** stayed **ON for the entire run** — every window `rerun=on`, **no `RERUN-DISABLED-SLOW`
+  shed**. This is the fix for the "recording cuts off mid-run" report: at stock clocks the loop was
+  over budget and the loop-cost backstop dropped Rerun ~20 s in (Capture A); pinned, the loop stays
+  under budget so the recording runs full-length (499 MB `.rrd`, `k1_follow_1783471908.rrd`).
+
+### Raw windows (budget = 100 ms, 10 Hz, rerun=on)
+
+| window | n | p50 | p90 | p99 | max |
+|---|---|---|---|---|---|
+| 1 (warmup) | 10 | 100 | 826 | 826 | 826 |
+| 2 | 109 | 75 | 102 | 122 | 826 |
+| 3 | 208 | 73 | 101 | 122 | 826 |
+| 4 | 307 | 70 | 98 | 122 | 826 |
+
+### A/B — pinning is a clear win (note B carries Rerun's load and is STILL faster)
+
+| metric | Capture A (stock, rerun **off**) | Capture B (pinned, rerun **on**) | Δ |
+|---|---|---|---|
+| p50 | 86–104 ms | **70–75 ms** | ~−28% |
+| p90 | 118–124 ms | **98–102 ms** | ~−18% |
+| p99 | 143–149 ms | **122 ms** | ~−18% |
+| max (warmup spike) | 1052 ms | **826 ms** | ~−21% |
+
+- The loop now holds **under the 100 ms / 10 Hz budget at p50 from the first steady window** — and
+  that's *with* Rerun on. Pinned + rerun-off (the true P4.2/P4.4 reference) will be lower still, so
+  **122 ms is an upper bound** on the healthy pinned p99.
+- **Pin persistence is the actionable item:** `jetson_clocks` does not survive reboot, and every
+  reboot this session reset it (Capture A was an accidental unpinned run right after a reboot).
+  Make pinning durable (boot service / NOPASSWD sudoers) — tracked in DECISIONS.md — or every
+  session silently regresses ~20–28%. `run_follow.sh` already warns when unpinned.
+
+### P4.4 implication (still gated behind P4.2)
+
+Healthy pinned p99 ≤ 122 ms → 1.5× ≤ ~185 ms, comfortably under the brief's 400 ms goal. Do NOT
+retune the C++ tiers yet: (a) P4.2 (TRT + warm-up) should first cut the tail and kill the 826 ms
+first-inference spike, and (b) get a pinned **rerun-off** capture as the clean reference. The warmup
+spike still argues for arming any tighter tier only *after* the first-frame settle.
