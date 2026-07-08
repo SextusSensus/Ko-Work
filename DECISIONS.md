@@ -174,7 +174,13 @@ Then add a guarded BEST_EFFORT subscription (topic configurable, default `''` = 
 logs `x/y/θ` to the `.rrd` and an `odom_x/odom_y/odom_theta` triple into the JSONL. Fail-safe: a
 missing or mismatched topic records nothing and never touches the follow.
 
-- [ ] Confirm `/odometer_state` type/rate on-robot, then wire the guarded odometry recorder.
+- [x] **RESOLVED (P6.1a, commit `2541440`).** Type confirmed from the on-robot memory note:
+  `/odometer_state` = `booster_interface/msg/Odometer` `{float32 x,y,theta}`. Wired a guarded,
+  config-gated (`--odom-topic`, default `''` = inert) subscription in `perception.CamNode`: records
+  `/odom/{x,y,theta}` to the `.rrd` and `odom_x/y/theta` to the JSONL; a missing type/workspace or bad
+  message self-disables and never touches the follow. `run_follow*.sh` now source
+  `BoosterRos2Interface`. **VERIFY ON ROBOT:** the live subscription (run `ros2 topic hz /odometer_state`
+  to confirm rate; grep the JSONL for `odom_x`).
 
 ## P6.1b — A `capture.yaml` profile for P7/P8 runs?
 
@@ -187,8 +193,11 @@ A profile changes nothing unless selected, so this is SAFE recording-config — 
 whether capture piggybacks on a demo or is operator-selected is a call worth making deliberately
 (and the `--rerun`+`--drive` loop-cost gate in `RERUN_PLAN.md` must pass at the chosen N).
 
-- [ ] Decide capture-run mechanism: standalone `capture.yaml` vs a `--capture` flag on an existing
-  profile; set `rerun_image_every_n` for P8 fidelity within the loop-cost budget.
+- [x] **RESOLVED (P6.1b, commit `2db422a`).** Chose a standalone `config/capture.yaml` (demo-grade
+  safety + `rerun: true`, `rerun_image_every_n: 2`, `odom_topic: '/odometer_state'`) plus
+  `run_follow_capture.sh` (forces `--profile capture`, pre-compiles the bridge) so capture is usable
+  headless. Deployed by the app. **Open sub-decision:** `rerun_image_every_n: 2` is a starting value —
+  the `--rerun`+`--drive` loop-cost gate (RERUN_PLAN.md) must pass at it on the Orin; raise N if tight.
 
 ## P6.2a — Stamp a deploy SHA so run manifests carry a real version?
 
@@ -201,8 +210,11 @@ absent that file the manifest reads `git_version: "nogit"` and `run_id` ends in 
 is traceable to the exact code that produced it (P7 dataset provenance wants this). One line in
 `Deploy-RobotFiles`; no robot behavior change.
 
-- [ ] Add a `DEPLOY_VERSION` stamp on deploy (else run manifests stay `nogit`, still valid just
-  un-versioned).
+- [x] **RESOLVED (P6.2a, commit `8f51e34`).** `Deploy-FollowFiles` now stamps
+  `git -C robot rev-parse --short HEAD` to `/home/booster/DEPLOY_VERSION` after the follow files land;
+  best-effort (git absent / not a repo / push fail → manifest stays `nogit`, deploy still succeeds).
+  **Sequencing (per the P7/P8 design pass):** land this before minting the P7.1 dataset `v1`, or record
+  `git_version: nogit` honestly in the card — never fabricate a SHA.
 
 ## P6.2b — Wire the offload to run automatically on clean session end?
 
@@ -215,5 +227,12 @@ runs the SSH follow session and knows when it ends cleanly. Auto-firing means (a
 That's app-integration work (`robot-deploy`/`autonomy-ops`) worth doing deliberately rather than
 folding into this task — the on-demand scripts are the reusable core and work standalone today.
 
-- [ ] Hook `offload_run.sh` + `Pull-Run.ps1` into the app's clean-session-end path (pass the profile
-  that was launched).
+- [x] **RESOLVED (P6.2b, commit `b44baaf`).** Added `desktop/Offload-Run.ps1` (ssh `offload_run.sh` →
+  `Pull-Run.ps1`) and wired `Invoke-Offload` into `Stop-Tracker`: on a capture session's end (rerun
+  was on), it launches Offload-Run.ps1 **detached** AFTER the robot is safed, so the WinForms teardown
+  never blocks and it can never throw into the safing path. Profile label is `tracker-drive/preview`
+  (the app launches with flags, not `--profile`). **VERIFY ON ROBOT:** the end-to-end ssh+pull.
+  **⚠ Retention footgun (from the P7/P8 design pass):** `offload_run.sh` moves the `.rrd` out of source
+  + truncates the JSONL after publish, and `--keep N` prunes old bundles on the laptop — so after
+  offload a run lives in ONE place until synced onward. Sync capture runs to the desktop (P7.1 host)
+  before `--keep` can prune them, or raise `--keep` for capture runs.

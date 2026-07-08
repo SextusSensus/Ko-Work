@@ -193,6 +193,24 @@ stays as the thin orchestrator per the "don't improve while moving" invariant.
   **PowerShell, not the plan's `runs.py`** — this workstation has no Python and the store lives here;
   `index.json` is language-neutral so a future Python `runs.py` on a GPU box reads it unchanged.
   Fully tested locally (list shows 3 bundles newest-first; outcome survives reindex; show detail).
+- **P6.1a** optional planar odometry recorder (`--odom-topic`, default `''` = off = byte-identical).
+  `booster_interface/msg/Odometer {x,y,theta}` via a GUARDED `CamNode` subscription (missing type/
+  workspace self-disables) -> `/odom/{x,y,theta}` in the `.rrd` + `odom_x/y/theta` in the JSONL, for
+  P8 trajectory prior. `run_follow*.sh` source `BoosterRos2Interface`. Recording-only; live sub
+  `VERIFY ON ROBOT`.
+- **P6.1b** `config/capture.yaml` (demo-grade safety + `rerun: true`, `rerun_image_every_n: 2`,
+  `odom_topic`) + `run_follow_capture.sh` (`--profile capture`, pre-compiles bridge) so P7/P8 runs
+  actually record pixels+depth+intrinsics+odom. App deploys both. Loop-cost of `--rerun`+`--drive`
+  at N=2 is `VERIFY ON ROBOT`.
+- **P6.2a** app stamps `/home/booster/DEPLOY_VERSION` (repo short SHA) on deploy so run manifests carry
+  a real `git_version` (else `nogit`). Best-effort.
+- **P6.2b** `desktop/Offload-Run.ps1` + `Invoke-Offload` in `Stop-Tracker`: a capture session's end
+  fires the bundle+pull DETACHED, after the robot is safed (never blocks/throws into teardown). End-to-
+  end `VERIFY ON ROBOT`.
+- **Design pass** (multi-agent, adversarially verified): P7/P8 compute placement (desktop 3080/64GB =
+  P7/P8 workstation; laptop = robot-facing landing store; Jetson = TRT build + shadow node + geofence
+  only) + the P7.1 dataset design; captured for the P7 kickoff. Flagged an FSM-id freeze
+  (`fsm_states.json`) and the retention footgun (sync capture runs off the laptop before `--keep`).
 
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
