@@ -1639,7 +1639,14 @@ $mediaTimer.Add_Tick({
                 # (DRIVE-ABORT, deliberate); anything else = crash.
                 $tailFile = '/home/booster/k1_follow.err'
                 if($ec -eq 3){ $tailFile='/home/booster/k1_compile.err'; Add-LogTrack 'Follow process exited 3 = COMPILE FAILED (run_follow.sh). See k1_compile.err tail below.' $red }
-                elseif($ec -eq 4){ Add-LogTrack 'Follow process exited 4 = DRIVE-ABORT (node refused to walk -- see the amber DRIVE-ABORT line above and the tail below).' $amber }
+                elseif($ec -eq 4){
+                    Add-LogTrack 'Follow process exited 4 = DRIVE-ABORT (node refused to walk -- see the amber DRIVE-ABORT line above and the tail below).' $amber
+                    # Most DRIVE-ABORTs are stalled cameras (sensors not sustained-fresh). Point the
+                    # operator at the recovery tool rather than auto-running it: this handler is on the
+                    # UI thread and cam_health.sh --recover takes ~60-90s (would freeze the app), and a
+                    # safe background+relaunch version needs async UI work + on-robot testing (deferred).
+                    Add-LogTrack ('If the tail shows rgb/depth fps ~0 -> cameras stalled. Recover:  ssh {0}@{1} "bash /home/booster/cam_health.sh --recover"  then toggle Follow again.' -f $script:SshUser, $(try{$ipTrack.Text.Trim()}catch{'<ip>'})) $accent
+                }
                 else{ Add-LogTrack "Follow process exited $ec (crash). See k1_follow.err tail below." $red }
                 # Bounded ssh tail of the remote stderr log into the Tracker log (red). Own System.Diagnostics.Process
                 # with RedirectStandardOutput + WaitForExit(4000)+Kill so the UI thread can never hang. Reuses
