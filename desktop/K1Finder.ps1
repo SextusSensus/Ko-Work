@@ -148,6 +148,10 @@ function Deploy-FollowFiles {
     # missing local copy or failed push must not block the follow like the hard-required files do.
     $rr = Join-Path $ROBOT_DIR 'k1_rerun.py'
     if (Test-Path $rr) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($rr, ("{0}@{1}:/home/booster/k1_rerun.py" -f $script:SshUser, $ip))) }
+    # cam_health.sh is BEST-EFFORT too: it's the camera-stall detect/recover aid (Ensure-Cameras /
+    # the "Fix Cameras" action run it), NOT a follow import, so a missing copy must not block a launch.
+    $ch = Join-Path $ROBOT_DIR 'cam_health.sh'
+    if (Test-Path $ch) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($ch, ("{0}@{1}:/home/booster/cam_health.sh" -f $script:SshUser, $ip))) }
     return $true
 }
 
