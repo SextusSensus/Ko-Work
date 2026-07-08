@@ -498,6 +498,7 @@ $script:TrackProc=$null; $script:TrackPS=$null; $script:TrackRS=$null; $script:T
 $script:HbProc=$null   # Deadman-HB relay ssh process (P2 #12); alive only while the follow runs with 'Deadman HB' checked
 $script:trackMs=$null; $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1
 $script:TrackStart=[datetime]::MinValue
+$script:TrackRerunOn=$false      # P6.2b: did the current/last Tracker session record a .rrd? -> post-run offload
 $script:TrackMaxSec=125          # UI-side hard session watchdog (python also self-limits at 120s)
 $script:TrackToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 $ctrlSync = [hashtable]::Synchronized(@{ Log=(New-Object System.Collections.Queue); Stop=$false })
@@ -1348,6 +1349,9 @@ function Start-Tracker([bool]$drive){
     $ps=[powershell]::Create(); $ps.Runspace=$rs; [void]$ps.AddScript($trackReader); [void]$ps.BeginInvoke()
     $script:TrackPS=$ps; $script:TrackRS=$rs
     $script:TrackOn=$true; $script:TrackDrive=$drive; $script:TrackStart=[datetime]::Now
+    # P6.2b: remember whether THIS session records a .rrd (rerun on, post any auto-uncheck above), so
+    # Stop-Tracker fires the post-run offload only for capture sessions.
+    $script:TrackRerunOn = [bool]($trackRerun -and $trackRerun.Checked)
     Set-TrackLockout $true
     Set-TrackBadge 0
     $script:ReidBadgeState=''; $script:ReidLastGood='CUDA'; Set-ReidBadge '--'   # clear stale health + provider memory from a prior session; repopulated from REID-ENGINE lines
@@ -1391,8 +1395,27 @@ function Stop-HbRelay{
     $script:HbProc=$null
 }
 
+# P6.2b: fire-and-forget post-session offload. Launch Offload-Run.ps1 (ssh bundle -> pull) DETACHED so
+# the WinForms teardown never blocks and this can never throw into it. Only meaningful when the session
+# RECORDED (rerun on); offload_run.sh bundles whatever exists and Pull-Run.ps1 verifies by hash.
+function Invoke-Offload([string]$ip, [string]$profileLabel){
+    try{
+        if(-not $ip){ return }
+        $script = Join-Path $SCRIPT_DIR 'Offload-Run.ps1'
+        if(-not (Test-Path $script)){ Add-LogTrack 'Offload skip: Offload-Run.ps1 not found beside the app.' $amber; return }
+        Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile','-ExecutionPolicy','Bypass','-File',$script,
+            '-Ip',$ip,'-User',$script:SshUser,'-Pass',$script:SshPass,'-Profile',$profileLabel) | Out-Null
+        Add-LogTrack ("Offload started (background): bundle on robot -> pull to runs\ (label $profileLabel).") $accent
+    }catch{ try{ Add-LogTrack ("Offload skip: $_") $amber }catch{} }
+}
+
 function Stop-Tracker([bool]$procAlreadyDead=$false){
     if(-not $script:TrackOn){ return }
+    # P6.2b: capture what the offload needs BEFORE the teardown resets it (TrackDrive is cleared below).
+    $offloadDo = [bool]$script:TrackRerunOn
+    $offloadProfile = if($script:TrackDrive){'tracker-drive'}else{'tracker-preview'}
+    $offloadIp=''; try{ $offloadIp=$ipTrack.Text.Trim() }catch{}
     $trackSync.Stop=$true
     # Tear down the stderr capture FIRST so the ErrorDataReceived handler stops firing across restarts.
     try{ if($script:TrackProc){ $script:TrackProc.CancelErrorRead() } }catch{}
@@ -1425,6 +1448,11 @@ function Stop-Tracker([bool]$procAlreadyDead=$false){
         Add-LogTrack 'Follow stopped (killed ssh + pkill; robot does stop + PREP via SIGHUP/SIGTERM/EOF).' $amber
         $statusLbl.Text='Tracker stopped.'
     }catch{}
+    # P6.2b: AFTER the robot is safed + UI restored, fire the post-run offload for a capture session
+    # (detached, non-blocking, never throws). $script:TrackRerunOn was captured to $offloadDo at the
+    # top, before the teardown reset TrackDrive.
+    if($offloadDo){ Invoke-Offload $offloadIp $offloadProfile }
+    $script:TrackRerunOn = $false
 }
 
 # ============================================================================
