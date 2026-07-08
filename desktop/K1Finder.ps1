@@ -139,9 +139,17 @@ function Deploy-FollowFiles {
     # abort the launch, not leave a stale config in place and report success.
     $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($defaults, ("{0}@{1}:/home/booster/config/defaults.yaml" -f $script:SshUser, $ip)))
     if ($rc -ne 0) { $script:DeployErr = ("scp of config/defaults.yaml to {0} failed (exit {1}) -- the node fail-closes without it." -f $ip, $rc); return $false }
-    foreach ($prof in @('dev.yaml', 'demo.yaml', 'field.yaml')) {
+    foreach ($prof in @('dev.yaml', 'demo.yaml', 'field.yaml', 'capture.yaml')) {
         $ps = Join-Path $cfgDir $prof
         if (Test-Path $ps) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($ps, ("{0}@{1}:/home/booster/config/{2}" -f $script:SshUser, $ip, $prof))) }
+    }
+    # BEST-EFFORT extras (P6.1b/P6.2): the capture launcher + post-run offload assembler. NOT follow
+    # imports -- a missing local copy or failed push must NOT block a launch (unlike the hard-required
+    # helpers above). run_follow_capture.sh forces --profile capture; offload_run.sh bundles a finished
+    # run for Pull-Run.ps1 / auto-offload.
+    foreach ($f in @('run_follow_capture.sh', 'offload_run.sh')) {
+        $src = Join-Path $ROBOT_DIR $f
+        if (Test-Path $src) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f))) }
     }
     # k1_rerun.py is BEST-EFFORT (review fix): Rerun is never a launch dependency -- the node
     # degrades to a no-op sink when the module is absent (follow_person_k1.py _NullRR), so a
