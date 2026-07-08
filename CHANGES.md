@@ -178,6 +178,15 @@ stays as the thin orchestrator per the "don't improve while moving" invariant.
   recording is off**. SAFE / recording-only; on-robot capture-bundle checks are the gate
   (`VERIFY ON ROBOT`, no Python off-robot). Odometry + a `capture.yaml` profile deferred to
   `DECISIONS.md` (P6.1a/P6.1b).
+- **P6.2** post-run offload hook (on-demand pair; auto-on-session-end deferred to P6.2b).
+  `robot/offload_run.sh` (Jetson) packages a finished run into `runs/<run_id>/` (`.rrd` +
+  `intrinsics.json`, `events.jsonl`, `k1_follow.err`, `config/`, `manifest.json` with per-file
+  size+SHA-256, profile, duration) — atomic staging + **retry-safe** (sources rotated only after a
+  clean publish; interrupted offload leaves sources intact) + `--keep N` retention. `desktop/Pull-Run.ps1`
+  (this Windows PC, OpenSSH — no rsync/Python) pulls a bundle, fetching each file only on
+  missing/hash-mismatch so an interrupted pull re-runs to convergence. Staging + fail-safe verified
+  locally with a fake tree; the `python3` manifest step + the SSH pull are `VERIFY ON ROBOT`. Channel
+  decided with the user: workstation-pull over scp; `runs/` lives on this PC.
 
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.

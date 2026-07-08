@@ -147,3 +147,28 @@ checks below **were not run here** — they are the on-robot acceptance steps.
    - RGB, depth, and JSONL `t` values overlap on the same wall-time window (the common clock).
 3. **Rates:** from `k1_follow.err`, confirm depth is actually publishing (`DEPTH FRESH fps=…`) during
    the captured window — a run with dead depth records RGB-only and is not P8-usable.
+
+---
+
+## 7. Offload bundles (P6.2)
+
+A finished run is packaged into a self-contained, verifiable bundle and pulled to this workstation.
+
+**Jetson side — `robot/offload_run.sh`** (post-session; nothing driving). Assembles
+`/home/booster/runs/<run_id>/` where `run_id = <UTC stamp>_<deploy-sha|nogit>`, containing the
+`.rrd` + `intrinsics.json` (capture runs), `events.jsonl`, `k1_follow.err`, the `config/` in effect,
+an optional `DEPLOY_VERSION`, and a `manifest.json` (per-file size + SHA-256, profile, duration,
+totals). Assembly is atomic (staged in a hidden `.partial`, `mv`'d into place) and **retry-safe**:
+sources are only rotated (the `.rrd` moved out, the append-mode `events.jsonl` truncated to start a
+fresh per-run log) **after** a successful publish, so an interrupted offload leaves sources intact.
+Then a `--keep N` retention prunes oldest-first. Invoked with the active `--profile` (the launcher
+knows it) and never touches the control loop.
+
+**Workstation side — `desktop/Pull-Run.ps1`** (this Windows PC; no rsync/Python needed). Over the same
+OpenSSH channel the app uses, it fetches `manifest.json` first, then each file **only if** missing or
+its SHA-256 doesn't match — so an interrupted pull, re-run, transfers just the gap and converges
+(`PULL-OK` / `PULL-INCOMPLETE`). `-List` shows remote bundles; no `-RunId` pulls the latest.
+
+`run_id` carries a real git SHA only if deploy drops `/home/booster/DEPLOY_VERSION` (a short SHA);
+otherwise the manifest records `nogit` (see `DECISIONS.md` P6.2a). Local store defaults to `runs/` at
+the repo root; a second GPU box for P7/P8 heavy compute can re-sync from there later.

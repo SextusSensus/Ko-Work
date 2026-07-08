@@ -189,3 +189,31 @@ whether capture piggybacks on a demo or is operator-selected is a call worth mak
 
 - [ ] Decide capture-run mechanism: standalone `capture.yaml` vs a `--capture` flag on an existing
   profile; set `rerun_image_every_n` for P8 fidelity within the loop-cost budget.
+
+## P6.2a — Stamp a deploy SHA so run manifests carry a real version?
+
+**What:** `offload_run.sh` records `git_version` in each bundle's `manifest.json` from an optional
+`/home/booster/DEPLOY_VERSION` file (short SHA). The robot runs flat scp'd files with **no `.git`**, so
+absent that file the manifest reads `git_version: "nogit"` and `run_id` ends in `_nogit`.
+
+**Recommendation (small `robot-deploy` add):** have the app's deploy step write the deploying repo's
+`git rev-parse --short HEAD` to `/home/booster/DEPLOY_VERSION` right after the scp push. Then every run
+is traceable to the exact code that produced it (P7 dataset provenance wants this). One line in
+`Deploy-RobotFiles`; no robot behavior change.
+
+- [ ] Add a `DEPLOY_VERSION` stamp on deploy (else run manifests stay `nogit`, still valid just
+  un-versioned).
+
+## P6.2b — Wire the offload to run automatically on clean session end?
+
+**What:** P6.2 ships the offload as an **on-demand** pair (`offload_run.sh` on the Jetson,
+`Pull-Run.ps1` on the workstation). The plan also wants it to fire "on clean session end."
+
+**Why not auto-wired yet:** the session lifecycle is owned by the Windows app (`K1Finder.ps1`), which
+runs the SSH follow session and knows when it ends cleanly. Auto-firing means (a) the app SSHes
+`offload_run.sh --profile <selected>` on the Jetson at session end, then (b) runs `Pull-Run.ps1`.
+That's app-integration work (`robot-deploy`/`autonomy-ops`) worth doing deliberately rather than
+folding into this task — the on-demand scripts are the reusable core and work standalone today.
+
+- [ ] Hook `offload_run.sh` + `Pull-Run.ps1` into the app's clean-session-end path (pass the profile
+  that was launched).
