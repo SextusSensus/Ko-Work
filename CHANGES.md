@@ -187,6 +187,12 @@ stays as the thin orchestrator per the "don't improve while moving" invariant.
   missing/hash-mismatch so an interrupted pull re-runs to convergence. Staging + fail-safe verified
   locally with a fake tree; the `python3` manifest step + the SSH pull are `VERIFY ON ROBOT`. Channel
   decided with the user: workstation-pull over scp; `runs/` lives on this PC.
+- **P6.3** workstation run index. `desktop/Runs.ps1 list|show|reindex` derives `runs/index.json`
+  from the pulled `manifest.json`s (run_id, created_utc, profile, duration, sizes, + an `outcome`
+  label slot for the P5.1 scorer that is PRESERVED across reindex). Filesystem + JSON only.
+  **PowerShell, not the plan's `runs.py`** — this workstation has no Python and the store lives here;
+  `index.json` is language-neutral so a future Python `runs.py` on a GPU box reads it unchanged.
+  Fully tested locally (list shows 3 bundles newest-first; outcome survives reindex; show detail).
 
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.

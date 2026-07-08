@@ -35,6 +35,10 @@ k1_tree.txt
 k1_paths.json
 k1_paths_list.txt
 
+# Offloaded run bundles (P6.2/P6.3): pulled per-machine, large .rrd/JSONL; the run
+# index is derived on demand by desktop/Runs.ps1. Never tracked in git.
+runs/
+
 # Local Claude Code settings (per-machine)
 .claude/settings.local.json
 
