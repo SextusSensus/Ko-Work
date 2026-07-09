@@ -232,6 +232,14 @@ stays as the thin orchestrator per the "don't improve while moving" invariant.
   laptop has none) -- PS index-surfacing + no-Python path tested here, the Python labeler is
   `VERIFY ON WORKSTATION`. Same stub-detection fix applied to `Setup-Workstation.ps1`.
 
+## Phase 8 (laptop-authorable groundwork)
+- **P8.1** `docs/FRAMES.md`: coordinate-frame conventions (REP-103; map / anchor_i / odom / base /
+  camera + the camera-in-world compose chain, with the `/tf`-is-body-only and flat-floor caveats from
+  on-robot notes) and the `models/calibration.json` format that upgrades P6.1's approximate
+  `intrinsics.json` to a real (checkerboard/factory) intrinsic + distortion + **depth-scale
+  validated against a known distance** (kills the mm-vs-m bug). The doc + format are the laptop
+  deliverable; the OpenCV checkerboard solve + depth-scale check are `VERIFY ON WORKSTATION`.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
