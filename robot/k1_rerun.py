@@ -35,6 +35,8 @@ _RSRC_CODE = {"depth": 2.0, "bboxH": 1.0}
 # FSM state -> scrubbable numeric series (alongside the text log). Keys are the EXACT node S_*
 # string values (follow_person_k1.py:1722-1726) -- note the search state is "SEARCH_MARKER", not
 # "SEARCH" (a plain "SEARCH" here logged -1 for the most common state in every .rrd).
+# SOURCE OF TRUTH for the FROZEN categorical encoding of the P7 dataset's fsm_state_id feature: keep
+# this in exact sync with eval/fsm_states.json (P7.1 ingest asserts coverage against it).
 _STATE_CODE = {"TRACK": 3.0, "REACQUIRE": 2.0, "SEARCHING": 1.5,
                "SEARCH_MARKER": 1.0, "SEARCH": 1.0, "PARKED": 0.0}
 

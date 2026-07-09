@@ -1,0 +1,14 @@
+{
+  "_comment": "FROZEN FSM state->id map (P7.1 groundwork). This is the canonical, version-locked encoding of the categorical `fsm_state_id` feature in the P7 dataset (observation.state). It MIRRORS robot/k1_rerun.py `_STATE_CODE`, which is the RUNTIME source that records /fsm/state_id into the .rrd. The two MUST stay in sync; the P7.1 ingest asserts every recorded state string maps here and refuses to mint a dataset otherwise. The id VALUES are an arbitrary categorical encoding -- what matters is that they are DISTINCT-per-logical-state and FROZEN, so the feature is stable across dataset versions. Note SEARCH and SEARCH_MARKER intentionally share an id: the node's search state string is 'SEARCH_MARKER'; plain 'SEARCH' is a defensive alias for the same logical state (see k1_rerun.py comment). Bump `version` and record a migration note if this map ever changes.",
+  "version": 1,
+  "source_of_truth": "robot/k1_rerun.py::_STATE_CODE",
+  "states": {
+    "TRACK": 3.0,
+    "REACQUIRE": 2.0,
+    "SEARCHING": 1.5,
+    "SEARCH_MARKER": 1.0,
+    "SEARCH": 1.0,
+    "PARKED": 0.0
+  },
+  "unmapped_id": -1.0
+}

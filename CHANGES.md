@@ -240,6 +240,13 @@ stays as the thin orchestrator per the "don't improve while moving" invariant.
   validated against a known distance** (kills the mm-vs-m bug). The doc + format are the laptop
   deliverable; the OpenCV checkerboard solve + depth-scale check are `VERIFY ON WORKSTATION`.
 
+## Phase 7 (laptop-authorable groundwork)
+- **P7.1 prep** `eval/fsm_states.json`: FROZEN categorical FSM state->id map for the dataset's
+  `fsm_state_id` feature, mirroring `robot/k1_rerun.py::_STATE_CODE` exactly (validated). Zero-risk
+  (no recording change) -- it just version-locks the encoding so the feature is stable across dataset
+  versions; the P7.1 ingest will assert every recorded state maps here before minting a dataset. Fixes
+  the design pass's "unfrozen ad-hoc FSM enum" blocker. k1_rerun.py gains a sync cross-ref comment.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
