@@ -24,13 +24,18 @@ $ErrorActionPreference = 'Stop'
 if (-not (Test-Path -LiteralPath $Req)) { throw "requirements file not found: $Req" }
 $Req = (Resolve-Path -LiteralPath $Req).Path
 
-# Find a Python 3 launcher: prefer the `py` launcher, fall back to `python`.
-$pyExe = $null; $pyArgs = @()
-if (Get-Command py -ErrorAction SilentlyContinue)     { $pyExe = 'py';     $pyArgs = @('-3') }
-elseif (Get-Command python -ErrorAction SilentlyContinue) { $pyExe = 'python' }
-else { throw "no Python found. Install Python 3.10-3.12 for Windows (python.org) with 'Add to PATH', then re-run." }
-
-$ver = (& $pyExe @pyArgs --version) 2>&1
+# Find a REAL Python 3 (not the Windows App-Execution-Alias stub, which resolves via Get-Command but
+# exits non-zero). Invoke --version and check the exit code + output.
+$pyExe = $null; $pyArgs = @(); $ver = ''
+foreach ($cand in @(@('py', '-3'), @('python'), @('python3'))) {
+  try {
+    $v = (& $cand[0] $cand[1..($cand.Count - 1)] --version) 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0 -and $v -match 'Python\s+3') {
+      $pyExe = $cand[0]; $pyArgs = @($cand[1..($cand.Count - 1)]); $ver = $v.Trim(); break
+    }
+  } catch { }
+}
+if (-not $pyExe) { throw "no working Python 3 found. Install Python 3.12 for Windows (python.org) with 'Add to PATH', then re-run. (A bare 'py'/'python' that prints 'Python was not found' is the Store stub, not Python.)" }
 Write-Host "python: $pyExe $($pyArgs -join ' ')  ($ver)"
 Write-Host "venv  : $Venv"
 Write-Host "reqs  : $Req"

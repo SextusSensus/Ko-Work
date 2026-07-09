@@ -20,7 +20,7 @@
 #>
 [CmdletBinding()]
 param(
-  [Parameter(Position = 0)][ValidateSet('list', 'show', 'reindex')][string]$Cmd = 'list',
+  [Parameter(Position = 0)][ValidateSet('list', 'show', 'reindex', 'label')][string]$Cmd = 'list',
   [Parameter(Position = 1)][string]$RunId = '',
   [string]$LocalRuns = (Join-Path $PSScriptRoot '..\runs')
 )
@@ -59,7 +59,9 @@ function Build-Index {
         duration_s  = $m.duration_s
         file_count  = $m.file_count
         total_bytes = $m.total_bytes
-        outcome     = if ($prevOutcome.ContainsKey($rid)) { $prevOutcome[$rid] } else { $null }
+        # P6.4: the auto-labeler (label_run.py) writes `outcome` into manifest.json -- that's the
+        # source of truth; fall back to a previously-attached index label only if the manifest has none.
+        outcome     = if ($m.outcome) { $m.outcome } elseif ($prevOutcome.ContainsKey($rid)) { $prevOutcome[$rid] } else { $null }
       }
     }
   }
@@ -74,6 +76,30 @@ switch ($Cmd) {
   'reindex' {
     $e = Build-Index
     Write-Host "reindexed $($e.Count) run(s) -> $indexPath"
+  }
+  'label' {
+    # P6.4: auto-label via the Python scorer (eval/label_run.py). The scorer is Python; this laptop
+    # has none, so on the laptop this reports where to run it. On the desktop (Python present) it labels.
+    # Detection must INVOKE python -- Windows ships `py`/`python` App-Execution-Alias STUBS that resolve
+    # via Get-Command but exit non-zero ("Python was not found"), so a mere Get-Command check is fooled.
+    $pyInvoke = $null
+    foreach ($cand in @(@('py', '-3'), @('python'), @('python3'))) {
+      try {
+        $v = (& $cand[0] $cand[1..($cand.Count - 1)] --version) 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0 -and $v -match 'Python\s+3') { $pyInvoke = $cand; break }
+      } catch { }
+    }
+    if (-not $pyInvoke) {
+      Write-Host "label: no working Python here -- run it on the desktop:  py eval\label_run.py --runs-dir <runs> [--all]"
+      return
+    }
+    $script = Join-Path $PSScriptRoot '..\eval\label_run.py'
+    if (-not (Test-Path $script)) { throw "label_run.py not found at $script" }
+    $pyArgs = @($pyInvoke[1..($pyInvoke.Count - 1)]) + @($script, '--runs-dir', $LocalRuns)
+    if ($RunId) { $pyArgs += @('--run', $RunId) } else { $pyArgs += '--all' }
+    & $pyInvoke[0] @pyArgs
+    Build-Index | Out-Null   # surface the fresh labels into index.json
+    Write-Host "index refreshed with labels -> $indexPath"
   }
   'show' {
     if (-not $RunId) { throw "usage: Runs.ps1 show <run_id>" }

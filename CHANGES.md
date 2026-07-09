@@ -222,6 +222,15 @@ stays as the thin orchestrator per the "don't improve while moving" invariant.
   writes back after a hash-checked pull), oldest-first beyond `--keep`; an un-offloaded bundle is
   **never** pruned (data loss impossible) and a pile-up emits `OFFLOAD-DISK-ALERT`. Both verified
   locally; live sweep + writeback `VERIFY ON ROBOT`.
+- **P6.4** auto-label on ingest. `eval/label_run.py` runs the EXACT P5.1 `score_outcome` over a bundle's
+  own decision log (`k1_follow.err` -- range/rsrc/vx/track_id), writing an `outcome` label (pass /
+  review / incomplete) + metrics + `scorer_version` into `manifest.json`; idempotent, `--force`/`--all`,
+  flags artifact-incomplete / never-locked runs for review rather than passing them. Thresholds default
+  + refined from the bundle's own config. `Runs.ps1 label` invokes it (robust real-Python detection --
+  Windows ships `py`/`python` alias STUBS that fool `Get-Command`) and surfaces the label into
+  `index.json` (index now reads `outcome` from the manifest). Runs where Python lives (the desktop; this
+  laptop has none) -- PS index-surfacing + no-Python path tested here, the Python labeler is
+  `VERIFY ON WORKSTATION`. Same stub-detection fix applied to `Setup-Workstation.ps1`.
 
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
