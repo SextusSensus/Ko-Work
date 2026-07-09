@@ -211,6 +211,17 @@ stays as the thin orchestrator per the "don't improve while moving" invariant.
   P7/P8 workstation; laptop = robot-facing landing store; Jetson = TRT build + shadow node + geofence
   only) + the P7.1 dataset design; captured for the P7 kickoff. Flagged an FSM-id freeze
   (`fsm_states.json`) and the retention footgun (sync capture runs off the laptop before `--keep`).
+- **Design pass** (web-verified): Windows-native desktop toolchain kit (superseded 2026-07-09 by the
+  updated plan's WSL2+Docker desktop substrate, but the pins/findings still hold as reference).
+
+## Phase 6 (updated plan Rev 2026-07-08) additions
+- **P6.2 enhancement** (updated spec): (a) `offload_run.sh --reconcile` runs at session START from
+  every `run_follow*.sh` launcher, so a crashed/killed/power-cut session's leftover data still gets
+  bundled on the next boot (no-op after a clean session; runs before the node writes, so nothing mixes).
+  (b) Retention now prunes **only workstation-VERIFIED** bundles (a `.verified` marker `Pull-Run.ps1`
+  writes back after a hash-checked pull), oldest-first beyond `--keep`; an un-offloaded bundle is
+  **never** pruned (data loss impossible) and a pile-up emits `OFFLOAD-DISK-ALERT`. Both verified
+  locally; live sweep + writeback `VERIFY ON ROBOT`.
 
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.

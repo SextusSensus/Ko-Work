@@ -116,4 +116,14 @@ if ($bad.Count) {
   Write-Host "PULL-INCOMPLETE: hash mismatch after fetch -> re-run to retry: $($bad -join ', ')"
   exit 1
 }
+
+# P6.2: mark the bundle VERIFIED on the Jetson so offload_run.sh's retention may prune it. Retention
+# NEVER prunes an un-verified bundle, so a failure here just keeps the run on the robot (safe) -- the
+# whole bundle was already hash-verified locally above, so the data is preserved regardless.
+try {
+  Invoke-SshCapture "touch $RemoteRuns/$RunId/.verified" | Out-Null
+  Write-Host "marked verified on robot -> $RunId (retention may now prune it)"
+} catch {
+  Write-Host "note: could not mark verified on robot ($_) -- bundle stays RETAINED on the robot (safe)."
+}
 Write-Host "PULL-OK $RunId profile=$($man.profile) duration_s=$($man.duration_s)"

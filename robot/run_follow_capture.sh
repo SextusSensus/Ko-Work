@@ -13,6 +13,9 @@ source /opt/booster/BoosterRos2/install/setup.bash 2>/dev/null
 # P6.1a: interface workspace for booster_interface/msg/Odometer (odometry recorder). Best-effort.
 source /opt/booster/BoosterRos2Interface/install/setup.bash 2>/dev/null
 cd /home/booster
+# P6.2: reconcile-sweep BEFORE the node starts -- offload a crashed prior session's leftover bundle
+# (no-op after a clean session). Best-effort; never blocks a launch.
+[ -f /home/booster/offload_run.sh ] && bash /home/booster/offload_run.sh --reconcile >/dev/null 2>&1 || true
 _gmin=$(cat /sys/class/devfreq/17000000.gpu/min_freq 2>/dev/null)
 _gmax=$(cat /sys/class/devfreq/17000000.gpu/max_freq 2>/dev/null)
 if [ -n "$_gmin" ] && [ -n "$_gmax" ] && [ "$_gmin" != "$_gmax" ]; then

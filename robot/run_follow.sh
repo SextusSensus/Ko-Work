@@ -10,6 +10,9 @@ source /opt/booster/BoosterRos2/install/setup.bash 2>/dev/null
 # follow is unaffected (the import is guarded in perception.CamNode).
 source /opt/booster/BoosterRos2Interface/install/setup.bash 2>/dev/null
 cd /home/booster
+# P6.2: reconcile-sweep BEFORE the node starts -- offload any leftover bundle from a crashed/killed
+# prior session that never offloaded (a no-op after a clean session). Best-effort; never blocks a launch.
+[ -f /home/booster/offload_run.sh ] && bash /home/booster/offload_run.sh --reconcile >/dev/null 2>&1 || true
 # Pre-flight (OPTIMIZATION_PLAN.md Phase 0.1): warn if the Orin GPU clocks aren't pinned. Pinning
 # (sudo jetson_clocks) measured a ~25% loop-p99 cut and an ~86% pose-latency-tail cut on 2026-07-06.
 # WARN-ONLY: this launcher never escalates privilege -- pin clocks deliberately (manual / NOPASSWD

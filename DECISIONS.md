@@ -232,7 +232,9 @@ folding into this task — the on-demand scripts are the reusable core and work 
   was on), it launches Offload-Run.ps1 **detached** AFTER the robot is safed, so the WinForms teardown
   never blocks and it can never throw into the safing path. Profile label is `tracker-drive/preview`
   (the app launches with flags, not `--profile`). **VERIFY ON ROBOT:** the end-to-end ssh+pull.
-  **⚠ Retention footgun (from the P7/P8 design pass):** `offload_run.sh` moves the `.rrd` out of source
-  + truncates the JSONL after publish, and `--keep N` prunes old bundles on the laptop — so after
-  offload a run lives in ONE place until synced onward. Sync capture runs to the desktop (P7.1 host)
-  before `--keep` can prune them, or raise `--keep` for capture runs.
+  **⚠ Retention footgun (from the P7/P8 design pass) — MITIGATED by the P6.2 enhancement:**
+  `offload_run.sh` moves the `.rrd` out of source + truncates the JSONL after publish. Retention now
+  prunes **only `.verified` bundles** (marker written back by `Pull-Run.ps1` after a hash-checked pull),
+  never an un-offloaded one, so a bundle can't be pruned before it's safely pulled to the laptop. The
+  laptop→desktop hop (Sync-Runs.ps1) is still a separate copy; sync capture runs onward before deleting
+  them from the laptop.

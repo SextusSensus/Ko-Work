@@ -8,9 +8,13 @@
 # network (the pull is workstation-initiated). Safe to re-run: an interrupted attempt leaves only a
 # throwaway .partial and all SOURCE artifacts intact, so a retry is clean (the kill-test).
 #
-# Usage:  offload_run.sh [--profile NAME] [--keep N] [--runs-dir DIR] [--src-dir DIR]
-#   --profile  config profile in effect this run (the launcher knows it; default "unknown").
-#   --keep     retain this many newest bundles, prune older (default 10).
+# Usage:  offload_run.sh [--profile NAME] [--keep N] [--reconcile] [--runs-dir DIR] [--src-dir DIR]
+#   --profile   config profile in effect this run (the launcher knows it; default "unknown").
+#   --keep      retain this many newest VERIFIED bundles, prune older (default 10).
+#   --reconcile RECOVERY MODE (called at session START by run_follow*.sh): bundle any leftover data
+#               from a crashed/killed PRIOR session that never offloaded, then exit. A no-op when the
+#               prior session offloaded cleanly (no .rrd + empty JSONL). So a power-cut session's data
+#               still leaves on the next boot, not only on a clean exit.
 set -u
 
 SRC="${SRC_DIR:-/home/booster}"
@@ -18,12 +22,14 @@ RUNS=""
 RERUN=""
 KEEP="${KEEP:-10}"
 PROFILE="unknown"
+RECONCILE=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --profile)  PROFILE="${2:-unknown}"; shift 2 ;;
-    --keep)     KEEP="${2:-10}";         shift 2 ;;
-    --runs-dir) RUNS="${2:-}";           shift 2 ;;
-    --src-dir)  SRC="${2:-$SRC}";        shift 2 ;;
+    --profile)   PROFILE="${2:-unknown}"; shift 2 ;;
+    --keep)      KEEP="${2:-10}";         shift 2 ;;
+    --reconcile) RECONCILE=1;             shift ;;
+    --runs-dir)  RUNS="${2:-}";           shift 2 ;;
+    --src-dir)   SRC="${2:-$SRC}";        shift 2 ;;
     *) echo "offload: unknown arg '$1'" >&2; exit 2 ;;
   esac
 done
@@ -37,6 +43,20 @@ mkdir -p "$RUNS" || { echo "offload: cannot mkdir $RUNS" >&2; exit 1; }
 RRD="$(ls -1t "$RERUN"/k1_follow_*.rrd 2>/dev/null | head -1)"
 JSONL="$SRC/k1_events.jsonl"
 ERR="$SRC/k1_follow.err"
+
+# RECONCILE (session-start recovery): only proceed if there is leftover data from a prior session that
+# never offloaded -- a .rrd still in rerun/, OR a non-empty JSONL. If the prior session offloaded
+# cleanly (its .rrd was moved out + JSONL truncated), there is nothing to reconcile -> quiet no-op.
+# This runs BEFORE the new session writes, so the leftover is never mixed with the new run.
+if [ "$RECONCILE" = "1" ]; then
+  _jsz=0; [ -f "$JSONL" ] && _jsz="$(wc -c < "$JSONL" 2>/dev/null || echo 0)"
+  if [ -z "$RRD" ] && [ "${_jsz:-0}" -le 1 ]; then
+    echo "offload: reconcile -- no leftover session data, nothing to do"
+    exit 0
+  fi
+  echo "offload: reconcile -- leftover session data found, bundling a prior (crashed?) session"
+  [ "$PROFILE" = "unknown" ] && PROFILE="reconciled"
+fi
 
 # run_id = <UTC stamp>_<deploy sha | nogit>. Stamp from the .rrd epoch when present (ties the id to
 # the recording), else now. DEPLOY_VERSION is an optional short-SHA file the deploy step may drop.
@@ -123,9 +143,19 @@ echo "offload: staged $DEST"
 [ -n "$RRD" ] && [ -f "$RRD" ] && rm -f "$RRD" "$(dirname "$RRD")/intrinsics.json"
 [ -f "$JSONL" ] && : > "$JSONL"
 
-# --- retention: keep newest $KEEP bundles, prune older (oldest-first). ---
-ls -1dt "$RUNS"/*/ 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r d; do
-  echo "offload: retention prune $d"
-  rm -rf "$d"
-done
+# --- retention: prune ONLY workstation-VERIFIED bundles, oldest-first, beyond $KEEP. ---
+# A bundle is verified when Pull-Run.ps1 writes a `.verified` marker into it after a hash-checked pull.
+# An UN-verified (un-offloaded) bundle is NEVER pruned, even past $KEEP -- losing an un-offloaded run
+# must be impossible. Un-verified pile-up is a loud disk-pressure alert, not a silent delete. (.partial
+# staging dirs start with a dot -> excluded from the "*/" glob, never matched.)
+_verified="$(ls -1dt "$RUNS"/*/ 2>/dev/null | while read -r d; do [ -f "${d}.verified" ] && echo "$d"; done)"
+if [ -n "$_verified" ]; then
+  echo "$_verified" | tail -n +$((KEEP + 1)) | while read -r d; do
+    [ -n "$d" ] && { echo "offload: retention prune (verified) $d"; rm -rf "$d"; }
+  done
+fi
+_unver="$(ls -1d "$RUNS"/*/ 2>/dev/null | while read -r d; do [ -f "${d}.verified" ] || echo "$d"; done | grep -c . || true)"
+if [ "${_unver:-0}" -gt "$KEEP" ]; then
+  echo "OFFLOAD-DISK-ALERT $_unver un-offloaded bundle(s) under $RUNS (workstation/network down?) -- RETAINED, not pruned. Pull them (Pull-Run.ps1) to free space." >&2
+fi
 echo "OFFLOAD-OK $RUN_ID"
