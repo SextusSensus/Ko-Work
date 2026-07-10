@@ -988,6 +988,12 @@ class Follower:
                 sys.exit(4)
 
         period = 1.0 / max(1.0, self.a.rate_hz)
+        # P6.4: record the EFFECTIVE follow thresholds in the decision log so the offline auto-labeler
+        # (eval/label_run.py) scores each run against the values ACTUALLY in effect. App runs set these
+        # via CLI (--standoff-m / --max-follow-range), not a bundled profile, so config-file defaults
+        # would mislabel a clean run 'review'. Log-only, decision-neutral.
+        log("CONFIG standoff_m=%.3f max_follow_range=%.3f min_safe_range=%.3f"
+            % (self.a.standoff_m, self.a.max_follow_range, self.a.min_safe_range))
         last_seq = -1
         last_frame_mono = 0.0
         ever_framed = False

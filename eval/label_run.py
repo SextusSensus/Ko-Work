@@ -61,8 +61,10 @@ def _yaml_scalar(path, key):
 
 
 def build_oc(bundle):
-    """DEFAULT_OC refined from the bundle's own config (defaults.yaml then the run's profile overlay if
-    it names a real config file). Returns the oc dict actually used (recorded in the label)."""
+    """DEFAULT_OC refined from (a) the bundle's config YAMLs, then (b) -- AUTHORITATIVE -- the node's
+    logged `CONFIG standoff_m=.. max_follow_range=..` line in k1_follow.err, which reflects the values
+    ACTUALLY in effect (app runs set them via CLI, not a bundled profile, so config-file defaults alone
+    would mislabel a clean run). Returns the oc dict actually used (recorded in the label)."""
     oc = dict(DEFAULT_OC)
     cfgdir = os.path.join(bundle, "config")
     layers = [os.path.join(cfgdir, "defaults.yaml")]
@@ -79,6 +81,20 @@ def build_oc(bundle):
             oc["standoff_m"] = so
         if gf is not None and gf > 0:
             oc["geofence_m"] = gf
+    # AUTHORITATIVE overlay: the effective thresholds the node logged this run (P6.4).
+    err = os.path.join(bundle, "k1_follow.err")
+    if os.path.isfile(err):
+        try:
+            with open(err, errors="replace") as f:
+                for ln in f:
+                    m = re.search(r"CONFIG standoff_m=([-\d.]+) max_follow_range=([-\d.]+)", ln)
+                    if m:
+                        oc["standoff_m"] = float(m.group(1))
+                        gf = float(m.group(2))
+                        oc["geofence_m"] = gf if gf > 0 else None  # 0 == geofence disabled this run
+                        break
+        except Exception:
+            pass
     return oc
 
 
