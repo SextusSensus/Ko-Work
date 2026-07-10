@@ -210,9 +210,17 @@ def mint_dataset(episodes, out_dir, version, seed=0, val_fraction=0.2, provenanc
         for im in (e.get("rgb") or []):
             if im is not None:
                 h, w = int(np.asarray(im).shape[0]), int(np.asarray(im).shape[1]); break
+        # image_frame_indices: the 0-based parquet frame_index values that HAVE a non-None rgb, in mp4
+        # order (rrd_to_lerobot._write_video writes exactly the non-None frames). The train dataloader
+        # maps parquet frame t -> mp4 frame j where image_frame_indices[j] is the largest <= t
+        # (nearest-earlier, mirroring assemble_episode). Without this, a decimated mp4 (fewer frames than
+        # T) cannot be aligned to the parquet rows. It IS part of the content_hash (video_index is hashed).
+        _rgb = e.get("rgb") or []
+        image_frame_indices = [i for i, im in enumerate(_rgb) if im is not None]
         video_index["episode_%06d" % idx] = {
             "run_id": e["run_id"], "frame_count": int(np.asarray(e["state"]).shape[0]),
             "source_frame_idx": [int(x) for x in e.get("frames", [])],
+            "image_frame_indices": image_frame_indices,
             "height": h, "width": w, "video_backend": backend,
             "encode": {"codec": "libx264", "pix_fmt": "yuv420p", "crf": 23, "fps": int(fps),
                        "threads": 1, "faststart": True}}
