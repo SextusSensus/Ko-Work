@@ -401,7 +401,18 @@ def ingest(runs_dir, out_dir, version, seed=0, val_fraction=0.2, include_outcome
             print("EXCLUDE %s -- %s" % (name, reason))
             excluded.append({"run_id": name, "reason": reason})
             continue
-        ep = episode_from_bundle(bundle)
+        try:
+            ep = episode_from_bundle(bundle)
+        except SystemExit as e:
+            # assemble_episode refuses a .rrd with no scalar frames or no /follow/range TRACK frames
+            # (e.g. a session where --rerun auto-disabled mid-run per RERUN-DISABLED-SLOW, or a bundle
+            # from a pre-capture-code deployment). A single such run must NOT abort the whole mint --
+            # exclude it LOUDLY like any other unusable bundle. The FSM-enum abort is intentionally
+            # still fatal; it lives in mint_dataset (below), not here, so it is unaffected.
+            reason = "no-TRACK-frames (%s)" % (str(e)[:80] or "empty")
+            print("EXCLUDE %s -- %s" % (name, reason))
+            excluded.append({"run_id": name, "reason": reason})
+            continue
         if ep is None or int(__import__("numpy").asarray(ep["state"]).shape[0]) == 0:
             print("EXCLUDE %s -- no-TRACK-frames" % name)
             excluded.append({"run_id": name, "reason": "no-TRACK-frames"})
