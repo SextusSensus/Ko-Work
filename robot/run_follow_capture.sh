@@ -33,8 +33,13 @@ if [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
   g++ -std=c++17 "$SRC" -I "$SDK/include" "$SDK/lib/aarch64/libbooster_robotics_sdk.a" -lfastrtps -lfastcdr -lpthread -o "$BIN" 2>/home/booster/k1_compile.err || { echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow_capture] COMPILE FAILED"; exit 3; }
   echo "[run_follow_capture] compiled OK."
 fi
+# NOTE: this launcher does NOT pass --stream, so the node's decision log (TRACK/LOOP-MS via common.log)
+# goes to STDOUT, not stderr. Capture STDOUT into k1_follow.err (+ stderr merged) so the offloaded
+# bundle carries the decision lines the P6.4 scorer needs -- otherwise every capture run labels
+# 'incomplete'. (run_follow.sh keeps stderr-only because the app launches it WITH --stream, where
+# stdout is the binary frame protocol.)
 if [ "$MODE" = "drive" ]; then
-  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BIN" --topic "$TOPIC" --profile capture "$@" 2> >(tee /home/booster/k1_follow.err >&2)
+  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BIN" --topic "$TOPIC" --profile capture "$@" > >(tee /home/booster/k1_follow.err) 2>&1
 else
-  exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" --profile capture "$@" 2> >(tee /home/booster/k1_follow.err >&2)
+  exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" --profile capture "$@" > >(tee /home/booster/k1_follow.err) 2>&1
 fi

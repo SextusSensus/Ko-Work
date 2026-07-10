@@ -36,8 +36,10 @@ if [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
   g++ -std=c++17 "$SRC" -I "$SDK/include" "$SDK/lib/aarch64/libbooster_robotics_sdk.a" -lfastrtps -lfastcdr -lpthread -o "$BIN" 2>/home/booster/k1_compile.err || { echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow_demo] COMPILE FAILED"; exit 3; }
   echo "[run_follow_demo] compiled OK."
 fi
+# NOTE: no --stream here, so the node's decision log (common.log) is on STDOUT -- capture STDOUT into
+# k1_follow.err (+ stderr merged) so an offloaded bundle is scoreable (see run_follow_capture.sh).
 if [ "$MODE" = "drive" ]; then
-  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BIN" --topic "$TOPIC" --profile demo "$@" 2> >(tee /home/booster/k1_follow.err >&2)
+  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BIN" --topic "$TOPIC" --profile demo "$@" > >(tee /home/booster/k1_follow.err) 2>&1
 else
-  exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" --profile demo "$@" 2> >(tee /home/booster/k1_follow.err >&2)
+  exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" --profile demo "$@" > >(tee /home/booster/k1_follow.err) 2>&1
 fi
