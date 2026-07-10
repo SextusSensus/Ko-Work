@@ -263,8 +263,9 @@ class RerunSink:
     def pinhole(self, entity, w, h, fx, fy, cx, cy):
         """Log the camera model as a static rr.Pinhole so the .rrd is self-describing for offline
         RGBD work (P8). Idempotent (once-per-run latch). rr.Pinhole(resolution/focal_length/
-        principal_point) is stable across the pinned 0.23.1 and the 0.33.1 laptop SDK; wrapped in
-        the fault latch so an API mismatch just no-ops -- Rerun never breaks the follow."""
+        principal_point) is VERIFIED on the pinned 0.23.1 (0 faults) AND read back on 0.33.1
+        (docs/RERUN_COMPAT.md, eval/compat/); wrapped in the fault latch so an API mismatch would just
+        no-op -- Rerun never breaks the follow -- and intrinsics.json is a sidecar backstop regardless."""
         if not self.ok or self._intr_done:
             return
         try:
