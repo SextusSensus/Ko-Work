@@ -284,9 +284,30 @@ charter-scaffolding workflow hit the account rate limit mid-run; this records **
 - The single-desktop framing in `docs/HANDOFF_DESKTOP.md` + `docs/COMPUTE_PLACEMENT.md` gained pivot
   banners; `PHASE_6-8_PLAN.md` §2/§6 + P6G.1/P6G.3 overrides recorded in DECISIONS.md P6G.0.
 
-**The pivot substrate (`cluster/`) -- to author next:** `jobspec.py`, `queue.py`, `proto/cluster.proto`,
-`scheduler.py`, `worker.py`, `submit.py` + `desktop/Submit-Job.ps1`, `docs/CLUSTER_SETUP.md` -- each
-with a local, no-network/no-Docker self-test (`CLUSTER_PLAN.md` §6).
+## Phase 6G -- LAN job-pool substrate (`cluster/`, laptop-authored + LOCALLY VERIFIED)
+
+The pivot (`docs/CLUSTER_PLAN.md`): a heterogeneous job-pool -- Docker workers pull independent jobs
+from one scheduler, matched by capability tag. **Correction to the standing "no Python on the laptop"
+claim:** anaconda python 3.13.9 (+ numpy 2.3.5, rerun 0.33.1, pyarrow 21) IS present (just not `python`
+on PATH). So all the stdlib/numpy/rerun scaffolds were **run green locally** -- NOT "presumed broken."
+
+- `cluster/jobspec.py` (schema + pure fail-closed capability match), `cluster/jobqueue.py` (filesystem
+  queue: atomic transitions, bounded retry, stale-lease reaping, crash-reconcile), `cluster/scheduler.py`
+  (`SchedulerCore` pure + lazy-gRPC `serve()`), `cluster/worker.py` (`WorkerCore` lease->run->report; the
+  self-test wires a real worker to a real scheduler in-process), `cluster/submit.py` + `desktop/Submit-Job.ps1`
+  (enqueue; laptop ssh's to the coordinator). `cluster/proto/cluster.proto` = the pull-based control plane.
+  ALL self-tests pass locally: JOBSPEC/QUEUE/SCHEDULER/WORKER/SUBMIT-SELFTEST-OK.
+- **S1** `eval/batch_ingest.py` -- the P7.1 dataset mint (was rate-limited out earlier), now authored +
+  `INGEST-SELFTEST-OK` across BOTH tiers (core determinism + real-`.rrd` bundle w/ integrity gate +
+  FSM-abort blocker).
+- `docs/CLUSTER_PLAN.md` + `docs/CLUSTER_SETUP.md`. Coordinator-host design corrected: the scheduler is
+  Python so it runs on a Python node (desktop/WSL), NOT the laptop; laptop stays data source of truth +
+  submits over ssh.
+- **Two real bugs caught by running it:** `synth_fixtures` emitted `bearing=+05.5` (parser needs
+  `+05.5deg`); and it hashed the `.rrd` before rerun's background writer finalized it (footer lands on
+  recording-drop) -> every fixture bundle failed the integrity gate; forced a `rerun_shutdown` finalize.
+- **Still `VERIFY ON CLUSTER`:** the gRPC network loop, Docker/GPU execution + `detect_caps` on real
+  hardware, image builds, cross-pyarrow `content_hash` stability, the P6G.3 wipe-and-resubmit gate.
 
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.

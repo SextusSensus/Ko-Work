@@ -7,7 +7,11 @@
 > hosts the coordinator/scheduler + stays source of truth. `CLUSTER_PLAN.md` is authoritative on the
 > substrate; where this file says "the desktop does X" read "a capable worker does X." The
 > dataset/contract/fixture scaffolds below are unchanged (they are *jobs* the pool runs). See
-> DECISIONS.md P6G.0.
+> DECISIONS.md P6G.0. **Substrate setup + the current step-0 self-test list live in
+> `docs/CLUSTER_SETUP.md`** (use that, not the single-desktop step 0 below). **Also: the "no Python on
+> the laptop" premise was wrong** -- anaconda python 3.13.9 (+ numpy/rerun/pyarrow) is present, and the
+> `cluster/` + `eval/` scaffolds already PASS their self-tests locally, so they are verified logic, not
+> "presumed broken." Only Docker/GPU/gRPC-network/cross-pyarrow-hash remain VERIFY ON CLUSTER.
 
 **Audience:** a fresh Claude Code session on the DESKTOP (Ryzen 9 5900X / 64 GB / RTX 3080, Windows 11)
 — the pool's first CUDA worker (and a fine place to develop the recon/train images).
