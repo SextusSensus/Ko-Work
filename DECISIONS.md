@@ -411,3 +411,47 @@ P7.5 scorecard (taxonomy doctrine: `runtime-safety references/integration.md`).
 - [x] **CRITERIA RECORDED (2026-07-10).** P7.6 ships the criteria; building the shield + the eventual
   human-approved switch-flip are a future initiative gated on A (agreement corpus) + B (shield built +
   tested) + C (mapping complete). Until then the shadow node stays log-only, no bridge handle (P7.4).
+
+---
+
+## P6/P7 — On-robot verification of the off-robot pipeline (2026-07-10)
+
+Ran the full offload -> pull -> read -> ingest chain against a **real robot session**
+(K1 at 192.168.1.81, GPU clocks pinned via `sudo jetson_clocks`). Results:
+
+**VERIFIED on real robot data:**
+- `offload_run.sh` bundled a live session -> `OFFLOAD-OK 20260710T225555Z_nogit`
+  (7 files, valid `manifest.json` sha256s, 120 MB `.rrd`).
+- `Pull-Run.ps1` pulled + hash-verified (7/7) + marked `.verified` on the Jetson ->
+  `PULL-OK`. **Found+fixed a real bug** in the process: the `$remoteRuns` discovery
+  variable clobbered the `$RemoteRuns` param (PowerShell case-insensitivity), doubling
+  the run-id in every scp path. (commit `fix(pull): ...`).
+- **RERUN_COMPAT holds on REAL data** (previously only synthetic): rerun 0.33.1 read the
+  robot's 0.23.1-written `.rrd` via the legacy `stream()` fallback -> 160 RGB frames
+  (544x448 uint8), 45 depth frames, 5 scalar streams. No decode errors.
+- Ingest adapter (`rrd_to_lerobot.assemble_episode`) on real data: default correctly
+  **REFUSES** the no-TRACK run (fail-closed, never fabricates `range=0.0` rows); the
+  FSM-enum assert **passes** on the robot's real `fsm_state_id` values (id 1.0 ->
+  SEARCH_MARKER, zero UNMAPPED -> no enum divergence between the deployed robot and the
+  frozen `fsm_groups` vocab).
+
+**GAP diagnosed (blocks a real trainable dataset):** the robot's CURRENT (old) deployment
+does **NOT log the follow observation/action channels into the `.rrd`**. Proof: this
+session's `events.jsonl` shows a rich real follow — **351 TRACK ticks, 272 REACQUIRE,
+771 lock (`seed:true`) ticks, 237 nonzero-velocity ticks (drove, vx up to 0.13)** — yet the
+`.rrd` has **zero** `/follow/range`, `/follow/bearing`, `/reid/sim`, `/track/conf` and
+**zero** `/cmd/vx`, `/cmd/vyaw`. Only `/health/depth_fps` + a sparse `/fsm/state_id` made
+it into the `.rrd`. So the blocker is the **deployed code, not the session** — a
+better/locked follow won't help; the old `k1_rerun.py`+`follow_person_k1.py` simply don't
+emit those channels to rerun. `events.jsonl` carries actions+fsm but not the observation
+state (no range/bearing/sim/conf), so an events-join can't substitute either.
+
+**[ ] DECISION — deploy the P6.1 capture-recording code to the robot?** To mint a real
+training episode we must deploy the updated capture stack (`k1_rerun.py` pinhole+odom+
+`/follow/*`+`/cmd/*` logging, `config/capture.yaml`, `run_follow_capture.sh`, and the
+`follow_person_k1.py` sink wiring) and then run one **heartbeat-enabled locked-follow
+session**. Pushing a new build of the ~4.5k-line control loop to a physical robot is a
+`VERIFY ON ROBOT` / behavior-risk step — recommend deploying via the app's tested
+`Deploy-FollowFiles` path (not an ad-hoc scp of the control loop). Until deployed, the
+off-robot dataset/train pipeline is verified on the decode/adapter paths but **not** on a
+real trainable episode.
