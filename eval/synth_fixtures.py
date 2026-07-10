@@ -445,6 +445,17 @@ def _write_rrd(run_dir, raw):
     if sink._faults:   # the latch hid something -> the .rrd is silently incomplete: refuse
         raise SystemExit("synth_fixtures: RerunSink recorded %d fault(s) writing %s -- the .rrd "
                          "is not trustworthy; fix before consumers use it" % (sink._faults, rrd_path))
+    # rerun streams the .rrd on a background thread; sink.close()'s flush() does NOT guarantee the file
+    # is FULLY finalized in-process (a footer lands on recording drop). In production, offload_run.sh
+    # hashes the .rrd AFTER the node process has exited, so the bytes are settled -- but this fixture
+    # writer hashes it in-process for the manifest, so it must force a full finalize FIRST, or the
+    # manifest sha won't match the settled file and batch_ingest's integrity check rejects every
+    # fixture bundle. rerun_shutdown() drains + tears down all recordings; the next bundle re-inits.
+    try:
+        import rerun as _rr
+        _rr.rerun_shutdown()
+    except Exception:  # noqa: BLE001 -- best-effort finalize; the size/stability check below is the gate
+        pass
     if not os.path.isfile(rrd_path) or os.path.getsize(rrd_path) == 0:
         raise SystemExit("synth_fixtures: %s missing/empty after close()" % rrd_path)
 
