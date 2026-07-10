@@ -3,7 +3,7 @@
 
 ONE definition of "a job" shared by the scheduler, workers, and the submit CLI. Stdlib only, so it
 imports anywhere (laptop stubs, any worker, the coordinator). A job is a plain JSON object on disk in
-the filesystem queue (cluster/queue.py); this module is its schema, (de)serialization, validation, and
+the filesystem queue (cluster/jobqueue.py); this module is its schema, (de)serialization, validation, and
 the pure capability-match predicate the scheduler uses to assign a job to a worker.
 
 Authored blind on a no-Python laptop -- VERIFY ON CLUSTER. Self-test needs no network/Docker/GPU:

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""queue.py -- the filesystem job queue for the LAN job-pool (docs/CLUSTER_PLAN.md).
+"""jobqueue.py -- the filesystem job queue for the LAN job-pool (docs/CLUSTER_PLAN.md).
+
+NOTE: named jobqueue.py, NOT queue.py, on purpose -- a module named `queue` shadows Python's stdlib
+`queue` (which concurrent.futures imports inside the scheduler's gRPC server), a real sys.path footgun.
 
 YAGNI by design: a job is a JSON file; a job's STATE is which subdir it sits in
 (root/{queued,leased,running,done,failed}/<job_id>.json). Transitions are atomic os.replace + remove.
@@ -8,7 +11,7 @@ scheduler (cluster/scheduler.py) is the SOLE writer and serializes every op unde
 so this needs no cross-process locking (a single scheduler is the CLUSTER_PLAN invariant).
 
 Authored blind on a no-Python laptop -- VERIFY ON CLUSTER. Self-test needs no network/Docker/GPU:
-  python -m cluster.queue selftest   ->  QUEUE-SELFTEST-OK
+  python -m cluster.jobqueue selftest   ->  QUEUE-SELFTEST-OK
 
 Durability contract: "losing a job must be impossible" (mirrors offload_run.sh's never-lose-a-run
 doctrine). A crash mid-transition can leave a job file in TWO state dirs; _reconcile() on init keeps
@@ -21,7 +24,7 @@ import tempfile
 
 try:
     from . import jobspec
-except ImportError:                               # allow `python cluster/queue.py` (no package context)
+except ImportError:                               # allow `python cluster/jobqueue.py` (no package context)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import jobspec
 
@@ -134,6 +137,18 @@ class JobQueue:
         if now_epoch is not None:
             job["lease_epoch"] = float(now_epoch)   # refresh so a long run isn't reaped mid-flight
         return self._move(job, "leased", "running")
+
+    def touch_lease(self, job_id, now_epoch):
+        """Refresh a leased/running job's lease_epoch so a LONG job (a multi-minute recon/train) is not
+        reaped as stale mid-run. Called on every worker heartbeat. No state change; a no-op (returns
+        False) if the job is not currently leased/running."""
+        state, path = self._find(job_id)
+        if state not in ("leased", "running"):
+            return False
+        job = self._read(path)
+        job["lease_epoch"] = float(now_epoch)
+        self._atomic_write(state, job)              # same-state rewrite; no transition
+        return True
 
     def complete(self, job_id, result_manifest=None):
         state, path = self._find(job_id)
@@ -283,6 +298,10 @@ def _selftest():
         again = q.lease("w-cpu", cpu, 1020.0)
         assert again["job_id"] == j_recon["job_id"] and again["attempts"] == 2
         q.mark_running(j_recon["job_id"], 1021.0)
+        # touch_lease refreshes a running job's lease (long-job keep-alive); no-op on a terminal job.
+        assert q.touch_lease(j_recon["job_id"], 1022.0) is True
+        assert q.get(j_recon["job_id"])["lease_epoch"] == 1022.0
+        assert q.touch_lease(j_hot["job_id"], 9999.0) is False        # j_hot is done -> no-op
         job, requeued = q.fail(j_recon["job_id"], "boom again")
         assert requeued is False and job["status"] == "failed"
 
@@ -307,6 +326,6 @@ def _selftest():
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] != "selftest":
-        raise SystemExit("usage: python cluster/queue.py selftest")
+        raise SystemExit("usage: python cluster/jobqueue.py selftest")
     _selftest()
     print("QUEUE-SELFTEST-OK")

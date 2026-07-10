@@ -109,7 +109,7 @@ Docker, no GPU — an in-process/local-filesystem exercise of the logic.
 |---|---|---|
 | `cluster/proto/cluster.proto` | gRPC service + messages | `protoc` compiles (desktop) |
 | `cluster/jobspec.py` | job spec dataclass + JSON (de)serialize + validate | `python -m cluster.jobspec selftest` (round-trip + validation) |
-| `cluster/queue.py` | filesystem job queue (enqueue/lease/complete/fail/requeue), single-writer lock | `python -m cluster.queue selftest` (state-machine + capability match + retry, tmp dir) |
+| `cluster/jobqueue.py` | filesystem job queue (enqueue/lease/complete/fail/requeue), single-writer lock | `python -m cluster.jobqueue selftest` (state-machine + capability match + retry, tmp dir) |
 | `cluster/scheduler.py` | gRPC server over the queue + worker registry + lease-timeout requeue | `python cluster/scheduler.py selftest` (in-process fake worker round-trip, no gRPC socket) |
 | `cluster/worker.py` | capability detect + lease loop + docker-run + artifact push | `python cluster/worker.py selftest --stub` (echo job, no Docker/GPU) |
 | `cluster/submit.py` + `desktop/Submit-Job.ps1` | enqueue CLI (Py + laptop PS) | `python cluster/submit.py selftest` / `-SelfTest` (writes+reads a job JSON) |
@@ -120,7 +120,7 @@ real hardware, the CUDA train image + torchrun/DDP hook, splat image v2 — all 
 
 ## 7. Build order
 
-1. `cluster/jobspec.py` + `cluster/queue.py` — the core, pure-logic, fully self-testable on the laptop.
+1. `cluster/jobspec.py` + `cluster/jobqueue.py` — the core, pure-logic, fully self-testable on the laptop.
 2. `cluster/proto/cluster.proto` — freeze the RPC contract.
 3. `cluster/scheduler.py` (in-process self-test) + `cluster/worker.py --stub`.
 4. `cluster/submit.py` + `desktop/Submit-Job.ps1`.

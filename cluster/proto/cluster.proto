@@ -1,0 +1,77 @@
+// cluster.proto -- the LAN job-pool control plane (docs/CLUSTER_PLAN.md).
+//
+// PULL-BASED: the worker initiates every RPC; the scheduler never dials a worker. So workers need no
+// inbound port beyond their own Docker/ssh, and a worker behind NAT/firewall still participates.
+//
+// A job crosses the wire as CANONICAL jobspec JSON (job_json = cluster/jobspec.py dumps()), NOT a
+// re-declared proto message -- jobspec.py stays the ONE schema. Likewise result_manifest_json. This is
+// deliberate YAGNI: the control plane carries opaque, versioned job/result blobs; only the routing
+// fields (worker_id, capabilities, status) are typed here.
+//
+// Data plane is NOT here: input bundles + output artifacts move over the sha256-verified scp transport
+// (Pull-Run.ps1 idiom, reused by cluster/worker.py), never through gRPC.
+//
+// Regenerate stubs ON A WORKER (needs grpcio-tools; VERIFY ON CLUSTER -- not on the no-Python laptop):
+//   python -m grpc_tools.protoc -I cluster/proto --python_out=cluster/proto \
+//          --grpc_python_out=cluster/proto cluster/proto/cluster.proto
+// The generated cluster_pb2*.py are build artifacts (gitignored); scheduler.py/worker.py import them
+// only inside their serve()/connect() paths, so the stdlib self-tests never need them.
+
+syntax = "proto3";
+
+package k1cluster;
+
+service Cluster {
+  // A worker announces itself + its capabilities. Returns the lease timeout it must heartbeat within.
+  rpc Register(WorkerInfo) returns (RegisterAck);
+  // A worker asks for work it can run. have_job=false means "nothing for you right now" (poll again).
+  rpc LeaseJob(LeaseRequest) returns (LeaseReply);
+  // A worker reports a terminal (done/failed) or progress (running) outcome for a leased job.
+  rpc ReportResult(ResultReport) returns (Ack);
+  // A worker keeps a long-running job's lease alive (so the scheduler doesn't reap it as stale).
+  rpc Heartbeat(HeartbeatPing) returns (Ack);
+}
+
+message WorkerInfo {
+  string worker_id = 1;            // stable per machine (e.g. hostname + a persisted uuid)
+  repeated string backends = 2;    // advertised: any of cpu, cuda, mps, npu (jobspec.BACKENDS)
+  double vram_gb = 3;              // 0 for a cpu-only worker
+  double ram_gb = 4;
+  repeated string images = 5;      // docker images present locally (scheduler may prefer a warm image)
+  string hostname = 6;
+}
+
+message RegisterAck {
+  bool ok = 1;
+  string message = 2;
+  int32 lease_timeout_s = 3;       // heartbeat within this or the lease is reaped + requeued
+}
+
+message LeaseRequest {
+  string worker_id = 1;
+  WorkerInfo caps = 2;             // re-sent each lease so capability changes (e.g. an image pulled) apply
+}
+
+message LeaseReply {
+  bool have_job = 1;
+  string job_json = 2;             // canonical cluster/jobspec.py JSON when have_job=true
+}
+
+message ResultReport {
+  string worker_id = 1;
+  string job_id = 2;
+  string status = 3;               // "running" (progress) | "done" | "failed"
+  string result_manifest_json = 4; // {status, artifacts:[{path,sha256,bytes}], metrics, image_digest, seed}
+  string error = 5;                // non-empty on status=failed
+}
+
+message Ack {
+  bool ok = 1;
+  string message = 2;
+}
+
+message HeartbeatPing {
+  string worker_id = 1;
+  string job_id = 2;
+  string phase = 3;                // free-text stage label for observability (e.g. "tsdf 40%")
+}
