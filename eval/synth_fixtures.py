@@ -301,7 +301,7 @@ def _gen_raw(spec, seed):
             put("/reid/sim", i, sim)
             put("/track/conf", i, conf)
             put("/track/cost", i, cost)
-            line = ("TRACK id=%d LOCK c=(%d,%d) range=%s[%s] bearing=%+05.1f "
+            line = ("TRACK id=%d LOCK c=(%d,%d) range=%s[%s] bearing=%+05.1fdeg "
                     "vx=%+.2f vyaw=%+.2f cost=%+.2f/2nd=- sim=%.2f conf=%.2f"
                     % (tid, cx, cy, ("n/a" if rng_m is None else "%.2f" % rng_m), rsrc,
                        bearing, vx, vyaw, cost, sim, conf))
