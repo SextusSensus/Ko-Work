@@ -61,8 +61,14 @@ more consumers" idea), and they **feed** recon (masks + depth) and the map (sema
 ## Status / honesty
 
 - **NPU + driver: confirmed present + OK.**
-- **Inference stack: NOT installed** — full NPU execution is `VERIFY ON NPU` after the Ryzen AI SW
-  install + per-model INT8 quantization above.
-- The **inference utility + the three job types** are authorable now (import-verifiable on CPU/DML;
-  the VitisAI EP swaps in after the install) — see the follow-up work. The models themselves: YOLO11n is
-  the robot's own; Depth-Anything-V2-Small + SegFormer-B0 are small public ONNX exports.
+- **Inference utility: BUILT + verified** — `npu/infer.py` (the `VitisAI→DML→CPU` runner + the three
+  tasks + a CLI). `python npu/infer.py selftest` → `NPU-INFER-SELFTEST-OK` (ran a trivial ONNX via the
+  selected EP; CPU here, VitisAI/DML swap in when available). The three job types `detect`/`depth`/
+  `segment` are registered in `jobspec.JOB_TYPES` (`backend=npu`).
+- **NPU jobs run NATIVELY on the laptop (a subprocess), NOT in Docker** — the VitisAI EP needs the host
+  Ryzen AI runtime + NPU device access that Docker can't pass through on Windows/WSL. (The CUDA/CPU job
+  types — `train`, `recon`, `ingest` — DO containerize: `desktop/train/train.Dockerfile`,
+  `desktop/recon/recon.Dockerfile`.)
+- **`VERIFY ON NPU`:** the Ryzen AI SW install (→ the `VitisAIExecutionProvider` appears), per-model INT8
+  Quark quantization, and the per-task pre/post parse against the real models (`_yolo_person_boxes`
+  etc. are best-effort until run against `yolo11n.onnx` / Depth-Anything / SegFormer).

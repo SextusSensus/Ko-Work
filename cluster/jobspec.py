@@ -23,7 +23,8 @@ import json
 import sys
 
 # --- frozen vocab (bump deliberately; workers/scheduler share this exact set) --------------------
-JOB_TYPES = ("ingest", "recon", "train", "splat")
+JOB_TYPES = ("ingest", "recon", "train", "splat",
+             "detect", "depth", "segment")           # npu/infer.py offline-inference jobs (backend=npu)
 BACKENDS = ("cpu", "cuda", "mps", "npu")          # a job requires ONE; a worker advertises a SET
 STATES = ("queued", "leased", "running", "done", "failed")
 TERMINAL_STATES = ("done", "failed")

@@ -1,0 +1,16 @@
+# k1train image -- P7.1 ingest + P7.2 ACT train. UNPINNED INTENT ONLY; the lockfile
+# (requirements-train.lock) is minted on the desktop/laptop from the first successful build.
+# torch/torchvision are installed SEPARATELY from the CUDA index (cu126 Ampere / cu128 Blackwell) --
+# see train.Dockerfile -- NOT here (a plain pip -r can't carry a per-package index).
+#
+# NO lerobot (RAW LeRobot-v3 layout; lerobot pins torch<2.12 and its bytes aren't hash-stable).
+# NO COLMAP. NO torch.compile at runtime (flaky on Blackwell sm_120).
+
+rerun-sdk>=0.33,<0.34         # the `ingest` job reads the .rrd (VERIFIED reads the robot's 0.23 .rrd -- docs/RERUN_COMPAT.md)
+numpy<3
+pyarrow                       # RAW-layout parquet read/write
+opencv-python-headless        # train_act dataloader (mp4->frames, resize); headless = no GUI libs in a container
+imageio
+imageio-ffmpeg               # mp4 decode/encode (bundles ffmpeg)
+scipy
+onnx                         # P7.3 ONNX export tooling (export itself runs on the Ampere desktop)
