@@ -71,21 +71,21 @@ function Get-Sha256Lower { param([string]$Path)
 
 # ---- list remote bundles (newest first) ----
 # basename of each runs/*/ dir; ignore .partial (hidden) staging dirs.
-$remoteRuns = @(Invoke-SshCapture "ls -1dt $RemoteRuns/*/ 2>/dev/null | xargs -n1 basename 2>/dev/null") |
+$bundleIds = @(Invoke-SshCapture "ls -1dt $RemoteRuns/*/ 2>/dev/null | xargs -n1 basename 2>/dev/null") |
               Where-Object { $_ -and ($_ -notlike '.*') }
 
 if ($List) {
-  if (-not $remoteRuns) { Write-Host "no run bundles under $RemoteRuns on $Ip" }
-  else { Write-Host "run bundles on $Ip ($RemoteRuns), newest first:"; $remoteRuns | ForEach-Object { "  $_" } }
+  if (-not $bundleIds) { Write-Host "no run bundles under $RemoteRuns on $Ip" }
+  else { Write-Host "run bundles on $Ip ($RemoteRuns), newest first:"; $bundleIds | ForEach-Object { "  $_" } }
   return
 }
 
 if (-not $RunId) {
-  if (-not $remoteRuns) { throw "no run bundles under $RemoteRuns on $Ip (nothing to pull)" }
-  $RunId = $remoteRuns[0]
+  if (-not $bundleIds) { throw "no run bundles under $RemoteRuns on $Ip (nothing to pull)" }
+  $RunId = $bundleIds[0]
   Write-Host "pulling latest: $RunId"
-} elseif ($remoteRuns -notcontains $RunId) {
-  throw "run '$RunId' not found on $Ip (have: $($remoteRuns -join ', '))"
+} elseif ($bundleIds -notcontains $RunId) {
+  throw "run '$RunId' not found on $Ip (have: $($bundleIds -join ', '))"
 }
 
 # Resolve LocalRuns to a full path whether or not it exists yet (GetFullPath is anchored on the
