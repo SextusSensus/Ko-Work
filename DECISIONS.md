@@ -340,3 +340,74 @@ new dep, justified by the RPC contract).
   substrate design; the Desktop-copy `PHASE_6-8_PLAN.md` P6G is superseded -- update it when convenient).
   Scaffolds (`cluster/`) authored next; all `VERIFY ON CLUSTER`. The pivot-agnostic scaffolds
   (dataset/contracts/fixtures) are untouched -- they are jobs the pool runs.
+
+---
+
+## P7.6 -- GRADUATION CRITERIA: what must ALL be true before the shadow policy may actuate
+
+**This ships the CRITERIA, not the shield.** Per the plan invariant, the shadow policy NEVER actuates
+until every item below exists AND passes AND a human flips the switch. Building the shield (a
+`runtime-safety` initiative) and flipping the switch are separate, future, human-approved work. Numbers
+here are **starting thresholds** -- tune with data, but a future session can implement against them
+without interpretation. The C++ floor + mode-keyed deadman gate stay sovereign underneath ALL of this,
+always.
+
+### A. Offline agreement gate (from P7.5, per FSM state)
+
+Metric: per control tick, the shadow action `(shadow_vx, shadow_vyaw)` vs the executed P-controller
+action `(vx, vyaw)`, bucketed by the executed-tick FSM state (canonical name via `eval/fsm_groups.py`).
+"In-band" = `|shadow_vx - vx| <= 0.03 m/s` AND `|shadow_vyaw - vyaw| <= 0.05 rad/s` (starting bands ~
+1/6 of the hard clamps). Score the **Wilson 95% LOWER bound** of the in-band fraction (conservative,
+not the point estimate).
+
+| FSM state | in-band Wilson-low >= | min sample floor (ticks) |
+|---|---|---|
+| TRACK | 0.95 | 2000 |
+| REACQUIRE | 0.90 | 500 |
+| SEARCHING | 0.85 | 500 |
+| SEARCH_MARKER | 0.85 | 300 |
+| PARKED | 0.99 (near-zero action) | 100 |
+
+- **A state below its sample floor is `INSUFFICIENT`** -- its threshold does NOT count as met (an
+  agreement number on a handful of SEARCH ticks is theater). You close the gap by SCHEDULING capture
+  runs that deliberately induce that state (step behind an obstacle -> REACQUIRE/SEARCH), never by
+  lowering the floor. FSM-occupancy (P6.4 index + P7.1 card) tells you which states are short.
+- **Corpus:** >= 10 offloaded runs spanning >= 3 distinct sessions/days; ALL five states at or above
+  their floors; every state's Wilson-low at or above its threshold. One checkpoint hash, graded across
+  the whole corpus by `eval/` (P7.5).
+
+### B. The runtime-safety shield (must be BUILT + unit-tested before actuation)
+
+A graded intervention ladder (never a bare kill); the learned policy runs only while ALL rungs are live:
+
+- **Rung 0 nominal:** shadow action passes the OOD check AND the action-envelope clamp -> actuate.
+- **Rung 1 caution:** mild OOD / thin uncertainty margin -> tighten the action envelope (reduce the vx/
+  vyaw limits toward the P-controller's), log.
+- **Rung 2 hold (turn-only):** OOD, or a perception-health flag (track unstable, `depth_starved`,
+  `range_source != depth`) -> suppress forward vx, yaw-only, per the existing `forbid_forward` keystone.
+- **Rung 3 fallback-to-P-controller:** sustained disagreement / OOD / uncertainty over N ticks -> hand
+  control back to `control.py`'s P-controller (the known-good baseline). **The learned policy is NEVER
+  in the loop without the P-controller as a live, instant fallback.**
+- **Rung 4 safe-stop:** the existing C++ staleness/deadman floor -- untouched, always underneath.
+
+Shield components that must exist:
+1. **OOD / uncertainty check** -- Mahalanobis distance of the live observation vs the training
+   distribution (the dataset card's per-channel `stats.json` mean/std -- already emitted by
+   `batch_ingest.py`) over a threshold, plus an action-uncertainty proxy (ensemble/temporal variance).
+2. **Action-envelope clamp** -- the shadow action is hard-clamped to (a) the same velocity limits as the
+   P-controller (the Python<->C++ clamp, unchanged) AND (b) a **per-FSM-state envelope** derived from
+   the training data: never command outside the range `control.py` ever produced in that state.
+3. **Fallback-to-P-controller** -- a live, tested handover that is the DEFAULT the moment any rung above
+   0 trips.
+
+### C. Trigger <-> failure-taxonomy 1:1 mapping (binding)
+
+Every offline failure category P7.5 names (e.g. "forward-lunge disagreement in REACQUIRE", "yaw
+oscillation in SEARCH", "standoff creep in TRACK") MUST map to a specific online shield trigger above.
+**A failure mode with no online gate is a blocker to actuation** -- every dangerous offline failure has
+an online guard, and every guard is offline-measurable. The mapping table is authored alongside the
+P7.5 scorecard (taxonomy doctrine: `runtime-safety references/integration.md`).
+
+- [x] **CRITERIA RECORDED (2026-07-10).** P7.6 ships the criteria; building the shield + the eventual
+  human-approved switch-flip are a future initiative gated on A (agreement corpus) + B (shield built +
+  tested) + C (mapping complete). Until then the shadow node stays log-only, no bridge handle (P7.4).
