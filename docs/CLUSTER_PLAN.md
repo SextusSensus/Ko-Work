@@ -50,15 +50,26 @@ report), the existing sha256-verified scp bundle transport for the data plane.
 
 ## 3. Components
 
+**Coordinator vs data source of truth (a real constraint):** the **laptop stays the DATA source of
+truth** (`runs/`, dataset identity) but **cannot host the scheduler** -- the scheduler is Python and the
+laptop has none. So the **scheduler + queue run on a designated Python-capable coordinator node** (the
+simplest choice is the first CUDA worker / desktop, which is always-on and has Python via its WSL
+distro; a dedicated small always-on box also works). The laptop **submits jobs over ssh** to the
+coordinator (`desktop/Submit-Job.ps1`) and remains where run bundles physically live; **workers fetch
+inputs from the laptop and push artifacts back to it.** Wiping the coordinator loses only the transient
+queue (regenerable); wiping the laptop is the only real loss, so the laptop is the thing you back up.
+
 ```
- LAPTOP (source of truth, coordinator host)          WORKERS (any LAN box: 3080 desktop, laptop-NPU, a Mac, ...)
- ─────────────────────────────────────────           ──────────────────────────────────────────────────────────
-  runs/  (bundles, datasets — authoritative)           worker agent (registers caps, leases jobs, runs Docker,
-  cluster/queue/  (jobs as JSON, filesystem)             pushes artifacts back; holds nothing authoritative)
-  scheduler  (gRPC server: register/lease/report,        docker: recon image (P8), train image (P7), ingest
-             matches job.requires -> worker caps)         each job = `docker run <image> <entrypoint> <args>`
-  submit CLI (enqueue a job)                             CUDA worker | CPU worker | NPU worker (capability-tagged)
+ LAPTOP (DATA source of truth; no Python)     COORDINATOR (a Python node, e.g. the 3080/WSL)   WORKERS (any LAN box)
+ ───────────────────────────────────────     ─────────────────────────────────────────────   ───────────────────────
+  runs/  (bundles, datasets — authoritative)   scheduler (gRPC: register/lease/report)          worker agent: register caps,
+  Submit-Job.ps1  --ssh-->  coordinator        cluster/queue/ (jobs as JSON, filesystem)         lease jobs, docker run,
+  workers fetch inputs from here (scp)         matches job.requires -> worker caps               push artifacts back to laptop
+                                               submit.py (enqueue a job)                         cpu | cuda | mps | npu tagged
 ```
+
+(A worker and the coordinator commonly co-locate on the same box -- e.g. the desktop runs both the
+scheduler and a CUDA worker. They are separate processes; nothing requires them apart.)
 
 - **Scheduler** (`cluster/scheduler.py`): one process. Holds the worker registry (in-memory, rebuilt
   from re-registration on restart) + the job queue (on disk). gRPC server. Matching = FIFO-by-priority
