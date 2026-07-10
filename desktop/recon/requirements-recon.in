@@ -1,0 +1,13 @@
+# recon image v1 -- CPU-lean geometry (charter S3 / docs/RECON_CONTRACT.md).
+# UNPINNED INTENT ONLY. The real lockfile (requirements-recon.lock) is minted on the DESKTOP from the
+# first successful build (`pip freeze` in-container -> commit) -- a blind lockfile is fiction.
+#
+# Doctrine (RECON_CONTRACT.md section 5): NO COLMAP, ever. NO torch/gsplat/CUDA in v1 -- those arrive
+# as the v2 image bump at P6G.4 (splat). This is the offline reconstruction toolset only.
+
+numpy
+rerun-sdk>=0.33,<0.34          # read the robot's 0.23.1-written .rrd (VERIFIED: docs/RERUN_COMPAT.md);
+                              #   do NOT bump past <0.34 without re-running eval/compat/. pyarrow rides along.
+open3d                        # CPU RGBD odometry + loop closure + TSDF (the selftest smoke + odom/tsdf stages)
+opencv-contrib-python-headless # aruco built-in AprilTag dicts (align stage) + image ops; headless = no GUI libs
+coacd                         # convex decomposition -> watertight collision mesh (simexport stage)
