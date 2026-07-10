@@ -15,6 +15,13 @@ runs/index.json. IDEMPOTENT: a bundle already labeled with this scorer_version i
 --force; bumping SCORER_VERSION triggers a clean relabel. Artifact-incomplete bundles (missing
 k1_follow.err, or a drive that never locked -> 0 TRACK frames) are flagged `incomplete` for human
 review, never silently labeled `pass`.
+
+The metrics block also carries `fsm_occupancy` -- per-FSM-state tick counts read from the bundle's
+events.jsonl `fsm` field, canonicalized via the shared eval/fsm_groups.py helper (SCAFFOLD_CHARTER
+B1: the run-index coverage-gap signal Runs.ps1/index.json consumers schedule against). Occupancy is
+ADVISORY for run scheduling; the dataset card's .rrd-derived per-state counts (batch_ingest.py, same
+helper) stay AUTHORITATIVE for training (charter Section 5.2). A missing/corrupt events.jsonl
+degrades to fsm_occupancy absent + a review flag, never a crash.
 """
 import argparse
 import json
@@ -27,9 +34,12 @@ import time as _time
 # lazily inside functions), so importing these two names never pulls a robot dependency.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from replay_eval import score_outcome  # noqa: E402
+# The ONE fsm-grouping truth (charter B1): id/string -> canonical state name. Never hand-roll a map.
+from fsm_groups import count_strings  # noqa: E402
 
-# Bump this when the scorer or the default thresholds change -> a relabel pass supersedes old labels.
-SCORER_VERSION = "p5.1-score_outcome/2026-07-09"
+# Bump this when the scorer, the default thresholds, or the label CONTENT changes (e.g. a new
+# metrics field like fsm_occupancy) -> a relabel pass supersedes old labels.
+SCORER_VERSION = "p5.1-score_outcome+fsm-occupancy/2026-07-10"
 
 # Default outcome thresholds for a LIVE run (no per-clip manifest, no ground-truth operator_id -> the
 # scorer falls back to ID STABILITY, not ID CORRECTNESS -- see score_outcome docstring). standoff_m /
@@ -106,6 +116,37 @@ def _read_manifest(bundle):
         return {}
 
 
+def _fsm_occupancy(bundle):
+    """Per-FSM-state tick counts from the bundle's events.jsonl `fsm` field (P5.3 writes one JSON
+    line per control tick), keyed by CANONICAL state name via the shared fsm_groups helper -- so
+    this index-side count and batch_ingest's card-side count can never disagree on grouping. An
+    UNMAPPED key here means a data bug upstream (surfaced, not judged -- the .rrd ingest is the
+    hard gate). Returns None -- NEVER raises -- when events.jsonl is missing or yields no parseable
+    fsm entries; the caller degrades to fsm_occupancy absent + flag-for-review. Torn tail lines
+    (the JSONL is line-buffered, a hard crash truncates mid-line) are skipped, not fatal."""
+    path = os.path.join(bundle, "events.jsonl")
+    if not os.path.isfile(path):
+        return None
+    states = []
+    try:
+        with open(path, errors="replace") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln:
+                    continue
+                try:
+                    ev = json.loads(ln)
+                except ValueError:
+                    continue        # torn/corrupt line -> skip it, count the rest
+                if isinstance(ev, dict) and isinstance(ev.get("fsm"), str):
+                    states.append(ev["fsm"])
+    except Exception:
+        return None
+    if not states:
+        return None                 # a tick log with zero fsm entries is as bad as no log
+    return count_strings(states)
+
+
 def label_bundle(bundle, force=False):
     """Score one bundle dir; write the label into its manifest.json. Returns the outcome string."""
     man_path = os.path.join(bundle, "manifest.json")
@@ -134,6 +175,18 @@ def label_bundle(bundle, force=False):
             metrics.setdefault("fails", []).append("no locked-TRACK frames -> not assessable")
         else:
             outcome = "pass" if passed else "review"
+
+    # B1 occupancy (SCAFFOLD_CHARTER): per-state tick counts for the run-index coverage-gap signal.
+    # events.jsonl is written by EVERY run (P5.3 always-on, bundled by offload_run.sh), so its
+    # absence is itself an anomaly: occupancy degrades to ABSENT and a clean `pass` is demoted to
+    # `review` (flag anomalies, don't guess) -- scoring above is never blocked and this never raises.
+    occ = _fsm_occupancy(bundle)
+    if occ is not None:
+        metrics["fsm_occupancy"] = occ
+    else:
+        metrics.setdefault("fails", []).append("events.jsonl missing/unreadable -> no fsm_occupancy")
+        if outcome == "pass":
+            outcome = "review"
 
     man["label"] = {
         "outcome": outcome,
