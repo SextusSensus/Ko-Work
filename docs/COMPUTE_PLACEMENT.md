@@ -1,5 +1,12 @@
 # P7/P8 Compute Placement & P7.1 Design (verified design pass)
 
+> **⚠ PARTLY SUPERSEDED (2026-07-10) by `docs/CLUSTER_PLAN.md`.** The machine-assignment table below
+> was written for a **single central desktop**; compute is now a **LAN job-pool** where jobs route to
+> workers by hardware *capability*, not to a fixed box. The **task -> hardware-CLASS** mapping still
+> holds (recon = CPU-heavy, train = CUDA, ingest = CPU) and is exactly the `requires` tag a job
+> declares; only "task -> that specific desktop" is superseded. The P7.1 dataset design (§3) is fully
+> current. See DECISIONS.md P6G.0.
+
 Output of a multi-agent design pass (4 expert lenses + 2 adversarial verifiers + synthesis),
 grounded in the repo + the three confirmed machines. Reference for the P7/P8 execution phases.
 

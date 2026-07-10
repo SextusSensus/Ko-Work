@@ -238,3 +238,105 @@ folding into this task — the on-demand scripts are the reusable core and work 
   never an un-offloaded one, so a bundle can't be pruned before it's safely pulled to the laptop. The
   laptop→desktop hop (Sync-Runs.ps1) is still a separate copy; sync capture runs onward before deleting
   them from the laptop.
+
+---
+
+## P6G.3a -- recon.py/rsync -> Recon.ps1/scp (RESOLVED-BY-DESIGN)
+
+**What:** the plan's P6G.3 names `recon.py submit|status|fetch <run_id>` over **rsync** as the
+laptop-side recon job CLI. The charter's blocker **B2** (`docs/SCAFFOLD_CHARTER.md`) confirmed the
+contradiction against the worktree: this laptop has **no Python and no rsync** (the
+`Pull-Run.ps1`/`Sync-Runs.ps1` headers state it), so the CLI as specced cannot run on the machine the
+gate requires it to run from.
+
+**Decision (charter S2):** the laptop CLI is **`desktop/Recon.ps1`**
+(`-Submit | -Status | -Fetch | -SelfTest`), PowerShell over **Windows-OpenSSH scp**, mirroring
+`Pull-Run.ps1`'s manifest-verify-or-fetch idiom (per-file sha256, skip-if-match, resumable to
+convergence). **rsync survives as desktop-side intent only** -- inside the WSL distro, never a laptop
+binary. The desktop-side job wrapper is `desktop/recon_job.sh` (bash, deployed into the distro).
+
+- [x] **RESOLVED-BY-DESIGN (2026-07-10).** No robot/plan behavior change -- transport substitution
+  only; `docs/HANDOFF_DESKTOP.md` P6G.3 updated to match. The round-trip itself stays
+  `VERIFY ON DESKTOP` (P6G.3 stub-then-real gate).
+- **SUPERSEDED by P6G.0 (LAN-pool pivot):** the B2 finding still holds (laptop submit CLI is
+  PowerShell/scp, not Python/rsync), but the target is now the **scheduler** (`desktop/Submit-Job.ps1`
+  -> `cluster/submit.py`), not a direct `Recon.ps1` round-trip to one desktop. Recon is one job type in
+  the pool; the manifest-verify-or-fetch scp idiom is reused by the worker. The untracked `Recon.ps1`
+  the workflow drafted is NOT committed (its transport logic moves into `cluster/worker.py`).
+
+---
+
+## P8.2a -- person-masking v0 masks ONLY the logged TARGET box (bystander gap)
+
+**What:** the recon container's person-masking v0 (charter S3) dilates the logged TARGET box
+(`/camera/rgb/target` Boxes2D) and zeroes depth inside it before BOTH odom and TSDF. **Bystanders are
+NOT masked** -- the recorder logs only the locked target's box today; all-person YOLO boxes are never
+written to the `.rrd`. A bystander walking through frame leaves ghost geometry in the mesh and can
+bias odometry.
+
+**Options (open decision):**
+- (a) **Recorder extension:** log all person detection boxes to the `.rrd` (small `rerun_sink`
+  addition; slight per-frame recording cost; needs a robot deploy and only helps FUTURE captures).
+- (b) **Offline re-detect:** run a person detector inside the recon container over the decoded RGB
+  (no robot change, fixes already-captured runs; adds a model dep + nondeterminism to the image).
+
+- [ ] Decide (a) record-all-boxes vs (b) re-detect-in-container. Until then v0 ships target-only
+  masking with dilation + masked fraction recorded in `recon_manifest.json`; treat meshes from
+  bystander-heavy runs as suspect.
+
+---
+
+## P6.4a -- B1 dual-ownership rule: card counts authoritative, index occupancy advisory
+
+**What:** per-FSM-state occupancy now exists in TWO places, deliberately (charter B1 resolution,
+section 5.2): the **dataset card** (S1 `eval/batch_ingest.py` computes per-episode and per-split
+frame counts from the `.rrd` `/fsm/state_id` stream) and **`runs/index.json`** (the
+`eval/label_run.py` occupancy patch derives per-state counts from `events.jsonl`'s `fsm` field).
+
+**Decision (the rule):** the **card is authoritative for training** (P7.2 consumes it; P7.5
+INSUFFICIENT floors judge against it); the **index occupancy is advisory for run scheduling** only
+(coverage-gap "which state needs more capture runs" queries). Both sides MUST key canonical state
+names through the shared **`eval/fsm_groups.py`** helper -- two hand-rolled maps are guaranteed to
+drift. If card and index ever disagree on a run's per-state counts beyond expected `.rrd`-vs-JSONL
+sampling skew, that is a **data bug to investigate**, never a value to reconcile silently.
+
+- [x] **RESOLVED-BY-DESIGN (2026-07-10).** Rule recorded so nobody treats the two counts as a single
+  source of truth or "fixes" a divergence by copying one over the other.
+
+---
+
+## P6G.0 -- ARCHITECTURE PIVOT: single central desktop -> LAN heterogeneous job-pool
+
+**What (decided with the user 2026-07-10, `docs/CLUSTER_PLAN.md`):** replace the "one disposable
+desktop GPU box" substrate with a **LAN job-pool** -- multiple computers each run a Docker **worker**
+that pulls **independent jobs** from one **scheduler**, matched to hardware by capability tag
+(cuda/cpu/npu/mps). Control plane = gRPC (register/lease/report, pull-based); data plane = the proven
+sha256-verified scp bundle transport. Filesystem+JSON queue, single scheduler; **no K8s/Slurm/Ray/
+broker.** NOT distributed data-parallel SGD (the tiny ACT trains slower split across a LAN than on the
+3080 alone -- comms dominate); a DDP job type is designed-for, not built.
+
+**Why:** the parallelism in this workload is across *jobs*, most embarrassingly parallel -- P8.2 recon
+is one job per run, P7.2 is seed/HP sweeps, plus splat/ingest. A job-pool speeds that up and fits the
+NPU/MPS/CPU/GPU mix; DDP of one small model does not.
+
+**What this SUPERSEDES (the audit):**
+- `PHASE_6-8_PLAN.md` §2 "the desktop is stateless compute" -> **"the worker POOL is stateless"**
+  (disposability now per-worker; laptop still single source of truth).
+- `PHASE_6-8_PLAN.md` §6 out-of-scope "no standing job queues, watchers" -> **deliberately overridden**
+  (a standing scheduler + queue is the point; still no watchers/daemons on the robot, no cloud).
+- P6G.1 single-WSL2-desktop -> **per-CUDA-worker-node provisioning** (`docs/WSL2_SUBSTRATE.md`
+  re-scoped, banner added; `docs/CLUSTER_SETUP.md` generalizes it).
+- P6G.3 `Recon.ps1` direct laptop->one-desktop round-trip (P6G.3a below) -> **the scheduler client**
+  (`cluster/submit.py` + `desktop/Submit-Job.ps1`); recon becomes one job *type*. The
+  `recon_manifest.json`/stage contract (`docs/RECON_CONTRACT.md`) survives unchanged.
+- `docs/HANDOFF_DESKTOP.md` + `docs/COMPUTE_PLACEMENT.md` single-desktop framing -> pool framing
+  (banners added; task->hardware-CLASS mapping survives, task->specific-BOX does not).
+
+**Unchanged invariants:** laptop = source of truth; workers stateless/disposable; robot never a worker
+and no worker has robot credentials; byte-identical doctrine stays robot-side; YAGNI (gRPC is the one
+new dep, justified by the RPC contract).
+
+- [x] **RESOLVED-BY-DESIGN (2026-07-10).** Plan updated in-repo (`CLUSTER_PLAN.md` is the authoritative
+  substrate design; the Desktop-copy `PHASE_6-8_PLAN.md` P6G is superseded -- update it when convenient).
+  Scaffolds (`cluster/`) authored next; all `VERIFY ON CLUSTER`. The pivot-agnostic scaffolds
+  (dataset/contracts/fixtures) are untouched -- they are jobs the pool runs.

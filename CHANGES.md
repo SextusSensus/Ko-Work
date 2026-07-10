@@ -247,6 +247,47 @@ stays as the thin orchestrator per the "don't improve while moving" invariant.
   versions; the P7.1 ingest will assert every recorded state maps here before minting a dataset. Fixes
   the design pass's "unfrozen ad-hoc FSM enum" blocker. k1_rerun.py gains a sync cross-ref comment.
 
+## Phase 6G/7 prep -- charter scaffolds + the LAN-pool pivot (laptop-authored, VERIFY ON CLUSTER)
+
+Per `docs/SCAFFOLD_CHARTER.md` (the adjudicated GO/DEFER record for blind-authoring on this no-Python
+laptop) and `docs/CLUSTER_PLAN.md` (the 2026-07-10 architecture pivot: single central desktop -> a LAN
+heterogeneous job-pool; DECISIONS.md P6G.0). Every artifact ships UNEXECUTED -- **`VERIFY ON CLUSTER`**:
+presumed broken until its self-test passes where Python exists (`docs/HANDOFF_DESKTOP.md` step 0). The
+charter-scaffolding workflow hit the account rate limit mid-run; this records **what actually landed**.
+
+**LANDED + self-test-gated (pivot-agnostic -- a dataset/contract/fixture is a *job* the pool runs):**
+- **S6** `eval/synth_fixtures.py` -- deterministic-under-`--seed` synthetic run bundles/episodes
+  (`offload_run.sh`-shaped, planted edge cases: unlabeled / no-rrd / unmapped-FSM / under-floor); the
+  shared fixture source. `python eval/synth_fixtures.py --out %TEMP%\fixtures --seed 0`.
+- **B1** `eval/fsm_groups.py` (the ONE fsm id->canonical-name helper; VERIFIED BY READ against
+  `fsm_states.json`) + the `eval/label_run.py` occupancy patch (VERIFIED BY READ). Dual-ownership rule
+  in DECISIONS.md P6.4a.
+- **S5 (contracts only, train DEFERRED)** `docs/TRAIN_CONTRACT.md` + `eval/checkpoint_contract.py`
+  (checkpoint/`stats_hash` handshake; `python eval/checkpoint_contract.py selftest`). The desktop
+  authors `train_act.py` from scratch against these.
+- **S3 contract** `docs/RECON_CONTRACT.md` -- frozen stage enum + `recon_manifest.json` schema. Under
+  the pivot this describes one job *type* run by a worker; bystander-masking gap in DECISIONS.md P8.2a.
+
+**NOT reached before the rate limit (still to author):**
+- **S1** `eval/batch_ingest.py` -- P7.1 dataset mint (RAW LeRobot-v3, imports `rrd_to_lerobot`'s
+  decoder, deterministic `content_hash`/`stats_hash`, fail-closed FSM assert, loud exclusions). **Next
+  up.** Pivot-agnostic. Target self-test `INGEST-SELFTEST-OK`.
+- **S3 image** `desktop/recon/` Dockerfile + stage CLI + synthetic-TSDF smoke. Author-agent failed.
+- **S4** `docs/WSL2_SUBSTRATE.md` -- LANDED, but **re-scoped by the pivot** to *per-CUDA-worker-node*
+  provisioning (banner added); `docs/CLUSTER_SETUP.md` will generalize it across worker types.
+
+**SUPERSEDED by the pivot (audit -- removed/not committed):**
+- **S2** `desktop/Recon.ps1` (the direct laptop->one-desktop recon round-trip) is **not committed** --
+  recon is now a pool job submitted to the scheduler (`cluster/submit.py` + `desktop/Submit-Job.ps1`);
+  its manifest-verify scp idiom moves into `cluster/worker.py`. `recon_job.sh` / `Runs.ps1`-recon were
+  never authored and are replaced by the worker + scheduler. (DECISIONS.md P6G.3a, superseded note.)
+- The single-desktop framing in `docs/HANDOFF_DESKTOP.md` + `docs/COMPUTE_PLACEMENT.md` gained pivot
+  banners; `PHASE_6-8_PLAN.md` §2/§6 + P6G.1/P6G.3 overrides recorded in DECISIONS.md P6G.0.
+
+**The pivot substrate (`cluster/`) -- to author next:** `jobspec.py`, `queue.py`, `proto/cluster.proto`,
+`scheduler.py`, `worker.py`, `submit.py` + `desktop/Submit-Job.ps1`, `docs/CLUSTER_SETUP.md` -- each
+with a local, no-network/no-Docker self-test (`CLUSTER_PLAN.md` §6).
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
