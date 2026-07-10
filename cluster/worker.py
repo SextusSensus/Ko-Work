@@ -76,6 +76,68 @@ def stub_runner(job, heartbeat=None):
                     "artifacts": []}, None
 
 
+# --- the data plane: a Store moves run bundles worker<->laptop (the sha-verified scp transport) -----
+class LocalStore:
+    """Filesystem store (tests + a co-located coordinator). fetch/push are directory copies under a
+    root. Used by the self-test to exercise the fetch->run->push flow with zero ssh/Docker."""
+    def __init__(self, root):
+        self.root = os.path.abspath(root)
+
+    def fetch(self, run_id, dest):
+        import shutil
+        src = os.path.join(self.root, run_id)
+        if not os.path.isdir(src):
+            raise FileNotFoundError("LocalStore: no bundle %s under %s" % (run_id, self.root))
+        if os.path.isdir(dest):
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+
+    def push(self, run_id, subdir, src):
+        import shutil
+        dst = os.path.join(self.root, run_id, subdir)
+        if os.path.isdir(dst):
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+
+
+class ScpStore:  # pragma: no cover -- VERIFY ON CLUSTER (needs ssh/scp + a reachable laptop)
+    """Production store: run bundles live on the LAPTOP (source of truth); the worker scp's inputs down
+    and pushes artifacts back. Mirrors Pull-Run.ps1's OpenSSH idiom (key auth). `remote_runs` is the
+    laptop's runs/ dir; `host`/`user`/`port`/`identity` reach the laptop's sshd."""
+    def __init__(self, host, user="k1", port=22, identity=None, remote_runs="~/k1/runs"):
+        self.host, self.user, self.port = host, user, port
+        self.identity, self.remote_runs = identity, remote_runs
+
+    def _opts(self):
+        o = ["-p", str(self.port), "-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=yes"]
+        if self.identity:
+            o += ["-i", self.identity]
+        return o
+
+    def _target(self, path):
+        return "%s@%s:%s" % (self.user, self.host, path)
+
+    def fetch(self, run_id, dest):
+        import subprocess
+        os.makedirs(os.path.dirname(os.path.abspath(dest)) or ".", exist_ok=True)
+        rc = subprocess.call(["scp", "-r"] + self._opts()
+                             + [self._target("%s/%s" % (self.remote_runs, run_id)), dest])
+        if rc != 0:
+            raise RuntimeError("ScpStore.fetch %s exit %d" % (run_id, rc))
+
+    def push(self, run_id, subdir, src):
+        import subprocess
+        rc = subprocess.call(["scp", "-r"] + self._opts()
+                             + [src, self._target("%s/%s/%s" % (self.remote_runs, run_id, subdir))])
+        if rc != 0:
+            raise RuntimeError("ScpStore.push %s/%s exit %d" % (run_id, subdir, rc))
+
+
+def _docker_call(cmd):  # pragma: no cover -- the real container run
+    import subprocess
+    return subprocess.call(cmd)
+
+
 # --- production paths (lazy / guarded; VERIFY ON CLUSTER) -----------------------------------------
 def detect_caps(worker_id):  # pragma: no cover -- probes real hardware
     """Best-effort capability probe. Every backend/figure is guarded: a worker under-advertises rather
@@ -119,13 +181,14 @@ def _hostname():
         return "unknown"
 
 
-def docker_run_job(job, store, inbox_root, outbox_root, heartbeat=None):  # pragma: no cover -- VERIFY ON CLUSTER
-    """Production runner: fetch input bundles from the store, `docker run` the job's image with inbox
-    RO + outbox RW mounts, hash the outbox into a result_manifest, push artifacts back. Guarded so any
-    failure becomes ('failed', None, msg) -- never a raise that strands the lease. `store` provides
-    fetch(run_id, dest) and push(run_id, subdir, src). The image digest is read from the container
-    (the recon_version/job_version doctrine)."""
-    import subprocess
+def docker_run_job(job, store, inbox_root, outbox_root, heartbeat=None, run_container=None):
+    """Runner: fetch input bundles from the store, run the job's image with inbox RO + outbox RW mounts,
+    hash the outbox into a result_manifest, push artifacts back. Guarded so any failure becomes
+    ('failed', None, msg) -- never a raise that strands the lease. `store` provides fetch(run_id, dest)
+    + push(run_id, subdir, src). `run_container(cmd)->rc` is injectable (default = real `docker run`);
+    the self-test injects a fake that writes an artifact, so the whole data-plane flow is testable
+    without Docker. The image digest / recon_version is recorded by the container into its own manifest."""
+    run_container = run_container or _docker_call
     jid = job["job_id"]
     inbox = os.path.join(inbox_root, jid)
     outbox = os.path.join(outbox_root, jid)
@@ -137,8 +200,7 @@ def docker_run_job(job, store, inbox_root, outbox_root, heartbeat=None):  # prag
         cmd = ["docker", "run", "--rm", "--name", "job_" + jid,
                "-v", "%s:/inbox:ro" % os.path.abspath(inbox),
                "-v", "%s:/outbox" % os.path.abspath(outbox)]
-        req_backend = job["requires"]["backend"]
-        if req_backend == "cuda":
+        if job["requires"]["backend"] == "cuda":
             cmd += ["--gpus", "all"]
         cmd += [job["image"]]
         if job.get("entrypoint"):
@@ -146,9 +208,9 @@ def docker_run_job(job, store, inbox_root, outbox_root, heartbeat=None):  # prag
         cmd += list(job.get("args", []))
         if heartbeat is not None:
             heartbeat()
-        rc = subprocess.call(cmd)
+        rc = run_container(cmd)
         if rc != 0:
-            return "failed", None, "docker run exit %d" % rc
+            return "failed", None, "container run exit %d" % rc
         manifest = _hash_tree(outbox)
         manifest["job_id"] = jid
         manifest["seed"] = job.get("seed", 0)
@@ -221,14 +283,27 @@ def main(argv):  # pragma: no cover -- VERIFY ON CLUSTER (real gRPC + Docker)
     ap.add_argument("--inbox", default=os.path.expanduser("~/k1/inbox"))
     ap.add_argument("--outbox", default=os.path.expanduser("~/k1/outbox"))
     ap.add_argument("--poll-s", type=float, default=5.0)
-    ap.add_argument("--stub", action="store_true", help="run jobs with the echo stub (no Docker)")
+    ap.add_argument("--stub", action="store_true", help="run jobs with the echo stub (no Docker/store)")
+    ap.add_argument("--laptop-host", help="the laptop (runs/ source of truth) for the scp data plane")
+    ap.add_argument("--laptop-user", default="k1")
+    ap.add_argument("--laptop-port", type=int, default=22)
+    ap.add_argument("--identity", default=None)
+    ap.add_argument("--remote-runs", default="~/k1/runs")
     a = ap.parse_args(argv)
     caps = detect_caps(a.worker_id)
     client = GrpcClient(a.scheduler)
     client.register(a.worker_id, caps)
     print("WORKER %s registered: backends=%s vram=%.1f ram=%.1f images=%d"
           % (a.worker_id, caps["backends"], caps["vram_gb"], caps["ram_gb"], len(caps["images"])))
-    runner = stub_runner  # docker_run_job needs a Store impl; wired on the box (VERIFY ON CLUSTER)
+    if a.stub:
+        runner = stub_runner
+    else:
+        if not a.laptop_host:
+            raise SystemExit("--laptop-host is required for real (non --stub) jobs (the scp data plane)")
+        store = ScpStore(a.laptop_host, user=a.laptop_user, port=a.laptop_port,
+                         identity=a.identity, remote_runs=a.remote_runs)
+        runner = lambda job, heartbeat=None: docker_run_job(  # noqa: E731
+            job, store, a.inbox, a.outbox, heartbeat=heartbeat)
     core = WorkerCore(a.worker_id, caps, client, runner, time.time)
     while True:
         if core.run_once() is None:
@@ -291,6 +366,37 @@ def _selftest():
         w2 = WorkerCore("w1", cpu, sched, boom, clock)
         assert w2.run_once() == "20260710T130003-raise"
         assert q.get("20260710T130003-raise")["status"] in ("queued", "failed")  # requeued then would fail
+
+        # Store + docker_run_job data-plane flow: LocalStore + a FAKE container that writes an artifact
+        # into the outbox -- exercises fetch -> run -> hash -> push with no ssh/Docker.
+        storeroot = os.path.join(root, "store")
+        os.makedirs(os.path.join(storeroot, "run-X"))
+        with open(os.path.join(storeroot, "run-X", "manifest.json"), "w") as f:
+            f.write('{"run_id": "run-X"}')
+        ls = LocalStore(storeroot)
+        djob = jobspec.new_job("20260710T140000-store", "recon", "k1recon", ["run-X"],
+                               requires={"backend": "cpu"})
+
+        def fake_container(cmd):
+            for i, a in enumerate(cmd):                        # find the -v <outbox>:/outbox mount
+                if a == "-v" and str(cmd[i + 1]).endswith(":/outbox"):
+                    ob = str(cmd[i + 1])[: -len(":/outbox")]
+                    with open(os.path.join(ob, "mesh.ply"), "w") as f:
+                        f.write("ply-bytes")
+            return 0
+
+        status, manifest, err = docker_run_job(
+            djob, ls, os.path.join(root, "inbox"), os.path.join(root, "outbox"),
+            run_container=fake_container)
+        assert status == "done", (status, err)
+        assert any(a["path"] == "mesh.ply" for a in manifest["artifacts"]), manifest
+        # the fetched input landed, and the artifact was pushed back to runs/run-X/recon/
+        assert os.path.isfile(os.path.join(root, "inbox", djob["job_id"], "run-X", "manifest.json"))
+        assert os.path.isfile(os.path.join(storeroot, "run-X", "recon", "mesh.ply"))
+        # a non-zero container rc is a reported failure, not a raise
+        s2, _, e2 = docker_run_job(djob, ls, os.path.join(root, "inbox2"), os.path.join(root, "outbox2"),
+                                   run_container=lambda cmd: 7)
+        assert s2 == "failed" and "exit 7" in e2
 
         # detect_caps always returns at least a cpu worker with a hostname (no hardware assumptions)
         caps = detect_caps("probe")

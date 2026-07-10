@@ -228,8 +228,26 @@ def _selftest():
         shutil.rmtree(root, ignore_errors=True)
 
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] != "selftest":
-        raise SystemExit("usage: python cluster/scheduler.py selftest   (serve() is VERIFY ON CLUSTER)")
+def main(argv):
+    import argparse
+    ap = argparse.ArgumentParser(description="job-pool scheduler")
+    sub = ap.add_subparsers(dest="cmd")
+    sv = sub.add_parser("serve", help="run the gRPC scheduler over a filesystem queue (VERIFY ON CLUSTER)")
+    sv.add_argument("--queue", required=True, help="queue dir on the coordinator (ext4, not /mnt/c)")
+    sv.add_argument("--port", type=int, default=50077)
+    sv.add_argument("--lease-timeout", type=int, default=DEFAULT_LEASE_TIMEOUT_S)
+    sv.add_argument("--max-attempts", type=int, default=3)
+    sub.add_parser("selftest")
+    a = ap.parse_args(argv)
+    if a.cmd == "serve":
+        core = SchedulerCore(JobQueue(a.queue, max_attempts=a.max_attempts),
+                             lease_timeout_s=a.lease_timeout)
+        serve(core, port=a.port, block=True)      # needs grpc + generated stubs; raises loudly if absent
+        return 0
     _selftest()
     print("SCHEDULER-SELFTEST-OK")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
