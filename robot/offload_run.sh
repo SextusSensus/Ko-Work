@@ -38,6 +38,23 @@ RERUN="${RERUN_DIR:-$SRC/rerun}"
 
 mkdir -p "$RUNS" || { echo "offload: cannot mkdir $RUNS" >&2; exit 1; }
 
+# DATA-SAFETY quiescence guard: the .rrd is only COMPLETE once the follow node has exited and flushed
+# it. Wait (bounded) for no follow node before selecting/copying sources. Without this, a post-session
+# offload fired right after the app's SIGTERM (K1Finder Stop-Tracker fires Invoke-Offload without
+# waiting for node exit) can copy a still-being-written .rrd, hash the TRUNCATED copy into manifest.json
+# (so the pull "verifies" it clean), then rm the original -> the tail of the run is lost, undetectably.
+# At session start (reconcile) the new node hasn't launched yet, so this only waits out a PRIOR node
+# still flushing after a kill.
+_qn=0
+while pgrep -f 'follow_person_k1\.py' >/dev/null 2>&1; do
+  _qn=$((_qn + 1))
+  if [ "$_qn" -gt 60 ]; then
+    echo "offload: a follow node is STILL running after 30s -> ABORT (refusing to bundle a live run; its data stays put for the next reconcile sweep)" >&2
+    exit 4
+  fi
+  sleep 0.5
+done
+
 # The newest .rrd is this session's recording. It exists ONLY for a capture run (--rerun); a
 # no-rerun run still bundles its JSONL + err (RUN_ARTIFACTS.md: pixels/depth are opt-in).
 RRD="$(ls -1t "$RERUN"/k1_follow_*.rrd 2>/dev/null | head -1)"
@@ -73,7 +90,22 @@ RUN_ID="${STAMP}_${SHA}"
 
 DEST="$RUNS/$RUN_ID"
 TMP="$RUNS/.${RUN_ID}.partial"
-if [ -d "$DEST" ]; then echo "offload: $DEST already exists -> nothing to do"; exit 0; fi
+if [ -d "$DEST" ]; then
+  # The bundle is already published. If offload was killed AFTER publish (mv) but BEFORE source rotation
+  # (power cut / dropped ssh), the source .rrd is still in rerun/ AND already inside the bundle -> finish
+  # the rotation now, else every future reconcile recomputes this same RUN_ID, re-hits this exit, and
+  # never rotates: the stale .rrd wedges reconcile forever and the append-mode JSONL is never truncated
+  # (contaminating later sessions' forensics). Only rm the .rrd once it's confirmed present in the
+  # bundle (data-safe); nothing writes the JSONL between the killed node and here, so truncation is safe.
+  if [ -n "$RRD" ] && [ -f "$RRD" ] && [ -f "$DEST/$(basename "$RRD")" ]; then
+    echo "offload: $DEST already published but sources un-rotated -> finishing rotation"
+    rm -f "$RRD" "$(dirname "$RRD")/intrinsics.json"
+    [ -f "$JSONL" ] && : > "$JSONL"
+  else
+    echo "offload: $DEST already exists -> nothing to do"
+  fi
+  exit 0
+fi
 rm -rf "$TMP"; mkdir -p "$TMP" || { echo "offload: cannot mkdir $TMP" >&2; exit 1; }
 
 # --- collect (COPY everything into .partial; SOURCES stay put until AFTER a successful publish, so
