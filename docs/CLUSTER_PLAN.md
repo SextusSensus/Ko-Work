@@ -95,7 +95,16 @@ scheduler and a CUDA worker. They are separate processes; nothing requires them 
 |---|---|---|---|
 | `ingest` | k1ingest (or the train image) | cpu | `eval/batch_ingest.py` |
 | `recon` | k1recon (P6G.2, CPU-lean v1) | cpu | `docs/RECON_CONTRACT.md` stage CLI |
-| `train` | k1train (torch cu126) | cuda, min_vram_gb=8 | `docs/TRAIN_CONTRACT.md` + `eval/checkpoint_contract.py` |
+| `train` | k1train:cu126 (Ampere/3080) **or** k1train:cu128 (Blackwell/5060) | cuda, min_vram_gb=8, **min_ram_gb** | `docs/TRAIN_CONTRACT.md` + `eval/checkpoint_contract.py` + `eval/train_act.py` |
+
+> **Two CUDA workers (2026-07-10):** the laptop 5060 (Blackwell sm_120) is a 2nd CUDA worker alongside
+> the desktop 3080 (Ampere sm_86) — `train_act.py` is VERIFIED on the 5060. cu126 wheels don't target
+> sm_120, so there are **two `k1train` image variants** (cu126/cu128); both must produce metric-comparable
+> (not bit-identical) weights — GPU-stochastic outputs are metric-gated per the §2 determinism doctrine,
+> `node_id`+`seed`+`image_digest` in each result attribute a numeric disagreement to a box. **Train jobs
+> MUST set `min_ram_gb`** (a value, not a schema change — 16GB binds the laptop). **Open (recommend (a)):**
+> `requires` has no `cuda_arch` field — (a) both images give equivalent weights so any CUDA worker is
+> fine, or (b) add a `cuda_arch=sm_86|sm_120` tag if a job must pin an arch.
 | `splat` | k1recon v2 (CUDA/gsplat) | cuda | P6G.4 (deferred) |
 
 A DDP job type (one model, N workers) is **not** built; the job spec's `requires` + a future

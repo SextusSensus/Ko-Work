@@ -11,14 +11,20 @@ Output of a multi-agent design pass (4 expert lenses + 2 adversarial verifiers +
 grounded in the repo + the three confirmed machines. Reference for the P7/P8 execution phases.
 
 **Machines:** LAPTOP (this PC — Ryzen AI 9 270 + XDNA2 NPU, RTX 5060 Laptop/Blackwell ~8GB, 16GB
-LPDDR5X, no Python) · DESKTOP (Ryzen 9 5900X, 64GB DDR4, RTX 3080/Ampere 10GB) · JETSON (Orin, robot).
+LPDDR5X, anaconda py 3.13.9 + a dedicated cu128 `train` conda env → **now a 2nd CUDA worker**) ·
+DESKTOP (Ryzen 9 5900X, 64GB DDR4, RTX 3080/Ampere 10GB) · JETSON (Orin, robot).
+
+> **Update 2026-07-10:** training also runs on the LAPTOP. The base anaconda torch was CPU-only; a
+> dedicated cu128 `train` env gives torch 2.11.0+cu128 that sees the 5060 (Blackwell sm_120) —
+> `train_act.py selftest` passes ON the 5060. So the laptop is a second CUDA worker beside the 3080;
+> the machine table below is superseded by the job-pool (`train` is a capability-routed JOB, not a box).
 
 ## 1. Machine-assignment table
 
 | Task | Machine | Why |
 |---|---|---|
 | P7.1 batch ingest → versioned LeRobot dataset | **Desktop** | CPU/IO (parquet+ffmpeg); 64GB; one host = stable hash. Laptop has no Python. |
-| P7.2 train small ACT (vx,vyaw), val on held-out episodes | **Desktop** | Mature Ampere CUDA/PyTorch; ACT is tiny, 10GB VRAM ample. 5060 Blackwell needs unpinnable CUDA 12.8+. |
+| P7.2 train small ACT (vx,vyaw), val on held-out episodes | **Desktop OR Laptop** (either CUDA worker) | ACT is tiny (~2M params); runs on any `backend=cuda, min_vram_gb=8` worker. Desktop 3080/Ampere/cu126 (10GB/64GB); Laptop 5060/Blackwell sm_120/cu128 (8GB/16GB, VERIFIED `train_act.py` runs there). **16GB RAM binds the laptop's batch/num_workers/image-cache** — set `min_ram_gb` per job so image-heavy configs route to the 64GB desktop; 8GB VRAM is a TIGHT fit, set `min_vram_gb` from a measured peak, not assumed 8. Two sweeps run concurrently ≈ 2× throughput (no DDP). |
 | P7.3a ONNX export (fixed obs contract) | **Desktop** | `torch.onnx.export` + ORT-vs-torch parity check. Stops at ONNX. |
 | P7.3b TRT engine (FP16) + p99 w/ YOLO+ReID live | **Jetson** | **Invariant: engines built on the Orin, never copied.** Measure pinned, deploy power, all resident. |
 | P7.4 shadow inference node (logs shadow_vx/vyaw/latency/hash) | **Jetson** | Consumes live obs; **no bridge handle**; fails isolated like `_reid_watchdog`; shadow-off diff EMPTY. |
@@ -105,8 +111,13 @@ version/contract/stats/source-runs; a re-run over the same runs reproduces `cont
 2. Stand up laptop `runs/` → desktop sync (one-line rsync-over-WSL or robocopy, post-offload).
 3. Make `jetson_clocks` pinning durable (boot service) — every unpinned reboot regresses loop p99
    ~20-28%; any P7.3/P7.4 latency taken unpinned is invalid.
-4. **Laptop needs no Python** (only SSH offload + one sync). The XDNA2 NPU has **no role** (INT8 ONNX,
-   not training/geometry; shadow runs on the Jetson).
+4. **The laptop now runs anaconda py + a cu128 `train` env and is a 2nd CUDA worker** (small ACT sweeps
+   + dev iteration). It stays the data source of truth + Jetson-facing landing store. **Do NOT
+   co-schedule recon + train (or a live capture-offload + train) on the laptop — 16GB RAM is shared with
+   the OS and would OOM.** The pool enforces one-job-per-worker; a *bare* hand-run script alongside the
+   worker breaks that (an operational rule). The **XDNA2 NPU** is a separate accelerator for **INT8 ONNX
+   inference only** (its own three offline job types — `docs/NPU_UTILIZATION.md`); it has **no
+   training/geometry role**, and the laptop's CUDA capability comes from the 5060 GPU, not the NPU.
 
 ## 5. Open questions for the user
 

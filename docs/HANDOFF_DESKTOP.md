@@ -30,7 +30,7 @@ This doc is the entry point; it exists so you don't need the laptop session's tr
 
 | Machine | Role |
 |---|---|
-| **Laptop** (RTX 5060, 16 GB, NO Python) | Repo home + robot-facing control. `runs/` landing store (`desktop/Pull-Run.ps1` pulls from the Jetson; `desktop/Runs.ps1` indexes). Source of truth. |
+| **Laptop** (RTX 5060 Blackwell 8 GB, 16 GB; anaconda py + cu128 `train` env → **2nd CUDA worker**) | Repo home + robot-facing control. `runs/` landing store (`desktop/Pull-Run.ps1`; `desktop/Runs.ps1` indexes). Source of truth. **Also a 2nd CUDA worker for small ACT sweeps** (`train_act.py` VERIFIED on the 5060) — never co-schedule recon/train or capture-offload+train on it (16 GB RAM). XDNA2 NPU = INT8 inference only (`docs/NPU_UTILIZATION.md`). |
 | **Desktop** (this box) | Stateless GPU compute: P6G substrate → P7 ingest/train + P8 reconstruction. Everything here must be regenerable from `runs/` + the pinned recon image — wiping this box loses nothing. |
 | **Jetson** (robot) | Exactly three things ever: TRT engine build (P7.3), shadow node (P7.4), replay-gated geofence (P8.4b). Control loop is sacred. **No route/credentials from this desktop to the robot — by construction.** |
 
