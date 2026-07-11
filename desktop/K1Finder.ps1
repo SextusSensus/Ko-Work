@@ -1052,7 +1052,10 @@ function Get-TrackExtraArgs {
     # The node auto-disables Rerun (RERUN-DISABLED-SLOW) if the loop goes over budget with it on, so the
     # gait is never held hostage to logging -- but the loop-cost gate (RERUN_PLAN.md) is still the
     # operator's call before ticking this WITH DRIVE.
-    if($trackRerun -and $trackRerun.Checked){ $a += ('--rerun --rerun-mode save --rerun-dir {0}' -f $script:RerunDir) }
+    # Recording ON also enables planar odometry (P6.1a/P8): --odom-topic puts /odom/x,y,theta on the
+    # .rrd so the offline stitch (eval/rrd_map.py) has per-frame poses. Guarded on the node side (msg
+    # type absent -> odom disabled, follow proceeds); recording-only, never feeds the control law.
+    if($trackRerun -and $trackRerun.Checked){ $a += ('--rerun --rerun-mode save --rerun-dir {0} --odom-topic /odometer_state' -f $script:RerunDir) }
     # Deadman HB: node gates velocity on a fresh /tmp/k1_hb mtime AND env-arms the bridge's own
     # heartbeat watchdog. The app-side relay (Start-HbRelay) is started by Start-Tracker.
     if($trackHbChk -and $trackHbChk.Checked){ $a += '--require-heartbeat' }
