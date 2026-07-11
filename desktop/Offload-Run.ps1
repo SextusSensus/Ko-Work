@@ -35,3 +35,25 @@ if (Test-Path $pull) {
 } else {
   Write-Host "Offload-Run: Pull-Run.ps1 not found beside this script -- bundle assembled on robot but not pulled."
 }
+
+# 3) Workstation-side: auto-label the pulled bundle(s) so batch_ingest can include the 'pass' runs
+# (P6.4). Best-effort: needs a laptop python with rerun (the anaconda 'train' env this project uses);
+# absent -> the bundle is still pulled, just label it later with `Runs.ps1 label`. label_run --all is
+# idempotent per SCORER_VERSION, so re-runs only score new/unlabeled bundles. The labeler reads each
+# run's true standoff/geofence from the .rrd's own static refs, so app runs (CLI standoff) score right.
+$repoRoot = Split-Path $PSScriptRoot -Parent
+$labeler  = Join-Path $repoRoot 'eval\label_run.py'
+$runsDir  = Join-Path $repoRoot 'runs'
+$pyCand   = @(
+  'C:\Users\toddm\anaconda3\envs\train\python.exe',
+  (Join-Path $env:USERPROFILE 'anaconda3\envs\train\python.exe'),
+  (Join-Path $env:USERPROFILE 'miniconda3\envs\train\python.exe')
+)
+$py = $pyCand | Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($py -and (Test-Path $labeler)) {
+  $env:KMP_DUPLICATE_LIB_OK = 'TRUE'
+  Write-Host "Offload-Run: labeling pulled runs (label_run --all) ..."
+  & $py $labeler --runs-dir $runsDir --all 2>&1 | Where-Object { $_ -match '^label:' }
+} else {
+  Write-Host "Offload-Run: no train-env python / label_run.py -> bundle pulled but NOT labeled (run Runs.ps1 label)."
+}
