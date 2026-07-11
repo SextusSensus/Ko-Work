@@ -139,9 +139,17 @@ function Deploy-FollowFiles {
     # abort the launch, not leave a stale config in place and report success.
     $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($defaults, ("{0}@{1}:/home/booster/config/defaults.yaml" -f $script:SshUser, $ip)))
     if ($rc -ne 0) { $script:DeployErr = ("scp of config/defaults.yaml to {0} failed (exit {1}) -- the node fail-closes without it." -f $ip, $rc); return $false }
-    foreach ($prof in @('dev.yaml', 'demo.yaml', 'field.yaml')) {
+    foreach ($prof in @('dev.yaml', 'demo.yaml', 'field.yaml', 'capture.yaml')) {
         $ps = Join-Path $cfgDir $prof
         if (Test-Path $ps) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($ps, ("{0}@{1}:/home/booster/config/{2}" -f $script:SshUser, $ip, $prof))) }
+    }
+    # BEST-EFFORT extras (P6.1b/P6.2): the capture launcher + post-run offload assembler. NOT follow
+    # imports -- a missing local copy or failed push must NOT block a launch (unlike the hard-required
+    # helpers above). run_follow_capture.sh forces --profile capture; offload_run.sh bundles a finished
+    # run for Pull-Run.ps1 / auto-offload.
+    foreach ($f in @('run_follow_capture.sh', 'offload_run.sh')) {
+        $src = Join-Path $ROBOT_DIR $f
+        if (Test-Path $src) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f))) }
     }
     # k1_rerun.py is BEST-EFFORT (review fix): Rerun is never a launch dependency -- the node
     # degrades to a no-op sink when the module is absent (follow_person_k1.py _NullRR), so a
@@ -152,6 +160,16 @@ function Deploy-FollowFiles {
     # the "Fix Cameras" action run it), NOT a follow import, so a missing copy must not block a launch.
     $ch = Join-Path $ROBOT_DIR 'cam_health.sh'
     if (Test-Path $ch) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($ch, ("{0}@{1}:/home/booster/cam_health.sh" -f $script:SshUser, $ip))) }
+    # P6.2a: stamp the deploying repo's short SHA to /home/booster/DEPLOY_VERSION so run-offload
+    # manifests (offload_run.sh) carry a real git_version instead of 'nogit' -- dataset/run provenance
+    # for P7. BEST-EFFORT: git absent, not a repo, or a failed push just leaves the manifest 'nogit';
+    # the deploy still succeeds. No 2>redirect on the native git call (PS 5.1 wraps native stderr).
+    try {
+        $sha = (git -C $ROBOT_DIR rev-parse --short HEAD | Select-Object -First 1)
+        if ($sha -and ($sha -match '^[0-9a-fA-F]{4,40}$')) {
+            $null = Invoke-Proc ssh.exe ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser, $ip), ("printf '%s' '{0}' > /home/booster/DEPLOY_VERSION" -f $sha)))
+        }
+    } catch { }
     return $true
 }
 
@@ -480,6 +498,7 @@ $script:TrackProc=$null; $script:TrackPS=$null; $script:TrackRS=$null; $script:T
 $script:HbProc=$null   # Deadman-HB relay ssh process (P2 #12); alive only while the follow runs with 'Deadman HB' checked
 $script:trackMs=$null; $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1
 $script:TrackStart=[datetime]::MinValue
+$script:TrackRerunOn=$false      # P6.2b: did the current/last Tracker session record a .rrd? -> post-run offload
 $script:TrackMaxSec=125          # UI-side hard session watchdog (python also self-limits at 120s)
 $script:TrackToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 $ctrlSync = [hashtable]::Synchronized(@{ Log=(New-Object System.Collections.Queue); Stop=$false })
@@ -1330,6 +1349,9 @@ function Start-Tracker([bool]$drive){
     $ps=[powershell]::Create(); $ps.Runspace=$rs; [void]$ps.AddScript($trackReader); [void]$ps.BeginInvoke()
     $script:TrackPS=$ps; $script:TrackRS=$rs
     $script:TrackOn=$true; $script:TrackDrive=$drive; $script:TrackStart=[datetime]::Now
+    # P6.2b: remember whether THIS session records a .rrd (rerun on, post any auto-uncheck above), so
+    # Stop-Tracker fires the post-run offload only for capture sessions.
+    $script:TrackRerunOn = [bool]($trackRerun -and $trackRerun.Checked)
     Set-TrackLockout $true
     Set-TrackBadge 0
     $script:ReidBadgeState=''; $script:ReidLastGood='CUDA'; Set-ReidBadge '--'   # clear stale health + provider memory from a prior session; repopulated from REID-ENGINE lines
@@ -1373,8 +1395,27 @@ function Stop-HbRelay{
     $script:HbProc=$null
 }
 
+# P6.2b: fire-and-forget post-session offload. Launch Offload-Run.ps1 (ssh bundle -> pull) DETACHED so
+# the WinForms teardown never blocks and this can never throw into it. Only meaningful when the session
+# RECORDED (rerun on); offload_run.sh bundles whatever exists and Pull-Run.ps1 verifies by hash.
+function Invoke-Offload([string]$ip, [string]$profileLabel){
+    try{
+        if(-not $ip){ return }
+        $script = Join-Path $SCRIPT_DIR 'Offload-Run.ps1'
+        if(-not (Test-Path $script)){ Add-LogTrack 'Offload skip: Offload-Run.ps1 not found beside the app.' $amber; return }
+        Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile','-ExecutionPolicy','Bypass','-File',$script,
+            '-Ip',$ip,'-User',$script:SshUser,'-Pass',$script:SshPass,'-Profile',$profileLabel) | Out-Null
+        Add-LogTrack ("Offload started (background): bundle on robot -> pull to runs\ (label $profileLabel).") $accent
+    }catch{ try{ Add-LogTrack ("Offload skip: $_") $amber }catch{} }
+}
+
 function Stop-Tracker([bool]$procAlreadyDead=$false){
     if(-not $script:TrackOn){ return }
+    # P6.2b: capture what the offload needs BEFORE the teardown resets it (TrackDrive is cleared below).
+    $offloadDo = [bool]$script:TrackRerunOn
+    $offloadProfile = if($script:TrackDrive){'tracker-drive'}else{'tracker-preview'}
+    $offloadIp=''; try{ $offloadIp=$ipTrack.Text.Trim() }catch{}
     $trackSync.Stop=$true
     # Tear down the stderr capture FIRST so the ErrorDataReceived handler stops firing across restarts.
     try{ if($script:TrackProc){ $script:TrackProc.CancelErrorRead() } }catch{}
@@ -1407,6 +1448,11 @@ function Stop-Tracker([bool]$procAlreadyDead=$false){
         Add-LogTrack 'Follow stopped (killed ssh + pkill; robot does stop + PREP via SIGHUP/SIGTERM/EOF).' $amber
         $statusLbl.Text='Tracker stopped.'
     }catch{}
+    # P6.2b: AFTER the robot is safed + UI restored, fire the post-run offload for a capture session
+    # (detached, non-blocking, never throws). $script:TrackRerunOn was captured to $offloadDo at the
+    # top, before the teardown reset TrackDrive.
+    if($offloadDo){ Invoke-Offload $offloadIp $offloadProfile }
+    $script:TrackRerunOn = $false
 }
 
 # ============================================================================

@@ -97,6 +97,7 @@ from identity import (  # noqa: E402  (P3.3)
 )
 from perception import (  # noqa: E402  (P3.5)
     PersonDetector, CamNode, bearing_from_x, range_from_bbox_height, target_point_from_box, low_light_boost,
+    pinhole_intrinsics,
 )
 from triggers import ArucoTrigger, GestureTrigger, CompositeTrigger, marker_center  # noqa: E402  (P3.6)
 
@@ -951,7 +952,10 @@ class Follower:
         # diverge (an empty-string topic used to subscribe nothing yet still be "required").
         depth_topic = self.a.depth_topic if (self.a.depth_topic
                                              and self.a.depth_topic.lower() != "none") else None
-        self.node = CamNode(topics, depth_topic)
+        _odom_topic = getattr(self.a, "odom_topic", "") or ""
+        if _odom_topic.lower() == "none":
+            _odom_topic = ""
+        self.node = CamNode(topics, depth_topic, odom_topic=_odom_topic)
         # FR-1 (CRITICAL): service CamNode on a DEDICATED background executor thread. The old
         # one-spin_once-per-10Hz-tick pattern measured the LOOP's callback-servicing rate, not the
         # sensor: with 2 RGB subs + depth at KEEP_LAST 1, depth was serviced at <=3.3-5Hz on a
@@ -984,9 +988,16 @@ class Follower:
                 sys.exit(4)
 
         period = 1.0 / max(1.0, self.a.rate_hz)
+        # P6.4: record the EFFECTIVE follow thresholds in the decision log so the offline auto-labeler
+        # (eval/label_run.py) scores each run against the values ACTUALLY in effect. App runs set these
+        # via CLI (--standoff-m / --max-follow-range), not a bundled profile, so config-file defaults
+        # would mislabel a clean run 'review'. Log-only, decision-neutral.
+        log("CONFIG standoff_m=%.3f max_follow_range=%.3f min_safe_range=%.3f"
+            % (self.a.standoff_m, self.a.max_follow_range, self.a.min_safe_range))
         last_seq = -1
         last_frame_mono = 0.0
         ever_framed = False
+        intr_logged = False       # P6.1: emit camera intrinsics once, on the first framed tick
         last_depth_state = None   # depth-health heartbeat (log on transition + 10s pulse)
         last_depth_hb = 0.0
 
@@ -1064,6 +1075,17 @@ class Follower:
                 if frame is not None:
                     ever_framed = True
                     last_frame_mono = now
+                    # P6.1: log camera intrinsics ONCE, now that a frame's true (w,h) is known.
+                    # Gated on the (default-off) Rerun sink -> strictly part of a capture bundle and
+                    # byte-identical when recording is off. No CameraInfo on this rig, so the model is
+                    # derived from --hfov-deg and marked approximate (calibrated in P8.1).
+                    if not intr_logged and rerun_sink._RR.ok:
+                        intr_logged = True
+                        _fh, _fw = frame.shape[:2]
+                        _intr = pinhole_intrinsics(_fw, _fh, self.a.hfov_deg)
+                        rerun_sink._RR.pinhole("/camera/rgb", _intr["width"], _intr["height"],
+                                               _intr["fx"], _intr["fy"], _intr["cx"], _intr["cy"])
+                        rerun_sink._RR.write_intrinsics(_intr)
                     # Low-light boost ONCE here so detection (YOLO/ArUco/color) and
                     # the annotated --stream view all use the same enhanced frame.
                     frame = low_light_boost(frame, self.a.low_light, self.a.ll_dark_thresh)
@@ -1109,10 +1131,19 @@ class Follower:
                     rerun_sink._RR.scalar("/diag/loop_ms", dt * 1000.0)   # true loop dt straight into the .rrd
                 # P5.3: always-on per-tick forensic record (cmd_vel, fsm, loop timing, lock). Inert
                 # when the sink couldn't open (off-robot); never raises (EventLog swallows write errors).
-                self.events.tick(t=round(time.time(), 3), fsm=self.state, walk=bool(self.walking),
-                                 vx=round(self._ev_cmd[0], 4), vy=round(self._ev_cmd[1], 4),
-                                 vyaw=round(self._ev_cmd[2], 4), loop_ms=round(dt * 1000.0, 1),
-                                 seed=(self.seed is not None), hb_req=bool(self.require_hb))
+                _ev = dict(t=round(time.time(), 3), fsm=self.state, walk=bool(self.walking),
+                           vx=round(self._ev_cmd[0], 4), vy=round(self._ev_cmd[1], 4),
+                           vyaw=round(self._ev_cmd[2], 4), loop_ms=round(dt * 1000.0, 1),
+                           seed=(self.seed is not None), hb_req=bool(self.require_hb))
+                # P6.1a: attach planar odometry when recorded (odom_topic set + fresh) -- P8 trajectory
+                # prior. Absent by default -> the line is unchanged (byte-identical forensic contract).
+                _latest_odom = getattr(self.node, "latest_odom", None)
+                if callable(_latest_odom):
+                    _od = _latest_odom()
+                    if _od is not None:
+                        _ev["odom_x"], _ev["odom_y"], _ev["odom_theta"] = (
+                            round(_od[0], 4), round(_od[1], 4), round(_od[2], 5))
+                self.events.tick(**_ev)
                 # Always-on loop-timing observability (autonomy-ops: observable by default). WORK-time
                 # per iteration (before the fill-sleep); a 10s p50/p99/max pulse tagged rerun on/off,
                 # so the --rerun loop-cost gate compares directly against the baseline in the logs.
@@ -2762,6 +2793,11 @@ def parse_args(argv):
     p.add_argument("--topic", default=DEF_TOPIC)
     p.add_argument("--depth-topic", default="/boostercamera/head/depth",
                    help="depth image topic ('none' to disable)")
+    p.add_argument("--odom-topic", default="",
+                   help="P6.1a: planar base odometry topic (booster_interface/msg/Odometer {x,y,theta}); "
+                        "'' disables (default -> no subscription, byte-identical). Recording only -- feeds "
+                        "the .rrd + JSONL for P8 map stitching, never the control law. The capture profile "
+                        "sets '/odometer_state'; needs BoosterRos2Interface sourced (run_follow*.sh do).")
     p.add_argument("--bridge", default="./loco_follow_bridge",
                    help="path to compiled loco_follow_bridge (drive mode)")
     p.add_argument("--yolo-path", default=DEF_YOLO_PATH,

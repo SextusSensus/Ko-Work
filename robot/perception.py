@@ -37,6 +37,27 @@ def range_from_bbox_height(box_h_px, h_img, hfov_deg, person_h_m):
     return (person_h_m * f) / box_h_px
 
 
+def pinhole_intrinsics(w_img, h_img, hfov_deg):
+    """Derived pinhole intrinsics for the recorded run (P6.1). This rig publishes NO CameraInfo
+    (see focal_px above / range_from_bbox_height), so fx is derived from the configured --hfov-deg
+    and fy is set equal to it (square-pixel monocular proxy); the principal point is the image
+    centre. Marked approximate=True: P8.1 replaces this with a calibrated/CameraInfo intrinsic
+    before any RGBD reconstruction trusts it. Returns a plain dict (JSON-serialisable, no numpy)."""
+    f = focal_px(w_img, hfov_deg)
+    return {
+        "model": "pinhole_from_hfov",
+        "approximate": True,
+        "width": int(w_img),
+        "height": int(h_img),
+        "hfov_deg": float(hfov_deg),
+        "fx": float(f),
+        "fy": float(f),
+        "cx": w_img / 2.0,
+        "cy": h_img / 2.0,
+        "note": "fx from --hfov-deg; fy:=fx (no vertical FOV published); calibrate in P8.1",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Person detection (YOLO11n ONNX). Loaded ONCE at startup. Never crashes loop.
 # ---------------------------------------------------------------------------
@@ -185,7 +206,7 @@ def low_light_boost(bgr, on=True, thresh=LL_DARK_THRESH):
 # ROS node -- BEST_EFFORT camera (both head topics, deduped) + depth.
 # ---------------------------------------------------------------------------
 class CamNode(Node):
-    def __init__(self, topics, depth_topic):
+    def __init__(self, topics, depth_topic, odom_topic=""):
         super().__init__("k1_follow_person")
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -200,6 +221,21 @@ class CamNode(Node):
             self.create_subscription(Image, t, self._cb, qos)
         if depth_topic:
             self.create_subscription(Image, depth_topic, self._depth_cb, qos)
+        # P6.1a: OPTIONAL planar odometry, recording-only (never feeds the control law). Guarded:
+        # the Odometer msg lives in the Booster interface workspace (booster_interface.msg), which a
+        # plain ssh may not have sourced -- a failed import or subscribe just disables odom recording
+        # (latest_odom() stays None) and NEVER stops the follow. Default odom_topic '' = no subscription
+        # (byte-identical). The capture profile turns it on for P8 map stitching.
+        self._odom_lock = threading.Lock()
+        self._odom = None          # (x, y, theta) planar pose, or None until first message
+        self._odom_stamp = 0.0
+        self._odom_count = 0
+        if odom_topic:
+            try:
+                from booster_interface.msg import Odometer
+                self.create_subscription(Odometer, odom_topic, self._odom_cb, qos)
+            except Exception as e:  # noqa: BLE001 -- msg type/workspace absent -> odom disabled, follow proceeds
+                print("ODOM subscribe failed (%s) -> odometry recording disabled (follow proceeds)" % e)
         self._lock = threading.Lock()
         self._latest = None        # newest BGR frame
         self._stamp = 0.0          # monotonic time it arrived
@@ -268,6 +304,36 @@ class CamNode(Node):
         if rerun_sink._RR.ok:
             rerun_sink._RR.frame(self._seq, time.time())
             rerun_sink._RR.depth("/camera/depth", d, seq=_dcount)
+
+    def _odom_cb(self, msg):
+        # P6.1a: stash the latest planar pose + log to the (default-off) Rerun sink. Recording only;
+        # wrapped so a malformed message can never kill the cam-spin thread. Booster Odometer is
+        # {float32 x, y, theta}; be defensive about the exact field names anyway.
+        try:
+            x = float(getattr(msg, "x", 0.0))
+            y = float(getattr(msg, "y", 0.0))
+            th = float(getattr(msg, "theta", getattr(msg, "yaw", 0.0)))
+        except Exception:  # noqa: BLE001
+            return
+        now = time.monotonic()
+        with self._odom_lock:
+            self._odom = (x, y, th)
+            self._odom_stamp = now
+            self._odom_count += 1
+        if rerun_sink._RR.ok:
+            rerun_sink._RR.scalar("/odom/x", x)
+            rerun_sink._RR.scalar("/odom/y", y)
+            rerun_sink._RR.scalar("/odom/theta", th)
+
+    def latest_odom(self, max_age=1.0):
+        """Latest (x, y, theta) planar pose if fresh within max_age, else None. Odometry publishes
+        slower than the camera, so the window is looser than depth's."""
+        with self._odom_lock:
+            if self._odom is None:
+                return None
+            if (time.monotonic() - self._odom_stamp) > max_age:
+                return None
+            return self._odom
 
     def take_if_new(self, last_seq):
         with self._lock:

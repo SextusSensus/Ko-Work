@@ -18,6 +18,12 @@
 *.bat    text eol=crlf
 *.vbs    text eol=crlf
 
+# Linux-container / cross-machine build inputs (recon image, gRPC proto) -> always LF.
+*.Dockerfile text eol=lf
+Dockerfile   text eol=lf
+*.in         text eol=lf
+*.proto      text eol=lf
+
 # Model / recording blobs -> never apply text or eol conversion.
 *.onnx   binary
 *.engine binary

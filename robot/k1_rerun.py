@@ -24,6 +24,8 @@ to rerun 0.23.1 -- the newest release that allows numpy 1.x; >=0.23.2 requires n
 break the numpy-1.26-ABI follow stack (onnxruntime/cv2/rclpy). close() uses a no-arg flush() that
 blocks on both. The API is identical across both versions for everything this sink uses.
 """
+import json
+import os
 import re
 import time as _time
 
@@ -33,6 +35,8 @@ _RSRC_CODE = {"depth": 2.0, "bboxH": 1.0}
 # FSM state -> scrubbable numeric series (alongside the text log). Keys are the EXACT node S_*
 # string values (follow_person_k1.py:1722-1726) -- note the search state is "SEARCH_MARKER", not
 # "SEARCH" (a plain "SEARCH" here logged -1 for the most common state in every .rrd).
+# SOURCE OF TRUTH for the FROZEN categorical encoding of the P7 dataset's fsm_state_id feature: keep
+# this in exact sync with eval/fsm_states.json (P7.1 ingest asserts coverage against it).
 _STATE_CODE = {"TRACK": 3.0, "REACQUIRE": 2.0, "SEARCHING": 1.5,
                "SEARCH_MARKER": 1.0, "SEARCH": 1.0, "PARKED": 0.0}
 
@@ -134,6 +138,7 @@ class RerunSink:
         self._standoff = float(standoff or 0.0)
         self._max_follow = float(max_follow or 0.0)
         self._refs_done = False
+        self._intr_done = False
         if not enabled:
             return
         try:
@@ -251,6 +256,40 @@ class RerunSink:
                 if val and val > 0:
                     self.rr.log("/follow/range/%s" % name,
                                 self.rr.Scalars(float(val)), static=True)
+        except Exception as e:
+            self._fault(e)
+
+    # ---------- camera intrinsics (P6.1: log once per run for P8 reconstruction) ----------
+    def pinhole(self, entity, w, h, fx, fy, cx, cy):
+        """Log the camera model as a static rr.Pinhole so the .rrd is self-describing for offline
+        RGBD work (P8). Idempotent (once-per-run latch). rr.Pinhole(resolution/focal_length/
+        principal_point) is VERIFIED on the pinned 0.23.1 (0 faults) AND read back on 0.33.1
+        (docs/RERUN_COMPAT.md, eval/compat/); wrapped in the fault latch so an API mismatch would just
+        no-op -- Rerun never breaks the follow -- and intrinsics.json is a sidecar backstop regardless."""
+        if not self.ok or self._intr_done:
+            return
+        try:
+            self.rr.log(entity, self.rr.Pinhole(
+                resolution=[float(w), float(h)],
+                focal_length=[float(fx), float(fy)],
+                principal_point=[float(cx), float(cy)]), static=True)
+        except Exception as e:
+            self._fault(e)
+
+    def write_intrinsics(self, data):
+        """Write the intrinsics dict as an intrinsics.json sidecar beside the .rrd (P6.1), so the
+        offload bundle (P6.2) and P8.1 calibration have a machine-readable camera model that does
+        not depend on parsing the .rrd. Once-per-run; save-mode only (no path in connect mode);
+        never raises into the caller."""
+        if not self.ok or self._intr_done:
+            return
+        self._intr_done = True   # latch regardless: pinhole()+sidecar are a single once-per-run emit
+        try:
+            if not self.path or "://" in str(self.path) or ":" in os.path.basename(str(self.path)):
+                return           # connect-mode addr (host:port) -> no sidecar, .rrd Pinhole still logged
+            out = os.path.join(os.path.dirname(os.path.abspath(self.path)), "intrinsics.json")
+            with open(out, "w") as f:
+                json.dump(data, f, indent=2, sort_keys=True)
         except Exception as e:
             self._fault(e)
 

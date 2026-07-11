@@ -215,7 +215,10 @@ def check_clip(log_lines, checks):
 
 # TRACK line -> (id, range_m, range_src, vx). Format:
 #   "TRACK id=1 LOCK c=(273,231) range=1.40[depth] bearing=+00.3deg vx=+0.00 vyaw=... sim=..."
-_TRACK_RE = re.compile(r"TRACK id=(\d+)\s+LOCK\s+.*?range=([\d.]+)\[(\w+)\].*?\svx=([+-]?[\d.]+)")
+# range may be "n/a" (no depth AND no bbox-height estimate) -- those frames MUST still be scored: a
+# forward vx on a no-range frame is the exact lunge class score_outcome exists to catch. Matching only
+# numeric ranges silently dropped them.
+_TRACK_RE = re.compile(r"TRACK id=(\d+)\s+LOCK\s+.*?range=([\d.]+|n/a)\[(\w+)\].*?\svx=([+-]?[\d.]+)")
 
 
 def score_outcome(log_lines, oc):
@@ -234,7 +237,9 @@ def score_outcome(log_lines, oc):
         m = re.search(r"REPLAY-END frames=(\d+)", ln)
         if m:
             total = int(m.group(1))
-    tracks = [(int(m.group(1)), float(m.group(2)), m.group(3), float(m.group(4)))
+    def _rng(s):
+        return None if s == "n/a" else float(s)   # n/a -> no metric range for this frame
+    tracks = [(int(m.group(1)), _rng(m.group(2)), m.group(3), float(m.group(4)))
               for ln in log_lines for m in [_TRACK_RE.search(ln)] if m]
     n = len(tracks)
     metrics = {"frames": total, "track_frames": n}
@@ -253,7 +258,7 @@ def score_outcome(log_lines, oc):
 
     so, band = oc.get("standoff_m"), oc.get("standoff_band_m")
     if so is not None and band is not None:
-        frac = sum(1 for (_, r, _, _) in tracks if abs(r - so) <= band) / n
+        frac = sum(1 for (_, r, _, _) in tracks if r is not None and abs(r - so) <= band) / n
         metrics["standoff_in_band_frac"] = round(frac, 3)
         if frac < oc.get("min_standoff_in_band_frac", 0.0):
             fails.append("standoff_in_band %.2f < %.2f" % (frac, oc.get("min_standoff_in_band_frac", 0.0)))
@@ -266,7 +271,7 @@ def score_outcome(log_lines, oc):
 
     gf = oc.get("geofence_m")
     if gf is not None:
-        gb = sum(1 for (_, r, _, _) in tracks if r > gf)
+        gb = sum(1 for (_, r, _, _) in tracks if r is not None and r > gf)
         metrics["geofence_breach"] = gb
         if gb > oc.get("max_geofence_breach", 0):
             fails.append("geofence_breach %d > %d" % (gb, oc.get("max_geofence_breach", 0)))

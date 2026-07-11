@@ -1,0 +1,21 @@
+# K1 Phase 7 -- ingest + small ACT train + ONNX export (Windows-native desktop, Python 3.12).
+# INSTALL torch/torchvision FIRST, separately, from the CUDA 12.6 index -- NOT via this file:
+#   pip install torch==2.12.1+cu126 torchvision==0.28.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+#   (Ampere / RTX 3080. Fallback if that wheel is absent: torch==2.11.0+cu126 torchvision==0.27.1+cu126)
+# Then: pip install -r requirements-p7.txt
+#
+# Do NOT add the `lerobot` library here -- it pins torch<2.12 / torchvision<0.27 and would fight the
+# training pin. The repo's eval/rrd_to_lerobot.py writes the RAW LeRobot-v3 layout with no lerobot lib.
+# Pins version-verified 2026-07-08 (PyPI / download.pytorch.org); re-check on install (indexes drift).
+
+rerun-sdk>=0.33,<0.34        # REQUIRED: rrd_to_lerobot.py reads the .rrd via rerun.experimental.RrdReader.
+                            # Pinned <0.34: 0.33.1 is VERIFIED to read the robot's 0.23.1-written .rrd
+                            # (docs/RERUN_COMPAT.md). Do NOT bump past this without re-running that check
+                            # -- a rerun that drops 0.23-era chunk migration silently breaks corpus ingest.
+numpy>=2.0,<3                # desktop uses numpy 2.x; do NOT inherit the robot's 1.x pin
+scipy>=1.16,<1.19
+pyarrow>=17,<22              # RAW-layout parquet writer
+imageio>=2.34               # RAW-layout mp4 writer (forces the FFMPEG plugin)
+imageio-ffmpeg==0.6.0       # Windows wheel BUNDLES ffmpeg.exe -- no system ffmpeg needed
+onnx>=1.17,<2               # P7.3a ONNX export
+onnxruntime==1.27.0         # CPU is enough for the torch-vs-ONNX parity check (TRT is Jetson-only)

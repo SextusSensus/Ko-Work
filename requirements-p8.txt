@@ -1,0 +1,13 @@
+# K1 Phase 8 -- Open3D RGBD odometry + loop closure + TSDF, AprilTag anchors (Windows-native, Py 3.12).
+# Same venv as P7. Open3D's Windows wheel is CPU-only (fine on 64 GB). No RTAB-Map, no TensorRT.
+# Pins version-verified 2026-07-08; re-check on install.
+
+open3d==0.19.0                    # CPU TSDF/odometry/loop-closure; Windows wheel caps Python at 3.12
+opencv-contrib-python==5.0.0.93   # OpenCV core + cv2.aruco AprilTag dicts (DICT_APRILTAG_36h11 etc.)
+                                  # NOTE: install this OR opencv-python, never both (they clobber cv2).
+numpy>=2.0,<3
+scipy>=1.16,<1.19
+
+# OPTIONAL -- only if OpenCV's aruco AprilTag proves insufficient. On Windows prefer pyapriltags
+# (clean win_amd64 wheel) over pupil-apriltags (cp312 wheel not guaranteed):
+# pyapriltags==3.4.3.1

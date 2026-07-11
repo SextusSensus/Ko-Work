@@ -1,0 +1,29 @@
+# capture profile (P6.1b) -- a DATA-CAPTURE run for P7 (obs/action) + P8 (RGBD map/domains).
+# It is demo-grade SAFE (this drives) PLUS it turns on the full recording bundle that demo/field leave
+# off for loop-cost. Overlaid on defaults.yaml; CLI still overrides. Selecting it satisfies the
+# fail-closed drive gate (require_heartbeat: true). Profile rules: never set drive/preview here, leave
+# the 7 appearance floors null, unknown keys refuse to start.
+#
+# WHY a separate profile: pixels + depth record ONLY under --rerun (see docs/RUN_ARTIFACTS.md), which
+# demo/field keep off. A P7/P8-usable run needs them ON. Use via run_follow_capture.sh (forces
+# --profile capture) or the app's Rerun checkbox.
+#
+# LOOP-COST GATE (VERIFY ON ROBOT): --rerun + --drive adds loop cost; confirm the on-Orin loop-cost
+# gate PASSES at this rerun_image_every_n before a real drive (RERUN_PLAN.md). Lower N = more P8
+# fidelity + more cost; raise it if the gate is tight. rerun-sdk must be staged on the robot (the app's
+# Rerun checkbox stages the wheels once) or the sink self-disables and no .rrd is written (follow still
+# runs -- Rerun is never a safety dependency).
+
+# --- safety (mirrors demo.yaml; keep in sync -- profiles don't stack) ---
+require_heartbeat: true       # operator deadman mandatory (active-consent tether)
+obstacle_brake: true          # depth forward-clearance reflex on (only ever reduces vx)
+max_follow_range: 3.0         # geofence: stand if depth-range to target > 3.0 m
+coast_frames: 6               # coast ~0.6 s (yaw-only) through brief occlusions
+max_seconds: 120.0            # session watchdog; raise per-capture via CLI for longer map traverses
+obstacle_target_margin: 0.4   # don't brake on the operator being followed
+
+# --- recording bundle (the point of this profile) ---
+rerun: true                   # record the .rrd (RGB + depth + scalars + P6.1 intrinsics)
+rerun_mode: 'save'            # write a file (default; explicit here)
+rerun_image_every_n: 2        # ~6.5 Hz RGB+depth on a ~13 Hz cam (vs 3 default) -- more P8 fidelity; gate it
+odom_topic: '/odometer_state' # P6.1a planar odometry -> P8 trajectory prior (guarded; absent -> disabled)
