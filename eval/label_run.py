@@ -70,11 +70,62 @@ def _yaml_scalar(path, key):
     return None
 
 
+def _rrd_thresholds(bundle):
+    """Read the effective standoff/geofence the node RECORDED as static refs in the .rrd
+    (/follow/range/standoff and /follow/range/max, written by k1_rerun.RerunSink.refs_once). This is
+    the SELF-DESCRIBING, authoritative source: it reflects the values actually in effect that run and
+    is robust to an on-robot build that predates the `CONFIG ...` text line (the deploy can lag the
+    labeler). refs_once logs each ref only when its value > 0, so a recorded standoff with an ABSENT
+    /follow/range/max means the geofence was DISABLED (max_follow_range=0) that run -> geofence None.
+    Returns {} when there is no .rrd, rerun is unavailable, or no standoff ref was recorded (caller
+    then keeps the config-file / CONFIG-line values)."""
+    rrd = None
+    try:
+        for n in sorted(os.listdir(bundle)):
+            if n.endswith(".rrd"):
+                rrd = os.path.join(bundle, n)
+                break
+    except OSError:
+        return {}
+    if rrd is None:
+        return {}
+    try:
+        from rerun.experimental import RrdReader
+    except Exception:
+        return {}                       # no rerun in this env -> graceful fall-back to text sources
+    try:
+        store = RrdReader(rrd).stream().collect()
+        vals = {}
+        for ch in store.stream():
+            if not ch.is_static:
+                continue
+            ep = str(ch.entity_path)
+            if ep not in ("/follow/range/standoff", "/follow/range/max"):
+                continue
+            rb = ch.to_record_batch()
+            i = rb.schema.get_field_index("Scalars:scalars")
+            if i < 0:
+                continue
+            col = rb.column(i).to_pylist()
+            v = col[0] if col else None
+            if isinstance(v, (list, tuple)):
+                v = v[0] if v else None
+            if v is not None:
+                vals[ep] = float(v)
+    except Exception:
+        return {}
+    if "/follow/range/standoff" not in vals:
+        return {}                       # refs_once did not record -> not a self-describing .rrd
+    return {"standoff_m": vals["/follow/range/standoff"],
+            "geofence_m": vals.get("/follow/range/max")}    # absent => None => geofence disabled
+
+
 def build_oc(bundle):
-    """DEFAULT_OC refined from (a) the bundle's config YAMLs, then (b) -- AUTHORITATIVE -- the node's
-    logged `CONFIG standoff_m=.. max_follow_range=..` line in k1_follow.err, which reflects the values
-    ACTUALLY in effect (app runs set them via CLI, not a bundled profile, so config-file defaults alone
-    would mislabel a clean run). Returns the oc dict actually used (recorded in the label)."""
+    """DEFAULT_OC refined from (a) the bundle's config YAMLs, then (b) -- AUTHORITATIVE -- the effective
+    thresholds the run itself recorded: the node's `CONFIG standoff_m=.. max_follow_range=..` line in
+    k1_follow.err, else (fallback, robust to a stale node build) the /follow/range/standoff + /max
+    static refs in the .rrd. App runs set these via CLI (not a bundled profile), so config-file
+    defaults alone would mislabel a clean run. Returns the oc dict actually used (recorded in the label)."""
     oc = dict(DEFAULT_OC)
     cfgdir = os.path.join(bundle, "config")
     layers = [os.path.join(cfgdir, "defaults.yaml")]
@@ -91,7 +142,8 @@ def build_oc(bundle):
             oc["standoff_m"] = so
         if gf is not None and gf > 0:
             oc["geofence_m"] = gf
-    # AUTHORITATIVE overlay: the effective thresholds the node logged this run (P6.4).
+    # AUTHORITATIVE overlay #1 (cheap): the effective thresholds the node logged this run (P6.4).
+    config_line_found = False
     err = os.path.join(bundle, "k1_follow.err")
     if os.path.isfile(err):
         try:
@@ -102,9 +154,19 @@ def build_oc(bundle):
                         oc["standoff_m"] = float(m.group(1))
                         gf = float(m.group(2))
                         oc["geofence_m"] = gf if gf > 0 else None  # 0 == geofence disabled this run
+                        config_line_found = True
                         break
         except Exception:
             pass
+    # AUTHORITATIVE overlay #2 (fallback, robust to a stale node build that lacks the CONFIG line):
+    # the standoff/geofence the run RECORDED as static refs in its .rrd. Only read the .rrd when the
+    # cheap CONFIG line was absent (the legacy-.rrd scan is not free), so this stays fast once the
+    # on-robot build catches up. This is what makes labeling self-describing for ANY standoff.
+    if not config_line_found:
+        th = _rrd_thresholds(bundle)
+        if th:
+            oc["standoff_m"] = th["standoff_m"]
+            oc["geofence_m"] = th["geofence_m"]   # None => geofence disabled that run
     return oc
 
 
