@@ -244,4 +244,10 @@ P6G.3 gate (that is the wipe-and-resubmit round trip). It proves the image plumb
 - **Person-mask box** decode path (`/camera/rgb/target` Boxes2D) -- synth fixtures log no target box.
 - align **cross-run merge into `map`** -- needs two real runs from different days (P8.3).
 
-**Deferred to image v2:** **splat + CUDA** (P6G.4, gated on P8.3).
+**Image v2 (`k1splat`, splat.Dockerfile) — BUILT + pipeline validated on synthetic (2026-07-13):**
+depth-supervised 3DGS with adaptive densification (gsplat DefaultStrategy), joint pose refinement
+(se3 deltas, gauge-anchored by an L2 prior — 'seeded from odom, never re-estimated'), per-frame
+appearance embeddings (gauge-anchored to identity), sharpness pre-filter, and the real-bundle
+`--run` driver (bundle .rrd + recon outbox -> point_cloud.ply + splat_metrics.json, frame-tagged).
+`--selftest` -> `SPLAT-SELFTEST-OK` (A/B: refinement wins SSIM under injected pose noise; deltas
+held by the prior). The REAL-GARAGE splat + its quality gate remain gated on P8.3 aligned data.

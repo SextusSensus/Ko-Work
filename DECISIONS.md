@@ -455,3 +455,113 @@ session**. Pushing a new build of the ~4.5k-line control loop to a physical robo
 `Deploy-FollowFiles` path (not an ad-hoc scp of the control loop). Until deployed, the
 off-robot dataset/train pipeline is verified on the decode/adapter paths but **not** on a
 real trainable episode.
+
+---
+
+## P7.6 — GRADUATION CRITERIA + RUNTIME SHIELD SPEC (2026-07-13, spec-only — BINDING)
+
+**What this is:** the complete, concrete list of conditions that must ALL hold before the shadow
+policy is ever allowed to actuate, plus the spec of the runtime shield that must exist first.
+Written per PHASE_6-8_PLAN.md P7.6 (skills: runtime-safety + sim-eval). **This entry ships no
+code and flips no switch** — building the shield and enabling actuation is a separate, future,
+human-approved initiative. Until then the plan §2 invariant stands: the shadow node has NO code
+path to the bridge (absent, not flagged off).
+
+Numbers below are **provisional v1**: binding as written, revisable ONLY by a new DECISIONS
+entry citing P7.5 scorecard data (a threshold changed without data is a violation). Calibration
+doctrine: thresholds sit where the P7.5 offline numbers show agreement degrading — the taxonomy
+below is shared with the offline grader precisely so every gate is offline-tunable.
+
+### A. Definitions (shared with P7.5 — the grader MUST implement these verbatim)
+
+- **Tick pair:** `(shadow_vx, shadow_vyaw)` vs `(vx, vyaw)` actually sent, same tick, raw units
+  (m/s, rad/s), paired under the checkpoint's recorded `obs_action_pairing` convention (P7.3
+  contract). Off-by-one pairing invalidates every number below.
+- **Agreement band (v1):** `|Δvx| ≤ 0.05 m/s AND |Δvyaw| ≤ 0.10 rad/s`. A tick inside the band
+  agrees; outside disagrees. (Scale: the runtime clamps bound |vx| ≈ 0.15 m/s, so the band is
+  ~1/3 of full range.)
+- **Per-state:** every metric computed separately per frozen FSM id (`eval/fsm_states.json` v1:
+  TRACK, REACQUIRE, SEARCHING, SEARCH_MARKER, PARKED) via `eval/fsm_groups.py`. Blended numbers
+  do not count for anything.
+- **Wilson LB:** lower bound of the 95% Wilson interval on the in-band proportion.
+
+### B. Offline agreement criteria (per state; ALL must hold on the graduating checkpoint)
+
+| state | min ticks (floor) | in-band % | Wilson LB | p99 excursion cap |
+|---|---|---|---|---|
+| TRACK | ≥ 3000 | ≥ 95% | ≥ 0.93 | p99 |Δvx| ≤ 0.10 m/s, p99 |Δvyaw| ≤ 0.20 rad/s |
+| REACQUIRE | ≥ 600 | ≥ 90% | ≥ 0.85 | same caps |
+| SEARCHING | ≥ 300 | ≥ 90% | ≥ 0.85 | same caps |
+| SEARCH_MARKER | ≥ 300 | ≥ 95% | ≥ 0.90 | same caps |
+| PARKED | ≥ 600 | ≥ 99% "phantom-free" | ≥ 0.97 | max |shadow_vx| ≤ 0.02, |shadow_vyaw| ≤ 0.05 |
+
+- **A floor unmet = the state is INSUFFICIENT = the checkpoint does NOT graduate**, no matter how
+  good its other states look. Close coverage gaps by scheduling runs that induce the state
+  (step behind an obstacle for REACQUIRE/SEARCH), never by lowering the floor (plan P7.5).
+- **PARKED is special (safety-critical):** "phantom-free" means the shadow output is inside the
+  null band while the executed command is identically zero. A policy that wants to move a parked
+  robot fails graduation outright.
+- **Data basis:** ≥ 10 shadow-enabled live sessions across ≥ 3 distinct days, ALL runs P6.4-labeled,
+  scorer + dataset + checkpoint versions pinned in the scorecard; plus the full labeled replay suite.
+
+### C. Non-interference criteria (the shadow must be a perfect ghost first)
+
+1. Decision-stream diff vs shadow-off: **empty** on every session (existing P7.4 gate).
+2. Loop-timing: shadow-on p99 `loop_ms` within **10%** of the shadow-off distribution over the
+   same session count; staleness-event rate not statistically higher (same tiers).
+3. The shadow node **self-suspends on any staleness event** and logs it; ≥ 1 session must
+   demonstrate the suspend path actually firing (induce it deliberately).
+
+### D. Offline failure taxonomy → runtime shield triggers (1:1, both directions)
+
+P7.5 MUST name disagreement categories with exactly these keys; the shield MUST gate on each.
+An offline mode with no runtime gate, or a gate with no offline measure, is a spec violation
+(runtime-safety `references/integration.md` doctrine).
+
+| taxonomy key (P7.5 measures) | definition (offline) | runtime detector | shield rung |
+|---|---|---|---|
+| `phantom_motion` | shadow motion while executed = 0 / PARKED / forbid_forward | null-band check on proposed cmd vs gate state | **Hold** |
+| `lunge` | Δvx > band with shadow overspeeding toward target | envelope: proposed vx vs range-scaled cap (existing anti-lunge gates) | **Caution** → Fallback on repeat |
+| `wrong_direction` | sign-opposed vyaw with |Δvyaw| > band | agreement-vs-P divergence check | **Caution** → Fallback |
+| `oscillation` | tick-to-tick shadow jerk: |d(cmd)/dt| > 2× the slew limit | temporal-incoherence check | **Caution** |
+| `ood_scene` | obs outside the trained distribution (feature-space distance on the checkpoint's normalized obs; threshold at the P7.5 knee) | OOD detector (cheap, classical first) | **Caution** → Fallback after dwell |
+| `lost_track_action` | nonzero shadow cmd while track conf < floor / no lock | perception-health gate (reuses ReID health + track conf) | **Hold** |
+| `stale_input` | obs staleness beyond tier | liveness watchdog (existing staleness tiers) | **Safe-stop** (existing path) |
+
+### E. The shield (spec of what must be BUILT before any switch flips)
+
+Architecture: the policy **proposes**, the shield **disposes** — a node in the action path
+(policy → shield → bridge), never an observer racing to e-stop. Graded rungs, never a bare kill:
+
+- **Nominal** — policy cmd passes through the EXISTING 3-layer velocity clamps + slew limits
+  (unchanged; the shield adds no new nominal-path math).
+- **Caution** — velocity-scale the proposed cmd by 0.5 and tighten the range gates; triggered by
+  any Caution-rung detector in §D.
+- **Hold** — zero-velocity stable posture; policy output not consumed; recover only after the
+  trigger clears for the dwell.
+- **Fallback-to-P-controller** — the incumbent `control.py` proportional law takes the tick.
+  Structural requirement: **the P-controller keeps computing every tick forever** (it is never
+  removed from the loop); fallback is an atomic source-swap, not a mode change.
+- **Safe-stop** — the EXISTING safety spine exit (`MoveCommand(0,0,0)` + `kPrepare`, C++ floor,
+  mode-keyed fail-closed gate). The shield adds NO new stop mechanism — it reuses the proven one.
+- **Human handoff** — the existing gamepad-held deadman remains sovereign and above all rungs.
+
+Rules: **escalate immediately, de-escalate slowly** (dwell ≥ 3 s clear for Caution→Nominal,
+≥ 5 s for Hold; hysteresis prevents flapping). **Fail-safe:** if the shield itself crashes or
+its inputs go stale, the tick falls back to the P-controller (the incumbent, fully-safeguarded
+behavior) and an alert is logged — the system never defaults to trusting the policy. The C++
+floor and heartbeat gate stay sovereign beneath everything; the shield consumes single-digit ms
+of the loop budget, measured under the same combined YOLO+ReID load as P7.3.
+
+### F. Structural preconditions (all must exist; each independently verifiable)
+
+1. P7.5 scorecard implementing §A–§B verbatim, one command, per-state, versions pinned.
+2. The §E shield built + its own replay/selftest gates green, including a demonstrated trip of
+   EVERY rung on injected inputs (per-rung test vectors, not just Nominal).
+3. TRT parity + latency gates (P7.3) passed on the graduating checkpoint, power mode recorded.
+4. §C non-interference proven on the same build that would actuate.
+5. Every §D taxonomy key measured in ≥ 1 offline scorecard (so thresholds are calibrated, not guessed).
+6. A new signed DECISIONS entry, written by a human, naming the checkpoint hash + scorecard +
+   shield build being enabled. **Enabling actuation is a code change through review — never a
+   runtime flag, config default, or env var.**
+

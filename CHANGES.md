@@ -353,6 +353,26 @@ live-fire bugs fixed in `cluster/worker.py`: missing `RECON_IMAGE_DIGEST` inject
 wrapper post-pivot) and root-owned bind-mount artifacts (jobs now run `--user uid:gid -e HOME=/tmp`).
 Open: one ceremonial `Submit-Job.ps1` run from the laptop; cross-pyarrow content_hash.
 
+## P7.6 + P6G.5 + P6G.4-features — the remaining desk work closed (DESKTOP RIG2, 2026-07-13)
+
+- **P7.6 (DECISIONS.md, spec-only, BINDING):** graduation criteria for the shadow policy — per-state
+  agreement bands/Wilson floors/sample floors (PARKED phantom-motion its own criterion),
+  non-interference criteria, the offline failure taxonomy mapped 1:1 onto the runtime shield's graded
+  rungs (Caution→Hold→Fallback-to-P→Safe-stop), structural preconditions, enable-by-reviewed-code only.
+- **P6G.5 (docs/DOMAIN.md, new):** the domain artifact contract + Phases 9–12 handoff (collision =
+  CoACD parts, visual = decimated mesh/splat, nav = named occupancy interface), randomization axes,
+  portability + parked Cosmos track.
+- **P6G.4 deferred features (desktop/recon/splat.py, all five):** adaptive densification (gsplat
+  DefaultStrategy; `packed=False` API pin), joint pose refinement + per-frame appearance — both
+  **gauge-anchored** (found live: unregularized deltas drifted to 4x injected noise, PSNR fell while
+  SSIM rose; L2 priors pin poses near odom and appearance near identity; assertion doctrine: under a
+  depth anchor refinement wins SSIM, PSNR must merely not regress), Laplacian sharpness pre-filter,
+  and the real-bundle `--run` driver (bundle .rrd wall-time-paired + person-masked via geom, poses
+  from trajectory.jsonl, init from mesh_visual.ply → point_cloud.ply + splat_metrics.json).
+  `SPLAT-SELFTEST-OK` + driver plumbing proven on the synth bundle (quality numbers honest-low on
+  noise-texture fixtures; real quality gate awaits a real garage bundle — P8.3-gated). Image deps:
+  +rerun-sdk; Dockerfile ships eval/rrd_to_lerobot.py.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
