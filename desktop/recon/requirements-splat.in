@@ -1,0 +1,9 @@
+# recon image v2 (P6G.4 splat) -- GPU deps ON TOP of torch cu126 + gsplat (installed in splat.Dockerfile
+# from the CUDA index / source). UNPINNED INTENT; lock (requirements-splat.lock) minted from the first
+# successful desktop build. NO COLMAP (doctrine): the splat initializes from P6G.2's TSDF cloud + poses.
+numpy<3
+open3d                          # read the P6G.2 mesh_visual.ply / TSDF point cloud + trajectory
+opencv-contrib-python-headless  # image ops (sharpness pre-filter, mask dilation)
+imageio
+imageio-ffmpeg                  # decode the run's head_rgb frames
+scikit-image                    # held-out PSNR/SSIM (the GPU-stochastic gate -- not byte-identical)
