@@ -118,6 +118,120 @@ def read_rrd(path):
     return scalars, images, depth
 
 
+def _wall_secs(v):
+    """A rerun 'wall' timeline cell -> float epoch seconds. Rerun stores it as a timestamp; to_pylist()
+    yields a datetime (tz-aware) or an int (nanoseconds) depending on version -- handle both."""
+    if v is None:
+        return None
+    if hasattr(v, "timestamp"):          # datetime
+        return float(v.timestamp())
+    try:
+        iv = int(v)
+    except (TypeError, ValueError):
+        return None
+    return iv / 1e9 if iv > 1_000_000_000_000 else float(iv)   # ns since epoch -> s (heuristic)
+
+
+def read_rrd_frames(path):
+    """Richer decode for the P6G.2 geometry stages (desktop/recon/geom.py): per-frame WALL timestamps
+    for RGB and depth, plus the /camera/rgb/target Boxes2D. The geometry stages pair RGBD by WALL time
+    (RECON_CONTRACT doctrine 4 -- depth's frame_idx is best-effort), which read_rrd's frame_idx-only view
+    cannot support; and they mask the followed operator using the target box (doctrine 5). Kept SEPARATE
+    from read_rrd (whose 3-tuple signature has many callers).
+
+    Returns (rgb_stream, depth_stream) where
+      rgb_stream   = [(wall_t, HxWx3 uint8, box_or_None)]   box = (x0,y0,x1,y1) px from /camera/rgb/target
+      depth_stream = [(wall_t, HxW float32 metres)]
+    both sorted by wall time. A run that logged no target box yields box=None on every RGB frame (masking
+    then no-ops) -- the box path is VERIFY ON DESKTOP (synth fixtures don't log it)."""
+    import numpy as np
+    store = _load_store(path)
+    rgb, depth, boxes_by_fi = [], [], {}
+    for ch in store.stream():
+        if ch.is_static or ch.is_empty:
+            continue
+        ep = str(ch.entity_path)
+        rb = ch.to_record_batch()
+        names = rb.schema.names
+        if "frame_idx" not in names:
+            continue
+        fidx = _col(rb, "frame_idx").to_pylist()
+        wallc = _col(rb, "wall")
+        wall = wallc.to_pylist() if wallc is not None else [None] * len(fidx)
+
+        if ep == RGB_ENTITY:
+            buf, fmt = _col(rb, "Image:buffer"), _col(rb, "Image:format")
+            if buf is None or fmt is None:
+                continue
+            for fi, wv, b, f in zip(fidx, wall, buf.to_pylist(), fmt.to_pylist()):
+                if not b or not f:
+                    continue
+                raw = b[0] if (isinstance(b, list) and b and isinstance(b[0], list)) else b
+                meta = f[0] if isinstance(f, list) else f
+                w, h = int(meta["width"]), int(meta["height"])
+                if w * h == 0:
+                    continue
+                arr = np.frombuffer(bytes(bytearray(raw)), dtype=np.uint8)
+                c = max(1, arr.size // (w * h))
+                img = arr[: w * h * c].reshape(h, w, c)
+                if c == 1:
+                    img = np.repeat(img, 3, axis=2)
+                rgb.append([_wall_secs(wv), np.ascontiguousarray(img[:, :, :3]), int(fi) if fi is not None else None])
+        elif ep == DEPTH_ENTITY:
+            dbuf, dfmt = _col(rb, "DepthImage:buffer"), _col(rb, "DepthImage:format")
+            if dbuf is None or dfmt is None:
+                continue
+            for fi, wv, b, f in zip(fidx, wall, dbuf.to_pylist(), dfmt.to_pylist()):
+                if not b or not f:
+                    continue
+                raw = b[0] if (isinstance(b, list) and b and isinstance(b[0], list)) else b
+                meta = f[0] if isinstance(f, list) else f
+                w, h = int(meta["width"]), int(meta["height"])
+                if w * h == 0:
+                    continue
+                arr = np.frombuffer(bytes(bytearray(raw)), dtype=np.float32)
+                if arr.size >= w * h:
+                    depth.append((_wall_secs(wv), arr[: w * h].reshape(h, w)))
+        elif ep == "/camera/rgb/target":
+            box = _boxes2d_row(rb)          # (x0,y0,x1,y1) per frame_idx, or {}
+            for fi, bx in zip(fidx, box):
+                if fi is not None and bx is not None:
+                    boxes_by_fi[int(fi)] = bx
+
+    # attach the target box to each RGB frame by its frame_idx (best-effort; None if absent)
+    rgb_stream = [(t, img, boxes_by_fi.get(fi)) for (t, img, fi) in rgb if t is not None]
+    rgb_stream.sort(key=lambda r: r[0])
+    depth_stream = sorted([(t, d) for (t, d) in depth if t is not None], key=lambda r: r[0])
+    return rgb_stream, depth_stream
+
+
+def _boxes2d_row(rb):
+    """Decode a /camera/rgb/target Boxes2D chunk -> list of (x0,y0,x1,y1) aligned to frame_idx rows.
+    The sink logs a single box via Boxes2D(mins=, sizes=); rerun stores it as centers+half_sizes. Try
+    both column spellings (VERIFY ON DESKTOP -- synth fixtures don't log this entity)."""
+    cen, half = _col(rb, "Boxes2D:centers"), _col(rb, "Boxes2D:half_sizes")
+    if cen is not None and half is not None:
+        cl, hl = cen.to_pylist(), half.to_pylist()
+        out = []
+        for c, hh in zip(cl, hl):
+            if not c or not hh:
+                out.append(None); continue
+            cx, cy = c[0]; hx, hy = hh[0]
+            out.append((cx - hx, cy - hy, cx + hx, cy + hy))
+        return out
+    mins, sizes = _col(rb, "Boxes2D:mins"), _col(rb, "Boxes2D:sizes")
+    if mins is not None and sizes is not None:
+        ml, sl = mins.to_pylist(), sizes.to_pylist()
+        out = []
+        for m, s in zip(ml, sl):
+            if not m or not s:
+                out.append(None); continue
+            x0, y0 = m[0]; sw, sh = s[0]
+            out.append((x0, y0, x0 + sw, y0 + sh))
+        return out
+    return [None] * len(_col(rb, "frame_idx").to_pylist())
+
+
 def _ffill(series_by_fi, frames):
     """Forward-fill a {frame_idx: value} map onto the sorted `frames` list (0.0 before first)."""
     out, last = [], 0.0

@@ -13,12 +13,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY desktop/recon/requirements-recon.in /app/requirements-recon.in
-RUN pip install --no-cache-dir -r /app/requirements-recon.in
+# Install from the minted lockfile (requirements-recon.lock) for reproducible rebuilds -- the unpinned
+# requirements-recon.in is intent/provenance only (RECON_CONTRACT.md section 7). Lock minted 2026-07-13
+# from the first successful build's `pip freeze`; digest recorded in the lockfile header.
+COPY desktop/recon/requirements-recon.lock /app/requirements-recon.lock
+RUN pip install --no-cache-dir -r /app/requirements-recon.lock
 
-# The recon code + the .rrd decoder it imports (eval/rrd_to_lerobot.read_rrd). cli.py finds eval/ at
-# /app/eval via its ../eval search path.
+# The recon code + the .rrd decoder it imports (eval/rrd_to_lerobot.{read_rrd,read_rrd_frames}). cli.py
+# finds eval/ at /app/eval via its ../eval search path; geom.py sits beside cli.py on sys.path[0].
 COPY desktop/recon/cli.py /app/recon/cli.py
+COPY desktop/recon/geom.py /app/recon/geom.py
 COPY eval/rrd_to_lerobot.py /app/eval/rrd_to_lerobot.py
 
 ENV PYTHONUNBUFFERED=1

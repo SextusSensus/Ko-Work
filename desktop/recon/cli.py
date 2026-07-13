@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """cli.py -- the recon container entrypoint `recon` (charter S3; contract: docs/RECON_CONTRACT.md).
 
-Image v1 is CPU-lean: only `ingest` is implemented; odom/tsdf/simexport/align are registered and exit
-`not_implemented` LOUDLY (never a fake ok). Everything here binds to the FROZEN recon_manifest schema +
-stage enum in docs/RECON_CONTRACT.md -- do not drift a field without amending that doc (two other
-machines code against it).
+Image v1 is CPU-lean and now implements ALL stages: ingest (bundle validation) + the geometry stages
+odom / tsdf / simexport / align (the heavy open3d/coacd/cv2 work lives in geom.py, imported lazily).
+`splat` remains reserved for image v2 (P6G.4). Everything here binds to the FROZEN recon_manifest schema
++ stage enum in docs/RECON_CONTRACT.md -- do not drift a field without amending that doc (two other
+machines code against it). Metric stages (odom/tsdf) fail-closed on approximate/missing intrinsics unless
+--allow-approximate-intrinsics; align's cross-run map merge is DEFERRED (P8.3, data-blocked).
 
 Run in the container (bundle RO at /in, output RW at /out):
   docker run -d --name recon_<id> -v ~/k1/inbox/<id>:/in:ro -v ~/k1/outbox/<id>:/out \
@@ -38,8 +40,8 @@ for _cand in (os.path.join(_HERE, "eval"),                       # eval copied b
 
 # ---- frozen contract constants (docs/RECON_CONTRACT.md) -----------------------------------------
 STAGES = ("ingest", "odom", "tsdf", "simexport", "align")        # FROZEN order; splat reserved for v2
-METRIC_STAGES = frozenset(("odom", "tsdf"))
-V1_IMPLEMENTED = frozenset(("ingest",))
+METRIC_STAGES = frozenset(("odom", "tsdf"))                      # intrinsics-gated (contract doctrine 2)
+V1_IMPLEMENTED = frozenset(STAGES)                               # all stages implemented (geom.py)
 DEPTH_MIN_M, DEPTH_MAX_M = 0.15, 15.0
 MAX_PAIR_SKEW_S = 0.06
 MASK_DILATE_FRAC = 0.15
@@ -171,49 +173,185 @@ def stage_ingest(bundle, out_dir, params):
     return "ok", 0, metrics, intr_src
 
 
-def stage_not_implemented(name, intr_src, allow_approx):
-    """v1 stub: loud not_implemented (exit_code 3), distinct from ok/failed; never halts later stages.
-    A metric stage records the intrinsics-gate posture it WILL enforce when implemented (contract 5.2)."""
-    metrics = {"note": "image v1 stub -- not implemented", "artifacts": []}
-    if name in METRIC_STAGES:
-        metrics["intrinsics_source"] = intr_src
-        metrics["intrinsics_gate"] = ("would-refuse (approximate/missing intrinsics; pass "
-                                      "--allow-approximate-intrinsics)" if intr_src != "calibrated"
-                                      and not allow_approx else "would-pass")
-    return "not_implemented", 3, metrics
+# ---- geometry stages (P6G.2) -- the heavy lifting lives in desktop/recon/geom.py (open3d/coacd/cv2),
+# imported lazily so the CPU-lean ingest path never pays for open3d. Each returns (status, code,
+# metrics, params). ctx threads shared state (frames/intr/trajectory/mesh) across the pipeline. -------
+def _geom():
+    import geom                     # same dir as cli.py: /app/recon (container) or desktop/recon (local)
+    return geom
+
+
+def _load_intrinsics(bundle):
+    with open(os.path.join(bundle, "intrinsics.json")) as f:
+        d = json.load(f)
+    for k in ("width", "height", "fx", "fy", "cx", "cy"):
+        if k not in d:
+            raise ValueError("intrinsics.json missing %r" % k)
+    return d
+
+
+def _ensure_frames(ctx):
+    """Read the bundle .rrd once (wall-timed), pair+mask -> frames, and build the intrinsic. Cached."""
+    if ctx.get("frames") is not None:
+        return ctx["frames"], ctx["intr"]
+    from rrd_to_lerobot import read_rrd_frames
+    geom = _geom()
+    rrd = _find_rrd(ctx["bundle"])
+    if rrd is None:
+        raise ValueError("no .rrd in bundle (ingest should have caught this)")
+    rgb_stream, depth_stream = read_rrd_frames(rrd)
+    frames, fstats = geom.prepare_frames(rgb_stream, depth_stream,
+                                         dilate_frac=MASK_DILATE_FRAC, max_skew_s=MAX_PAIR_SKEW_S)
+    d = _load_intrinsics(ctx["bundle"])
+    intr = geom.make_intrinsic(d["width"], d["height"], d["fx"], d["fy"], d["cx"], d["cy"])
+    ctx["frames"], ctx["intr"], ctx["frame_stats"] = frames, intr, fstats
+    return frames, intr
+
+
+def _metric_gate(ctx, stage):
+    """Metric stages (odom/tsdf) REFUSE approximate/missing intrinsics unless the override is passed
+    (contract doctrine 2). Returns a failed 4-tuple to short-circuit, or None to proceed."""
+    if ctx["intr_source"] == "calibrated" or ctx["allow_approx"]:
+        return None
+    return ("failed", 1,
+            {"error": "%s refuses intrinsics_source=%r (not calibrated); pass "
+                      "--allow-approximate-intrinsics to override" % (stage, ctx["intr_source"]),
+             "intrinsics_source": ctx["intr_source"], "artifacts": []},
+            {"allow_approximate_intrinsics": False})
+
+
+def _approx_params(ctx):
+    return {"allow_approximate_intrinsics": bool(ctx["allow_approx"])}
+
+
+def stage_odom(ctx):
+    gate = _metric_gate(ctx, "odom")
+    if gate:
+        return gate
+    frames, intr = _ensure_frames(ctx)
+    if len(frames) < 2:
+        return ("failed", 1, {"error": "odom needs >= 2 paired RGBD frames, got %d (RGBD wall-time "
+                "pairing yielded too few)" % len(frames), "artifacts": []}, _approx_params(ctx))
+    res = _geom().rgbd_odometry(frames, intr, pose_prior=None, loop_closure=True)
+    ctx["trajectory"] = res["trajectory"]
+    out = ctx["out"]
+    traj_p = os.path.join(out, "trajectory.jsonl")
+    with open(traj_p, "w") as f:
+        for fr, T in zip(frames, res["trajectory"]):
+            f.write(json.dumps({"wall_t": fr["t"], "T_run_local_camera": T.tolist()}) + "\n")
+    pg_p = os.path.join(out, "pose_graph.json")
+    with open(pg_p, "w") as f:
+        json.dump({"nodes": [T.tolist() for T in res["trajectory"]],
+                   "loop_edges": [{"i": i, "j": j, "info00": w} for (i, j, w) in res["loop_edges"]]},
+                  f, indent=2)
+    metrics = dict(res["stats"]); metrics.update(ctx.get("frame_stats", {}))
+    metrics["intrinsics_source"] = ctx["intr_source"]
+    metrics["artifacts"] = [
+        {"path": "trajectory.jsonl", "frame": "run_local", "bytes": os.path.getsize(traj_p)},
+        {"path": "pose_graph.json", "frame": "run_local", "bytes": os.path.getsize(pg_p)}]
+    return "ok", 0, metrics, _approx_params(ctx)
+
+
+def stage_tsdf(ctx):
+    gate = _metric_gate(ctx, "tsdf")
+    if gate:
+        return gate
+    if ctx.get("trajectory") is None:
+        return ("failed", 1, {"error": "tsdf requires the odom trajectory (odom did not run)",
+                              "artifacts": []}, _approx_params(ctx))
+    frames, intr = _ensure_frames(ctx)
+    geom = _geom()
+    mesh = geom.tsdf_integrate(frames, ctx["trajectory"], intr)
+    ctx["mesh"] = mesh
+    mv = os.path.join(ctx["out"], "mesh_visual.ply")
+    geom.write_mesh_ply(mesh, mv)
+    nverts = len(mesh.vertices)
+    metrics = {"vertices": int(nverts), "triangles": int(len(mesh.triangles)),
+               "intrinsics_source": ctx["intr_source"],
+               "artifacts": [{"path": "mesh_visual.ply", "frame": "run_local",
+                              "bytes": os.path.getsize(mv)}]}
+    if nverts == 0:
+        metrics["error"] = "TSDF produced an empty mesh (no depth integrated along the trajectory)"
+        return "failed", 1, metrics, _approx_params(ctx)
+    return "ok", 0, metrics, _approx_params(ctx)
+
+
+def stage_simexport(ctx):
+    if ctx.get("mesh") is None:
+        return ("failed", 1, {"error": "simexport requires the tsdf mesh (tsdf did not run)",
+                              "artifacts": []}, {})
+    geom = _geom()
+    visual, parts, sx = geom.simplify_and_decompose(ctx["mesh"], seed=ctx["seed"])
+    out = ctx["out"]
+    vd = os.path.join(out, "mesh_visual_decimated.ply")
+    geom.write_mesh_ply(visual, vd)
+    arts = [{"path": "mesh_visual_decimated.ply", "frame": "run_local", "bytes": os.path.getsize(vd)}]
+    cdir = os.path.join(out, "mesh_collision")
+    os.makedirs(cdir, exist_ok=True)
+    for k, pm in enumerate(parts):
+        pp = os.path.join(cdir, "part_%03d.obj" % k)
+        geom.write_obj(pm, pp)
+        arts.append({"path": "mesh_collision/part_%03d.obj" % k, "frame": "run_local",
+                     "bytes": os.path.getsize(pp)})
+    metrics = dict(sx); metrics["artifacts"] = arts
+    return "ok", 0, metrics, {"coacd_threshold": sx["coacd_threshold"], "seed": ctx["seed"]}
+
+
+def stage_align(ctx):
+    frames, intr = _ensure_frames(ctx)
+    geom = _geom()
+    obs = geom.detect_apriltags(frames, intr, ctx["tag_size_m"])
+    ap = os.path.join(ctx["out"], "apriltag_observations.json")
+    with open(ap, "w") as f:
+        json.dump({"tag_dict": geom._TAG_DICT, "tag_size_m": ctx["tag_size_m"],
+                   "cross_run_map_alignment": "deferred (P8.3 -- needs >= 2 real runs, different days)",
+                   "tags": obs}, f, indent=2)
+    metrics = {"tags_detected": sorted(obs.keys()),
+               "observations_total": int(sum(v["n"] for v in obs.values())),
+               "cross_run_alignment": "deferred",
+               "artifacts": [{"path": "apriltag_observations.json", "frame": "camera",
+                              "bytes": os.path.getsize(ap)}]}
+    return "ok", 0, metrics, {"tag_size_m": ctx["tag_size_m"]}
+
+
+_GEOM_STAGES = {"odom": stage_odom, "tsdf": stage_tsdf, "simexport": stage_simexport, "align": stage_align}
+_STAGE_DEPS = {"tsdf": ["odom"], "simexport": ["odom", "tsdf"]}
 
 
 # ---- driver -------------------------------------------------------------------------------------
-def run(run_id, stages, bundle_dir, out_dir, seed, allow_approx, image_digest):
+def run(run_id, stages, bundle_dir, out_dir, seed, allow_approx, image_digest, tag_size_m=0.16):
     os.makedirs(out_dir, exist_ok=True)
-    # effective plan: ingest ALWAYS first (its validation gates everything), then requested enum order.
-    requested = [s for s in STAGES if s in stages]
-    plan = ["ingest"] + [s for s in STAGES if s in requested and s != "ingest"]
+    # expand deps (tsdf<-odom, simexport<-odom,tsdf), then order by the FROZEN enum with ingest first.
+    want = set(stages)
+    for s in list(want):
+        want.update(_STAGE_DEPS.get(s, []))
+    plan = ["ingest"] + [s for s in STAGES if s in want and s != "ingest"]
 
+    ctx = {"bundle": bundle_dir, "out": out_dir, "seed": int(seed), "allow_approx": bool(allow_approx),
+           "intr_source": "unknown", "frames": None, "intr": None, "trajectory": None, "mesh": None,
+           "tag_size_m": float(tag_size_m)}
     started = _now_utc()
     stage_recs = []
-    intr_src = "unknown"
     stopped = False
     for name in plan:
         t0 = time.time()
         if stopped:
-            rec = {"name": name, "status": "skipped", "exit_code": None, "wall_s": 0.0,
-                   "params": {}, "metrics": {"note": "skipped: an earlier stage failed", "artifacts": []},
-                   "inputs_hash": None}
-            stage_recs.append(rec)
+            stage_recs.append({"name": name, "status": "skipped", "exit_code": None, "wall_s": 0.0,
+                               "params": {}, "metrics": {"note": "skipped: an earlier stage failed",
+                                                         "artifacts": []}, "inputs_hash": None})
             continue
         if name == "ingest":
             params = {"depth_min_m": DEPTH_MIN_M, "depth_max_m": DEPTH_MAX_M,
                       "max_pair_skew_s": MAX_PAIR_SKEW_S, "person_mask": "target-box-v0",
                       "mask_dilate_frac": MASK_DILATE_FRAC, "expect_run_id": run_id}
-            status, code, metrics, intr_src = stage_ingest(bundle_dir, out_dir, params)
+            status, code, metrics, ctx["intr_source"] = stage_ingest(bundle_dir, out_dir, params)
             params.pop("expect_run_id", None)
         else:
-            params = {}
-            if name in METRIC_STAGES and allow_approx:
-                params["allow_approximate_intrinsics"] = True
-            status, code, metrics = stage_not_implemented(name, intr_src, allow_approx)
-        # inputs_hash (v1) = the bundle hash from its manifest files[].
+            try:
+                status, code, metrics, params = _GEOM_STAGES[name](ctx)
+            except Exception as e:  # noqa: BLE001 -- a stage bug is a LOUD failure, never a silent hang
+                status, code, params = "failed", 1, {}
+                metrics = {"error": "%s raised: %s: %s" % (name, type(e).__name__, e), "artifacts": []}
         ihash = None
         try:
             with open(os.path.join(bundle_dir, "manifest.json")) as f:
@@ -227,9 +365,8 @@ def run(run_id, stages, bundle_dir, out_dir, seed, allow_approx, image_digest):
             stopped = True                                       # subsequent stages -> skipped
 
     manifest = {"run_id": run_id, "image_digest": image_digest, "stages": stage_recs, "seed": int(seed),
-                "intrinsics_source": intr_src, "started_utc": started, "finished_utc": _now_utc()}
+                "intrinsics_source": ctx["intr_source"], "started_utc": started, "finished_utc": _now_utc()}
     _write_manifest(out_dir, manifest)
-    # exit code: 1 if any failed; 3 if none failed but any not_implemented; else 0.
     statuses = [s["status"] for s in stage_recs]
     if "failed" in statuses:
         return 1
@@ -304,6 +441,8 @@ def main(argv):
                     help="comma list from %s (ingest always runs first)" % ",".join(STAGES))
     ap.add_argument("--allow-approximate-intrinsics", action="store_true")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--tag-size-m", type=float, default=0.16,
+                    help="printed AprilTag side length in metres (align stage; rig parameter)")
     ap.add_argument("--bundle-dir", default="/in")
     ap.add_argument("--out-dir", default="/out")
     ap.add_argument("--selftest", action="store_true")
@@ -327,7 +466,7 @@ def main(argv):
         if s not in STAGES:
             ap.error("unknown stage %r (valid: %s)" % (s, ",".join(STAGES)))
     return run(a.run, set(stages) | {"ingest"}, a.bundle_dir, a.out_dir, a.seed,
-               a.allow_approximate_intrinsics, digest)
+               a.allow_approximate_intrinsics, digest, tag_size_m=a.tag_size_m)
 
 
 if __name__ == "__main__":
