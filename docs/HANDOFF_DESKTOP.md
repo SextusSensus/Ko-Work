@@ -13,6 +13,41 @@
 > `cluster/` + `eval/` scaffolds already PASS their self-tests locally, so they are verified logic, not
 > "presumed broken." Only Docker/GPU/gRPC-network/cross-pyarrow-hash remain VERIFY ON CLUSTER.
 
+## ⬛ Latest state — 2026-07-11 laptop session (read this first)
+
+Since this doc was written, the laptop session verified + built:
+- **Phase 6 offload substrate PROVEN on the real robot** — a live K1 follow offloaded → pulled →
+  ingested end-to-end; RERUN_COMPAT holds on real 0.23.1 `.rrd`; **first trainable episode confirmed**
+  (all 9 obs/action channels, 663 TRACK frames). Fixes: `Pull-Run` case-collision, `batch_ingest`
+  no-TRACK graceful exclude, `label_run` reads standoff from `.rrd` static refs, `Offload-Run`
+  auto-labels (offload→pull→label).
+- **First PoC train done** (`eval/train_act.py` on the laptop 5060, TRACK val MSE ≈ 0.003) — the
+  mint→train pipeline works on REAL data. Input is `review`-quality (follow distance too variable), so
+  it's pipeline-proof, not a good policy. A real train needs `pass` runs (steady follow).
+- **Odometry now records ON the `.rrd`** (P6.1a completed): the app's Rerun checkbox enables
+  `--odom-topic`; `eval/rrd_poses.py` extracts `poses.jsonl` for `eval/rrd_map.py`. The POSE
+  foundation all of P8 needs. `VERIFY ON ROBOT`: one odom-enabled capture confirms `/odom` in the `.rrd`.
+- **Object/scene labeling works** (`eval/rrd_label.py`): open-vocab YOLO-World + SegFormer + 3D
+  center-of-mass + `--merge-radius` dedup. Needs `ultralytics` + `transformers` in the env.
+
+**THIS DESKTOP'S REMAINING WORK (Phase 6G + P8 geometry) — the bulk of what's left:**
+1. **P6G.1** — WSL2 + Docker + nvidia-container-toolkit (`docs/CLUSTER_SETUP.md`).
+2. **P6G.2** — build the recon image AND **implement the `odom`/`tsdf`/`align` stages** (today they are
+   `not_implemented` stubs in `desktop/recon/cli.py`). This is the **biggest remaining build** — it
+   turns odom-enabled runs into the mesh the sim twin needs. Pose input: `rrd_poses.py` → `rrd_map.py`.
+3. **P6G.3** — job round-trip via the `cluster/` job-pool (self-tests already pass locally).
+4. **P6G.4** — the **splat pass** (Gaussian Splatting, CUDA) → `.ply` in the map frame = the sim's
+   photoreal layer (gated on P8.3 align).
+
+**North star (user, 2026-07-11):** mesh + splat feed a **K1 sim twin** to train the shadow policy
+("increase the robot's understanding"). Mesh = collision, splat = visuals, one co-registered frame (no
+COLMAP — doctrine). This wants a **room-coverage capture** (slow look-around), not just a person-follow.
+
+**Blocked on physical:** (a) `pass`-quality odom-enabled capture runs (robot), (b) this desktop stood
+up. Everything else is developable here against existing `runs/` + `eval/synth_fixtures.py`.
+
+---
+
 **Audience:** a fresh Claude Code session on the DESKTOP (Ryzen 9 5900X / 64 GB / RTX 3080, Windows 11)
 — the pool's first CUDA worker (and a fine place to develop the recon/train images).
 This doc is the entry point; it exists so you don't need the laptop session's transcript. Read in order:
