@@ -23,6 +23,42 @@ before that gate passes.
 > expectation, and record deviations inline. This doc converges from runbook to as-built record.
 > Never claim a PROVE-IT passed without running it.
 
+---
+
+## AS-BUILT — desktop `RIG2`, 2026-07-13 (stages 1-9 + local gate half DONE)
+
+Executed via `desktop/setup-cuda-worker-windows.ps1` (user, elevated) + `desktop/setup-cuda-worker-distro.sh`
+(user, sudo) with every PROVE-IT run by the session. Deviations from the blind runbook noted inline:
+
+- **Distro/user:** Ubuntu-24.04, UNIX user **`modd`** (not the suggested `k1`), hostname `rig2`.
+  Desktop LAN identity for the laptop: **`192.168.1.75`** (adapter `A8000_NETGEAR`) / Windows host `RIG2`.
+- **Stage 2-3:** systemd was already enabled (pre-existing distro). PROVE-IT: pid1=`systemd`.
+- **Stage 4:** **Branch A (mirrored) HOLDS** — `wslinfo --networking-mode` -> `mirrored` on WSL 2.4.11 /
+  Win11 26200. `.wslconfig` = memory=48GB + networkingMode=mirrored; PROVE-IT: `free -g` -> 47.
+  No portproxy needed. Windows-side `Test-NetConnection localhost -Port 2222` -> True.
+- **Stage 5:** docker-ce **5:29.6.1-1~ubuntu.24.04~noble**, dockerd `active` under systemd, docker runs
+  without sudo. **Deviation:** the box previously ran Docker Desktop — its WSL integration was disabled
+  first (Settings -> Resources -> WSL Integration), and dpkg replaced the stale `/usr/bin/docker` DD
+  symlink with the real binary. The DD-era images (k1recon/k1train/k1splat) live in DD's daemon, not
+  this one — rebuild under native when needed (regenerable by design).
+- **Stage 6:** nvidia-container-toolkit installed; `docker info` Runtimes includes `nvidia`. Doctrine 1
+  guard passed (no Linux GPU driver present; `/usr/lib/wsl/lib/libcuda.so.1` projected by Windows
+  driver 591.44).
+- **Stage 7:** `nvidia/cuda:12.6.3-base-ubuntu24.04` @ **sha256:c87e78933f4c16e3272123bf2f75537306596d0fbaa395a29696a22786e5ee0e**.
+  PROVE-IT (local gate half): `docker run --rm --gpus all ... nvidia-smi` -> **NVIDIA GeForce RTX 3080, 591.44**.
+- **Stage 8:** sshd listening **:2222** (v4+v6), not :22 (`ssh.socket` disabled per the 24.04 gotcha).
+  Firewall rule "WSL2 k1 sshd 2222" present/enabled; logon task `WSL-K1-Boot` registered. 8.3 key
+  install + key-only lockdown are the laptop steps — **PENDING** (password auth still on until then).
+- **Stage 9:** `~/k1/{inbox,outbox,runs,bin}` on **ext4**; 1 GiB dd: write **787 MB/s**, read 14.7 GB/s
+  (warm cache; write is the honest uncached floor — both >> the 300 MB/s bar).
+- **Stage 10 (THE gate):** local half PASSED (above). **Laptop-initiated half PENDING** — needs the
+  laptop: keygen -> key install -> key-only lockdown -> `ssh -p 2222 modd@192.168.1.75 "docker run --rm
+  --gpus all nvidia/cuda:12.6.3-base-ubuntu24.04 nvidia-smi"` + the copied-bundle read check. If the
+  laptop's first TCP test times out with sshd provably listening, apply the stage-8.2 Hyper-V firewall
+  cmdlet (mirrored-mode inbound gotcha) and re-test.
+
+---
+
 > **Verification legend** (same two tiers as `docs/WORKSTATION_SETUP.md`, rendered ASCII because
 > this file is ASCII-only):
 > - `[VERIFIED]` -- prescriptive and stable: standard OS/tool syntax, unlikely to drift. Run as
