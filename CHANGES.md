@@ -335,6 +335,24 @@ failed" note above — the image built and all stages landed.
   (P6G.4) is the v2 image bump. Git: tracked locally on branch `desktop/p6g2-stages` (this box is not the
   laptop checkout — reconcile there).
 
+## Phase 6G.1 + 6G.3 — substrate stood up + the pool VERIFIED live (DESKTOP RIG2, 2026-07-13)
+
+**P6G.1 GATE PASSED** (as-built in `docs/WSL2_SUBSTRATE.md`): mirrored networking + 48GB cap, native
+docker-ce 29.6.1 under systemd (Docker Desktop integration off), nvidia-container-toolkit, key-only
+sshd:2222, `~/k1` on ext4 (787 MB/s). Laptop-initiated key-auth `docker run --gpus all nvidia-smi`
+named the RTX 3080; forced-password leak check refused. Laptop identity file deviation:
+`C:\Users\toddm\k1_desktop` (not `~/.ssh`).
+
+**P6G.3 / CLUSTER VERIFIED** (as-built in `docs/CLUSTER_SETUP.md` section 6): every 'VERIFY ON
+CLUSTER' item except cross-pyarrow content_hash is now proven on the real substrate — real gRPC loop
+(coordinator on **:40077**; 50077 sits in a Windows excluded-port range under mirrored networking),
+`detect_caps` reporting true hardware (cpu+cuda, 10GB, 47GB), k1recon:v1 rebuilt on the native daemon
+from the committed lockfile, a real recon job end-to-end (submit → lease → container, all 5 stages ok
+→ 19 artifacts pushed), and the **wipe-and-resubmit disposability gate: tolerance-identical**. Two
+live-fire bugs fixed in `cluster/worker.py`: missing `RECON_IMAGE_DIGEST` injection (the worker is the
+wrapper post-pivot) and root-owned bind-mount artifacts (jobs now run `--user uid:gid -e HOME=/tmp`).
+Open: one ceremonial `Submit-Job.ps1` run from the laptop; cross-pyarrow content_hash.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).

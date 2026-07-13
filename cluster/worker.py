@@ -138,6 +138,15 @@ def _docker_call(cmd):  # pragma: no cover -- the real container run
     return subprocess.call(cmd)
 
 
+def _image_digest(image):  # pragma: no cover -- best-effort docker inspect (worker host has docker)
+    import subprocess
+    try:
+        return subprocess.check_output(["docker", "inspect", "--format", "{{.Id}}", image],
+                                       stderr=subprocess.DEVNULL, timeout=10).decode().strip() or None
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
 # --- production paths (lazy / guarded; VERIFY ON CLUSTER) -----------------------------------------
 def detect_caps(worker_id):  # pragma: no cover -- probes real hardware
     """Best-effort capability probe. Every backend/figure is guarded: a worker under-advertises rather
@@ -200,6 +209,18 @@ def docker_run_job(job, store, inbox_root, outbox_root, heartbeat=None, run_cont
         cmd = ["docker", "run", "--rm", "--name", "job_" + jid,
                "-v", "%s:/inbox:ro" % os.path.abspath(inbox),
                "-v", "%s:/outbox" % os.path.abspath(outbox)]
+        # The worker IS the job wrapper post-pivot (DECISIONS.md P6G.0), so it owns the wrapper's
+        # RECON_CONTRACT.md section-2 duty: inject the image digest as the job's version pin. Generic
+        # alias + the contract's frozen name; on inspect failure the container honestly records 'unset'.
+        digest = _image_digest(job["image"])
+        if digest:
+            cmd += ["-e", "JOB_IMAGE_DIGEST=" + digest, "-e", "RECON_IMAGE_DIGEST=" + digest]
+        # Rootful dockerd writes bind-mount artifacts as ROOT; the (non-root) worker then cannot push
+        # or prune them -- LocalStore.push dies on PermissionError and the outbox becomes unwipeable.
+        # Run the job as the worker's own uid:gid so every artifact stays worker-managed. HOME=/tmp
+        # because the arbitrary uid has no passwd entry and libs (open3d etc.) want a writable HOME.
+        if hasattr(os, "getuid"):
+            cmd += ["--user", "%d:%d" % (os.getuid(), os.getgid()), "-e", "HOME=/tmp"]
         if job["requires"]["backend"] == "cuda":
             cmd += ["--gpus", "all"]
         cmd += [job["image"]]
