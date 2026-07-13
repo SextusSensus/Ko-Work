@@ -96,10 +96,10 @@ apriltag_observations.json    align     frames: anchor_<id> per tag (+ its map p
 | stage     | image v1  | what it does (or will do)                                          |
 |-----------|-----------|--------------------------------------------------------------------|
 | ingest    | IMPLEMENTED | Validates the bundle fail-closed: (a) every `manifest.json` sha256 vs disk; (b) intrinsics gate input (`intrinsics.json` -> `intrinsics_source`); (c) depth-unit sanity via the `.rrd` read -- median of finite positive `/camera/depth` values must lie in **[0.15, 15] m** (`DepthImage(meter=1.0)`); a median in the hundreds is the 1000x mm-vs-m garage and it dies HERE, not as a broken mesh. A bundle with no `.rrd` or no depth frames is refused (not a capture run / not P8-usable). |
-| odom      | not_implemented | RGBD odometry + loop closure (NO COLMAP -- doctrine). Wall-time RGBD pairing + person masking per section 5. Emits `trajectory.jsonl` + `pose_graph.json`. Metric stage: intrinsics gate applies. |
-| tsdf      | not_implemented | TSDF integration over masked, paired RGBD along the odom trajectory -> `mesh_visual.ply`. Metric stage: intrinsics gate applies. |
-| simexport | not_implemented | Watertight collision mesh via convex decomposition (CoACD; per-part watertight by construction) + quadric-decimated visual mesh, frame-tagged. |
-| align     | not_implemented | AprilTag anchor observations + cross-run alignment into `map`. Its real gate needs two real runs from different days -- desktop work by definition. |
+| odom      | IMPLEMENTED | RGBD odometry + loop closure (NO COLMAP -- doctrine). Wall-time RGBD pairing + person masking per section 5. Emits `trajectory.jsonl` + `pose_graph.json`. Metric stage: intrinsics gate applies. (accuracy VERIFY ON DESKTOP -- section 7) |
+| tsdf      | IMPLEMENTED | TSDF integration over masked, paired RGBD along the odom trajectory -> `mesh_visual.ply`. Metric stage: intrinsics gate applies. |
+| simexport | IMPLEMENTED | Watertight collision mesh via convex decomposition (CoACD; per-part watertight by construction) + quadric-decimated visual mesh, frame-tagged. Emits `mesh_visual_decimated.ply` + `mesh_collision/part_*.obj`. |
+| align     | IMPLEMENTED | AprilTag detect + solvePnP -> per-tag `T_cam_tag` observations in `apriltag_observations.json` (frame `camera`). Cross-run alignment into `map` DEFERRED (needs two real runs from different days -- P8.3). |
 
 **Frame-tagging rule (binding, per `docs/FRAMES.md` section 3):** every artifact names its
 frame. The manifest writer ENFORCES it -- each artifact entry a stage reports must carry a
@@ -225,11 +225,23 @@ P6G.3 gate (that is the wipe-and-resubmit round trip). It proves the image plumb
 
 ---
 
-## 7. Deferred (what image v1 does NOT contain -- charter DEFER list)
+## 7. Status (as-built 2026-07-13, DESKTOP) + what image v1 still does NOT contain
 
-- The committed **lockfile**: minted on the desktop from the first successful build
-  (`pip freeze` in-container -> commit as `requirements-recon.lock`); a blind lockfile is
-  fiction. `requirements-recon.in` carries the unpinned intent.
-- Real **odom / loop-closure / TSDF-on-real-data / align / AprilTag** implementations
-  (`VERIFY ON DESKTOP`, data-blocked; align needs two real runs from different days).
-- **splat + CUDA** (image v2, P6G.4, gated on P8.3).
+**DONE (desktop, this build):**
+- The committed **lockfile** `requirements-recon.lock` -- minted from the first successful build
+  (`pip freeze` in-container); the Dockerfile installs from it (reproducible). `requirements-recon.in`
+  keeps the unpinned intent.
+- **All geometry stages IMPLEMENTED** in `desktop/recon/geom.py` (open3d 0.19 / coacd / cv2 5.0):
+  odom = RGBD odometry + pose-graph loop closure + global optimization (NO COLMAP); tsdf =
+  masked-RGBD TSDF along the trajectory; simexport = quadric-decimated visual + CoACD watertight
+  collision parts; align = AprilTag detect + solvePnP per-tag observations. Validated in-container by a
+  synthetic-motion selftest (`python geom.py --selftest` -> `GEOM-SELFTEST-OK`, odom traj err ~0.003 m)
+  and a full-pipeline run over a real synth_fixtures `.rrd` bundle (all stages `ok`; refusal path exits 1).
+
+**Still `VERIFY ON DESKTOP` (data-blocked, not yet run on real capture data):**
+- Metric **accuracy** of odom/tsdf on a real garage bundle (needs a capture run + a real calibration --
+  synth fixtures validate plumbing + the synthetic selftest validates the math, not real-rig accuracy).
+- **Person-mask box** decode path (`/camera/rgb/target` Boxes2D) -- synth fixtures log no target box.
+- align **cross-run merge into `map`** -- needs two real runs from different days (P8.3).
+
+**Deferred to image v2:** **splat + CUDA** (P6G.4, gated on P8.3).

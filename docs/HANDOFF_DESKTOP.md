@@ -32,9 +32,11 @@ Since this doc was written, the laptop session verified + built:
 
 **THIS DESKTOP'S REMAINING WORK (Phase 6G + P8 geometry) — the bulk of what's left:**
 1. **P6G.1** — WSL2 + Docker + nvidia-container-toolkit (`docs/CLUSTER_SETUP.md`).
-2. **P6G.2** — build the recon image AND **implement the `odom`/`tsdf`/`align` stages** (today they are
-   `not_implemented` stubs in `desktop/recon/cli.py`). This is the **biggest remaining build** — it
-   turns odom-enabled runs into the mesh the sim twin needs. Pose input: `rrd_poses.py` → `rrd_map.py`.
+2. ~~**P6G.2** — build the recon image AND implement the `odom`/`tsdf`/`align` stages.~~ **DONE 2026-07-13**
+   (see CHANGES.md "Phase 6G.2" + RECON_CONTRACT.md §7): image built + locked; odom (RGBD odometry +
+   pose-graph loop closure, NO COLMAP) / tsdf / simexport (CoACD) / align (AprilTag) all implemented in
+   `desktop/recon/geom.py` + wired into `cli.py`; `GEOM-SELFTEST-OK` + full pipeline green on a synth
+   `.rrd`. **Still `VERIFY ON DESKTOP`:** metric accuracy on a real garage bundle (data-blocked).
 3. **P6G.3** — job round-trip via the `cluster/` job-pool (self-tests already pass locally).
 4. **P6G.4** — the **splat pass** (Gaussian Splatting, CUDA) → `.ply` in the map frame = the sim's
    photoreal layer (gated on P8.3 align).

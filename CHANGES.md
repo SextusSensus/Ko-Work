@@ -309,6 +309,32 @@ on PATH). So all the stdlib/numpy/rerun scaffolds were **run green locally** -- 
 - **Still `VERIFY ON CLUSTER`:** the gRPC network loop, Docker/GPU execution + `detect_caps` on real
   hardware, image builds, cross-pyarrow `content_hash` stability, the P6G.3 wipe-and-resubmit gate.
 
+## Phase 6G.2 — recon image built + geometry stages implemented (DESKTOP, 2026-07-13)
+
+First real work on the RTX 3080 desktop (Docker Desktop for now; native-engine substrate P6G.1 +
+sshd deferred until the laptop is present for its gate). Supersedes the stale "S3 image ... Author-agent
+failed" note above — the image built and all stages landed.
+
+- **Image built + locked.** `k1recon:v1` built via Docker Desktop; `RECON-IMAGE-SELFTEST-OK`.
+  `requirements-recon.lock` minted from the first build (`pip freeze`, 82 pins, open3d 0.19.0 /
+  rerun-sdk 0.33.1 / opencv-contrib-headless 5.0 / coacd 1.0.11); `recon.Dockerfile` pinned to the lock
+  (rebuild-from-lock reproduces the same set + green selftest).
+- **All geometry stages implemented** (`desktop/recon/geom.py`, wired into `cli.py`): odom = Open3D RGBD
+  odometry + pose-graph loop closure + global optimization (NO COLMAP); tsdf = masked-RGBD TSDF along the
+  trajectory; simexport = quadric-decimated visual + CoACD watertight collision parts; align = AprilTag
+  detect + solvePnP per-tag observations. Metric intrinsics gate fail-closed (odom/tsdf refuse approximate
+  intrinsics unless `--allow-approximate-intrinsics`); artifacts frame-tagged per the contract.
+- **New `.rrd` reader** `rrd_to_lerobot.read_rrd_frames` (non-breaking): per-frame WALL timestamps +
+  `/camera/rgb/target` Boxes2D, feeding wall-time RGBD pairing (doctrine 4) + person-masking (doctrine 5).
+- **Verified in-container:** `geom.py --selftest` (`GEOM-SELFTEST-OK`; synthetic RaycastingScene motion,
+  odom traj err ~0.003 m, tsdf/ simexport/align all pass) + a full-pipeline run over a real
+  `synth_fixtures` `.rrd` bundle (all stages `ok`; refusal path -> odom failed, tsdf skipped, exit 1).
+  `synth_fixtures.py` also runs green on this box (`SYNTH-FIXTURES-OK`).
+- **Still `VERIFY ON DESKTOP`:** metric accuracy on a real garage bundle (data-blocked); the target-box
+  mask decode (synth logs no box); align cross-run merge into `map` (P8.3, two-runs-blocked). Splat
+  (P6G.4) is the v2 image bump. Git: tracked locally on branch `desktop/p6g2-stages` (this box is not the
+  laptop checkout — reconcile there).
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
