@@ -54,6 +54,29 @@ def sample_box_depth(d, x1, y1, x2, y2, sw, sh):
     return float(np.median(valid))
 
 
+def box_centroid_xyz(d, x1, y1, x2, y2, sw, sh, w, h, f):
+    """Center of MASS of an object's visible surface: back-project EVERY valid depth pixel inside the
+    box and return the median [X(right), Z(forward), Yup(up)]. Beats the box-center pixel for large or
+    irregular items (a couch), where the geometric box center lands on an arm or a background corner --
+    the depth-weighted centroid sits on the object's actual mass. Returns None if too few valid pixels."""
+    import numpy as np
+    dh, dw = d.shape[:2]
+    fx1 = int(max(0, min(dw - 1, x1 * sw))); fx2 = int(max(0, min(dw, x2 * sw)))
+    fy1 = int(max(0, min(dh - 1, y1 * sh))); fy2 = int(max(0, min(dh, y2 * sh)))
+    if fx2 <= fx1 or fy2 <= fy1:
+        return None
+    patch = d[fy1:fy2, fx1:fx2]
+    ys, xs = np.mgrid[fy1:fy2, fx1:fx2]
+    m = (patch > 0.1) & (patch < 12.0) & np.isfinite(patch)
+    if int(m.sum()) < 8:
+        return None
+    z = patch[m].astype(np.float64)
+    rx = xs[m] / sw; ry = ys[m] / sh                 # depth-res pixel -> rgb-res pixel (rgb focal f)
+    X = (rx - w / 2.0) * z / f
+    Yup = -(ry - h / 2.0) * z / f
+    return [float(np.median(X)), float(np.median(z)), float(np.median(Yup))]
+
+
 def _class_color(cls):
     return [(37 * (cls + 1)) % 256, (91 * (cls + 3)) % 256, (151 * (cls + 7)) % 256]
 
@@ -151,6 +174,10 @@ def main():
     ap.add_argument("--jsonl", default=None)
     ap.add_argument("--classes", default=None)
     ap.add_argument("--corridor-deg", type=float, default=30.0)
+    ap.add_argument("--merge-radius", type=float, default=0.0,
+                    help="merge same-class obstacles whose 3D positions are within this many meters "
+                         "into ONE -- collapses ByteTrack fragmentation (a cabinet re-acquired under "
+                         "many track ids inflates the unique count). 0 = off (one obstacle per track).")
     a = ap.parse_args()
 
     import numpy as np
@@ -234,13 +261,12 @@ def main():
             col = _class_color(cls)
             tag = ("%s#%d %.2f" % (nm, tid, conf)) if tid is not None else ("%s %.2f" % (nm, conf))
             mins.append([x1, y1]); sizes.append([x2 - x1, y2 - y1]); labels.append(tag); colors.append(col)
-            Z = sample_box_depth(d, x1, y1, x2, y2, sw, sh) if d is not None else None
+            cen = box_centroid_xyz(d, x1, y1, x2, y2, sw, sh, w, h, f) if d is not None else None
             rec = {"frame_idx": int(fi), "cls": nm, "conf": round(conf, 3),
                    "track_id": tid, "box": [round(v, 1) for v in (x1, y1, x2, y2)]}
-            if Z is not None:
-                cx = (x1 + x2) / 2.0; cy = (y1 + y2) / 2.0
-                bearing = math.atan2(cx - w / 2.0, f)
-                X = (cx - w / 2.0) * Z / f; Yup = -(cy - h / 2.0) * Z / f
+            if cen is not None:
+                X, Z, Yup = cen                                   # depth-weighted center of mass
+                bearing = math.atan2(X, Z)
                 pts.append([X, Z, Yup]); plabels.append(tag.split(" ")[0]); pcolors.append(col)
                 rec.update(range_m=round(Z, 2), bearing_deg=round(math.degrees(bearing), 1),
                            xyz=[round(X, 2), round(Z, 2), round(Yup, 2)],
@@ -285,6 +311,27 @@ def main():
             pos = np.median(np.array(t["pos"]), axis=0)
             uniq.append((tid, cls, pos, len(t["frames"]),
                          float(np.median(t["rng"])), t["corr"] / max(1, len(t["frames"]))))
+        # same-class 3D merge: collapse fragments of one physical object (one cabinet re-acquired under
+        # many track ids) into a single obstacle. Greedy, anchored on the most-seen fragment. Opt-in.
+        if a.merge_radius > 0 and len(uniq) > 1:
+            order = sorted(range(len(uniq)), key=lambda i: -uniq[i][3])   # most-seen first = the anchor
+            used = [False] * len(uniq)
+            merged = []
+            for i in order:
+                if used[i]:
+                    continue
+                used[i] = True
+                tid, cls, pos, seen, rmed, corrf = uniq[i]
+                for j in order:
+                    if used[j] or uniq[j][1] != cls:
+                        continue
+                    if float(np.linalg.norm(uniq[j][2] - pos)) <= a.merge_radius:
+                        used[j] = True
+                        seen += uniq[j][3]                                # roll the fragment's frames in
+                merged.append((tid, cls, pos, seen, rmed, corrf))
+            print("MERGE: %d tracked -> %d after %.2fm same-class 3D merge"
+                  % (len(uniq), len(merged), a.merge_radius))
+            uniq = merged
         # log all unique obstacles at once (their median position), labeled cls#id
         name2id = {n: i for i, n in names.items()}
         rr.set_time("frame_idx", sequence=int(labeled_frames[-1]))

@@ -1143,6 +1143,14 @@ class Follower:
                     if _od is not None:
                         _ev["odom_x"], _ev["odom_y"], _ev["odom_theta"] = (
                             round(_od[0], 4), round(_od[1], 4), round(_od[2], 5))
+                        # P8: put odometry ON the .rrd too (not only the JSONL) so the offline stitch
+                        # (eval/rrd_map.py) reads per-frame poses straight from the recording. frame_idx
+                        # is already set for this iteration in run(); inherits it. Inert unless --rerun
+                        # (single-branch skip when _RR.ok is False -> byte-identical off path).
+                        if rerun_sink._RR.ok:
+                            rerun_sink._RR.scalar("/odom/x", _od[0])
+                            rerun_sink._RR.scalar("/odom/y", _od[1])
+                            rerun_sink._RR.scalar("/odom/theta", _od[2])
                 self.events.tick(**_ev)
                 # Always-on loop-timing observability (autonomy-ops: observable by default). WORK-time
                 # per iteration (before the fill-sleep); a 10s p50/p99/max pulse tagged rerun on/off,
