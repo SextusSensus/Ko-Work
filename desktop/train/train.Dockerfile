@@ -20,7 +20,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 # torch/torchvision FIRST, from the CUDA index (separate layer so a deps change doesn't re-pull torch).
-RUN pip install --no-cache-dir torch torchvision \
+# TORCH_SPEC defaults unpinned so each index (cu126 Ampere / cu128 Blackwell) serves its own version.
+# The as-built cu126 build (VERIFIED on the 3080: TRAIN-ACT-SELFTEST-OK) was torch 2.13.0 / torchvision
+# 0.28.0 -- reproduce it exactly with:  --build-arg TORCH_SPEC="torch==2.13.0 torchvision==0.28.0"
+# (full pin set in desktop/train/requirements-train.lock).
+ARG TORCH_SPEC="torch torchvision"
+RUN pip install --no-cache-dir ${TORCH_SPEC} \
         --index-url https://download.pytorch.org/whl/${TORCH_INDEX}
 COPY desktop/train/requirements-train.in /app/requirements-train.in
 RUN pip install --no-cache-dir -r /app/requirements-train.in
