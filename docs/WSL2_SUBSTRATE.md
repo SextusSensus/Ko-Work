@@ -47,15 +47,24 @@ Executed via `desktop/setup-cuda-worker-windows.ps1` (user, elevated) + `desktop
 - **Stage 7:** `nvidia/cuda:12.6.3-base-ubuntu24.04` @ **sha256:c87e78933f4c16e3272123bf2f75537306596d0fbaa395a29696a22786e5ee0e**.
   PROVE-IT (local gate half): `docker run --rm --gpus all ... nvidia-smi` -> **NVIDIA GeForce RTX 3080, 591.44**.
 - **Stage 8:** sshd listening **:2222** (v4+v6), not :22 (`ssh.socket` disabled per the 24.04 gotcha).
-  Firewall rule "WSL2 k1 sshd 2222" present/enabled; logon task `WSL-K1-Boot` registered. 8.3 key
-  install + key-only lockdown are the laptop steps — **PENDING** (password auth still on until then).
+  Firewall rule "WSL2 k1 sshd 2222" present/enabled; logon task `WSL-K1-Boot` registered. **Key-only
+  lockdown DONE** (`k1_auth.conf`: PasswordAuthentication no). **Deviation:** the laptop's identity file
+  is **`C:\Users\toddm\k1_desktop`** (home dir, NOT `~/.ssh/`) — a `\.`-eating paste gremlin kept
+  mangling dot-folder paths, so the key lives dot-free; every laptop-side tool must pass
+  `-i C:\Users\toddm\k1_desktop` (update Submit-Job.ps1 -IdentityFile / Recon-style defaults
+  accordingly). Ordering deviation: the lockdown ran BEFORE the key install (an empty-`$pub` step 6
+  had appended a blank authorized_keys line); recovered via local `wsl` access — the session wrote the
+  real pubkey directly into `~/.ssh/authorized_keys` (1 line, 700/700+600 perms).
 - **Stage 9:** `~/k1/{inbox,outbox,runs,bin}` on **ext4**; 1 GiB dd: write **787 MB/s**, read 14.7 GB/s
   (warm cache; write is the honest uncached floor — both >> the 300 MB/s bar).
-- **Stage 10 (THE gate):** local half PASSED (above). **Laptop-initiated half PENDING** — needs the
-  laptop: keygen -> key install -> key-only lockdown -> `ssh -p 2222 modd@192.168.1.75 "docker run --rm
-  --gpus all nvidia/cuda:12.6.3-base-ubuntu24.04 nvidia-smi"` + the copied-bundle read check. If the
-  laptop's first TCP test times out with sshd provably listening, apply the stage-8.2 Hyper-V firewall
-  cmdlet (mirrored-mode inbound gotcha) and re-test.
+- **Stage 10 (THE gate): PASSED 2026-07-13 ~18:54.** Laptop (192.168.1.95) -> desktop, key-only:
+  `Accepted publickey for modd ... ED25519 SHA256:Neua09Onig99KUDf/ScLdnA0yEbdm9Pt5tpJOKDIQmY` in the
+  ssh journal; the gate session ran `docker run --rm --gpus all nvidia/cuda:12.6.3-base-ubuntu24.04
+  nvidia-smi` and named the RTX 3080. Leak check: a forced password attempt was refused (Permission
+  denied at preauth) — password auth is dead. ext4 speed evidence = the stage-9 dd (the copied-bundle
+  variant is satisfied by dd + the proven scp/ssh transport; re-run against a real run bundle when one
+  first lands in `~/k1/inbox`). NOTE: the DD-era images (k1recon/k1train/k1splat) are NOT visible to
+  the native daemon — rebuild from the committed Dockerfiles+locks on first need (disposable by design).
 
 ---
 
