@@ -215,6 +215,12 @@ def docker_run_job(job, store, inbox_root, outbox_root, heartbeat=None, run_cont
         digest = _image_digest(job["image"])
         if digest:
             cmd += ["-e", "JOB_IMAGE_DIGEST=" + digest, "-e", "RECON_IMAGE_DIGEST=" + digest]
+        # Rootful dockerd writes bind-mount artifacts as ROOT; the (non-root) worker then cannot push
+        # or prune them -- LocalStore.push dies on PermissionError and the outbox becomes unwipeable.
+        # Run the job as the worker's own uid:gid so every artifact stays worker-managed. HOME=/tmp
+        # because the arbitrary uid has no passwd entry and libs (open3d etc.) want a writable HOME.
+        if hasattr(os, "getuid"):
+            cmd += ["--user", "%d:%d" % (os.getuid(), os.getgid()), "-e", "HOME=/tmp"]
         if job["requires"]["backend"] == "cuda":
             cmd += ["--gpus", "all"]
         cmd += [job["image"]]
