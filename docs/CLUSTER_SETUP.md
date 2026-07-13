@@ -92,3 +92,31 @@ The self-tests in step 0 verify the LOGIC locally. These need the real substrate
 (scheduler `serve()` + `GrpcClient`), Docker execution + `detect_caps` against real hardware, the recon/
 train image builds, cross-pyarrow `content_hash` stability for `batch_ingest`, and the P6G.3
 wipe-and-resubmit disposability gate.
+
+## 6. AS-BUILT — first CUDA worker + co-located coordinator (desktop RIG2, 2026-07-13)
+
+Everything in section 5 except cross-pyarrow `content_hash` is now **VERIFIED** on the RIG2 substrate
+(WSL2_SUBSTRATE.md as-built; native docker-ce, key-only sshd:2222):
+
+- **Coordinator env:** `~/k1/venv` (python 3.12.3, grpcio 1.82.1), repo clone `~/k1/Ko-Work` (ext4),
+  stubs generated per cluster.proto, queue `~/k1/queue` (ext4). All step-0 self-tests green here.
+- **PORT DEVIATION (load-bearing):** the default gRPC port **50077 is unusable on a mirrored-networking
+  Windows box** — it falls inside a Windows/Hyper-V *excluded port range* (bind fails EADDRINUSE with
+  nothing listening; check `netsh int ipv4 show excludedportrange protocol=tcp`). The coordinator runs
+  on **:40077**; workers dial `<coordinator>:40077`. Launch idiom: `setsid nohup ~/k1/venv/bin/python -u
+  -m cluster.scheduler serve --queue ~/k1/queue --port 40077 > ~/k1/scheduler.log 2>&1 &` (`-u` because
+  a buffered banner made an healthy scheduler look dead; health-check the PORT, not the log).
+- **gRPC loop + detect_caps:** worker registered over the wire as `backends=['cpu','cuda'] vram=10.0
+  ram=47.0` (true RTX 3080 / .wslconfig values); stub job queued→leased→done.
+- **Real Docker execution:** k1recon:v1 (rebuilt on the native daemon from the committed lockfile,
+  `RECON-IMAGE-SELFTEST-OK`) ran a full recon job — all 5 stages ok (~15 s), 19 artifacts hashed +
+  pushed to the store. **Two live bugs found + fixed in cluster/worker.py:** (1) the worker (the job
+  wrapper post-pivot) wasn't injecting `RECON_IMAGE_DIGEST` → manifests recorded 'unset'; (2) rootful
+  dockerd wrote bind-mount artifacts as root → `LocalStore.push` PermissionError + unwipeable outbox —
+  jobs now run `--user uid:gid -e HOME=/tmp` (POSIX).
+- **P6G.3 wipe-and-resubmit gate: PASSED** — wiped inbox/outbox/store-outputs, resubmitted, every
+  stage tolerance-identical (statuses/inputs_hash/vertex counts/artifact lists), same pinned digest.
+- **Still open:** the literal laptop `Submit-Job.ps1` invocation (its two halves — key-auth ssh and
+  `cluster.submit` — are independently proven; run it once from the laptop with
+  `-IdentityFile C:\Users\toddm\k1_desktop` for the checkbox) and cross-pyarrow `content_hash`
+  stability (needs a dataset minted on both machines).
