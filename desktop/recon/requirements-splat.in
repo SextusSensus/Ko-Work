@@ -7,3 +7,4 @@ opencv-contrib-python-headless  # image ops (sharpness pre-filter, mask dilation
 imageio
 imageio-ffmpeg                  # decode the run's head_rgb frames
 scikit-image                    # held-out PSNR/SSIM (the GPU-stochastic gate -- not byte-identical)
+rerun-sdk>=0.33,<0.34           # the --run driver reads the capture .rrd (read_rrd_frames; RERUN_COMPAT)

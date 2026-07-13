@@ -27,4 +27,5 @@ RUN pip install --no-cache-dir -r /app/requirements-splat.in
 
 COPY desktop/recon/splat.py /app/recon/splat.py
 COPY desktop/recon/geom.py /app/recon/geom.py
+COPY eval/rrd_to_lerobot.py /app/eval/rrd_to_lerobot.py
 ENTRYPOINT ["python", "/app/recon/splat.py"]
