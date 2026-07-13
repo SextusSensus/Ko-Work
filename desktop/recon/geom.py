@@ -345,9 +345,10 @@ def _checker_rgb(pts_world):
     return np.clip(base * (0.7 + 0.3 * ramp), 0, 255).astype(np.uint8)
 
 
-def _render_rgbd(scene, T_wc, intr_mat, w, h):
+def _render_rgbd(scene, T_wc, intr_mat, w, h, color_fn=None):
     """Cast a pinhole camera (extrinsic world->camera = inv(T_wc)) into the raycasting scene; return
-    (rgb HxWx3 uint8, depth HxW float32 metres, hit-mask). z-depth is computed in the camera frame."""
+    (rgb HxWx3 uint8, depth HxW float32 metres, hit-mask). z-depth is computed in the camera frame.
+    color_fn(world_points[...,3])->uint8[...,3] overrides the default checker (splat uses a smooth one)."""
     import open3d as o3d
     T_cw = np.linalg.inv(T_wc)
     rays = scene.create_rays_pinhole(
@@ -368,7 +369,7 @@ def _render_rgbd(scene, T_wc, intr_mat, w, h):
     depth[~np.isfinite(depth)] = 0.0
     rgb = np.zeros((int(h), int(w), 3), dtype=np.uint8)
     if hit.any():
-        rgb[hit] = _checker_rgb(pts_w[hit])
+        rgb[hit] = (color_fn or _checker_rgb)(pts_w[hit])
     return rgb, depth, hit
 
 
