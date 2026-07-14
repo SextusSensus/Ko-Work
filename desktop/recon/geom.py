@@ -41,7 +41,7 @@ def pair_rgbd(rgb_stream, depth_stream, max_skew_s=0.06):
     of {t, rgb, depth} in ascending depth time and stats has kept/rejected counts + max skew kept."""
     rgb = sorted(rgb_stream, key=lambda r: r[0])
     rgb_t = [r[0] for r in rgb]
-    paired, rejected, max_kept = [], 0, 0.0
+    paired, rejected, max_kept, used = [], 0, 0.0, []
     import bisect
     for td, dimg in sorted(depth_stream, key=lambda d: d[0]):
         if not rgb_t:
@@ -60,9 +60,22 @@ def pair_rgbd(rgb_stream, depth_stream, max_skew_s=0.06):
             continue
         box = rgb[best][2] if len(rgb[best]) > 2 else None
         paired.append({"t": float(td), "rgb": rgb[best][1], "depth": dimg, "box": box})
+        used.append(best)
         max_kept = max(max_kept, skew)
+    # RGB is decimated in the .rrd (1/N), so many depth frames can share ONE nearest RGB. Consecutive
+    # kept frames that reuse the same RGB make the hybrid odometry's PHOTOMETRIC term degenerate (zero
+    # colour residual, identity-biased) and quietly under-advance the trajectory -> a smeared mesh with
+    # nothing in the manifest to show it. Surface it: n_unique_rgb vs pairs_kept, and a loud warning.
+    n_unique = len(set(used))
+    dup = len(used) - n_unique
+    if paired and dup > 0.5 * len(paired):
+        print("PAIR-WARN: %d/%d kept pairs reuse a decimated RGB frame (only %d distinct RGBs) -- "
+              "frame-to-frame photometric odometry is degenerate on the duplicates; the trajectory may "
+              "under-advance. Capture a denser RGB cadence (lower rerun_image_every_n) or run odom on "
+              "RGB-distinct keyframes." % (dup, len(paired), n_unique))
     stats = {"pairs_kept": len(paired), "pairs_rejected_skew": rejected,
-             "max_skew_kept_s": round(max_kept, 4), "max_pair_skew_s": max_skew_s}
+             "max_skew_kept_s": round(max_kept, 4), "max_pair_skew_s": max_skew_s,
+             "unique_rgb_frames": n_unique, "duplicate_rgb_pairs": dup}
     return paired, stats
 
 
@@ -250,6 +263,12 @@ def simplify_and_decompose(mesh, target_tris=None, coacd_threshold=0.05, seed=0)
     ntri = len(mesh.triangles)
     tgt = int(target_tris) if target_tris else max(500, ntri // 4)
     visual = mesh.simplify_quadric_decimation(tgt)
+    # Pre-clean before CoACD: a real garage TSDF mesh carries degenerate/duplicated/non-manifold
+    # fragments that can drive an unbounded convex decomposition. Cleaning bounds the input (and the
+    # worker's wall-clock kill is the backstop if it still runs long). Deterministic.
+    for _op in (visual.remove_degenerate_triangles, visual.remove_duplicated_triangles,
+                visual.remove_duplicated_vertices, visual.remove_non_manifold_edges):
+        _op()
     visual.compute_vertex_normals()
     V = np.asarray(visual.vertices, dtype=np.float64)
     F = np.asarray(visual.triangles, dtype=np.int32)

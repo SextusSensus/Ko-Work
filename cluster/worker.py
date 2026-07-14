@@ -133,9 +133,24 @@ class ScpStore:  # pragma: no cover -- VERIFY ON CLUSTER (needs ssh/scp + a reac
             raise RuntimeError("ScpStore.push %s/%s exit %d" % (run_id, subdir, rc))
 
 
-def _docker_call(cmd):  # pragma: no cover -- the real container run
+# Wall-clock cap on any single container. A native stage (CoACD, an OOM thrash, a deadlock) can't be
+# caught by the cli's Python try/except, so without this the job hangs forever with no manifest -- the
+# exact silent hang the contract forbids. On timeout we kill the named container and report rc 124, which
+# docker_run_job turns into a loud 'failed', so the scheduler requeues/terminals it. Env-tunable.
+JOB_TIMEOUT_S = int(os.environ.get("K1_JOB_TIMEOUT_S", "5400"))     # 90 min: generous for recon, bounds hangs
+
+
+def _docker_call(cmd):  # pragma: no cover -- the real container run, with a wall-clock kill
     import subprocess
-    return subprocess.call(cmd)
+    name = cmd[cmd.index("--name") + 1] if "--name" in cmd else None
+    try:
+        return subprocess.run(cmd, timeout=JOB_TIMEOUT_S).returncode
+    except subprocess.TimeoutExpired:
+        if name:
+            subprocess.call(["docker", "kill", name])                # `docker run` client died; kill the detached container
+        print("JOB-TIMEOUT: killed %s after %ss (a stage hung -- native CoACD / OOM / deadlock)"
+              % (name, JOB_TIMEOUT_S))
+        return 124
 
 
 def _image_digest(image):  # pragma: no cover -- best-effort docker inspect (worker host has docker)

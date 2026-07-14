@@ -53,9 +53,11 @@ def _col(rb, name):
     return rb.column(i) if i >= 0 else None
 
 
-def read_rrd(path):
+def read_rrd(path, depth_only=False):
     """Return (scalars, images, depth) where scalars[entity] = {frame_idx: value},
-    images = {frame_idx: HxWx3 uint8}, depth = {frame_idx: HxW float32}."""
+    images = {frame_idx: HxWx3 uint8}, depth = {frame_idx: HxW float32}.
+    depth_only=True skips the RGB decode entirely (the ingest depth-sanity path never uses RGB;
+    decoding hundreds of full frames it throws away is a needless OOM risk on a long capture)."""
     import numpy as np
     store = _load_store(path)
     scalars = {}
@@ -83,6 +85,8 @@ def read_rrd(path):
         buf = _col(rb, "Image:buffer")
         fmt = _col(rb, "Image:format")
         if buf is not None and fmt is not None:
+            if depth_only:
+                continue                             # RGB not needed -> skip the decode (OOM guard)
             bl, fl = buf.to_pylist(), fmt.to_pylist()
             for fi, b, f in zip(fidx, bl, fl):
                 if fi is None or not b or not f:
