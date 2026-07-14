@@ -345,6 +345,13 @@ new dep, justified by the RPC contract).
 
 ## P7.6 -- GRADUATION CRITERIA: what must ALL be true before the shadow policy may actuate
 
+> **⚠ SUPERSEDED (2026-07-14) BY "P7.6 — GRADUATION CRITERIA + RUNTIME SHIELD SPEC (2026-07-13 —
+> BINDING)" below.** This earlier draft's agreement bands (|Δvx|≤0.03 / |Δvyaw|≤0.05) and sample
+> floors (TRACK 2000, …) are NOT authoritative — the 2026-07-13 entry is the single binding version
+> the P7.5 grader implements verbatim. Kept for history only. (Council review wf_f2789658 flagged the
+> two entries as contradictory-and-both-binding; resolved in favor of the newer, more complete one
+> that carries the shield ladder + the PARKED phantom-free criterion.)
+
 **This ships the CRITERIA, not the shield.** Per the plan invariant, the shadow policy NEVER actuates
 until every item below exists AND passes AND a human flips the switch. Building the shield (a
 `runtime-safety` initiative) and flipping the switch are separate, future, human-approved work. Numbers
@@ -478,8 +485,10 @@ below is shared with the offline grader precisely so every gate is offline-tunab
   (m/s, rad/s), paired under the checkpoint's recorded `obs_action_pairing` convention (P7.3
   contract). Off-by-one pairing invalidates every number below.
 - **Agreement band (v1):** `|Δvx| ≤ 0.05 m/s AND |Δvyaw| ≤ 0.10 rad/s`. A tick inside the band
-  agrees; outside disagrees. (Scale: the runtime clamps bound |vx| ≈ 0.15 m/s, so the band is
-  ~1/3 of full range.)
+  agrees; outside disagrees. (Scale: the DEPLOYED clamp is `vx ∈ [−0.06, +0.18] m/s` (hard ceiling
+  ±0.30, `common.py HARD_VX_LIMIT`; field.yaml lowers the default cap to 0.15) and
+  `vyaw ∈ [−0.30, +0.30]`; the 0.05 m/s band is ≈28% of the +0.18 forward cap. vx is **asymmetric**
+  — reverse is capped at −0.06 — so reason in absolute Δ, never a symmetric "|vx|".)
 - **Per-state:** every metric computed separately per frozen FSM id (`eval/fsm_states.json` v1:
   TRACK, REACQUIRE, SEARCHING, SEARCH_MARKER, PARKED) via `eval/fsm_groups.py`. Blended numbers
   do not count for anything.

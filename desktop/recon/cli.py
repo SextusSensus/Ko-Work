@@ -149,15 +149,27 @@ def stage_ingest(bundle, out_dir, params):
                              "intrinsics_source": intr_src, "artifacts": []}, intr_src
     try:
         from rrd_to_lerobot import read_rrd
-        _scalars, _images, depth = read_rrd(rrd)
+        _scalars, _images, depth = read_rrd(rrd, depth_only=True)   # never decode the RGB we don't use
     except Exception as e:  # noqa: BLE001
         return "failed", 1, {"error": "rrd read failed: %s" % e,
                              "intrinsics_source": intr_src, "artifacts": []}, intr_src
     if not depth:
         return "failed", 1, {"error": "no /camera/depth frames in the .rrd (not P8-usable)",
                              "intrinsics_source": intr_src, "artifacts": []}, intr_src
-    vals = np.concatenate([np.asarray(d, dtype=np.float64).ravel() for d in depth.values()])
-    finite_pos = vals[np.isfinite(vals) & (vals > 0.0)]
+    # Bounded subsample for the median/in-range sanity: concatenating every depth pixel of a long
+    # capture (frames x 448x544 float64) is a real OOM; an evenly-spaced sample is statistically
+    # identical for a median. Cap total samples regardless of run length.
+    frames_d = list(depth.values())
+    per = max(1, 2_000_000 // max(1, len(frames_d)))
+    samp = []
+    for d in frames_d:
+        a = np.asarray(d, dtype=np.float64).ravel()
+        a = a[np.isfinite(a) & (a > 0.0)]
+        if a.size:
+            if a.size > per:
+                a = a[np.linspace(0, a.size - 1, per).astype(np.int64)]
+            samp.append(a)
+    finite_pos = np.concatenate(samp) if samp else np.empty(0)
     if finite_pos.size == 0:
         return "failed", 1, {"error": "no finite positive depth values",
                              "intrinsics_source": intr_src, "artifacts": []}, intr_src
@@ -344,7 +356,11 @@ def run(run_id, stages, bundle_dir, out_dir, seed, allow_approx, image_digest, t
             params = {"depth_min_m": DEPTH_MIN_M, "depth_max_m": DEPTH_MAX_M,
                       "max_pair_skew_s": MAX_PAIR_SKEW_S, "person_mask": "target-box-v0",
                       "mask_dilate_frac": MASK_DILATE_FRAC, "expect_run_id": run_id}
-            status, code, metrics, ctx["intr_source"] = stage_ingest(bundle_dir, out_dir, params)
+            try:                                                 # symmetric with the geometry-stage guard:
+                status, code, metrics, ctx["intr_source"] = stage_ingest(bundle_dir, out_dir, params)
+            except Exception as e:  # noqa: BLE001 -- an ingest crash is a LOUD failed stage, never a lost manifest
+                status, code, metrics = "failed", 1, {
+                    "error": "ingest raised: %s: %s" % (type(e).__name__, e), "artifacts": []}
             params.pop("expect_run_id", None)
         else:
             try:

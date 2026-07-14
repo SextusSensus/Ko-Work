@@ -167,6 +167,15 @@ class RawLeRobotV3FollowDataset(torch.utils.data.Dataset):
             if rid not in idx_of:
                 raise SystemExit("REFUSE: split run_id %s not in card map" % rid)
             ekey = "episode_%06d" % idx_of[rid]
+            # Fail-closed on a non-mp4 episode: a png-fallback / failed encode (video_backend != "mp4")
+            # feeds all-black frames to the CNN while every other gate (state contract, stats_hash, FSM)
+            # still passes -- a silently degraded checkpoint. Refuse before any training starts.
+            _vinfo = self.vindex.get(ekey, {})
+            if _vinfo.get("image_frame_indices") and _vinfo.get("video_backend") != "mp4":
+                raise SystemExit("REFUSE: episode %s (run %s) declares %d image frames but "
+                                 "video_backend=%r != 'mp4' -- re-mint with a working mp4 encoder "
+                                 "(imageio-ffmpeg)." % (ekey, rid, len(_vinfo["image_frame_indices"]),
+                                                        _vinfo.get("video_backend")))
             t = pq.read_table(os.path.join(root, "data", "chunk-000", ekey + ".parquet"))
             st = np.asarray(t.column("observation.state").to_pylist(), np.float32)
             ac = np.asarray(t.column("action").to_pylist(), np.float32)
@@ -196,8 +205,12 @@ class RawLeRobotV3FollowDataset(torch.utils.data.Dataset):
             for fr in rd:
                 frames.append(np.asarray(fr))
             rd.close()
-        # tolerate a small decode/count mismatch by trimming to the min (a torn tail frame); mp4-vs-index
-        # exact equality is VERIFY ON CLUSTER with real head_rgb -- here we align on what decoded.
+        # Tolerate ONE torn tail frame; refuse a real truncation. Silently trimming to min() would
+        # freeze the whole back of the episode on one stale image (every downstream gate still green).
+        if ifi and len(frames) < len(ifi) - 1:
+            raise SystemExit("REFUSE: episode %s decoded %d mp4 frames but the index declares %d "
+                             "(truncated encode) -- would train on stale/frozen frames." %
+                             (ekey, len(frames), len(ifi)))
         n = min(len(frames), len(ifi))
         out = (frames[:n], ifi[:n])
         self._vid_cache[ekey] = out
