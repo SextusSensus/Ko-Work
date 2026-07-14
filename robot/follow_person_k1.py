@@ -100,6 +100,7 @@ from perception import (  # noqa: E402  (P3.5)
     pinhole_intrinsics,
 )
 from triggers import ArucoTrigger, GestureTrigger, CompositeTrigger, marker_center  # noqa: E402  (P3.6)
+from calibration import load_calibration  # noqa: E402  (P8.1 -- calibrated intrinsic over the hfov seed)
 
 
 # ---------------------------------------------------------------------------
@@ -1104,12 +1105,14 @@ class Follower:
                     last_frame_mono = now
                     # P6.1: log camera intrinsics ONCE, now that a frame's true (w,h) is known.
                     # Gated on the (default-off) Rerun sink -> strictly part of a capture bundle and
-                    # byte-identical when recording is off. No CameraInfo on this rig, so the model is
-                    # derived from --hfov-deg and marked approximate (calibrated in P8.1).
+                    # byte-identical when recording is off. No CameraInfo on this rig, so the intrinsic is
+                    # EITHER a P8.1 calibration (--calibration models/calibration.json) whose resolution
+                    # matches the frame, OR the --hfov-deg seed (approximate) as the fallback.
                     if not intr_logged and rerun_sink._RR.ok:
                         intr_logged = True
                         _fh, _fw = frame.shape[:2]
-                        _intr = pinhole_intrinsics(_fw, _fh, self.a.hfov_deg)
+                        _cal = load_calibration(getattr(self.a, "calibration", None), _fw, _fh)
+                        _intr = _cal if _cal is not None else pinhole_intrinsics(_fw, _fh, self.a.hfov_deg)
                         rerun_sink._RR.pinhole("/camera/rgb", _intr["width"], _intr["height"],
                                                _intr["fx"], _intr["fy"], _intr["cx"], _intr["cy"])
                         rerun_sink._RR.write_intrinsics(_intr)
@@ -2850,6 +2853,9 @@ def parse_args(argv):
     p.add_argument("--standoff-m", type=float, default=DEF_STANDOFF_M)
     p.add_argument("--deadband-m", type=float, default=DEF_DEADBAND_M)
     p.add_argument("--hfov-deg", type=float, default=DEF_HFOV_DEG)
+    p.add_argument("--calibration", default=None,
+                   help="P8.1 models/calibration.json; when its resolution matches the frame it "
+                        "replaces the --hfov-deg intrinsic seed in the recorded bundle (recording-only)")
     p.add_argument("--person-h-m", type=float, default=DEF_PERSON_H_M,
                    help="assumed standing height for bbox-height range fallback")
 
