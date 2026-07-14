@@ -353,7 +353,10 @@ function Pull-RerunRecording([string]$ip){
     $tmp = Join-Path $env:TEMP 'k1_rrd_name.txt'
     try{
         Remove-Item $tmp -ErrorAction SilentlyContinue
-        $q = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), 'ls -1t /home/booster/rerun/*.rrd 2>/dev/null | head -1')) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
+        # Newest .rrd across the loose rerun/ dir AND the offloaded bundles (runs/<id>/): the auto-offload
+        # MOVES a finished run's .rrd out of rerun/ into its bundle, so looking only in rerun/ finds an
+        # OLD leftover. Include runs/*/*.rrd so 'Open .rrd' shows the RUN YOU JUST DID, not a stale one.
+        $q = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), 'ls -1t /home/booster/rerun/*.rrd /home/booster/runs/*/*.rrd 2>/dev/null | head -1')) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
         $null = $q.WaitForExit(10000)
     }catch{ Add-LogTrack ('rrd list failed: {0}' -f $_) $red; return $null }
     $remote = (Get-Content $tmp -Raw -ErrorAction SilentlyContinue); if($remote){ $remote=$remote.Trim() }
