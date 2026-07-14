@@ -1055,7 +1055,12 @@ function Get-TrackExtraArgs {
     # Recording ON also enables planar odometry (P6.1a/P8): --odom-topic puts /odom/x,y,theta on the
     # .rrd so the offline stitch (eval/rrd_map.py) has per-frame poses. Guarded on the node side (msg
     # type absent -> odom disabled, follow proceeds); recording-only, never feeds the control law.
-    if($trackRerun -and $trackRerun.Checked){ $a += ('--rerun --rerun-mode save --rerun-dir {0} --odom-topic /odometer_state' -f $script:RerunDir) }
+    # Loop-cost headroom for a capture (RERUN_PLAN "raise it if the gate is tight"): the follow's own
+    # p99 spikes over the 10Hz budget (3 nets, gesture-pose every frame), so the default gate
+    # (image-every-n 3 / overrun-frames 8) sheds Rerun early and we lose the recording. Decimate images
+    # more (fewer encodes) and tolerate longer transient over-budget streaks so Rerun STAYS ON for the
+    # whole capture. Scalars (/follow, /cmd, /odom) still log every tick; only RGB/depth thin out.
+    if($trackRerun -and $trackRerun.Checked){ $a += ('--rerun --rerun-mode save --rerun-dir {0} --odom-topic /odometer_state --rerun-image-every-n 5 --rerun-overrun-frames 24' -f $script:RerunDir) }
     # Deadman HB: node gates velocity on a fresh /tmp/k1_hb mtime AND env-arms the bridge's own
     # heartbeat watchdog. The app-side relay (Start-HbRelay) is started by Start-Tracker.
     if($trackHbChk -and $trackHbChk.Checked){ $a += '--require-heartbeat' }
