@@ -639,6 +639,33 @@ class Follower:
         except Exception as e:  # noqa: BLE001 -- never let a stand attempt kill the loop
             log("STAND-ERR %s (zero velocity held)" % e)
 
+    def _graceful_stop(self):
+        """Clean-exit safe-stop (watchdog max-seconds / operator STOP): a walking humanoid can't take
+        MoveCommand(0,0,0)+ChangeMode(kPrepare) back-to-back (the bridge's quit/EOF path) without
+        falling -- it changes mode mid-stride. So DECELERATE IN-GAIT to a standstill first (stream zero
+        velocity so the gait ramps down and stays balanced, keeping the stream fresh so the C++ floor
+        doesn't step in), THEN kPrepare. This mirrors the C++ staleness floor's own graceful sequence
+        (zero at STALE_MS -> settle -> kPrepare) which the abrupt quit skips.
+
+        ONLY on CLEAN loop exit -- fault/exception paths skip this and take the immediate stop+quit in
+        _cleanup (fail fast). Fully crash-safe: any error here falls through to _cleanup's safe (and the
+        C++ EOF handler also safes), so a settle failure can never leave the robot un-safed. The
+        hardware e-stop / gamepad DAMP stays primary and overrides this at any instant.
+        VERIFY ON ROBOT: the ~1.2 s settle is an estimate; tune against the actual gait decel."""
+        if not (self.drive and self.walking and self.bridge is not None):
+            return
+        try:
+            log("GRACEFUL STOP: decelerate in-gait -> settle -> kPrepare (no mid-stride mode change)")
+            end = time.monotonic() + 1.2
+            while time.monotonic() < end:
+                self.bridge.send_velocity(0.0, 0.0, 0.0)   # zero target: gait ramps to a stable standstill
+                time.sleep(0.05)                           # keep the stream fresh (C++ floor stays out)
+            self.bridge.prep()                             # NOW kPrepare -- stable stance, not mid-stride
+            self.walking = False
+            self.standing = True
+        except Exception as e:  # noqa: BLE001 -- never block the shutdown safe path
+            log("GRACEFUL-STOP-ERR %s -> immediate stop+quit backstop" % e)
+
     def _resume_walk(self):
         """Re-enter kWalking from a fail-safe stand before following again.
         Fire-and-forget prep->settle->walk->settle (the bridge executes the
@@ -1221,6 +1248,11 @@ class Follower:
                     rem = period - dt
                     if rem > 0:
                         time.sleep(rem)
+            # CLEAN loop exit only (watchdog max-seconds hit `break`, or operator STOP cleared
+            # _stop_requested) -- NOT an exception (those jump to `except` below and take the immediate
+            # safe). Settle the gait to a standstill before the bridge quit so the robot never does a
+            # mid-stride ChangeMode(kPrepare) and falls.
+            self._graceful_stop()
         except KeyboardInterrupt:
             pass
         except Exception as e:  # noqa: BLE001
