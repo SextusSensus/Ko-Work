@@ -502,7 +502,7 @@ $script:HbProc=$null   # Deadman-HB relay ssh process (P2 #12); alive only while
 $script:trackMs=$null; $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1
 $script:TrackStart=[datetime]::MinValue
 $script:TrackRerunOn=$false      # P6.2b: did the current/last Tracker session record a .rrd? -> post-run offload
-$script:TrackMaxSec=125          # UI-side hard session watchdog (python also self-limits at 120s)
+$script:TrackMaxSec=315          # UI-side hard session watchdog BACKSTOP; node --max-seconds 300 stops first (graceful settle), this only fires if the node hangs
 $script:TrackToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 $ctrlSync = [hashtable]::Synchronized(@{ Log=(New-Object System.Collections.Queue); Stop=$false })
 $script:LiveProc=$null; $script:LivePS=$null; $script:LiveRS=$null; $script:LiveOn=$false
@@ -516,7 +516,7 @@ $script:MotionButtons=@()
 $followSync = [hashtable]::Synchronized(@{ Log=(New-Object System.Collections.Queue); Stop=$false })
 $script:FollowProc=$null; $script:FollowPS=$null; $script:FollowRS=$null; $script:FollowOn=$false; $script:FollowDrive=$false
 $script:FollowStart=[datetime]::MinValue
-$script:FollowMaxSec=125          # UI-side hard session watchdog (python also self-limits at 120s)
+$script:FollowMaxSec=315          # UI-side hard session watchdog BACKSTOP; node --max-seconds 300 stops first (graceful settle), this only fires if the node hangs
 $script:FollowToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 
 # ============================================================================
@@ -1063,6 +1063,11 @@ function Get-TrackExtraArgs {
     # (image-every-n 3 / overrun-frames 8) sheds Rerun early and we lose the recording. Decimate images
     # more (fewer encodes) and tolerate longer transient over-budget streaks so Rerun STAYS ON for the
     # whole capture. Scalars (/follow, /cmd, /odom) still log every tick; only RGB/depth thin out.
+    # Session length: the node's default watchdog is 120s -- too short for a full capture (room look-
+    # around / sustained pass follow). Raise to 300s. The node still stops first (with _graceful_stop
+    # safing the robot); the deadman + operator STOP stay live so you can stop earlier anytime; the app
+    # backstop (Track/FollowMaxSec=315) only fires if the node hangs past its own stop.
+    $a += '--max-seconds 300'
     if($trackRerun -and $trackRerun.Checked){ $a += ('--rerun --rerun-mode save --rerun-dir {0} --odom-topic /odometer_state --rerun-image-every-n 5 --rerun-overrun-frames 24' -f $script:RerunDir) }
     # Deadman HB: node gates velocity on a fresh /tmp/k1_hb mtime AND env-arms the bridge's own
     # heartbeat watchdog. The app-side relay (Start-HbRelay) is started by Start-Tracker.
