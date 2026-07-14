@@ -35,7 +35,8 @@ import sys
 import numpy as np
 
 DEFAULTS = {"iters": 4000, "depth_weight": 0.5, "ssim_weight": 0.2, "seed": 0,
-            "holdout_frac": 0.15, "sharp_min": 40.0, "refine_pose": True, "appearance": True}
+            "holdout_frac": 0.15, "sharp_min": 40.0, "refine_pose": True, "appearance": True,
+            "depth_min_m": 0.15, "depth_max_m": 5.0}
 # per-parameter-group Adam LRs (3DGS practice): geometry barely moves off a good cloud init;
 # opacity/colour/scale carry the appearance fit. Pose/appearance groups are separate (not per-gaussian).
 _LRS = {"means": 1.6e-4, "quats": 1e-3, "scales": 5e-3, "opacities": 5e-2, "colors": 1e-2}
@@ -141,7 +142,8 @@ def _ssim(x, y, win=11, sigma=1.5, C1=0.01 ** 2, C2=0.03 ** 2):
 
 
 def train(params, opts, frames, device, iters=4000, depth_weight=0.5, ssim_weight=0.2, seed=0,
-          refine_pose=True, appearance=True, pose_reg=5.0, app_reg=1e-2, log_every=500):
+          refine_pose=True, appearance=True, pose_reg=5.0, app_reg=1e-2,
+          depth_min=0.15, depth_max=5.0, log_every=500):
     """frames: [{rgb uint8 [H,W,3], depth float32 [H,W] (0=invalid), viewmat [4,4], K [3,3], W, H}].
     Loss = (1-ssim_w)*L1 + ssim_w*(1-SSIM) [+ depth_w*L1(depth) on valid px]. Densification via
     gsplat DefaultStrategy; optional per-frame se3 pose refinement + affine appearance.
@@ -189,7 +191,10 @@ def train(params, opts, frames, device, iters=4000, depth_weight=0.5, ssim_weigh
         l1 = (rgb_p - rgb_gt).abs().mean()
         loss = (1 - ssim_weight) * l1 + ssim_weight * (1 - _ssim(rgb_p.clamp(0, 1), rgb_gt))
         d_gt = torch.as_tensor(f["depth"], dtype=torch.float32, device=device)
-        m = d_gt > 0
+        # Supervise ONLY within the mesh's fusion range: far returns on this depth rig are noise (seen
+        # to 65 m in a garage) and the TSDF init already truncated at depth_max, so unbounded depth-L1
+        # drags gaussians to phantom far surfaces the init never had -> floaters that wreck novel views.
+        m = (d_gt > depth_min) & (d_gt < depth_max)
         if depth_weight > 0 and m.any():
             loss = loss + depth_weight * (depth_p[m] - d_gt[m]).abs().mean()
         if refine_pose:
@@ -331,7 +336,8 @@ def run_bundle(run_id, bundle_dir, recon_dir, out_dir, cfg):
     # 5. train -> eval -> export
     tstats = train(params, opts, train_fr, device, iters=cfg["iters"],
                    depth_weight=cfg["depth_weight"], ssim_weight=cfg["ssim_weight"],
-                   seed=cfg["seed"], refine_pose=cfg["refine_pose"], appearance=cfg["appearance"])
+                   seed=cfg["seed"], refine_pose=cfg["refine_pose"], appearance=cfg["appearance"],
+                   depth_min=cfg["depth_min_m"], depth_max=cfg["depth_max_m"])
     p, s = eval_heldout(params, held, device)
     n = export_ply(params, os.path.join(out_dir, "point_cloud.ply"))
     metrics = {"run_id": run_id, "frame": "run_local",
