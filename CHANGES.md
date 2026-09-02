@@ -472,6 +472,62 @@ is no longer inert — the next `--drive` with that flag ARMS markerless re-lock
 own help text says to arm only after validating audit-only. Treat the first post-OSNet session as the
 audit-only validation run, not a demo.
 
+## FIELD SESSION 2026-09-02 — first full follow: gesture lock → walk → armed re-lock → graceful stop
+
+The follow ran end to end on the robot for the first time since the re-image. Five blockers
+were found and fixed in one session, each masking the next:
+
+1. **Bridge would not compile** — `B1LocoClient` has no `MoveCommand` (it is `Move`), and the
+   hard-coded SDK root no longer exists (`booster_robotics_sdk` → `sdk_release`). See the
+   "Bridge build fix" entry.
+2. **Node could not import** — `calibration.py` was missing from the app's deploy list (P8.1
+   landed half-deployed). See the "P8.1 landed half-deployed" entry.
+3. **Node fail-closed on config** — `defaults.yaml` was missing the `calibration` key (same
+   half-landed P8.1).
+4. **Every drive aborted `ping 100`** — the 2026-05 firmware answers loco RPC ONLY via the ROS2
+   service `/booster_rpc_service`; the raw SDK channel times out. See the "ROS-transport loco
+   bridge" entry. This one cost the most time; the two red herrings are recorded there because
+   they are extremely easy to fall for again:
+   - `ss -ulpn` as `booster` cannot show pid info for the ROOT-owned `loco_rpc_bridge`, so it
+     reads as "0 DDS sockets" when it actually holds 19. This produced a confident-but-wrong
+     "boot race" diagnosis that cost a reboot and a daemon restart.
+   - `ros2 topic hz/echo` never wakes the lazy camera publishers, so out-of-band probes read
+     ~0 fps while a live session sees 30+. Only the node's own `DRIVE-WAIT` trace is truthful.
+5. **Drive gate `depth=STALE`** — NOT a depth fault. Arrival-gap measurement during a live
+   session: `depth median 0.055s p90 0.068s max 0.144s, gaps>0.5s: 0` vs
+   `rgb median 0.032s p90 0.044s max 8.934s, gaps>0.5s: 1`. RGB stalls (worst 8.9s) starve the
+   stereo depth downstream; the node reports the symptom as depth. Cleared by aiming at a lit,
+   textured scene — `rgb_fps` went 8.7 → 35.7. The fps EMA never decays, so a frozen
+   `depth_fps=7.4` alongside `depth=DOWN` means "stopped", not "slow": read the health state,
+   not the fps.
+
+**Verified in the 300s session** (`--standoff-m 0.9 --vx-max 0.1 --appearance osnet
+--arm-reacquire --lock-trigger gesture --require-heartbeat`):
+
+| signal | result |
+|---|---|
+| bridge (ROS transport) | `ping 0` / `prep 0` / `walk 0` |
+| gesture seed | `LOCKED conf=0.92 -- gesture handoff complete` (repeatable: 2/2 sessions) |
+| follow control law | closed 3.5m → **0.79m** vs 0.9m standoff, then `vx=+0.00` holding station |
+| OSNet identity | `sim=0.89–0.93` frame-to-frame, `cost=0.01/2nd=0.86` under a bystander |
+| armed re-lock | `AUTO-RELOCK id=44 via=anchor g=0.77 k=2 -> TRACK (anchor kept)` after 1 loss |
+| **P4.4 tier retune** | **`WATCHDOG stale` == 0** for the whole run → **the P4.4 VERIFY ON ROBOT criterion PASSES** |
+| graceful stop | `GRACEFUL STOP: decelerate in-gait -> settle -> kPrepare`; robot ended in mode 1 (standing) → **the 06000dc fall-fix VERIFY ON ROBOT PASSES** |
+| operator deadman | `HB-LOST -> velocity gated to zero` then `HB-OK restored` (WiFi hiccup, self-recovered) |
+| depth safety gate | `DEPTH-STARVED -> TURN-ONLY (forward vx suppressed)` then cleared — forward drive correctly suppressed during a hiccup |
+
+**Open, in priority order:**
+- **Loop cost.** `dt=137–237ms` against a 100ms target; `RERUN-DISABLED-SLOW` shed the recording
+  in every session, so there is **no .rrd from any of them**. P4.4's margin assumed p99≈122ms;
+  it held at 400ms, but a recorded run needs the loop cost back first (drop `--rerun`, or cut
+  per-frame neural cost — P4.3's one-model idea is now more attractive).
+- **`jetson-clocks.service` did not survive the re-image** (`Unit could not be found`). Clocks
+  reset to 306MHz on every boot; pin manually until the boot unit is reinstalled.
+- **Deadman auto-resumes on link return** — per runtime-safety doctrine a deadman should latch
+  and require a deliberate operator clear. `UNTETHERED_FOLLOW.md` blocker 3, now observed live.
+- `robot/ops/k1-loco-rpc-heal.service` was drafted against the WRONG (boot-race) diagnosis —
+  it is not needed and should be deleted rather than installed.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
