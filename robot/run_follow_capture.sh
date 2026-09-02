@@ -24,13 +24,26 @@ fi
 MODE="${1:-preview}"
 TOPIC="${2:-/boostercamera/head/raw/rgb}"
 shift 2 2>/dev/null || true   # remaining args ("$@") pass through and override the profile
-SDK=/home/booster/Workspace/booster_robotics_sdk
+# Booster SDK root, PROBED not hard-coded: the SDK drop moved (Workspace/booster_robotics_sdk ->
+# Workspace/sdk_release) and `sudo ./install.sh` also installs include/ + lib/ under /usr/local, so a
+# hard-coded root silently broke the bridge build (ld: cannot find libbooster_robotics_sdk.a).
+# Takes the first root that has BOTH the loco header and the static lib; $BOOSTER_SDK wins if set.
+# (Duplicated in run_follow{,_demo,_capture}.sh on purpose -- each launcher is deployed on its own and
+# must stand alone; a shared helper that failed to deploy would break every launch.)
+SDK_INC=""; SDK_LIB=""
+for _r in "$BOOSTER_SDK" /home/booster/Workspace/booster_robotics_sdk /home/booster/Workspace/sdk_release /usr/local; do
+  [ -n "$_r" ] && [ -f "$_r/include/booster/robot/b1/b1_loco_client.hpp" ] || continue
+  for _l in "$_r/lib/$(uname -m)/libbooster_robotics_sdk.a" "$_r/lib/libbooster_robotics_sdk.a"; do
+    [ -f "$_l" ] && { SDK_INC="$_r/include"; SDK_LIB="$_l"; break 2; }
+  done
+done
 BIN=/home/booster/loco_follow_bridge
 SRC=/home/booster/loco_follow_bridge.cpp
 # PRE-COMPILE the bridge unconditionally (same as run_follow_demo.sh) -- no compile-on-first-drive.
 if [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
   echo "[run_follow_capture] pre-compiling loco_follow_bridge ..."
-  g++ -std=c++17 "$SRC" -I "$SDK/include" "$SDK/lib/aarch64/libbooster_robotics_sdk.a" -lfastrtps -lfastcdr -lpthread -o "$BIN" 2>/home/booster/k1_compile.err || { echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow_capture] COMPILE FAILED"; exit 3; }
+  [ -n "$SDK_LIB" ] || { echo "no Booster SDK found (need <root>/include/booster/robot/b1/b1_loco_client.hpp + <root>/lib/<arch>/libbooster_robotics_sdk.a; probed BOOSTER_SDK, ~/Workspace/booster_robotics_sdk, ~/Workspace/sdk_release, /usr/local)" > /home/booster/k1_compile.err; echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow_capture] COMPILE FAILED"; exit 3; }
+  g++ -std=c++17 "$SRC" -I "$SDK_INC" "$SDK_LIB" -lfastrtps -lfastcdr -lpthread -o "$BIN" 2>/home/booster/k1_compile.err || { echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow_capture] COMPILE FAILED"; exit 3; }
   echo "[run_follow_capture] compiled OK."
 fi
 # NOTE: this launcher does NOT pass --stream, so the node's decision log (TRACK/LOOP-MS via common.log)

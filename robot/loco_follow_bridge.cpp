@@ -10,24 +10,27 @@
 //   prep              -> ChangeMode(kPrepare)
 //   walk              -> ChangeMode(kWalking)
 //   damp              -> ChangeMode(kDamping)
-//   v <vx> <vy> <vyaw>-> MoveCommand(vx,vy,vyaw) fire-and-forget (the 10Hz stream).
+//   v <vx> <vy> <vyaw>-> Move(vx,vy,vyaw) fire-and-forget (the 10Hz stream).
 //                        Values are HARD-clamped here as a last line of defense.
-//   stop              -> MoveCommand(0,0,0) fire-and-forget (immediate halt).
+//   stop              -> Move(0,0,0) fire-and-forget (immediate halt).
 //   quit              -> graceful shutdown (stop + return to PREP) then exit 0.
 //
 // COMMAND-STALENESS WATCHDOG: a DEDICATED thread zeroes velocity if no fresh 'v'
 // arrives for STALE_MS while a stream is active, and commands kPrepare after
 // STALE_PREP_MS. This covers a hung-but-CONNECTED driver (no EOF) holding the last
-// MoveCommand -- the one runaway the EOF latch and the python loop-top watchdogs
+// Move -- the one runaway the EOF latch and the python loop-top watchdogs
 // cannot catch. It runs on its own thread so a getline/stdout block can't disable it.
 //
-// On EOF (ssh/pipe closed), SIGINT/SIGTERM, or "quit": MoveCommand(0,0,0) then
+// On EOF (ssh/pipe closed), SIGINT/SIGTERM, or "quit": Move(0,0,0) then
 // ChangeMode(kPrepare), so the robot never keeps walking when the driver dies.
 //
-// Build (matches the working enable_camera recipe):
+// Build (matches the working enable_camera recipe). <sdk> is whichever root actually exists on the
+// robot -- the SDK drop moved from Workspace/booster_robotics_sdk to Workspace/sdk_release, and
+// `sudo ./install.sh` also installs it to /usr/local (lib/ flat, no arch subdir). run_follow*.sh and
+// bridge_cpp/CMakeLists.txt probe for it; only hard-code a root when you know which one is there.
 //   g++ -std=c++17 loco_follow_bridge.cpp \
-//       -I /home/booster/Workspace/booster_robotics_sdk/include \
-//       /home/booster/Workspace/booster_robotics_sdk/lib/aarch64/libbooster_robotics_sdk.a \
+//       -I <sdk>/include \
+//       <sdk>/lib/aarch64/libbooster_robotics_sdk.a \
 //       -lfastrtps -lfastcdr -lpthread -o loco_follow_bridge
 //
 // Run:   ./loco_follow_bridge [iface]      (iface default 127.0.0.1)
@@ -82,7 +85,7 @@ static std::atomic<bool> g_stop_requested{false};
 static std::atomic<bool> g_cleaned{false};
 
 // ---------------------------------------------------------------------------
-// COMMAND-STALENESS WATCHDOG state. MoveCommand is fire-and-forget and the loco
+// COMMAND-STALENESS WATCHDOG state. Move is fire-and-forget and the loco
 // service HOLDS the last commanded velocity, so a python driver that hangs while
 // the ssh pipe stays OPEN (no EOF) leaves the command loop blocked in getline and
 // the robot walking on the last 'v'. The frame-stall / max-seconds watchdogs sit
@@ -109,7 +112,7 @@ static const int64_t STALE_PREP_MS = 1000;   // sustained stale -> stop + kPrepa
                                              // ROBOT: ZERO 'WATCHDOG stale' lines on a healthy follow;
                                              // if any fire, the loop tail exceeds 400ms -> loosen.
 
-static std::mutex g_loco_mutex;              // serialises every MoveCommand/ChangeMode
+static std::mutex g_loco_mutex;              // serialises every Move/ChangeMode
 static std::atomic<int64_t> g_last_v_ms{0};  // steady-clock ms of the last accepted 'v'
 static std::atomic<bool> g_v_active{false};  // armed only while a velocity stream is live
 static std::atomic<bool> g_zeroed{false};    // tier-1 fired (cleared by the next 'v')
@@ -160,9 +163,11 @@ static inline bool hb_fresh() {
 // it is the terminal best-effort path, also reachable from the async signal handler
 // where taking a mutex could deadlock; the watchdog is stopped before the normal
 // cleanup runs safe_shutdown, and the signal path _exit()s immediately.)
+// (SDK API: B1LocoClient::Move(vx,vy,vyaw) -- booster/robot/b1/b1_loco_client.hpp. The SDK has
+// no MoveCommand; that name is a compile error, not an SDK-version difference.)
 static void loco_move(float vx, float vy, float vyaw) {
     std::lock_guard<std::mutex> lk(g_loco_mutex);
-    if (g_client) g_client->MoveCommand(vx, vy, vyaw);
+    if (g_client) g_client->Move(vx, vy, vyaw);
 }
 static int32_t loco_mode(RobotMode m) {
     std::lock_guard<std::mutex> lk(g_loco_mutex);
@@ -178,7 +183,7 @@ static void safe_shutdown() {
     if (g_client) {
         // Fire-and-forget zero velocity FIRST (fast, no response wait), then
         // command PREP so the robot stands safely instead of holding a gait.
-        g_client->MoveCommand(0.0f, 0.0f, 0.0f);
+        g_client->Move(0.0f, 0.0f, 0.0f);
         g_client->ChangeMode(RobotMode::kPrepare);
     }
 }

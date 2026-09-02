@@ -373,6 +373,41 @@ Open: one ceremonial `Submit-Job.ps1` run from the laptop; cross-pyarrow content
   noise-texture fixtures; real quality gate awaits a real garage bundle — P8.3-gated). Image deps:
   +rerun-sdk; Dockerfile ships eval/rrd_to_lerobot.py.
 
+## Bridge build fix — `Move` (not `MoveCommand`) + probed SDK root (ROBOT-VERIFIED, 2026-09-02)
+
+Symptom: every `--drive` launch died with `Follow process exited 3 = COMPILE FAILED`;
+`k1_compile.err` showed `'class booster::robot::b1::B1LocoClient' has no member named 'MoveCommand'`
+at `loco_follow_bridge.cpp:165` and `:181`. Two independent breakages, both from the robot's SDK
+having moved out from under the hard-coded assumptions:
+
+1. **Wrong API name.** The installed SDK (`b1_loco_client.hpp`, identical md5 at
+   `~/Workspace/sdk_release/include/` and `/usr/local/include/`) declares
+   `int32_t Move(float vx, float vy, float vyaw)`. There is no `MoveCommand` anywhere in the headers.
+   Renamed both call sites (`loco_move`, `safe_shutdown`) + the protocol comments; added a note at
+   `loco_move` so the name isn't "corrected" back. **No semantic change** — same fire-and-forget
+   velocity call, same clamps, same watchdog tiers, same shutdown order (`Move(0,0,0)` → `kPrepare`).
+2. **Wrong SDK root.** `/home/booster/Workspace/booster_robotics_sdk` no longer exists on the robot
+   (the drop is now `~/Workspace/sdk_release`, and `install.sh` also puts it in `/usr/local`, whose
+   `lib/` is flat with no arch subdir). Headers still resolved via the default `/usr/local/include`
+   search path — which is why the failure surfaced as a *member* error and hid the second half; with
+   the rename alone the link then failed `ld: cannot find .../lib/aarch64/libbooster_robotics_sdk.a`.
+   `run_follow.sh`, `run_follow_demo.sh`, `run_follow_capture.sh` and `bridge_cpp/CMakeLists.txt` now
+   **probe** `$BOOSTER_SDK` → `~/Workspace/booster_robotics_sdk` → `~/Workspace/sdk_release` →
+   `/usr/local` for a root with both the header and the static lib (arch subdir or flat), and
+   fail-closed with the reason in `k1_compile.err` + the `BRIDGE`-prefixed stderr marker (exit 3,
+   the contract the app already tails) when none is found.
+
+Verified on the robot (192.168.9.75, aarch64, g++ 11.4.0) in `/tmp` — probe resolves to
+`~/Workspace/sdk_release`, `g++ -std=c++17 ... -o` exits 0, and `cmake -B build && cmake --build build`
+(3.22.1) links `loco_follow_bridge` clean. The bridge binary was **not** run: `quit`/EOF ends in
+`ChangeMode(kPrepare)`, which is robot motion. `VERIFY ON ROBOT`: deploy from the app, then one drive
+session — expect `[run_follow] compiled OK.` and no exit 3.
+
+Not touched (same stale-path root cause, does not block the follow): `run_loco.sh` (cds into
+`~/Workspace/booster_robotics_sdk/build` for the SDK's own example client — that build dir doesn't
+exist in the new drop), `tree_manifest.py`'s `SDK` root and `K1Finder.ps1`'s SDK tree-node/hint
+(file-tree UI only).
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
