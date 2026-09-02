@@ -27,6 +27,7 @@ auto_reacquire: false
 bank_floor: null
 bbox_iou_isolate: 0.1
 bridge: './loco_follow_bridge'
+calibration: null
 cmd_file: '/tmp/k1_cmd'
 coast_frames: 0
 coast_vx_scale: 0.0

@@ -445,6 +445,33 @@ Note: the TRT cache is keyed to the ORT/TRT/driver versions, the GPU arch and th
 an SDK/JetPack upgrade or a model change, re-run `robot/stage_reid.py` or the first follow eats the
 ~6-minute rebuild.
 
+## P8.1 landed half-deployed — `calibration.py` + the `calibration` config key (FIELD-FOUND, 2026-09-02)
+
+Two launch-blocking gaps from the P8.1 commit, both found the hard way in a field session (the P8.1
+`VERIFY ON ROBOT` was never done). They surfaced one after the other, each masking the next:
+
+1. **`ModuleNotFoundError: No module named 'calibration'`** — `follow_person_k1.py:103` imports
+   `from calibration import load_calibration`, but `calibration.py` was never added to the app's
+   `Deploy-FollowFiles` hard-required list, so every deploy shipped a node that cannot import. Added
+   it to the list (the list's own comment is the contract: "the follow node imports every one of
+   these"), so a missing local copy now fail-closes the launch instead of crashing on the robot.
+2. **`CONFIG-ERROR: defaults.yaml key set mismatch -- missing=['calibration']`** — P8.1 added
+   `--calibration` to argparse but not the matching key to `robot/config/defaults.yaml`, and the node
+   fail-closes when the YAML key set doesn't exactly match the argparse surface (correctly — §2). Added
+   `calibration: null`, which is exactly the argparse default, so no behavior changes.
+
+Verified on the robot with the app's real drive argv (ROS sourced, `parse_args` only — no node, no
+motion): `CONFIG-OK` for both `--preview` and the full `--drive --appearance osnet --arm-reacquire …`
+line, `calibration=None`. Also evaluated the armed-relock ladder from the osnet-resolved floors:
+`bank 0.4 >= anchor 0.35`, `reloc 0.55 > 0.35`, `view 0.55 >= 0.4`, `0 < backstop 0.28 < 0.35`,
+`iso 0.55 > 0.35`, `arm_streak 8 >= streak 5`, `arm_margin 0.3 >= margin 0.2` → **LADDER-OK**.
+
+Consequence worth stating plainly: with the OSNet engine now present and on the TRT EP, all three
+arm-gate conditions (`_osnet_ok`, `_ep_ok`, `_ladder_ok`) pass for the first time, so `--arm-reacquire`
+is no longer inert — the next `--drive` with that flag ARMS markerless re-lock. `follow_person_k1.py`'s
+own help text says to arm only after validating audit-only. Treat the first post-OSNet session as the
+audit-only validation run, not a demo.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
