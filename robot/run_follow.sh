@@ -2,7 +2,7 @@
 # Launch the K1 person lock-and-handoff follow. args: <mode preview|drive> [topic]
 # Marker = one-time lock onto the human at the marker, then follows THAT PERSON (YOLO) markerlessly;
 # re-show the marker to re-seed/recover. preview = detect + print only (never moves). drive = walk to follow (ARM-gated by the app).
-# Compiles loco_follow_bridge from source on first drive (verified g++ recipe).
+# Compiles the loco bridge from source on first drive (ROS-transport preferred; see below).
 source /opt/ros/humble/setup.bash 2>/dev/null
 source /opt/booster/BoosterRos2/install/setup.bash 2>/dev/null
 # P6.1a: also source the Booster interface workspace so booster_interface/msg/Odometer imports for the
@@ -41,8 +41,45 @@ for _r in "$BOOSTER_SDK" /home/booster/Workspace/booster_robotics_sdk /home/boos
 done
 BIN=/home/booster/loco_follow_bridge
 SRC=/home/booster/loco_follow_bridge.cpp
+ROS_SRC=/home/booster/loco_follow_bridge_ros.cpp
 if [ "$MODE" = "drive" ]; then
-  if [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
+  # BRIDGE TRANSPORT SELECTION (2026-09-02). The 2026-05 robot firmware answers loco RPC ONLY via
+  # the ROS2 service /booster_rpc_service; the raw SDK channel (B1LocoClient over rt/LocoApiTopic)
+  # times out 100 on every call, so the SDK-transport bridge ping-aborts every drive. When the
+  # ROS-transport twin's source is present, build+use IT; the SDK path below stays as the fallback
+  # for robots/firmware where the raw channel still answers. The `strings|grep` guard matters: the
+  # app re-pushes loco_follow_bridge.cpp on EVERY launch, so mtime alone cannot tell whether $BIN
+  # is the ROS build or a stale SDK build compiled over it -- only the content can.
+  if [ -f "$ROS_SRC" ]; then
+    NEED=0
+    [ -x "$BIN" ] || NEED=1
+    [ "$ROS_SRC" -nt "$BIN" ] && NEED=1
+    grep -aq booster_rpc_service "$BIN" 2>/dev/null || NEED=1
+    if [ "$NEED" = 1 ]; then
+      echo "[run_follow] compiling loco_follow_bridge (ROS transport) ..."
+      # Same diagnostics contract as the SDK path: k1_compile.err + BRIDGE stderr marker + exit 3.
+      BROS=/home/booster/bridge_ros_build
+      mkdir -p "$BROS"
+      cat > "$BROS/CMakeLists.txt" <<'CML'
+cmake_minimum_required(VERSION 3.16)
+project(loco_follow_bridge_ros CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(rclcpp REQUIRED)
+find_package(booster_interface REQUIRED)
+add_executable(loco_follow_bridge_ros /home/booster/loco_follow_bridge_ros.cpp)
+target_link_libraries(loco_follow_bridge_ros
+  rclcpp::rclcpp
+  booster_interface::booster_interface__rosidl_typesupport_cpp)
+CML
+      { cmake -B "$BROS/build" -S "$BROS" && cmake --build "$BROS/build"; } >/home/booster/k1_compile.err 2>&1 \
+        || { echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
+      install -m 755 "$BROS/build/loco_follow_bridge_ros" "$BIN" \
+        || { echo "BRIDGE install FAILED" >>/home/booster/k1_compile.err; echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
+      : > /home/booster/k1_compile.err   # success -> empty, matching the g++ path's contract
+      echo "[run_follow] compiled OK (ROS transport)."
+    fi
+  elif [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
     echo "[run_follow] compiling loco_follow_bridge ..."
     # Compile diagnostics -> k1_compile.err (the app tails THAT file on exit 3; k1_follow.err still
     # holds the PREVIOUS session here and would masquerade as the compile diagnosis). The BRIDGE-
