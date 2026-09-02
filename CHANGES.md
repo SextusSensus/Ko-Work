@@ -408,6 +408,43 @@ Not touched (same stale-path root cause, does not block the follow): `run_loco.s
 exist in the new drop), `tree_manifest.py`'s `SDK` root and `K1Finder.ps1`'s SDK tree-node/hint
 (file-tree UI only).
 
+## OSNet ReID staged on the robot — export, verify, TRT pre-build (ROBOT-VERIFIED, 2026-09-02)
+
+`/home/booster/reid/` did not exist, so every `--appearance osnet` follow fell back to the colour
+histogram and the node auto-refused armed re-lock (`ARM-REFUSED`, `_osnet_ok=False`). `models/` had
+no OSNet blob either (README: "supplied out-of-band"), so nothing could be staged.
+
+**Exported from official sources rather than grabbing a prebuilt ONNX.** `models/export_osnet.py`
+(new) takes the official torchreid architecture (`KaiyangZhou/deep-person-reid`, self-contained,
+torch-only — no pip install on the robot) and the official `osnet_x0_25` MSMT17 checkpoint
+(`huggingface.co/kaiyangzhou/osnet`, the OSNet author's own repo), drops the dataset-specific 4101-id
+classifier head (the follow reads the 512-d feature, never the logits), and exports with a **dynamic
+batch axis** — a fixed-batch ONNX would silently collapse the node's pre-warmed `(1,2,4)` TRT set to
+batch 1 (P4.5). It refuses to write the file unless the ONNX matches PyTorch at batches 1/2/4 and the
+embedding is non-degenerate. Sizes + sha256s are in the script header; measured:
+`max|torch-onnx|` 4.8e-05 / 5.3e-05 / 9.9e-05, `cos` 0.99999988 / 1.0 / 1.0, distinct-input cos 0.9733.
+
+**Pre-built the TensorRT engines through the node's own `identity.ReidEngine`** (`robot/stage_reid.py`,
+new — same options, same `trt_engine_cache_path` = the model dir, so the node reuses the cache rather
+than building mid-follow). On the robot (Orin, sm87, ORT 1.22, GPU clocks UNPINNED at 306 MHz):
+
+- `REID-ENGINE ok providers=TensorrtExecutionProvider,... in=256x128`, `dyn_batch=True`,
+  `cpu_ep_degraded=False` → the arm gate's `_osnet_ok` and `_ep_ok` both pass.
+- build+warm **355.4 s ONE TIME** (cached to `/home/booster/reid/*_fp16_sm87.engine`, 1.6 MB); this is
+  exactly the stall that would otherwise land in the first field follow.
+- embeddings behave: same-crop cos 1.000000, shifted 0.9213, recoloured 0.5796.
+- `embed_batch(5)` 33.6 ms chunked `[4,1]` (no on-the-fly build), steady-state `embed_batch(2)`
+  p50 10.6 ms / p90 21.1 ms / p99 31.4 ms — measured at the 306 MHz clock floor, so pin
+  `jetson_clocks` before judging it.
+
+Also staged a copy at `models/osnet_x0_25_msmt17.onnx` (gitignored) so `K1Finder.ps1`'s
+`Ensure-ReidModel` re-stages it offline to a re-imaged robot. `models/fetch_models.sh` grew an
+`osnet` branch and `models/README.md` documents the recipe + the two robot-side steps.
+
+Note: the TRT cache is keyed to the ORT/TRT/driver versions, the GPU arch and the ONNX itself — after
+an SDK/JetPack upgrade or a model change, re-run `robot/stage_reid.py` or the first follow eats the
+~6-minute rebuild.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
