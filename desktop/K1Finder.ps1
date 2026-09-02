@@ -122,7 +122,7 @@ function Deploy-FollowFiles {
     # failed push must abort the launch (fail-closed) with an HONEST reason. Invoke-Proc gives a
     # reliable exit code (Start-Process -PassThru does not -- see helper). A non-zero here means
     # the robot refused/timed-out the copy, NOT that a local file is missing -- name which case.
-    foreach ($f in @('follow_person_k1.py','common.py','bridge.py','tracking.py','identity.py','rerun_sink.py','perception.py','triggers.py','calibration.py','loco_follow_bridge.cpp','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
+    foreach ($f in @('follow_person_k1.py','common.py','bridge.py','tracking.py','identity.py','rerun_sink.py','perception.py','triggers.py','calibration.py','loco_follow_bridge.cpp','loco_follow_bridge_ros.cpp','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
         $src = Join-Path $ROBOT_DIR $f
         if (-not (Test-Path $src)) { $script:DeployErr = ("local helper file not found: {0}" -f $src); return $false }
         $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f)))
