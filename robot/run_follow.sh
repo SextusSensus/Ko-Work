@@ -26,7 +26,19 @@ MODE="${1:-preview}"
 TOPIC="${2:-/boostercamera/head/raw/rgb}"
 shift 2 2>/dev/null || true   # remaining args ("$@") pass through to the node
                               # (e.g. --stream --standoff-m 1.2 --vx-max 0.18 from the Tracker page)
-SDK=/home/booster/Workspace/booster_robotics_sdk
+# Booster SDK root, PROBED not hard-coded: the SDK drop moved (Workspace/booster_robotics_sdk ->
+# Workspace/sdk_release) and `sudo ./install.sh` also installs include/ + lib/ under /usr/local, so a
+# hard-coded root silently broke the bridge build (ld: cannot find libbooster_robotics_sdk.a).
+# Takes the first root that has BOTH the loco header and the static lib; $BOOSTER_SDK wins if set.
+# (Duplicated in run_follow{,_demo,_capture}.sh on purpose -- each launcher is deployed on its own and
+# must stand alone; a shared helper that failed to deploy would break every launch.)
+SDK_INC=""; SDK_LIB=""
+for _r in "$BOOSTER_SDK" /home/booster/Workspace/booster_robotics_sdk /home/booster/Workspace/sdk_release /usr/local; do
+  [ -n "$_r" ] && [ -f "$_r/include/booster/robot/b1/b1_loco_client.hpp" ] || continue
+  for _l in "$_r/lib/$(uname -m)/libbooster_robotics_sdk.a" "$_r/lib/libbooster_robotics_sdk.a"; do
+    [ -f "$_l" ] && { SDK_INC="$_r/include"; SDK_LIB="$_l"; break 2; }
+  done
+done
 BIN=/home/booster/loco_follow_bridge
 SRC=/home/booster/loco_follow_bridge.cpp
 if [ "$MODE" = "drive" ]; then
@@ -35,7 +47,8 @@ if [ "$MODE" = "drive" ]; then
     # Compile diagnostics -> k1_compile.err (the app tails THAT file on exit 3; k1_follow.err still
     # holds the PREVIOUS session here and would masquerade as the compile diagnosis). The BRIDGE-
     # prefixed marker passes the app's stderr whitelist so the failure also shows live.
-    g++ -std=c++17 "$SRC" -I "$SDK/include" "$SDK/lib/aarch64/libbooster_robotics_sdk.a" -lfastrtps -lfastcdr -lpthread -o "$BIN" 2>/home/booster/k1_compile.err || { echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
+    [ -n "$SDK_LIB" ] || { echo "no Booster SDK found (need <root>/include/booster/robot/b1/b1_loco_client.hpp + <root>/lib/<arch>/libbooster_robotics_sdk.a; probed BOOSTER_SDK, ~/Workspace/booster_robotics_sdk, ~/Workspace/sdk_release, /usr/local)" > /home/booster/k1_compile.err; echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
+    g++ -std=c++17 "$SRC" -I "$SDK_INC" "$SDK_LIB" -lfastrtps -lfastcdr -lpthread -o "$BIN" 2>/home/booster/k1_compile.err || { echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
     echo "[run_follow] compiled OK."
   fi
   # stderr (the node's log lines in --stream mode) must flow to the ssh pipe so K1Finder can show

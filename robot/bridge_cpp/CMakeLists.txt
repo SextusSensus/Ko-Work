@@ -16,17 +16,43 @@ project(loco_follow_bridge CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Booster robotics SDK root (override with -DBOOSTER_SDK=...); default = the on-robot path.
-set(BOOSTER_SDK "/home/booster/Workspace/booster_robotics_sdk" CACHE PATH "Booster robotics SDK root")
-set(BOOSTER_LIB "${BOOSTER_SDK}/lib/aarch64/libbooster_robotics_sdk.a")
+# Booster robotics SDK root. PROBED, not assumed: the SDK drop moved
+# (Workspace/booster_robotics_sdk -> Workspace/sdk_release) and `sudo ./install.sh` also installs
+# include/ + lib/ under /usr/local, so a hard-coded root breaks the build on a re-imaged robot.
+# Override with -DBOOSTER_SDK=/path/to/sdk to pin one explicitly.
+set(BOOSTER_SDK "" CACHE PATH "Booster robotics SDK root (empty = probe the known locations)")
+set(_sdk_candidates "${BOOSTER_SDK}"
+                    "/home/booster/Workspace/booster_robotics_sdk"
+                    "/home/booster/Workspace/sdk_release"
+                    "/usr/local")
+set(BOOSTER_INC "")
+set(BOOSTER_LIB "")
+foreach(_root IN LISTS _sdk_candidates)
+  if(_root STREQUAL "" OR NOT EXISTS "${_root}/include/booster/robot/b1/b1_loco_client.hpp")
+    continue()
+  endif()
+  foreach(_lib "${_root}/lib/${CMAKE_SYSTEM_PROCESSOR}/libbooster_robotics_sdk.a"
+               "${_root}/lib/libbooster_robotics_sdk.a")
+    if(EXISTS "${_lib}")
+      set(BOOSTER_INC "${_root}/include")
+      set(BOOSTER_LIB "${_lib}")
+      break()
+    endif()
+  endforeach()
+  if(NOT BOOSTER_LIB STREQUAL "")
+    break()
+  endif()
+endforeach()
 
-if(NOT EXISTS "${BOOSTER_LIB}")
-  message(FATAL_ERROR "Booster SDK static lib not found: ${BOOSTER_LIB}\n"
-                      "Pass -DBOOSTER_SDK=/path/to/booster_robotics_sdk (must contain lib/aarch64/ + include/).")
+if(BOOSTER_LIB STREQUAL "")
+  message(FATAL_ERROR "Booster SDK not found. Need <root>/include/booster/robot/b1/b1_loco_client.hpp "
+                      "+ <root>/lib/[${CMAKE_SYSTEM_PROCESSOR}/]libbooster_robotics_sdk.a; probed: ${_sdk_candidates}\n"
+                      "Pass -DBOOSTER_SDK=/path/to/sdk.")
 endif()
+message(STATUS "Booster SDK: ${BOOSTER_INC} + ${BOOSTER_LIB}")
 
 # The source stays flat at robot/loco_follow_bridge.cpp so the app deploys it to /home/booster/
 # unchanged; this CMakeLists lives one level down in bridge_cpp/.
 add_executable(loco_follow_bridge "${CMAKE_CURRENT_SOURCE_DIR}/../loco_follow_bridge.cpp")
-target_include_directories(loco_follow_bridge PRIVATE "${BOOSTER_SDK}/include")
+target_include_directories(loco_follow_bridge PRIVATE "${BOOSTER_INC}")
 target_link_libraries(loco_follow_bridge PRIVATE "${BOOSTER_LIB}" fastrtps fastcdr pthread)
