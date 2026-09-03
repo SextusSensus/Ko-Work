@@ -134,6 +134,7 @@ require_heartbeat: false
 gap_steer: 'off'
 gap_steer_max_bearing_deg: 35.0
 gap_steer_rate: 0.2
+gap_steer_trigger_frac: 0.35
 sector_audit: 'off'
 rerun: false
 rerun_addr: null
