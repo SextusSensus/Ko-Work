@@ -33,9 +33,9 @@ head_scan: 'off'
 head_scan_cooldown_s: 6.0
 head_scan_hint_ttl_s: 8.0
 head_scan_max_deg: 30.0
-head_scan_settle_s: 0.40
-head_scan_steps: 5
-head_scan_timeout_s: 8.0
+head_scan_settle_s: 1.0
+head_scan_steps: 3
+head_scan_timeout_s: 0.0
 head_scan_tol_deg: 4.0
 head_track: 'off'
 head_track_deadband_deg: 6.0

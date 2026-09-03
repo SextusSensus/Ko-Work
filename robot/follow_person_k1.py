@@ -844,6 +844,19 @@ class Follower:
         half = n // 2
         return [mx * (i / float(half)) for i in range(-half, half + 1)]
 
+    def _scan_timeout(self):
+        """Hard abort budget for one sweep. Derived unless --head-scan-timeout-s is set.
+        A position advances when the head arrives (>= settle) OR after settle*2 on the slow
+        path, and the re-centre costs one more of the same -- so the true worst case is
+        (steps + 1) * settle * 2. The shipped fixed default was exactly the SWEEP half of
+        that, which made an abort certain on any slow sweep; this cannot drift out of sync
+        with the settle/steps knobs the way a hardcoded number did."""
+        if self.a.head_scan_timeout_s > 0.0:
+            return self.a.head_scan_timeout_s
+        n = max(3, min(9, int(self.a.head_scan_steps)))
+        settle = max(0.1, self.a.head_scan_settle_s)
+        return max(4.0, (n + 1) * settle * 2.0 * 1.5)
+
     def _head_scan_abort(self, why):
         """Give up mid-scan: re-centre (best effort) and fall back to unscanned behaviour."""
         try:
@@ -901,7 +914,7 @@ class Follower:
                 % (len(self._scan_pos), self.a.head_scan_max_deg))
             return True
 
-        if (now - self._scan_t0) > max(2.0, self.a.head_scan_timeout_s):
+        if (now - self._scan_t0) > self._scan_timeout():
             self._head_scan_abort("timeout")
             return False
         hy = self.node.head_yaw(max_age=1.0) if self.node is not None else None
@@ -915,7 +928,7 @@ class Follower:
         if self._scan_state == "pan":
             tgt = self._scan_pos[self._scan_i]
             waited = (now - self._scan_cmd_t)
-            if (abs(hy - tgt) <= tol and waited >= settle) or waited > (settle * 4.0):
+            if (abs(hy - tgt) <= tol and waited >= settle) or waited > (settle * 2.0):
                 # Sample where the CAMERA points (no body-forward shift), labelled with the
                 # OBSERVED yaw -- never the commanded one, so a servo that fell short is recorded
                 # as where it actually looked.
@@ -938,7 +951,7 @@ class Follower:
             if abs(hy) <= tol and (now - self._scan_cmd_t) >= settle:
                 self._head_scan_finish(hy)
                 return False
-            if (now - self._scan_cmd_t) > max(2.0, self.a.head_scan_timeout_s):
+            if (now - self._scan_cmd_t) > self._scan_timeout():
                 self._head_scan_abort("head did not return to centre")
                 return False
             return True
@@ -3443,10 +3456,10 @@ def parse_args(argv):
     p.add_argument("--head-scan-max-deg", type=float, default=30.0,
                    help="half-width of the sweep (deg). The bridge clamps head yaw to +/-34 deg "
                         "regardless, so this cannot exceed the mechanical guard.")
-    p.add_argument("--head-scan-steps", type=int, default=5,
+    p.add_argument("--head-scan-steps", type=int, default=3,
                    help="sample positions across the sweep (forced odd so one lands dead centre). "
                         "More positions = a finer map but a longer freeze.")
-    p.add_argument("--head-scan-settle-s", type=float, default=0.40,
+    p.add_argument("--head-scan-settle-s", type=float, default=1.0,
                    help="time to let the head reach a commanded position before sampling depth. "
                         "Too short samples mid-travel and mislabels the clearance.")
     p.add_argument("--head-scan-tol-deg", type=float, default=4.0,
@@ -3455,8 +3468,13 @@ def parse_args(argv):
     p.add_argument("--head-scan-cooldown-s", type=float, default=6.0,
                    help="minimum gap between scans, so a persistently blocked corridor cannot make "
                         "the robot sweep continuously instead of following.")
-    p.add_argument("--head-scan-timeout-s", type=float, default=8.0,
-                   help="hard abort for a scan that never settles (re-centres and falls back).")
+    p.add_argument("--head-scan-timeout-s", type=float, default=0.0,
+                   help="hard abort for a scan that never settles (re-centres and falls back). "
+                        "0 = derive it from the sweep, which is what you want. A FIXED value is a "
+                        "trap: the first on-robot scan aborted every single time because the old "
+                        "default 8.0 was EXACTLY the worst-case sweep for 5 positions at 0.4 s "
+                        "settle (5 x settle x 4), so any position taking the slow path guaranteed "
+                        "a timeout before the re-centre could finish.")
     p.add_argument("--head-scan-hint-ttl-s", type=float, default=8.0,
                    help="how long a scan result may steer for. The world moves; an old map is not "
                         "evidence about the world now, so the hint ages out rather than persisting.")
