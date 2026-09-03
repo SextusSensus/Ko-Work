@@ -902,6 +902,36 @@ Two defects, both mine:
 This is precisely the class of defect the audit pass exists to catch, and it was found in one live
 run instead of by reasoning -- worth remembering next time the temptation is to skip audit.
 
+## Obstacle brake RE-sensitised -- min-valid 150 was hiding thin objects until close (2026-09-03)
+
+Field: the robot still met obstacles late. The clearance trace shows why, and it is not a grading
+problem:
+```
+CLEARANCE 1.41m -> 0.43m -> 0.35m     (1 Hz samples, travelling ~0.18 m/s)
+```
+0.98 m of clearance vanished between two samples while the robot covered ~0.18 m -- the obstacle
+APPEARED rather than approached, the same cliff signature as the pre-band-fix chair.
+
+Cause: `--obstacle-min-valid 150`, raised from 40 earlier the same day when the brake was
+desensitised on request. A chair leg or table edge subtends very few depth pixels at 1.5 m and
+plenty at 0.4 m, so demanding 150 valid pixels made thin/distant objects invisible until they were
+close. That is precisely the "brakes later and less" trade recorded at the time, now observed.
+
+Walked back toward the middle:
+
+| knob | was | now | why |
+|---|---|---|---|
+| `--obstacle-min-valid` | 150 | **70** | thin/distant objects register again |
+| `--obstacle-pctile` | 20 | **12** | react to nearer returns sooner, still robust vs a raw min |
+| `--obstacle-brake-stop` | 0.6 | **0.7** | stop ~10 cm further out |
+| `--obstacle-aged` | 5 | 5 | KEEP -- anti-glitch guard, not a sensitivity knob |
+| `--obstacle-brake-start` | 1.5 | 1.5 | KEEP -- raising it puts the 1.98 m floor return inside the braking zone |
+
+Note the shape of this: sensitivity was tuned DOWN on one report and back UP on the next. The two
+requests are in genuine tension (fewer nuisance stops vs earlier detection) and the honest resolution
+is not a single number but better SENSING -- floor-plane rejection would let the band see low objects
+without the false-brake risk that forced the desensitisation in the first place.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
