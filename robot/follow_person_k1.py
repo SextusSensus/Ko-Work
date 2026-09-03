@@ -267,6 +267,9 @@ class Follower:
         self.det = None             # PersonDetector
         self.walking = False        # True only after a successful prep+walk
         self.standing = False       # True after a fail-safe kPrepare stand (blocks velocity)
+        self._head_ok = None        # None=unprobed, True=verified by --head-probe, False=probe FAILED
+                                    # (False disables the head features: an unverified head silently
+                                    #  offsets every bearing, so it fails closed rather than guessing)
         self._stop_requested = False
         self._cleaned = False
         self._cleanup_lock = threading.Lock()
@@ -618,12 +621,83 @@ class Follower:
     # the OBSERVED head yaw is added back to recover the body-relative bearing, and the obstacle
     # corridor is shifted to keep watching body-forward. Head yaw is never assumed -- unknown
     # (stale/absent /head_pose) fails closed.
+    def _head_probe(self):
+        """ONE-SHOT head calibration, run once at startup while the robot is in kWalking but
+        BEFORE self.walking flips True -- so velocity is still gated off (see the drive gate in
+        _send_velocity) and the ONLY thing that can move is the head. That placement is the whole
+        point: with the head off-centre every bearing is wrong by that angle, so a head probe must
+        never run while the robot is able to drive.
+
+        RotateHead is MODE-GATED by the firmware -- it returns 400 (bad request) in kPrepare and is
+        accepted only in kWalking, which is why this cannot be checked on a parked robot.
+
+        Measures the SIGN convention: does a commanded +yaw read back as +yaw on /head_pose?
+        Logs the answer for --head-yaw-sign, then leaves the head centred. Any failure (no pose,
+        no motion, or failure to re-centre) is reported loudly and disables the head features for
+        the session -- it never silently proceeds with an unverified head.
+        """
+        probe_rad = 0.20                 # ~11.5 deg: well inside the bridge clamp, clearly measurable
+        settle_s = 2.5                   # head servo travel + /head_pose publish latency
+        recentre_tol_deg = 3.0
+
+        y0 = self.node.head_yaw(max_age=1.0)
+        if y0 is None:
+            log("HEAD-PROBE SKIP /head_pose unavailable -> head features stay disabled")
+            self._head_ok = False
+            return
+        try:
+            self.bridge.send_head(0.0, probe_rad)
+        except Exception as e:  # noqa: BLE001
+            log("HEAD-PROBE ERR send failed: %s -> head features stay disabled" % e)
+            self._head_ok = False
+            return
+        if self._sleep_interruptible(settle_s):
+            return
+        y1 = self.node.head_yaw(max_age=1.0)
+
+        # Re-centre FIRST, unconditionally, before any interpretation -- so an early return or a
+        # surprising reading can never leave the head parked off-centre.
+        try:
+            self.bridge.send_head(0.0, 0.0)
+        except Exception as e:  # noqa: BLE001
+            log("HEAD-PROBE ERR recentre failed: %s" % e)
+        if self._sleep_interruptible(settle_s):
+            return
+        y2 = self.node.head_yaw(max_age=1.0)
+
+        if y1 is None or y2 is None:
+            log("HEAD-PROBE FAIL pose went stale mid-probe -> head features stay disabled")
+            self._head_ok = False
+            return
+        d = math.degrees(y1 - y0)
+        cen = math.degrees(y2)
+        if abs(d) < 2.0:
+            log("HEAD-PROBE FAIL commanded %+.1f deg, head moved %+.1f deg (no motion) -> RotateHead "
+                "not actuated; head features stay disabled" % (math.degrees(probe_rad), d))
+            self._head_ok = False
+            return
+        if abs(cen) > recentre_tol_deg:
+            log("HEAD-PROBE FAIL head did not return to centre (%+.1f deg, tol %.1f) -> head features "
+                "stay disabled (every bearing would carry this offset)" % (cen, recentre_tol_deg))
+            self._head_ok = False
+            return
+        sign = 1.0 if d > 0 else -1.0
+        self._head_ok = True
+        log("HEAD-PROBE OK commanded %+.1f deg -> observed %+.1f deg, recentred %+.1f deg. "
+            "Measured --head-yaw-sign %+.0f (configured %+.0f)%s"
+            % (math.degrees(probe_rad), d, cen, sign, self.a.head_yaw_sign,
+               "" if sign == self.a.head_yaw_sign else "  <-- MISMATCH: configured sign is BACKWARDS"))
+
     def _head_track(self, bearing_img):
         """Drive the head toward centring the operator. Returns the OBSERVED head yaw (rad) to use
         for corrections, or None when it is unknown and the caller must fail closed.
         In 'off' -> returns 0.0 and commands nothing (byte-identical).
         In 'audit' -> computes + logs, commands nothing, and returns 0.0 so NO correction is applied."""
         if self.a.head_track == "off":
+            return 0.0
+        if self._head_ok is False:
+            # --head-probe ran and FAILED. Behave exactly as "off": an unverified head means every
+            # bearing correction would be guesswork, and a wrong sign steers toward the obstacle.
             return 0.0
         hy = self.node.head_yaw() if self.node is not None else None
         if hy is None:
@@ -682,7 +756,14 @@ class Follower:
         try:
             h, w = d.shape[:2]
             y0 = int(h * self.a.obstacle_band_top); y1 = int(h * self.a.obstacle_band_bot)
-            cf = max(0.05, min(1.0, self.a.obstacle_corridor_frac))
+            # SECTORS ARE INDEPENDENT OF THE CORRIDOR (field fix 2026-09-03). They used to be
+            # defined as whatever lay OUTSIDE the corridor, so widening corridor-frac 0.35 -> 0.55
+            # shrank each side sector from ~32% to ~22% of the frame. Fewer pixels -> they kept
+            # falling under --obstacle-min-valid -> the committed side failed its check every few
+            # frames -> the gap-steer hysteresis fell through to a fresh decision and OSCILLATED
+            # again. Fixed thirds keep each sector large enough to judge reliably, whatever the
+            # corridor is set to.
+            sf = max(0.15, min(0.45, self.a.sector_frac))
             # HEAD-PAN CORRECTION: the corridor must track BODY-forward, not head-forward.
             # With the head panned by hy, body-forward sits at -hy in the image, so shift the
             # window by -hy*focal px. Without this the brake watches wherever the head looks --
@@ -694,7 +775,7 @@ class Follower:
                 _hy = self.node.head_yaw()
                 if _hy is not None:
                     _hshift = -self.a.head_yaw_sign * _hy * focal_px(w, self.a.hfov_deg)
-            cx0 = int(w * (0.5 - cf / 2.0)); cx1 = int(w * (0.5 + cf / 2.0))
+            cx0 = int(w * sf); cx1 = int(w * (1.0 - sf))
             for key, (sx0, sx1) in (("L", (0, cx0)), ("C", (cx0, cx1)), ("R", (cx1, w))):
                 if sx1 - sx0 < 8:
                     continue
@@ -1083,6 +1164,11 @@ class Follower:
             return False
         if self._sleep_interruptible(2.0):
             return False
+
+        # Head probe runs HERE by design: kWalking is reached (RotateHead is mode-gated and 400s in
+        # kPrepare) but self.walking is still False, so no velocity can stream while the head moves.
+        if self.a.head_probe:
+            self._head_probe()
 
         self.walking = True
         log("DRIVE-ACTIVE follow enabled (vx[%.2f,%.2f] vyaw[%.2f,%.2f])"
@@ -3092,6 +3178,12 @@ def parse_args(argv):
     # on    : pan the head to keep the operator centred, correct bearing by the OBSERVED head yaw,
     #         and shift the obstacle corridor so it keeps watching BODY-forward, not head-forward.
     # Fails closed: head pose stale/absent in `on` -> recentre + forward vx suppressed.
+    p.add_argument("--head-probe", action="store_true",
+                   help="run a ONE-SHOT head calibration at startup (after kWalking is entered but "
+                        "before velocity is ungated, so only the head can move): command a small yaw, "
+                        "read it back on --head-pose-topic, re-centre, and log the measured "
+                        "--head-yaw-sign. Off by default. Required to trust any head feature -- "
+                        "RotateHead is mode-gated and cannot be checked on a parked robot.")
     p.add_argument("--head-track", choices=("off", "audit", "on"), default="off",
                    help="head tracks the operator (off|audit|on). Default off = byte-identical.")
     p.add_argument("--head-pose-topic", default="/head_pose",
@@ -3223,6 +3315,12 @@ def parse_args(argv):
     # the free space beside an obstacle is already visible every frame and simply never consulted.
     # 'audit' LOGS where the gaps are and which way a steering layer would go; it commands NOTHING
     # and changes no control value. Default off = byte-identical.
+    p.add_argument("--sector-frac", type=float, default=0.33,
+                   help="width of each SIDE sector as a fraction of the frame (centre gets the"
+                        " rest). Independent of --obstacle-corridor-frac ON PURPOSE: sectors used"
+                        " to be the corridor leftovers, so widening the corridor shrank them until"
+                        " they fell under --obstacle-min-valid and the gap-steer hysteresis kept"
+                        " falling through to a fresh decision, which oscillated.")
     p.add_argument("--sector-audit", choices=("off", "audit"), default="off",
                    help="log per-sector (L/C/R) depth clearance and the gap a steering layer would "
                         "pick. Observation only -- never steers.")
