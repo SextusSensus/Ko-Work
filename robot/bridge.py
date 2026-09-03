@@ -115,6 +115,12 @@ class Bridge:
     def walk(self):
         self._send("walk")      # ChangeMode(kWalking)
 
+    def send_head(self, pitch, yaw):
+        """Point the head (radians, absolute). Fire-and-forget like velocity -- it is streamed
+        at tracking rate. The bridge clamps yaw to +/-0.60 rad and pitch to +/-0.35 rad as the
+        last line of defence, and re-centres the head on shutdown."""
+        self._send("head %.4f %.4f" % (pitch, yaw))
+
     def quit(self):
         self._send("quit")
 

@@ -989,6 +989,39 @@ constraint: on a FIXED head, every degree of detour is spent from the same budge
 operator in frame. Head tracking is the structural fix -- the head absorbs the detour and the operator
 stays centred -- and it remains blocked only on the ~11 deg head-motion test.
 
+## "Kept running into the chair" -- the corridor was NARROWER THAN THE ROBOT at contact range
+
+Root cause, and it is geometry rather than tuning. The obstacle corridor is an ANGULAR cone
+(`--obstacle-corridor-frac 0.35` = 49.6 deg), so the width it actually covers shrinks with range:
+
+| range | corridor at 0.35 | robot width |
+|---|---|---|
+| 1.5 m | 1.39 m | 0.45 m |
+| 1.0 m | 0.93 m | 0.45 m |
+| 0.7 m | 0.65 m | 0.45 m |
+| **0.5 m** | **0.46 m** | **0.45 m** |
+
+At contact range the watched cone was the same width as the robot, so an obstacle just outside it was
+invisible to the brake while still squarely in the SHOULDER path -- the reflex reported clear and the
+robot walked into it. Gap steering compounded it: as the body turned, the chair slid out of the CENTRE
+corridor into a side sector, centre read clear, the brake released, and it drove diagonally into the
+obstacle it was avoiding.
+
+`--obstacle-corridor-frac 0.35 -> 0.55` (49.6 -> 72.0 deg): 1.02 m at 0.7 m and 0.73 m at 0.5 m, i.e.
+body width plus real margin all the way to contact. Verified against the measured intrinsics
+(544 px, fx 205.8).
+
+Note this is a DIFFERENT failure from the two before it, and all three were called "it hits things":
+- band too high (0.68)      -> low obstacles invisible until close      -> fixed by band 0.75
+- min-valid too high (150)  -> thin obstacles invisible until close     -> fixed by min-valid 70
+- corridor too NARROW (0.35)-> obstacles beside the axis invisible      -> fixed by corridor 0.55
+Vertical coverage, evidence threshold, and horizontal coverage are three independent ways for the same
+symptom to appear, which is why threshold-tuning alone kept not fixing it.
+
+**Cost:** a 72 deg cone sees more, so it will brake for things further off-axis -- some of which the
+robot would have missed. That is the correct direction to err for a walking humanoid, but expect more
+stops in cluttered rooms.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).

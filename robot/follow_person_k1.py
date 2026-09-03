@@ -97,7 +97,7 @@ from identity import (  # noqa: E402  (P3.3)
 )
 from perception import (  # noqa: E402  (P3.5)
     PersonDetector, CamNode, bearing_from_x, range_from_bbox_height, target_point_from_box, low_light_boost,
-    pinhole_intrinsics,
+    pinhole_intrinsics, focal_px,
 )
 from triggers import ArucoTrigger, GestureTrigger, CompositeTrigger, marker_center  # noqa: E402  (P3.6)
 from calibration import load_calibration  # noqa: E402  (P8.1 -- calibrated intrinsic over the hfov seed)
@@ -584,7 +584,19 @@ class Follower:
         try:
             h, w = d.shape[:2]
             cf = max(0.05, min(1.0, self.a.obstacle_corridor_frac))
-            x0 = int(w * (0.5 - cf / 2.0)); x1 = int(w * (0.5 + cf / 2.0))
+            # HEAD-PAN CORRECTION: the corridor must track BODY-forward, not head-forward.
+            # With the head panned by hy, body-forward sits at -hy in the image, so shift the
+            # window by -hy*focal px. Without this the brake watches wherever the head looks --
+            # it would report clear while the robot walks into something. Unknown head yaw
+            # gives 0.0 shift AND forbids forward elsewhere, so the corridor is never silently
+            # wrong. At 105.8 deg FOV a +/-30 deg pan keeps body-forward well inside frame.
+            _hshift = 0.0
+            if self.a.head_track == "on":
+                _hy = self.node.head_yaw()
+                if _hy is not None:
+                    _hshift = -self.a.head_yaw_sign * _hy * focal_px(w, self.a.hfov_deg)
+            x0 = int(max(0, min(w - 2, w * (0.5 - cf / 2.0) + _hshift)))
+            x1 = int(max(x0 + 1, min(w, w * (0.5 + cf / 2.0) + _hshift)))
             y0 = int(h * self.a.obstacle_band_top); y1 = int(h * self.a.obstacle_band_bot)
             band = d[y0:y1, x0:x1]
             v = band[(band > 0.15) & (band < self.a.obstacle_max_m) & np.isfinite(band)]
@@ -596,6 +608,61 @@ class Follower:
         self._clr_hist.append(clr)
         self._clr_hist = self._clr_hist[-max(1, self.a.obstacle_aged):]
         return float(sorted(self._clr_hist)[len(self._clr_hist) // 2])   # aged-median
+
+    # ---- HEAD TRACKING (stage 3). Point the head at the operator so the BODY is free to turn --
+    # a detour then costs no lock margin, which is the constraint every gap-steer loss hit today
+    # (losses at -27, -32, +31 deg with a fixed head).
+    #
+    # THE COUPLING: bearing_from_x() measures the operator relative to where the CAMERA points, and
+    # everything downstream assumes that equals body-forward. Once the head pans that is false, so
+    # the OBSERVED head yaw is added back to recover the body-relative bearing, and the obstacle
+    # corridor is shifted to keep watching body-forward. Head yaw is never assumed -- unknown
+    # (stale/absent /head_pose) fails closed.
+    def _head_track(self, bearing_img):
+        """Drive the head toward centring the operator. Returns the OBSERVED head yaw (rad) to use
+        for corrections, or None when it is unknown and the caller must fail closed.
+        In 'off' -> returns 0.0 and commands nothing (byte-identical).
+        In 'audit' -> computes + logs, commands nothing, and returns 0.0 so NO correction is applied."""
+        if self.a.head_track == "off":
+            return 0.0
+        hy = self.node.head_yaw() if self.node is not None else None
+        if hy is None:
+            # UNKNOWN head yaw. Recentre (best effort) and tell the caller to fail closed -- an
+            # assumed-zero yaw with a panned head is the silent-corruption case this exists to avoid.
+            if self.a.head_track == "on" and self.bridge is not None:
+                try:
+                    self.bridge.send_head(0.0, 0.0)
+                except Exception:  # noqa: BLE001 -- head pointing must never break the loop
+                    pass
+            if (time.monotonic() - getattr(self, "_last_head_log", 0.0)) >= 1.0:
+                self._last_head_log = time.monotonic()
+                log("HEAD-UNKNOWN /head_pose stale or absent -> recentre + no bearing correction")
+            return None
+        sgn = self.a.head_yaw_sign
+        # Centring the operator means panning BY their image bearing. sgn resolves the hardware's
+        # yaw convention (+ = left or right), which is not documented -- verify once, then it is fixed.
+        want = clamp(hy + sgn * bearing_img,
+                     -math.radians(self.a.head_track_max_deg),
+                     math.radians(self.a.head_track_max_deg))
+        moved = abs(bearing_img) > math.radians(self.a.head_track_deadband_deg)
+        if self.a.head_track == "on":
+            if moved and self.bridge is not None:
+                try:
+                    self.bridge.send_head(0.0, want)
+                except Exception:  # noqa: BLE001
+                    pass
+            if (time.monotonic() - getattr(self, "_last_head_log", 0.0)) >= 1.0:
+                self._last_head_log = time.monotonic()
+                log("HEAD yaw=%+.0fdeg -> want %+.0fdeg (operator %+.0fdeg in frame, body-rel %+.0fdeg)"
+                    % (math.degrees(hy), math.degrees(want), math.degrees(bearing_img),
+                       math.degrees(bearing_img + sgn * hy)))
+            return hy
+        # audit: report what WOULD be commanded; apply nothing.
+        if (time.monotonic() - getattr(self, "_last_head_log", 0.0)) >= 1.0:
+            self._last_head_log = time.monotonic()
+            log("HEAD-AUDIT yaw=%+.0fdeg would-command %+.0fdeg (operator %+.0fdeg in frame) -- NOT applied"
+                % (math.degrees(hy), math.degrees(want), math.degrees(bearing_img)))
+        return 0.0
 
     # ---- SECTOR CLEARANCE (gap-following stage 4). AUDIT-ONLY: computes where the free space is
     # and logs it; steers NOTHING. The brake watches only the central corridor (35% of width =
@@ -616,6 +683,17 @@ class Follower:
             h, w = d.shape[:2]
             y0 = int(h * self.a.obstacle_band_top); y1 = int(h * self.a.obstacle_band_bot)
             cf = max(0.05, min(1.0, self.a.obstacle_corridor_frac))
+            # HEAD-PAN CORRECTION: the corridor must track BODY-forward, not head-forward.
+            # With the head panned by hy, body-forward sits at -hy in the image, so shift the
+            # window by -hy*focal px. Without this the brake watches wherever the head looks --
+            # it would report clear while the robot walks into something. Unknown head yaw
+            # gives 0.0 shift AND forbids forward elsewhere, so the corridor is never silently
+            # wrong. At 105.8 deg FOV a +/-30 deg pan keeps body-forward well inside frame.
+            _hshift = 0.0
+            if self.a.head_track == "on":
+                _hy = self.node.head_yaw()
+                if _hy is not None:
+                    _hshift = -self.a.head_yaw_sign * _hy * focal_px(w, self.a.hfov_deg)
             cx0 = int(w * (0.5 - cf / 2.0)); cx1 = int(w * (0.5 + cf / 2.0))
             for key, (sx0, sx1) in (("L", (0, cx0)), ("C", (cx0, cx1)), ("R", (cx1, w))):
                 if sx1 - sx0 < 8:
@@ -2413,6 +2491,17 @@ class Follower:
 
         # Range + bearing were computed up-front (for the geofence) and are reused here.
         # SAME control law + HARD clamps used throughout.
+        # ---- Stage-3 HEAD TRACKING. Point the head at the operator, then convert their
+        # IMAGE bearing into a BODY-relative one. With the head centred this is a no-op; with
+        # the head panned it is the difference between steering toward them and away.
+        # None == head yaw UNKNOWN -> fail closed: no correction, and forward is forbidden
+        # below (an assumed-zero yaw with a panned head is the silent-corruption case).
+        _hy = self._head_track(bearing)
+        _head_unknown = (_hy is None)
+        if _head_unknown:
+            _hy = 0.0
+        bearing = bearing + self.a.head_yaw_sign * _hy
+
         # ---- Stage-5 GAP STEERING. Computed BEFORE the yaw law so the existing slew limiter
         # still bounds how fast yaw may change, and re-clamped with it. Returns 0.0 unless
         # --gap-steer on, so by default the next line is the shipped expression unchanged.
@@ -2459,7 +2548,10 @@ class Follower:
         # flag so it is RE-APPLIED AFTER the slew: an accel-limited ramp from a high baseline
         # toward 0 (e.g. _slew(+0.18,0,0.06)=+0.12) would otherwise re-leak a forbidden forward
         # command the clamp cannot pull back to 0 (INV-1).
-        forbid_forward = ((rsrc != "depth")
+        # Head yaw UNKNOWN while head tracking is enabled -> the bearing is untrustworthy, so
+        # forward is forbidden until /head_pose returns. Turn-only, same shape as depth-starved.
+        forbid_forward = (_head_unknown
+                          or (rsrc != "depth")
                           or (rng is not None and self.a.min_safe_range > 0.0
                               and rng <= self.a.min_safe_range)
                           or self._postrelock_noforward
@@ -3006,6 +3098,11 @@ def parse_args(argv):
                    help="geometry_msgs/Pose topic giving the CURRENT head orientation; subscribed "
                         "only when --head-track is not off. Bearing correction REQUIRES it -- an "
                         "assumed head yaw is the silent-corruption case.")
+    p.add_argument("--head-yaw-sign", type=float, default=1.0,
+                   help="+1 or -1: which way the hardware's positive head yaw turns. NOT documented "
+                        "by the SDK -- verify once with a small commanded pan and the /head_pose "
+                        "readback, then it is fixed. Getting it wrong drives the head AWAY from the "
+                        "operator, which is why head-track defaults to off and audit commands nothing.")
     p.add_argument("--head-track-max-deg", type=float, default=30.0,
                    help="max commanded head yaw (deg); kept inside the bridge clamp (34 deg) so "
                         "body-forward stays well inside the 105.8 deg camera FOV.")
