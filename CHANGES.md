@@ -821,6 +821,58 @@ consumes the video stream -- but that is a Booster/Auki service and wants unders
 touched. The compute-manager conclusion is unchanged (contention, not features) but the specific
 target named earlier was wrong.
 
+## Gap steering — the robot can now route AROUND an obstacle (stages 4-5, DEFAULT OFF, 2026-09-03)
+
+Field report: "it runs into obstacles instead of finding an alternative route -- its head stays
+straight and it runs into everything." Correct diagnosis of the shipped behaviour: **nothing in the
+stack had steering authority over an obstacle.** The brake can only slow and stop.
+
+**The sequencing was wrong and the field report exposed it.** Head tracking was treated as a
+prerequisite for steering. It is not: the camera is **105.8 deg** wide and the obstacle reflex looks
+at only the central 35% (49.7 deg), DISCARDING the rest of every frame. The free space beside an
+obstacle is already visible -- it was simply never consulted. Gap steering therefore works on a FIXED
+head; head tracking becomes the upgrade that allows LARGE detours without losing the operator.
+```
+ left sector [-53..-25 deg]   centre [-25..+25]   right sector [+25..+53]
+                               ^ the only part the brake ever looked at
+```
+
+**Stage 4 -- `_sector_clearances()` + `--sector-audit`.** Per-sector (L/C/R) clearance over the full
+frame, same robustness rules as the brake (percentile not min, min-valid footprint). A sector that
+cannot be MEASURED returns None and every caller treats None as BLOCKED: "I cannot see" and "nothing
+is there" must never be the same answer for a moving robot.
+
+**Stage 5 -- `_gap_steer_bias()` + `--gap-steer off|audit|on`.** When the centre corridor is blocked
+and a side is measurably clear, bias the yaw TARGET toward it (pre-slew, so the existing slew limiter
+still bounds how fast yaw may change, and the hard vyaw clamp still applies).
+
+INVARIANTS (deliberate):
+- **Yaw only.** It never authorises forward vx. Speed stays under the brake + the `forbid_forward`
+  keystone, so a steer can never authorise driving at something unseen.
+- **Unmeasurable == blocked.**
+- **Boxed in -> 0.0**, let the brake stop; never guess a direction.
+- **Stops biasing once the operator nears the frame edge** (`--gap-steer-max-bearing-deg 35`): a
+  detour that loses the lock has failed even if it misses the chair.
+
+**How it drives.** The brake reads only the CENTRE corridor, so: centre blocked -> vx capped, robot
+rotates toward the gap -> after ~1-2 s the gap has rotated INTO the centre corridor -> centre
+clearance rises above brake-start -> the brake releases by itself -> forward resumes, now aimed down
+the gap. It turns, then drives. It will never drive forward while the centre is blocked, because that
+is driving at the obstacle.
+
+Decision table verified on the robot (pure function of sectors + bearing, no motion):
+```
+centre blocked, LEFT open      -> +0.20 (LEFT)      BOXED IN               -> 0.00
+centre blocked, RIGHT open     -> -0.20 (RIGHT)     side unmeasurable      -> 0.00
+both open, operator LEFT/RIGHT -> toward operator   centre clear           -> 0.00
+                                                    operator at -40deg     -> 0.00
+```
+Defaults verified `gap_steer=off`, `sector_audit=off`, and the config key set still matches argparse.
+
+**NOT YET RUN ON THE ROBOT.** Enable `--sector-audit audit --gap-steer audit` FIRST: that logs
+`SECTOR L=.. C=.. R=.. -> would-steer=..` and `GAP-AUDIT would-bias ..` while commanding nothing, so
+the decisions can be read against the real room before anything steers.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).

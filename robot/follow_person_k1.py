@@ -594,6 +594,94 @@ class Follower:
         self._clr_hist = self._clr_hist[-max(1, self.a.obstacle_aged):]
         return float(sorted(self._clr_hist)[len(self._clr_hist) // 2])   # aged-median
 
+    # ---- SECTOR CLEARANCE (gap-following stage 4). AUDIT-ONLY: computes where the free space is
+    # and logs it; steers NOTHING. The brake watches only the central corridor (35% of width =
+    # 49.7 deg) and DISCARDS the rest of a 105.8 deg frame -- so the robot can already see whether
+    # there is a gap beside an obstacle, it just never asks. Same robustness rules as the brake
+    # (percentile not min, min-valid footprint) because the same depth-glitch class applies.
+    def _sector_clearances(self):
+        """Clearance (m) per sector across the FULL frame: {'L': m|None, 'C': m|None, 'R': m|None}.
+        None = not enough valid depth to judge, which callers must treat as BLOCKED, never as clear
+        -- 'I cannot see' and 'nothing is there' must not be the same answer for a moving robot."""
+        out = {"L": None, "C": None, "R": None}
+        if self.node is None:
+            return out
+        d = self.node.latest_depth()
+        if d is None:
+            return out
+        try:
+            h, w = d.shape[:2]
+            y0 = int(h * self.a.obstacle_band_top); y1 = int(h * self.a.obstacle_band_bot)
+            cf = max(0.05, min(1.0, self.a.obstacle_corridor_frac))
+            cx0 = int(w * (0.5 - cf / 2.0)); cx1 = int(w * (0.5 + cf / 2.0))
+            for key, (sx0, sx1) in (("L", (0, cx0)), ("C", (cx0, cx1)), ("R", (cx1, w))):
+                if sx1 - sx0 < 8:
+                    continue
+                band = d[y0:y1, sx0:sx1]
+                v = band[(band > 0.15) & (band < self.a.obstacle_max_m) & np.isfinite(band)]
+                if v.size < self.a.obstacle_min_valid:
+                    continue                      # stays None == unknown == blocked
+                out[key] = float(np.percentile(v, self.a.obstacle_pctile))
+        except Exception:  # noqa: BLE001 -- an audit computation must never break the loop
+            return {"L": None, "C": None, "R": None}
+        return out
+
+    # ---- GAP STEERING (stage 5). Routes AROUND an obstacle instead of only stopping for it.
+    # INVARIANTS (deliberate, do not relax):
+    #   * It may only add YAW. It never authorises forward vx -- the brake still governs speed
+    #     independently, so the worst case is turning while stopped, never driving somewhere unseen.
+    #   * A sector that cannot be MEASURED (None) counts as BLOCKED. "I cannot see" and "nothing is
+    #     there" must never be the same answer for a moving robot.
+    #   * Boxed in (no side measurably clear) -> returns 0.0 and lets the brake stop us. It does not
+    #     guess a direction.
+    #   * It stops adding bias once the operator approaches the frame edge: the point of turning is to
+    #     keep following them, and a detour that loses the lock has failed even if it misses the chair.
+    def _gap_steer_bias(self, bearing, clr_centre):
+        """Yaw bias (rad/s) toward the freest side when the CENTRE corridor is blocked; 0.0 = none.
+        Sign convention (verified against field logs): POSITIVE vyaw turns LEFT."""
+        if self.a.gap_steer == "off":
+            return 0.0
+        bs = self.a.obstacle_brake_start
+        if clr_centre is None or clr_centre >= bs:
+            return 0.0                       # centre not blocked -> nothing to route around
+        s = self._sector_clearances()
+        left_ok = s["L"] is not None and s["L"] >= bs
+        right_ok = s["R"] is not None and s["R"] >= bs
+        if not (left_ok or right_ok):
+            return 0.0                       # boxed in -> brake handles it; never guess
+        if left_ok and right_ok:
+            want_left = bearing < 0.0        # both open -> least detour off the follow line
+        else:
+            want_left = left_ok
+        # Refuse to steer FURTHER toward the edge the operator is already near.
+        edge = math.radians(self.a.gap_steer_max_bearing_deg)
+        if abs(bearing) >= edge and ((bearing < 0.0) == want_left):
+            return 0.0
+        return self.a.gap_steer_rate * (1.0 if want_left else -1.0)
+
+    def _sector_audit(self, target_bearing_rad, clr_centre):
+        """Log where the gaps are and which way a steering layer WOULD go. Pure observation --
+        no command is issued and no control value is changed by this method."""
+        if self.a.sector_audit == "off":
+            return
+        now = time.monotonic()
+        if (now - getattr(self, "_last_sector_log", 0.0)) < 1.0:
+            return
+        self._last_sector_log = now
+        s = self._sector_clearances()
+        def fmt(x):
+            return "--" if x is None else ("%.2f" % x)
+        # Which sector a gap-follower would pick: needs clearance beyond the brake-start distance,
+        # and among those prefers the one closest to the operator's bearing (least detour).
+        bs = self.a.obstacle_brake_start
+        want = {"L": -0.68, "C": 0.0, "R": +0.68}       # sector centre bearings (rad), ~+/-39 deg
+        cands = [(abs(want[k] - target_bearing_rad), k) for k, v in s.items() if v is not None and v >= bs]
+        pick = min(cands)[1] if cands else None
+        log("SECTOR L=%s C=%s R=%s | brake-start=%.1f target_bearing=%+.0fdeg -> would-steer=%s%s"
+            % (fmt(s["L"]), fmt(s["C"]), fmt(s["R"]), bs, math.degrees(target_bearing_rad),
+               pick if pick else "NONE(stop)",
+               "" if pick != "C" else " (straight on)"))
+
     def _obstacle_vx_cap(self, target_range):
         """Max forward vx allowed by the corridor clearance (None = no cap). Graded: clear above
         --obstacle-brake-start, linearly down to 0 at --obstacle-brake-stop.
@@ -2303,7 +2391,25 @@ class Follower:
 
         # Range + bearing were computed up-front (for the geofence) and are reused here.
         # SAME control law + HARD clamps used throughout.
-        vyaw = self._slew(self._prev_vyaw, -self.a.k_yaw * bearing, self.vyaw_slew)
+        # ---- Stage-5 GAP STEERING. Computed BEFORE the yaw law so the existing slew limiter
+        # still bounds how fast yaw may change, and re-clamped with it. Returns 0.0 unless
+        # --gap-steer on, so by default the next line is the shipped expression unchanged.
+        # It biases YAW ONLY. Forward speed stays entirely under the brake + forbid_forward
+        # keystone below, so a steer can never authorise driving at something unseen: the
+        # robot turns toward the gap with vx capped, and forward resumes by itself once the
+        # ROTATION has put the clear sector in the centre corridor and the brake releases.
+        _gap = self._gap_steer_bias(bearing, self._corridor_clearance())
+        if self.a.gap_steer == "audit" and _gap != 0.0:
+            if (time.monotonic() - getattr(self, "_last_gap_log", 0.0)) >= 1.0:
+                self._last_gap_log = time.monotonic()
+                log("GAP-AUDIT would-bias vyaw %+.2f rad/s (bearing %+.0fdeg) -- NOT applied"
+                    % (_gap, math.degrees(bearing)))
+            _gap = 0.0
+        elif _gap != 0.0 and (time.monotonic() - getattr(self, "_last_gap_log", 0.0)) >= 1.0:
+            self._last_gap_log = time.monotonic()
+            log("GAP-STEER bias %+.2f rad/s (bearing %+.0fdeg, centre blocked) -> routing around"
+                % (_gap, math.degrees(bearing)))
+        vyaw = self._slew(self._prev_vyaw, -self.a.k_yaw * bearing + _gap, self.vyaw_slew)
         vyaw = clamp(vyaw, self.vyaw_min, self.vyaw_max)
         if rng is not None:
             err = rng - self.a.standoff_m
@@ -2338,6 +2444,9 @@ class Follower:
         # applied before the slew (so the slew ramps toward the cap) and re-applied after (like
         # forbid_forward). Only ever reduces forward vx; yaw untouched. Inert unless --obstacle-brake.
         _obs_cap, _clr = self._obstacle_vx_cap(rng)
+        # Stage-4 gap audit: log where the free space is and which way a steering layer WOULD
+        # go. Observation only -- no command, and nothing below reads its result.
+        self._sector_audit(bearing, _clr)
         if _obs_cap is not None and vx > _obs_cap:
             vx = _obs_cap
         # FIX F1: keep a short window of recent VALIDATED depth ranges (its median is the glitch-
@@ -2959,6 +3068,28 @@ def parse_args(argv):
                         "toward the RERUN-DISABLED-SLOW shed -- covers model/TensorRT warmup (robot not "
                         "walking yet) so the backstop can't kill the recording during startup (default 15)")
 
+    # ---- GAP STEERING (stage 5). Routes AROUND an obstacle rather than only stopping for it.
+    # Adds YAW ONLY: forward speed stays under the brake + forbid_forward keystone, so a steer can
+    # never authorise driving at something unseen. The robot turns toward a MEASURED-clear side with
+    # vx capped, and forward resumes by itself once the rotation has put that clear sector in the
+    # centre corridor and the brake releases. A sector it cannot measure counts as BLOCKED.
+    p.add_argument("--gap-steer", choices=("off", "audit", "on"), default="off",
+                   help="steer around a blocked centre corridor toward a clear side (off|audit|on). "
+                        "audit computes+logs the bias and discards it. Default off = byte-identical.")
+    p.add_argument("--gap-steer-rate", type=float, default=0.20,
+                   help="yaw bias (rad/s) applied toward the clear side; bounded and still subject "
+                        "to the yaw slew limiter and the hard vyaw clamp.")
+    p.add_argument("--gap-steer-max-bearing-deg", type=float, default=35.0,
+                   help="stop biasing further toward the frame edge the operator is already near -- "
+                        "a detour that loses the lock has failed even if it misses the obstacle.")
+    # ---- SECTOR / GAP-FOLLOWING (stage 4, AUDIT ONLY) --------------------------------------
+    # The brake watches only the central 49.7 deg of a 105.8 deg frame and discards the rest, so
+    # the free space beside an obstacle is already visible every frame and simply never consulted.
+    # 'audit' LOGS where the gaps are and which way a steering layer would go; it commands NOTHING
+    # and changes no control value. Default off = byte-identical.
+    p.add_argument("--sector-audit", choices=("off", "audit"), default="off",
+                   help="log per-sector (L/C/R) depth clearance and the gap a steering layer would "
+                        "pick. Observation only -- never steers.")
     # --- OBSTACLE-BRAKE reflex (Phase 3 obstacle-avoidance). DEFAULT-OFF + byte-identical when off. ---
     p.add_argument("--obstacle-brake", action="store_true",
                    help="grade forward vx down as an obstacle enters the forward DEPTH corridor "
