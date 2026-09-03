@@ -827,6 +827,14 @@ $trackFence=New-Object System.Windows.Forms.CheckBox; $trackFence.Text='Range fe
 # Only ever REDUCES vx, so it cannot make the forward path less safe. DEFAULT ON: it was built
 # 2026-07-04 but never wired here, so every session before 2026-09-03 drove with NO obstacle braking.
 $trackObstacle=New-Object System.Windows.Forms.CheckBox; $trackObstacle.Text='Obstacle brake'; $trackObstacle.AutoSize=$true; $trackObstacle.Location='610,110'; $trackObstacle.ForeColor=$accent; $trackObstacle.Font=$fontBold; $trackObstacle.Checked=$true; $grpTrackCtl.Controls.Add($trackObstacle)
+# GAP STEER (stage 5): route AROUND a blocked corridor instead of only stopping for it.
+#   off   - shipped behaviour, brake only (default)
+#   audit - logs SECTOR L/C/R + the bias it WOULD apply, commands nothing. Run this FIRST.
+#   on    - actually steers: yaw bias toward a measured-clear side. Forward speed still sits
+#           entirely under the obstacle brake, so it turns toward the gap with vx capped and
+#           forward resumes by itself once the rotation puts the gap in the centre corridor.
+$lblGap=New-Object System.Windows.Forms.Label; $lblGap.Text='Gap steer'; $lblGap.AutoSize=$true; $lblGap.Location='716,112'; $grpTrackCtl.Controls.Add($lblGap)
+$trackGap=New-Object System.Windows.Forms.ComboBox; $trackGap.DropDownStyle='DropDownList'; $trackGap.Size='74,24'; $trackGap.Location='778,108'; [void]$trackGap.Items.AddRange(@('off','audit','on')); $trackGap.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackGap)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
 $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
@@ -1074,6 +1082,14 @@ function Get-TrackExtraArgs {
         $a += '--arm-reacquire --reloc-arm-margin 0.35 --reloc-arm-streak 12 --reloc-floor 0.68'
     }
     if($trackFence -and $trackFence.Checked){ $a += '--max-follow-range 4.0' }
+    # Gap steering. audit => --sector-audit audit as well, so the SECTOR lines that explain each
+    # decision are in the same log. on => sector audit stays off (the GAP-STEER line already says
+    # what it did) to keep the 1 Hz logging down while it is actually steering.
+    if($trackGap -and $trackGap.SelectedItem -and [string]$trackGap.SelectedItem -ne 'off'){
+        $g = [string]$trackGap.SelectedItem
+        if($g -eq 'audit'){ $a += '--gap-steer audit --sector-audit audit' }
+        else               { $a += '--gap-steer on' }
+    }
     # Obstacle brake: depth forward-clearance reflex. Only ever REDUCES forward vx (yaw untouched),
     # ignores the operator being followed, and fails to stop when depth is missing -- it composes with
     # the forbid_forward keystone rather than adding a second forward-authorizing path.
