@@ -68,10 +68,33 @@ def sectors(f, left, centre, right):
     return f._sector_clearances()
 
 
+def live_session():
+    """True if a follow session is running. Bracket in the pattern so this process cannot match
+    ITSELF -- pgrep -f matches the whole command line, and a naive pattern here would find this
+    very script and report a session that does not exist."""
+    try:
+        import subprocess
+        r = subprocess.run(["pgrep", "-f", "follow_pe[r]son_k1.py"],
+                           capture_output=True, text=True, timeout=10)
+        return bool(r.stdout.strip())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--node", default=NODE_DEFAULT)
+    ap.add_argument("--force", action="store_true",
+                    help="run even while a follow session is live (do not: see the guard below)")
     a = ap.parse_args()
+    # This selftest loads YOLO and OSNet onto the SAME Orin GPU the follow uses. Running it beside
+    # a live session starves that session: it was observed pushing the bridge ping past its
+    # timeout, giving "BRIDGE ping -> <no-reply/timeout>" and a DRIVE-ABORT on a real drive. The
+    # test is headless and can wait; the robot on its feet cannot.
+    if live_session() and not a.force:
+        print("REFUSING: a follow session is live -- this test would contend for the GPU and can "
+              "stall the bridge ping. Re-run when the session ends, or pass --force.")
+        return 2
     m = load(a.node)
     f = build(m)
     fails = []
@@ -139,21 +162,30 @@ def main():
         f._head_scan_finish(0.0)
         return f._scan_hint
 
-    # slope < 0  =>  +yaw is RIGHT. Freest heading at +23 deg must steer RIGHT (-1).
-    check("+yaw=RIGHT, gap at +23deg -> steer RIGHT",
-          hint([(rad(-23), 0.6, 300.0), (rad(0), 0.9, 250.0), (rad(23), 3.0, 200.0)]), -1)
-    # mirrored scene: gap at -23 deg must steer LEFT (+1)
-    check("+yaw=RIGHT, gap at -23deg -> steer LEFT",
-          hint([(rad(-23), 3.0, 300.0), (rad(0), 0.9, 250.0), (rad(23), 0.6, 200.0)]), 1)
-    # opposite optical convention (slope > 0 => +yaw is LEFT) must flip the answer
-    check("+yaw=LEFT,  gap at +23deg -> steer LEFT",
-          hint([(rad(-23), 0.6, 200.0), (rad(0), 0.9, 250.0), (rad(23), 3.0, 300.0)]), 1)
+    # A pure head pan shifts a static point by the focal length, ~206 px/rad at this FOV. Over a
+    # +/-23 deg sweep (0.80 rad) that is a ~165 px swing. Fixtures below are built to that scale.
+    # Default --head-yaw-sign is +1, i.e. the config asserts +yaw = LEFT (slope > 0).
+
+    # plausible AND agrees with the config: gap at +23 deg is on the LEFT -> steer LEFT
+    check("plausible + agrees, gap at +23deg -> LEFT",
+          hint([(rad(-23), 0.6, 150.0), (rad(0), 0.9, 232.0), (rad(23), 3.0, 315.0)]), 1)
+    # mirrored scene, same optics -> steer RIGHT
+    check("plausible + agrees, gap at -23deg -> RIGHT",
+          hint([(rad(-23), 3.0, 150.0), (rad(0), 0.9, 232.0), (rad(23), 0.6, 315.0)]), -1)
+    # plausible magnitude but the measurement DISAGREES with --head-yaw-sign: one of them is
+    # wrong and we cannot tell which -> refuse rather than pick a side
+    check("plausible but disagrees with config -> refuse",
+          hint([(rad(-23), 0.6, 315.0), (rad(0), 0.9, 232.0), (rad(23), 3.0, 150.0)]), 0)
+    # too small to be a head pan: this is operator motion contaminating the estimate. This is the
+    # real field case -- three scans measured -90, +311, +37 px/rad, inconsistent and unphysical.
+    check("implausible slope (operator motion) -> refuse",
+          hint([(rad(-23), 0.6, 250.0), (rad(0), 0.9, 270.0), (rad(23), 3.0, 290.0)]), 0)
     # no operator visible across the sweep -> direction unresolved -> refuse to steer
     check("no cx evidence -> refuse to steer",
           hint([(rad(-23), 0.6, None), (rad(0), 0.9, None), (rad(23), 3.0, None)]), 0)
     # nothing clear enough anywhere -> no hint regardless of direction
     check("nothing meets the clearance bar -> no hint",
-          hint([(rad(-23), 0.6, 300.0), (rad(0), 0.9, 250.0), (rad(23), 1.1, 200.0)]), 0)
+          hint([(rad(-23), 0.6, 150.0), (rad(0), 0.9, 232.0), (rad(23), 1.1, 315.0)]), 0)
 
     print("")
     if fails:

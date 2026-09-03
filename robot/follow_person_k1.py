@@ -995,20 +995,37 @@ class Follower:
         if abs(best_yaw) <= dead:
             self._scan_hint = 0
         else:
-            # WHICH WAY IS +yaw? Prefer the MEASURED answer over the configured one.
-            # As the head pans, a fixed scene point slides the opposite way in the image, so
-            # slope = d(cx)/d(yaw) < 0 means +yaw turns the camera toward image-RIGHT. The first
-            # on-robot scan measured -90 px/rad -- +yaw is RIGHT -- while this code had been
-            # assuming +yaw = LEFT from head_yaw_sign, i.e. exactly inverted. It would have
-            # steered toward the WORSE side. head_yaw_sign was only ever verified as
-            # command-vs-readback consistency inside the head frame; it never established the
-            # mapping into the image frame, and this is that mapping.
-            # No usable evidence (operator not visible across the sweep) -> refuse rather than
-            # guess: a wrong side is a detour into the obstacle, and the whole point of the scan
-            # is to stop guessing.
+            # WHICH WAY IS +yaw? Neither source is trustworthy alone, so require BOTH to agree.
+            #
+            # The measurement: as the head pans, a static scene point slides the opposite way, so
+            # slope = d(cx)/d(yaw) < 0 means +yaw turns the camera toward image-RIGHT. But the only
+            # point being tracked is the OPERATOR, and the operator MOVES during the sweep, so the
+            # slope mixes head pan with operator motion. Three consecutive field scans measured
+            # -90, +311 and +37 px/rad -- inconsistent in sign, and none near the physical value,
+            # which for a pure pan is the focal length (~206 px/rad at this FOV). An earlier
+            # version of this code trusted that measurement outright; it would have picked a side
+            # from noise with full confidence.
+            #
+            # The config: --head-yaw-sign was only ever verified as command-vs-readback
+            # consistency INSIDE the head frame; it never established the mapping into the image
+            # frame, which is what choosing a side needs.
+            #
+            # So: accept only a PHYSICALLY PLAUSIBLE magnitude whose sign AGREES with the config.
+            # Disagreement means one of them is wrong and we cannot tell which -- exactly when a
+            # robot should not act. Refusing costs a detour; guessing costs a collision.
+            _f = focal_px(544.0, self.a.hfov_deg)
             if slope is None:
                 self._scan_hint = 0
                 eviden += "  [no cx evidence -> direction unresolved, refusing to steer]"
+            elif not ((0.5 * _f) <= abs(slope) <= (2.0 * _f)):
+                self._scan_hint = 0
+                eviden += ("  [evidence implausible: |slope| %.0f outside %.0f..%.0f px/rad, so it "
+                           "is operator motion not head pan -> refusing to steer]"
+                           % (abs(slope), 0.5 * _f, 2.0 * _f))
+            elif (slope > 0.0) != (self.a.head_yaw_sign > 0):
+                self._scan_hint = 0
+                eviden += ("  [MEASURED direction disagrees with --head-yaw-sign %+.0f -> refusing "
+                           "to steer; resolve the convention first]" % self.a.head_yaw_sign)
             else:
                 _plus_is_left = (slope > 0.0)
                 _left = (best_yaw > 0.0) == _plus_is_left
