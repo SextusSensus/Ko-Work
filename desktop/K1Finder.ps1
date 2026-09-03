@@ -1061,7 +1061,17 @@ function Get-TrackExtraArgs {
     # Obstacle brake: depth forward-clearance reflex. Only ever REDUCES forward vx (yaw untouched),
     # ignores the operator being followed, and fails to stop when depth is missing -- it composes with
     # the forbid_forward keystone rather than adding a second forward-authorizing path.
-    if($trackObstacle -and $trackObstacle.Checked){ $a += '--obstacle-brake' }
+    if($trackObstacle -and $trackObstacle.Checked){
+        # --obstacle-band-bot 0.75 (default 0.68): FIELD-MEASURED 2026-09-03. The head camera sits at
+        # 0.86 m with a horizontal axis (fitted from per-row floor returns, model vs measured +/-0.05 m
+        # over 4 rows). At the 0.68 default the band only sees ABOVE 0.53 m at 1 m range, so a chair
+        # seat (~0.45 m) is invisible until ~0.6 m -- the robot hit a chair this way: clearance jumped
+        # 1.38 m -> 0.59 m between samples, straight past the grading zone into the stop band. At 0.75
+        # the band sees above 0.38 m at 1 m while the FLOOR does not appear until 1.98 m, safely outside
+        # the 1.5 m trigger. Do NOT also raise --obstacle-brake-start to 2.0: it would put that floor
+        # return inside the braking zone and brake on the ground continuously.
+        $a += '--obstacle-brake --obstacle-band-bot 0.75'
+    }
     # Rerun observability -> record a scrubbable .rrd on the robot. Default OFF; byte-identical when off.
     # The node auto-disables Rerun (RERUN-DISABLED-SLOW) if the loop goes over budget with it on, so the
     # gait is never held hostage to logging -- but the loop-cost gate (RERUN_PLAN.md) is still the
