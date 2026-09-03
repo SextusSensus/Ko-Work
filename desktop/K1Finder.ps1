@@ -826,7 +826,7 @@ $trackFence=New-Object System.Windows.Forms.CheckBox; $trackFence.Text='Range fe
 # IGNORES the followed operator (--obstacle-target-margin), yaw untouched, fail-to-stop with no depth.
 # Only ever REDUCES vx, so it cannot make the forward path less safe. DEFAULT ON: it was built
 # 2026-07-04 but never wired here, so every session before 2026-09-03 drove with NO obstacle braking.
-$trackObstacle=New-Object System.Windows.Forms.CheckBox; $trackObstacle.Text='Obstacle brake'; $trackObstacle.AutoSize=$true; $trackObstacle.Location='610,110'; $trackObstacle.ForeColor=$accent; $trackObstacle.Font=$fontBold; $trackObstacle.Checked=$true; $grpTrackCtl.Controls.Add($trackObstacle)
+$trackObstacle=New-Object System.Windows.Forms.CheckBox; $trackObstacle.Text='Obstacle brake'; $trackObstacle.AutoSize=$true; $trackObstacle.Location='416,132'; $trackObstacle.ForeColor=$accent; $trackObstacle.Font=$fontBold; $trackObstacle.Checked=$true; $grpTrackCtl.Controls.Add($trackObstacle)
 
 # HEAD PROBE (--head-probe). ONE-SHOT startup calibration for the head, NOT a follow feature.
 # The firmware MODE-GATES RotateHead: it answers 400 (bad request) in kPrepare and is accepted only
