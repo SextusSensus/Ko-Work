@@ -12,6 +12,8 @@ import subprocess
 import threading
 import time
 
+from common import log
+
 
 class Bridge:
     def __init__(self, path, extra_env=None):
@@ -20,6 +22,7 @@ class Bridge:
         self._lock = threading.Lock()
         self.extra_env = extra_env or None
         self._rx = queue.Queue(maxsize=1000)   # bridge stdout lines (drained continuously)
+        self._safety_last = (0.0, "", 0)       # (t, category, count) -- throttles BRIDGE-SAFETY repeats
 
     def start(self):
         env = None
@@ -36,6 +39,28 @@ class Bridge:
         )
         threading.Thread(target=self._drain_stdout, daemon=True).start()
 
+    # The C++ safety floor reports every intervention on this pipe -- WATCHDOG staleness zeroes,
+    # HB deadman trips, kPrepare demotions. Historically all of it was drained into _rx and
+    # discarded by the reply matcher, so the floor acted INVISIBLY: a session could be velocity-
+    # zeroed or demoted repeatedly with no trace in k1_follow.err, and post-incident the honest
+    # answer to "did the watchdog fire?" was "unobservable" rather than yes or no.
+    # An intervention is a first-class safety event, so it gets logged. Repeats of the same
+    # category are throttled to 1/s (a stale condition re-emits every tick) with a count, so a
+    # sustained trip is one legible line per second rather than a flood.
+    _SAFETY = ("WATCHDOG", "HB-STALE", "ERR ")
+
+    def _note_safety(self, s):
+        cat = s.split(None, 2)[0] if s else ""
+        now = time.monotonic()
+        last_t, last_cat, n = self._safety_last
+        if cat == last_cat and (now - last_t) < 1.0:
+            self._safety_last = (last_t, cat, n + 1)
+            return
+        if n > 1 and last_cat:
+            log("BRIDGE-SAFETY %s x%d suppressed in the last %.1fs" % (last_cat, n - 1, now - last_t))
+        self._safety_last = (now, cat, 1)
+        log("BRIDGE-SAFETY %s" % s)
+
     def _drain_stdout(self):
         """Continuously read bridge stdout into _rx. TWO jobs: (a) feed command_expect_ok's
         reply matcher; (b) keep the pipe empty -- the bridge echoes 'OK v ...' for EVERY 10Hz
@@ -45,6 +70,12 @@ class Bridge:
         command_expect_ok could be waiting for."""
         try:
             for line in self.proc.stdout:
+                _s = line.strip()
+                if _s.startswith(self._SAFETY):
+                    try:
+                        self._note_safety(_s)
+                    except Exception:  # noqa: BLE001 -- logging must never break the drain
+                        pass
                 try:
                     self._rx.put_nowait(line)
                 except queue.Full:
