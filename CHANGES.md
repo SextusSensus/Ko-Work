@@ -528,6 +528,35 @@ were found and fixed in one session, each masking the next:
 - `robot/ops/k1-loco-rpc-heal.service` was drafted against the WRONG (boot-race) diagnosis —
   it is not needed and should be deleted rather than installed.
 
+## Obstacle brake wired to the app — the reflex existed but was OFF in every session (2026-09-03)
+
+`--obstacle-brake` (OBSTACLE_LABELING_PLAN.md Phase 3, built 2026-07-04) was enabled in
+`demo.yaml`/`field.yaml`/`capture.yaml` — but `K1Finder.ps1` passes **no `--profile` and never passed
+`--obstacle-brake`**, so `defaults.yaml`'s `obstacle_brake: false` won every launch. Every drive to
+date, including the first full follow on 2026-09-02, ran with **no obstacle braking at all**.
+
+Added a `Obstacle brake` checkbox on the Tracker safety row (next to Range fence / Arm re-lock),
+**default ON**, appending `--obstacle-brake`. No node changes: the reflex is unmodified.
+
+Pre-flighted headlessly on the robot (`parse_args` only — no node, no motion):
+- all 11 `obstacle_*` attributes the reflex reads are present — this is the exact failure class the
+  code comments record (a missing argparse attr once raised AttributeError on every tracked frame and
+  bricked the follow), so it is worth re-proving whenever the flag is turned on;
+- grading verified against `_obstacle_vx_cap`: no cap ≥1.5 m, 0.062 m/s @1.2 m, 0.038 @1.0, 0.013 @0.8,
+  **0.00 ≤0.7 m**;
+- operator-ignore verified both ways: target 0.9 m + nearest return 0.9 m → no brake (that return IS
+  the operator); obstacle 0.6 m + target 2.0 m → cap 0.00.
+
+**STILL VERIFY ON ROBOT** — the live drive validation the plan lists as outstanding ("blocked so far
+by gesture-lock flakiness = no TRACK to observe"). That blocker is gone: gesture lock seeded 2/2 on
+2026-09-02. Procedure: follow at walking pace, step past a chair/box so it sits between robot and
+operator, and expect throttled `CLEARANCE <m> -> vx-cap <v>` lines with vx grading to 0.00 before
+contact, then recovery when the corridor clears. Do it at `--vx-max 0.1` with a hand on STOP first.
+
+Scope note: this is **braking, not steering around**. The plan's safety spine forbids steer-around on
+this hardware (one ~70° forward cone, no side sensing, no odometry — turning away loses the lock).
+Class-aware braking (COCO modulates, geometry still triggers) remains Phase 3's other open TODO.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
