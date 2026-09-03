@@ -44,6 +44,7 @@
 static const int32_t API_CHANGE_MODE = 2000;
 static const int32_t API_MOVE        = 2001;
 static const int32_t API_GET_MODE    = 2017;
+static const int32_t API_ROTATE_HEAD = 2004;   // RotateHead{"pitch","yaw"} (b1_loco_api.hpp)
 enum class RobotMode { kDamping = 0, kPrepare = 1, kWalking = 2 };
 
 // ---------------------------------------------------------------------------
@@ -54,6 +55,12 @@ enum class RobotMode { kDamping = 0, kPrepare = 1, kWalking = 2 };
 static const float VX_MIN   = -0.10f, VX_MAX   = 0.30f;   // forward  m/s
 static const float VY_MIN   = -0.15f, VY_MAX   = 0.15f;   // lateral  m/s
 static const float VYAW_MIN = -0.40f, VYAW_MAX = 0.40f;   // angular  rad/s
+// HEAD clamps (rad). Yaw is bounded well inside the mechanical range for a REASON: the
+// follow derives target bearing from PIXEL offset, so body-forward must stay inside the
+// 105.8 deg camera FOV at any commanded pan -- +/-0.60 rad (34 deg) keeps ~19 deg of margin.
+// Pitch is bounded tighter still; the obstacle band geometry is fitted for a level head.
+static const float HEAD_YAW_MIN = -0.60f, HEAD_YAW_MAX = 0.60f;
+static const float HEAD_PIT_MIN = -0.35f, HEAD_PIT_MAX = 0.35f;
 
 static inline float clampf(float v, float lo, float hi) {
     if (std::isnan(v)) return 0.0f;     // NaN -> 0, never propagate garbage
@@ -183,6 +190,23 @@ static inline bool hb_fresh() {
 // Every loco call goes through these so the watchdog thread and the command loop
 // can never race the transport. (safe_shutdown stays UNLOCKED on purpose -- same
 // rationale as the SDK twin: terminal best-effort path, signal-handler reachable.)
+static std::string head_body(float pitch, float yaw) {
+    char b[96];
+    snprintf(b, sizeof(b), "{\"pitch\":%.4f,\"yaw\":%.4f}", pitch, yaw);
+    return std::string(b);
+}
+
+// Head pointing. Fire-and-forget like Move (it is streamed at tracking rate), clamped here
+// as the last line of defence exactly like velocity. NOT covered by the velocity staleness
+// watchdog: a stale head command cannot run the robot away, and zeroing head yaw mid-stride
+// would be a WORSE outcome than leaving it where it is. The node re-centres deliberately.
+static void loco_head(float pitch, float yaw) {
+    pitch = clampf(pitch, HEAD_PIT_MIN, HEAD_PIT_MAX);
+    yaw   = clampf(yaw,   HEAD_YAW_MIN, HEAD_YAW_MAX);
+    std::lock_guard<std::mutex> lk(g_loco_mutex);
+    if (g_loco) g_loco->fire(API_ROTATE_HEAD, head_body(pitch, yaw));
+}
+
 static void loco_move(float vx, float vy, float vyaw) {
     std::lock_guard<std::mutex> lk(g_loco_mutex);
     if (g_loco) g_loco->fire(API_MOVE, move_body(vx, vy, vyaw));
@@ -203,6 +227,11 @@ static void safe_shutdown() {
         // short sleep lets the transport flush before the process dies.
         g_loco->fire(API_MOVE, move_body(0.0f, 0.0f, 0.0f));
         g_loco->fire(API_CHANGE_MODE, mode_body(RobotMode::kPrepare));
+        // Head centred LAST, after the stop+PREP sequence is already on the wire: a panned head
+        // left behind would corrupt the NEXT session's bearing math (image-centre would no longer
+        // be body-forward), but it is not urgent enough to sit between zeroing velocity and
+        // commanding PREP -- that ordering is the safety contract and stays untouched.
+        g_loco->fire(API_ROTATE_HEAD, head_body(0.0f, 0.0f));
         struct timespec ts{0, 60 * 1000 * 1000};   // 60 ms
         nanosleep(&ts, nullptr);
     }
@@ -363,6 +392,13 @@ int main(int argc, char** argv) {
             loco_move(0.0f, 0.0f, 0.0f);
             g_v_active.store(false);
             emit("OK stop 0");
+        }
+        else if (cmd == "head") {
+            // head <pitch_rad> <yaw_rad>  -- absolute pointing, clamped in loco_head().
+            float hp = 0.0f, hy = 0.0f;
+            if (!(iss >> hp >> hy)) { emit("ERR head needs <pitch> <yaw>"); continue; }
+            loco_head(hp, hy);
+            emit("OK head 0");
         }
         else if (cmd == "ping") {
             // Read-only liveness check: GetMode answers in ANY mode without motion.
