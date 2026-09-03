@@ -857,6 +857,15 @@ class Follower:
         would invalidate every sample taken from a different pose."""
         if self.a.head_scan == "off":
             return False
+        if self._head_ok is False:
+            # The startup probe RAN and FAILED -- the head does not actuate. Sweeping anyway would
+            # command a head that never moves: all five samples land at centre, the map becomes five
+            # copies of the same view, and the robot holds still ~8 s per attempt for nothing.
+            # _head_track already fails closed on this; the scan must too.
+            if (time.monotonic() - getattr(self, "_scan_warn_t", 0.0)) > 30.0:
+                self._scan_warn_t = time.monotonic()
+                log("HEAD-SCAN disabled: --head-probe FAILED (head not actuated) -> no sweeping")
+            return False
         now = time.monotonic()
         self._scan_touch_t = now   # fed every step; the orphan watchdog in _process_frame reads it
         tol = math.radians(max(1.0, self.a.head_scan_tol_deg))
