@@ -827,6 +827,14 @@ $trackFence=New-Object System.Windows.Forms.CheckBox; $trackFence.Text='Range fe
 # Only ever REDUCES vx, so it cannot make the forward path less safe. DEFAULT ON: it was built
 # 2026-07-04 but never wired here, so every session before 2026-09-03 drove with NO obstacle braking.
 $trackObstacle=New-Object System.Windows.Forms.CheckBox; $trackObstacle.Text='Obstacle brake'; $trackObstacle.AutoSize=$true; $trackObstacle.Location='610,110'; $trackObstacle.ForeColor=$accent; $trackObstacle.Font=$fontBold; $trackObstacle.Checked=$true; $grpTrackCtl.Controls.Add($trackObstacle)
+
+# HEAD PROBE (--head-probe). ONE-SHOT startup calibration for the head, NOT a follow feature.
+# The firmware MODE-GATES RotateHead: it answers 400 (bad request) in kPrepare and is accepted only
+# in kWalking -- so the head cannot be checked on a parked robot, and the probe has to ride along
+# with a real session. It runs after kWalking is entered but BEFORE velocity is ungated, so the only
+# thing that can move is the head. Costs ~5 s of startup. Leave it on until HEAD-PROBE OK appears in
+# the log with the measured sign, then it can be switched off.
+$trackHeadProbe=New-Object System.Windows.Forms.CheckBox; $trackHeadProbe.Text='Head probe'; $trackHeadProbe.AutoSize=$true; $trackHeadProbe.Location='610,132'; $trackHeadProbe.ForeColor=$accent; $trackHeadProbe.Font=$fontBold; $trackHeadProbe.Checked=$true; $grpTrackCtl.Controls.Add($trackHeadProbe)
 # GAP STEER (stage 5): route AROUND a blocked corridor instead of only stopping for it.
 #   off   - shipped behaviour, brake only (default)
 #   audit - logs SECTOR L/C/R + the bias it WOULD apply, commands nothing. Run this FIRST.
@@ -1140,6 +1148,11 @@ function Get-TrackExtraArgs {
         # less). Pair with --vx-max 0.15 indoors; a gait cannot stop instantly inside 0.6 m.
         $a += ('--obstacle-brake --obstacle-band-bot 0.75 --obstacle-corridor-frac 0.55 --obstacle-pctile 12 ' +
                '--obstacle-min-valid 70 --obstacle-aged 5 --obstacle-brake-stop 0.7')
+    }
+    # Head probe: one-shot startup head calibration (see the checkbox comment). Independent of
+    # every follow feature -- it only measures and logs, then re-centres the head.
+    if ($trackHeadProbe.Checked) {
+        $a += '--head-probe'
     }
     # Rerun observability -> record a scrubbable .rrd on the robot. Default OFF; byte-identical when off.
     # The node auto-disables Rerun (RERUN-DISABLED-SLOW) if the loop goes over budget with it on, so the
