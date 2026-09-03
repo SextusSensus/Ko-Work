@@ -399,7 +399,8 @@ class Follower:
         else:
             _gest = GestureTrigger(
                 args.gesture_model, args,
-                every_n=(args.gesture_every_n if args.lock_trigger == "both" else 1))
+                every_n=(args.gesture_every_n if args.gesture_every_n > 0
+                         else (3 if args.lock_trigger == "both" else 1)))
             if args.lock_trigger == "gesture":
                 self._lock_trigger = _gest if _gest.ok else _aruco
                 if not _gest.ok:
@@ -3956,9 +3957,14 @@ def parse_args(argv):
     p.add_argument("--gesture-overrun-frames", type=int, default=5,
                    help="consecutive over-budget frames WITH pose inference active before the "
                         "gesture trigger auto-disables (degrade before the C++ watchdog must safe)")
-    p.add_argument("--gesture-every-n", type=int, default=3,
-                   help="in --lock-trigger both, run pose inference every Nth frame (audit "
-                        "decimation so it cannot starve the live ArUco control loop)")
+    p.add_argument("--gesture-every-n", type=int, default=0,
+                   help="run pose inference every Nth frame. 0 = auto: 1 in --lock-trigger gesture "
+                        "(pose IS the trigger), 3 in both (audit decimation so it cannot starve the "
+                        "live ArUco loop). Until now the value was IGNORED in gesture mode -- the "
+                        "only mode in use -- so this lever did not exist. Pose is the single largest "
+                        "stage at 64-83 ms p50 and runs only in SEARCH/REACQUIRE/PARKED, so raising "
+                        "this cuts the SEARCH-phase loop tail (which is what trips the bridge "
+                        "staleness tiers) at the cost of slower gesture acquisition.")
     p.add_argument("--gesture-stop", action=argparse.BooleanOptionalAction, default=False,
                    help="in-follow STOP gesture: the FOLLOWED person raising BOTH hands commands "
                         "WAIT (HOLD). DE-ESCALATING only (never motion). Runs pose DECIMATED in "
