@@ -843,6 +843,16 @@ $trackHeadProbe=New-Object System.Windows.Forms.CheckBox; $trackHeadProbe.Text='
 #           forward resumes by itself once the rotation puts the gap in the centre corridor.
 $lblGap=New-Object System.Windows.Forms.Label; $lblGap.Text='Gap steer'; $lblGap.AutoSize=$true; $lblGap.Location='716,112'; $grpTrackCtl.Controls.Add($lblGap)
 $trackGap=New-Object System.Windows.Forms.ComboBox; $trackGap.DropDownStyle='DropDownList'; $trackGap.Size='74,24'; $trackGap.Location='778,108'; [void]$trackGap.Items.AddRange(@('off','audit','on')); $trackGap.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackGap)
+# HEAD SCAN (--head-scan). The freeze fix: when the brake has fully stopped forward motion but the
+# operator is still beyond the standoff, the robot sweeps its head across the room, samples the
+# depth corridor at each position, re-centres, and picks the freest heading. An obstacle at
+# 0.4-0.6 m fills the 105.8 deg field of view, so from a fixed camera NEITHER side can be judged
+# and gap steer has nothing to commit to -- the sweep sees ~170 deg instead.
+# YAW ONLY: forward speed stays under the brake, so a wrong result turns the robot on the spot.
+# Start on 'audit' -- it performs the sweep and logs the HEAD-SCAN map without steering, which is
+# also how the head yaw -> left/right convention gets confirmed from the cx-evidence field.
+$lblScan=New-Object System.Windows.Forms.Label; $lblScan.Text='Head scan'; $lblScan.AutoSize=$true; $lblScan.Location='716,134'; $grpTrackCtl.Controls.Add($lblScan)
+$trackScan=New-Object System.Windows.Forms.ComboBox; $trackScan.DropDownStyle='DropDownList'; $trackScan.Size='74,24'; $trackScan.Location='778,130'; [void]$trackScan.Items.AddRange(@('off','audit','on')); $trackScan.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackScan)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
 $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
@@ -1151,6 +1161,12 @@ function Get-TrackExtraArgs {
     }
     # Head probe: one-shot startup head calibration (see the checkbox comment). Independent of
     # every follow feature -- it only measures and logs, then re-centres the head.
+    # Head scan: sweep the head when the brake has us stopped and pick the freest heading.
+    # The scan needs /head_pose, which the node only subscribes when a head feature asks for it --
+    # --head-scan does, so no extra flag is required here.
+    if($trackScan -and $trackScan.SelectedItem -and [string]$trackScan.SelectedItem -ne 'off'){
+        $a += ('--head-scan ' + [string]$trackScan.SelectedItem)
+    }
     if ($trackHeadProbe.Checked) {
         $a += '--head-probe'
     }

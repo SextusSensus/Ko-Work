@@ -271,6 +271,16 @@ class Follower:
                                     # (False disables the head features: an unverified head silently
                                     #  offsets every bearing, so it fails closed rather than guessing)
         self._stop_requested = False
+        # STAGE 6 stationary head scan (see _head_scan_step). All inert while --head-scan off.
+        self._scan_state = "idle"   # idle | pan | recentre
+        self._scan_pos = []         # commanded sweep positions (rad)
+        self._scan_i = 0
+        self._scan_map = []         # [(observed_yaw_rad, clearance_m|None, cx_px|None)]
+        self._scan_t0 = 0.0         # scan start, for the hard timeout
+        self._scan_cmd_t = 0.0      # when the current position was commanded
+        self._scan_last_t = 0.0     # end of the last scan, for the cooldown
+        self._scan_hint = 0         # +1 steer LEFT, -1 steer RIGHT, 0 none/unknown
+        self._scan_hint_t = 0.0     # when the hint was produced (it ages out)
         self._cleaned = False
         self._cleanup_lock = threading.Lock()
         self.t_start = time.monotonic()
@@ -570,7 +580,7 @@ class Follower:
     # as an obstacle enters the forward corridor. It ONLY ever REDUCES forward vx (never authorizes
     # it), yaw is untouched, and it composes with the forbid_forward keystone -- so it cannot make the
     # forward path less safe, only more cautious. Default-off (--obstacle-brake); byte-identical off.
-    def _corridor_clearance(self):
+    def _corridor_clearance(self, apply_head_shift=True):
         """Robust nearest-obstacle range (m) in the forward corridor, or None. Cheap: a percentile
         over the central band of the depth map (excludes the floor via a mid-vertical band). Uses a
         PERCENTILE (not raw min) + an AGED-MEDIAN history -- Phase-2 finding: a single depth-glitch
@@ -594,7 +604,7 @@ class Follower:
             # gives 0.0 shift AND forbids forward elsewhere, so the corridor is never silently
             # wrong. At 105.8 deg FOV a +/-30 deg pan keeps body-forward well inside frame.
             _hshift = 0.0
-            if self.a.head_track == "on":
+            if apply_head_shift and self.a.head_track == "on":
                 _hy = self.node.head_yaw()
                 if _hy is not None:
                     _hshift = -self.a.head_yaw_sign * _hy * focal_px(w, self.a.hfov_deg)
@@ -798,6 +808,173 @@ class Follower:
     #     guess a direction.
     #   * It stops adding bias once the operator approaches the frame edge: the point of turning is to
     #     keep following them, and a detour that loses the lock has failed even if it misses the chair.
+    # ---- STAGE 6: STATIONARY HEAD SCAN -------------------------------------------------------
+    # WHY THIS EXISTS. The brake stops the robot when the forward corridor is blocked, and at that
+    # point the obstacle typically fills the 105.8 deg field of view: the centre corridor AND both
+    # side sectors all read blocked-or-unknown, gap steer has nothing it can commit to, and the
+    # robot freezes. Field evidence 2026-09-03: gap steer holds its committed side perfectly while
+    # following (9 events, 0 sign flips) and only breaks down at the 0.39-0.56 m full stops
+    # (5 events, 3 flips). That is a VISIBILITY limit, not a tuning one -- from that position there
+    # is no free space in view to steer toward. Panning the head is the only way to see past an
+    # obstacle that close without moving first.
+    #
+    # NON-BLOCKING BY CONSTRUCTION. One step per follow frame, never a sleep. The loop MUST keep
+    # streaming velocity or the bridge staleness watchdog (STALE_MS) zeroes the robot mid-scan --
+    # a blocking sweep would trip the very safety floor it depends on.
+    #
+    # SAFETY PROPERTIES:
+    #   * The scan only ever produces a YAW hint. Forward speed stays under the obstacle brake and
+    #     the forbid_forward keystone, so even a wrong-direction result makes the robot rotate in
+    #     place -- it cannot drive into the thing it is looking at.
+    #   * It runs ONLY while the brake already has forward motion stopped. Never mid-stride.
+    #   * Head yaw is never assumed. A stale or absent /head_pose aborts the scan, re-centres, and
+    #     falls back to the unscanned behaviour.
+    #   * The head is re-centred before the result is used, and abandoned on timeout.
+    def _head_scan_positions(self):
+        """Sweep positions in radians, symmetric about centre."""
+        n = max(3, min(9, int(self.a.head_scan_steps)))
+        mx = math.radians(max(5.0, min(34.0, self.a.head_scan_max_deg)))
+        if n % 2 == 0:
+            n += 1
+        half = n // 2
+        return [mx * (i / float(half)) for i in range(-half, half + 1)]
+
+    def _head_scan_abort(self, why):
+        """Give up mid-scan: re-centre (best effort) and fall back to unscanned behaviour."""
+        try:
+            if self.bridge is not None:
+                self.bridge.send_head(0.0, 0.0)
+        except Exception:  # noqa: BLE001
+            pass
+        self._scan_state = "idle"
+        self._scan_hint = 0
+        self._scan_last_t = time.monotonic()
+        log("HEAD-SCAN ABORT %s -> re-centred, falling back" % why)
+
+    def _head_scan_step(self, blocked, cx_img):
+        """Advance the stationary sweep by ONE step. Returns True while a scan is in progress, in
+        which case the caller must hold the robot still: the scan owns the head, and a moving base
+        would invalidate every sample taken from a different pose."""
+        if self.a.head_scan == "off":
+            return False
+        now = time.monotonic()
+        self._scan_touch_t = now   # fed every step; the orphan watchdog in _process_frame reads it
+        tol = math.radians(max(1.0, self.a.head_scan_tol_deg))
+        settle = max(0.1, self.a.head_scan_settle_s)
+
+        if self._scan_state == "idle":
+            if not blocked:
+                return False
+            if (now - self._scan_last_t) < max(0.0, self.a.head_scan_cooldown_s):
+                return False
+            if self.node is None or self.node.head_yaw(max_age=1.0) is None:
+                if (now - getattr(self, "_scan_warn_t", 0.0)) > 10.0:
+                    self._scan_warn_t = now
+                    log("HEAD-SCAN unavailable: /head_pose not readable -> no scan")
+                return False
+            self._scan_pos = self._head_scan_positions()
+            self._scan_i = 0
+            self._scan_map = []
+            self._scan_t0 = now
+            self._scan_cmd_t = now
+            self._scan_state = "pan"
+            try:
+                self.bridge.send_head(0.0, self._scan_pos[0])
+            except Exception as e:  # noqa: BLE001
+                self._head_scan_abort("send failed: %s" % e)
+                return False
+            log("HEAD-SCAN start %d positions across +/-%.0f deg (robot stopped, yaw-only result)"
+                % (len(self._scan_pos), self.a.head_scan_max_deg))
+            return True
+
+        if (now - self._scan_t0) > max(2.0, self.a.head_scan_timeout_s):
+            self._head_scan_abort("timeout")
+            return False
+        hy = self.node.head_yaw(max_age=1.0) if self.node is not None else None
+        if hy is None:
+            self._head_scan_abort("head pose went stale mid-scan")
+            return False
+        return self._head_scan_advance(now, hy, tol, settle, cx_img)
+
+    def _head_scan_advance(self, now, hy, tol, settle, cx_img):
+        """Pan/re-centre half of the step machine, split out to keep each part readable."""
+        if self._scan_state == "pan":
+            tgt = self._scan_pos[self._scan_i]
+            waited = (now - self._scan_cmd_t)
+            if (abs(hy - tgt) <= tol and waited >= settle) or waited > (settle * 4.0):
+                # Sample where the CAMERA points (no body-forward shift), labelled with the
+                # OBSERVED yaw -- never the commanded one, so a servo that fell short is recorded
+                # as where it actually looked.
+                clr = self._corridor_clearance(apply_head_shift=False)
+                self._scan_map.append((hy, clr, cx_img))
+                self._scan_i += 1
+                self._scan_cmd_t = now
+                done = self._scan_i >= len(self._scan_pos)
+                nxt = 0.0 if done else self._scan_pos[self._scan_i]
+                if done:
+                    self._scan_state = "recentre"
+                try:
+                    self.bridge.send_head(0.0, nxt)
+                except Exception as e:  # noqa: BLE001
+                    self._head_scan_abort("send failed: %s" % e)
+                    return False
+            return True
+
+        if self._scan_state == "recentre":
+            if abs(hy) <= tol and (now - self._scan_cmd_t) >= settle:
+                self._head_scan_finish(hy)
+                return False
+            if (now - self._scan_cmd_t) > max(2.0, self.a.head_scan_timeout_s):
+                self._head_scan_abort("head did not return to centre")
+                return False
+            return True
+        return False
+
+    def _head_scan_finish(self, hy_centre):
+        """Turn the sweep into a committed side, logging the whole map so a wrong call is
+        diagnosable from the log alone rather than by re-running the robot."""
+        self._scan_state = "idle"
+        self._scan_last_t = time.monotonic()
+        parts = []
+        best_clr = None
+        best_yaw = 0.0
+        for (yaw, clr, _cx) in self._scan_map:
+            parts.append("%+.0fdeg=%s" % (math.degrees(yaw),
+                                          ("%.2fm" % clr) if clr is not None else "blocked"))
+            if clr is not None and (best_clr is None or clr > best_clr):
+                best_clr, best_yaw = clr, yaw
+
+        # EMPIRICAL DIRECTION EVIDENCE. As the head pans, a fixed scene point slides the OTHER way
+        # in the image. Two samples with the operator visible therefore reveal which way +yaw
+        # physically turns the camera -- independently of --head-yaw-sign, which the probe verified
+        # only as command-vs-readback consistency (both in the head frame), NOT as a mapping into
+        # the image/bearing frame. Logged every scan so the convention is measured, not assumed.
+        eviden = ""
+        pts = [(y, cx) for (y, _c, cx) in self._scan_map if cx is not None]
+        if len(pts) >= 2 and abs(pts[-1][0] - pts[0][0]) > math.radians(4.0):
+            slope = (pts[-1][1] - pts[0][1]) / (pts[-1][0] - pts[0][0])
+            eviden = "  cx-evidence %+.0fpx/rad -> +yaw looks %s" % (
+                slope, "RIGHT" if slope < 0 else "LEFT")
+
+        bs = self.a.obstacle_brake_start
+        if best_clr is None or best_clr < bs:
+            self._scan_hint = 0
+            log("HEAD-SCAN map [%s] centred %+.1fdeg -> NO clear heading (best %s, need >=%.2fm)%s"
+                % (", ".join(parts), math.degrees(hy_centre),
+                   ("%.2fm" % best_clr) if best_clr is not None else "none", bs, eviden))
+            return
+        dead = math.radians(max(1.0, self.a.head_scan_tol_deg))
+        if abs(best_yaw) <= dead:
+            self._scan_hint = 0
+        else:
+            # +yaw maps to LEFT under head_yaw_sign=+1, the same convention _head_track uses to
+            # fold head yaw back into bearing. Printed below so an inverted result is obvious.
+            self._scan_hint = 1 if (self.a.head_yaw_sign * best_yaw) > 0 else -1
+        self._scan_hint_t = time.monotonic()
+        log("HEAD-SCAN map [%s] centred %+.1fdeg -> freest %+.0fdeg (%.2fm) hint=%s%s"
+            % (", ".join(parts), math.degrees(hy_centre), math.degrees(best_yaw), best_clr,
+               {1: "LEFT", -1: "RIGHT", 0: "AHEAD"}[self._scan_hint], eviden))
+
     def _gap_steer_bias(self, bearing, clr_centre, target_range=None):
         """Yaw bias (rad/s) toward the freest side when the CENTRE corridor is blocked; 0.0 = none.
         Sign convention (verified against field logs): POSITIVE vyaw turns LEFT.
@@ -838,6 +1015,18 @@ class Follower:
         left_ok = s["L"] is not None and s["L"] >= bs
         right_ok = s["R"] is not None and s["R"] >= bs
         if not (left_ok or right_ok):
+            # BOXED IN from THIS viewpoint -- both sectors blocked or unjudgeable. Before giving up,
+            # use a stationary head-scan result if one is fresh: the sweep covers ~170 deg where the
+            # fixed camera sees 105.8, so it can find free space that simply is not in frame from
+            # here. This is the whole reason the scan exists; without it the robot freezes facing a
+            # close obstacle with no side it can justify.
+            # Still YAW-ONLY: the brake holds forward speed at zero until the rotation actually
+            # brings clear space into the centre corridor, so acting on a stale or wrong scan makes
+            # the robot turn on the spot, never drive at something it cannot see.
+            if (self.a.head_scan == "on" and self._scan_hint != 0
+                    and (time.monotonic() - self._scan_hint_t) <= max(1.0, self.a.head_scan_hint_ttl_s)):
+                self._gap_dir = self._scan_hint
+                return self.a.gap_steer_rate * (1.0 if self._scan_hint > 0 else -1.0)
             self._gap_dir = 0                      # boxed in -> brake handles it; never guess
             return 0.0
         if self._gap_dir > 0 and left_ok:          # HOLD the committed side while it stays clear
@@ -1271,13 +1460,15 @@ class Follower:
         _odom_topic = getattr(self.a, "odom_topic", "") or ""
         if _odom_topic.lower() == "none":
             _odom_topic = ""
-        # Head pose subscribed when head tracking is enabled OR --head-probe is set -- off stays
+        # Head pose subscribed when head tracking is enabled, OR --head-probe, OR --head-scan --
+        # off stays
         # byte-identical. The probe MUST be included: it reads the pose back to measure the yaw
         # sign, so gating the subscription on head_track alone made --head-probe a silent no-op
         # ("HEAD-PROBE SKIP /head_pose unavailable") for the common case of probing BEFORE
         # enabling tracking, which is the only sane order to do it in.
         _head_topic = (self.a.head_pose_topic
-                       if (self.a.head_track != "off" or self.a.head_probe) else "")
+                       if (self.a.head_track != "off" or self.a.head_probe
+                           or self.a.head_scan != "off") else "")
         self.node = CamNode(topics, depth_topic, odom_topic=_odom_topic, head_pose_topic=_head_topic)
         # FR-1 (CRITICAL): service CamNode on a DEDICATED background executor thread. The old
         # one-spin_once-per-10Hz-tick pattern measured the LOOP's callback-servicing rate, not the
@@ -1674,6 +1865,14 @@ class Follower:
     # -- per-frame state machine -------------------------------------------
     def _process_frame(self, frame):
         h_img, w_img = frame.shape[:2]
+
+        # SCAN ORPHAN WATCHDOG. _head_scan_step only runs on the tracked-control path, so losing
+        # the target mid-sweep (LOST -> SEARCH) would stop advancing it and leave the head PARKED
+        # OFF-CENTRE -- and a panned head silently offsets every bearing computed from pixel
+        # offset. If nothing has advanced a live scan for a second, re-centre and drop it.
+        if self._scan_state != "idle" and (time.monotonic() - getattr(self, "_scan_touch_t", 0.0)) > 1.0:
+            self._head_scan_abort("orphaned (left the tracking path mid-sweep)")
+
 
         # YOLO persons every frame (defensive; [] on any failure).
         _pt = time.perf_counter()
@@ -2673,6 +2872,20 @@ class Follower:
         # Stage-4 gap audit: log where the free space is and which way a steering layer WOULD
         # go. Observation only -- no command, and nothing below reads its result.
         self._sector_audit(bearing, _clr)
+        # STAGE 6: STATIONARY HEAD SCAN. Fires only once the brake has forward motion FULLY stopped
+        # while the follow still wants to advance (operator beyond the standoff) -- exactly the
+        # freeze case: stopped close to something, no side it can justify, nothing left to try.
+        # While sweeping, the base is held still so every sample comes from ONE pose; vx goes to 0
+        # through the slew below, and yaw is slewed toward 0 rather than cut, so the gait is never
+        # jerked. The scan itself only ever writes a yaw HINT consumed by _gap_steer_bias.
+        _scanning = False
+        if self.a.head_scan != "off":
+            _blocked_now = (_obs_cap is not None and _obs_cap <= 0.01)
+            _want_fwd = (rng is not None and rng > (self.a.standoff_m + 0.25))
+            _scanning = self._head_scan_step(_blocked_now and _want_fwd, cx)
+            if _scanning:
+                vx = 0.0
+                vyaw = self._slew(self._prev_vyaw, 0.0, self.vyaw_slew)
         if _obs_cap is not None and vx > _obs_cap:
             vx = _obs_cap
         # FIX F1: keep a short window of recent VALIDATED depth ranges (its median is the glitch-
@@ -3203,6 +3416,36 @@ def parse_args(argv):
                         "read it back on --head-pose-topic, re-centre, and log the measured "
                         "--head-yaw-sign. Off by default. Required to trust any head feature -- "
                         "RotateHead is mode-gated and cannot be checked on a parked robot.")
+    p.add_argument("--head-scan", choices=("off", "audit", "on"), default="off",
+                   help="STATIONARY HEAD SCAN: when the obstacle brake has fully stopped forward "
+                        "motion but the operator is still beyond the standoff, sweep the head "
+                        "across the room, sample the depth corridor at each position, re-centre, "
+                        "and pick the freest heading. Fixes the freeze case where an obstacle at "
+                        "0.4-0.6 m fills the 105.8 deg view so neither side can be judged. "
+                        "audit = sweep and log the map, commanding NO steer. on = also let the "
+                        "result break the gap-steer deadlock. YAW ONLY -- forward speed stays "
+                        "under the brake and forbid_forward, so a wrong result turns the robot on "
+                        "the spot rather than driving it at anything. Off by default.")
+    p.add_argument("--head-scan-max-deg", type=float, default=30.0,
+                   help="half-width of the sweep (deg). The bridge clamps head yaw to +/-34 deg "
+                        "regardless, so this cannot exceed the mechanical guard.")
+    p.add_argument("--head-scan-steps", type=int, default=5,
+                   help="sample positions across the sweep (forced odd so one lands dead centre). "
+                        "More positions = a finer map but a longer freeze.")
+    p.add_argument("--head-scan-settle-s", type=float, default=0.40,
+                   help="time to let the head reach a commanded position before sampling depth. "
+                        "Too short samples mid-travel and mislabels the clearance.")
+    p.add_argument("--head-scan-tol-deg", type=float, default=4.0,
+                   help="how close the OBSERVED head yaw must be to the commanded one to count as "
+                        "settled; also the centre deadband and the re-centre check.")
+    p.add_argument("--head-scan-cooldown-s", type=float, default=6.0,
+                   help="minimum gap between scans, so a persistently blocked corridor cannot make "
+                        "the robot sweep continuously instead of following.")
+    p.add_argument("--head-scan-timeout-s", type=float, default=8.0,
+                   help="hard abort for a scan that never settles (re-centres and falls back).")
+    p.add_argument("--head-scan-hint-ttl-s", type=float, default=8.0,
+                   help="how long a scan result may steer for. The world moves; an old map is not "
+                        "evidence about the world now, so the hint ages out rather than persisting.")
     p.add_argument("--head-track", choices=("off", "audit", "on"), default="off",
                    help="head tracks the operator (off|audit|on). Default off = byte-identical.")
     p.add_argument("--head-pose-topic", default="/head_pose",
