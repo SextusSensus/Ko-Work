@@ -557,6 +557,56 @@ Scope note: this is **braking, not steering around**. The plan's safety spine fo
 this hardware (one ~70° forward cone, no side sensing, no odometry — turning away loses the lock).
 Class-aware braking (COCO modulates, geometry still triggers) remains Phase 3's other open TODO.
 
+## Robot hit a chair with the brake ON — the band was blind below 0.53 m (FIELD, 2026-09-03)
+
+First live drive with `--obstacle-brake` (standoff 0.7, vx-max 0.23). The reflex engaged and held
+`vx-cap 0.00` — but only AFTER contact. The brake logic is correct; the SENSING was blind.
+
+Evidence, from the session log:
+```
+CLEARANCE 1.38m -> vx-cap 0.20      <- corridor "clear", full authority
+CLEARANCE 0.59m -> vx-cap 0.00      <- next sample: already inside the 0.7 m stop band
+```
+The obstacle did not approach through the grading zone; it MATERIALISED inside it. No graded braking
+was possible, and a walking gait at 0.23 m/s cannot stop in the remaining 0.59 m.
+
+Root cause, measured not assumed. A live per-row depth profile of the corridor (captured mid-session)
+gives floor returns that fit `floor_range = cam_h / sin(theta_row)` with **cam_h = 0.86 m and a
+horizontal optical axis, model vs measured within +/-0.05 m over four rows** (row 0.75: 1.98 vs 1.94;
+0.80: 1.69 vs 1.74; 0.85: 1.50 vs 1.54; 0.90: 1.37 vs 1.32). With `obstacle_band_bot` at its 0.68
+default the band therefore sees only ABOVE:
+
+| range | 0.68 (was) | 0.75 (now) |
+|---|---|---|
+| 1.5 m | +0.37 m | +0.14 m |
+| 1.0 m | **+0.53 m** | +0.38 m |
+| 0.7 m | +0.63 m | +0.52 m |
+
+A chair seat is ~0.45 m. At the old band it was invisible from ~1.2 m inward — visible far away, then
+dropping BELOW the band exactly as the robot closed on it, reappearing only when the backrest filled
+enough pixels at ~0.6 m. That is the 1.38 -> 0.59 jump.
+
+Fix (app-side, visible in the echoed launch line): the Obstacle brake checkbox now emits
+`--obstacle-brake --obstacle-band-bot 0.75`. At 0.75 the band sees above 0.38 m at 1 m range while the
+FLOOR does not appear until 1.98 m — a 0.48 m margin before the 1.5 m trigger, so no ground
+false-braking. Only ADDS obstacle sensitivity; the failure direction is a spurious stop (fail-safe).
+
+**Explicitly rejected:** raising `--obstacle-brake-start` to 2.0 m (as `field.yaml` does). At any band
+low enough to see a chair, the floor first returns at 1.79-1.98 m, which a 2.0 m trigger would put
+inside the braking zone -> continuous braking on the ground. Band and trigger are coupled; tune the
+band, keep the trigger at 1.5.
+
+Still open:
+- **Very low objects up close remain invisible** (coffee table ~0.40 m at 0.7 m range needs the band
+  to see below 0.52 m). Inherent to a forward camera at 0.86 m with a fixed pixel band. The real fix
+  is floor-plane REJECTION — extend the band far lower and discard returns consistent with the fitted
+  ground plane, which the +/-0.05 m fit now makes practical. New logic in a safety reflex: audit-only
+  first.
+- **Speed vs stopping distance.** 0.8 m of grading zone is 3.5 s at vx 0.23 but 5.3 s at 0.15. For
+  indoor clutter run `--vx-max 0.15`.
+- `LOOP-MS n=600 p50=116 p90=146 p99=179 max=241 budget=100 rerun=off` — the loop is 79% over budget
+  at p99 even without Rerun; 2.2x margin to the 400 ms watchdog tier (P4.4 holds).
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
