@@ -27,13 +27,18 @@ def bearing_from_x(cx, w_img, hfov_deg):
     return math.atan2((cx - w_img / 2.0), focal_px(w_img, hfov_deg))
 
 
-def range_from_bbox_height(box_h_px, h_img, hfov_deg, person_h_m):
-    """Fallback range from apparent person height. The camera's vertical FOV
-    isn't published here, so we reuse the horizontal focal length (a fine
-    monocular proxy): range ~= person_h_m * focal_px / box_h_px."""
+def range_from_bbox_height(box_h_px, h_img, vfov_deg, person_h_m):
+    """Fallback range from apparent person height:
+    range ~= person_h_m * focal_px(h_img, vfov_deg) / box_h_px.
+
+    Pass the VERTICAL fov. This used to be handed the horizontal one against the vertical
+    pixel count, described as "a fine monocular proxy" -- it is not: that only holds when
+    hfov/w == vfov/h, and on this camera (105.8 deg / 544 px vs 94.9 deg / 448 px) reusing
+    hfov here understated the focal by ~1.21x on top of whatever hfov itself was wrong by.
+    Both FOVs resolve to the same 205.8 px focal, which is the calibrated fx = fy."""
     if box_h_px <= 1:
         return None
-    f = focal_px(h_img, hfov_deg)
+    f = focal_px(h_img, vfov_deg)
     return (person_h_m * f) / box_h_px
 
 

@@ -108,9 +108,13 @@ from calibration import load_calibration  # noqa: E402  (P8.1 -- calibrated intr
 # ---------------------------------------------------------------------------
 DEF_STANDOFF_M    = 1.2       # how far behind the target the robot holds
 DEF_DEADBAND_M    = 0.20      # don't fidget within +/- this of standoff
-DEF_HFOV_DEG      = 70.0      # K1 head camera horizontal FOV
+DEF_HFOV_DEG      = 105.8     # K1 head camera horizontal FOV, from calibration (fx=205.8 @ 544 px)
+DEF_VFOV_DEG      = 94.9      # vertical FOV, same calibration (fy=205.8 @ 448 px)
 
-DEF_K_YAW = 0.9               # turn gain  (rad/s per rad of bearing error)
+DEF_K_YAW = 0.477             # turn gain (rad/s per rad of bearing error). Re-scaled from 0.9 when
+                              # the FOV was corrected 70 -> 105.8: bearings got 1.888x larger, so the
+                              # gain drops by the same factor and the YAW RESPONSE IS UNCHANGED.
+                              # The measurement is now truthful; tune this deliberately from here.
 DEF_K_VX  = 0.35              # speed gain (m/s per m of range error)
 
 # HARD clamps -- intentionally smaller than the bridge's own ceilings.
@@ -3286,7 +3290,7 @@ class Follower:
             except Exception:  # noqa: BLE001
                 pass
         # Fallback: pinhole on bbox height.
-        rng = range_from_bbox_height(person["h"], h_img, self.a.hfov_deg,
+        rng = range_from_bbox_height(person["h"], h_img, self.a.vfov_deg,
                                      self.a.person_h_m)
         if rng is not None and rng > 0:
             return rng, "bboxH"
@@ -3488,7 +3492,14 @@ def parse_args(argv):
     # control law / geometry
     p.add_argument("--standoff-m", type=float, default=DEF_STANDOFF_M)
     p.add_argument("--deadband-m", type=float, default=DEF_DEADBAND_M)
-    p.add_argument("--hfov-deg", type=float, default=DEF_HFOV_DEG)
+    p.add_argument("--hfov-deg", type=float, default=DEF_HFOV_DEG,
+                   help="camera HORIZONTAL field of view (deg). Sets the focal length behind every "
+                        "bearing: bearing = atan2(dx, (w/2)/tan(hfov/2)). MUST match the calibration "
+                        "or every steering decision is scaled wrong.")
+    p.add_argument("--vfov-deg", type=float, default=DEF_VFOV_DEG,
+                   help="camera VERTICAL field of view (deg), used for the bbox-height range fallback. "
+                        "Previously this path reused --hfov-deg against the vertical pixel count, which "
+                        "is only valid for square pixels at equal FOV -- it is not.")
     p.add_argument("--calibration", default=None,
                    help="P8.1 models/calibration.json; when its resolution matches the frame it "
                         "replaces the --hfov-deg intrinsic seed in the recorded bundle (recording-only)")

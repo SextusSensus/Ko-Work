@@ -80,12 +80,13 @@ gesture_stop_every_n: 5
 gesture_stop_hold: 4
 hb_file: '/tmp/k1_hb'
 hb_stale_ms: 400
-hfov_deg: 70.0
+hfov_deg: 105.8
+vfov_deg: 94.9
 hiconf: null
 idsw_debounce_frames: 3
 iou_min: 0.2
 k_vx: 0.35
-k_yaw: 0.9
+k_yaw: 0.477
 ll_dark_thresh: 90.0
 lock_trigger: 'aruco'
 lost_grace: 8
