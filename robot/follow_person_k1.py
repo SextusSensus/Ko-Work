@@ -628,7 +628,17 @@ class Follower:
                 # test is per-pixel and the selected wedge automatically narrows with range and
                 # widens up close -- the shape the robot actually sweeps.
                 f = focal_px(w, self.a.hfov_deg)
-                half = 0.5 * max(0.05, self.a.robot_width_m) + max(0.0, self.a.corridor_margin_m)
+                # TURN-AWARE HALF-WIDTH. Standing still the robot occupies its half-width; while
+                # ROTATING it sweeps its CIRCUMSCRIBED radius, hypot(half_width, half_depth),
+                # because the corners swing outboard. For a 0.60 x 0.35 m body that is 0.30 -> 0.35,
+                # a swept width of 0.69 m rather than 0.60 m.
+                # Not academic: gap steer detours by applying YAW, so the robot is turning at
+                # exactly the moment it squeezes past an obstacle. The operator reports it clipping
+                # its HANDS during avoidance, and the hands are the outboard corner of that circle.
+                _hw = 0.5 * max(0.05, self.a.robot_width_m)
+                _hd = 0.5 * max(0.0, self.a.robot_length_m)
+                _turning = abs(getattr(self, "_prev_vyaw", 0.0)) > 0.05
+                half = (math.hypot(_hw, _hd) if _turning else _hw) + max(0.0, self.a.corridor_margin_m)
                 band = d[y0:y1, :]
                 u = (np.arange(w, dtype=np.float32) - (w * 0.5 + _hshift)) / max(f, 1.0)
                 lat = np.abs(band * u[None, :])
@@ -3702,9 +3712,16 @@ def parse_args(argv):
                         "the centreline, which narrows with range and widens up close -- the shape "
                         "the robot actually sweeps. Default frac (unchanged behaviour).")
     p.add_argument("--robot-width-m", type=float, default=0.45,
-                   help="the robot's own width (m). Used by --corridor-mode footprint to decide "
-                        "what is actually in its path. Nothing else in the stack knew the robot's "
-                        "physical size.")
+                   help="the robot WIDEST STATIC EXTENT in m -- arms and hands included, NOT "
+                        "shoulder width. The operator observed the robot clipping its HANDS during "
+                        "avoidance, which is what a torso-width value produces: the hands sit "
+                        "outside the sensed corridor. 0.45 is a shoulder-width ESTIMATE with no "
+                        "measured source -- measure the arm span and set it.")
+    p.add_argument("--robot-length-m", type=float, default=0.35,
+                   help="the robot's front-to-back depth (m). Used with --robot-width-m to get the "
+                        "CIRCUMSCRIBED radius hypot(w/2, l/2), which is the half-width the robot "
+                        "actually sweeps while ROTATING -- and it detours by rotating, so this is "
+                        "the number that governs clipping something on the way past.")
     p.add_argument("--corridor-margin-m", type=float, default=0.15,
                    help="clearance added EACH SIDE of the robot width in footprint mode, covering "
                         "gait sway, depth noise and tracking error. Total swept width is "

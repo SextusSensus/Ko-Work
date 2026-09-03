@@ -151,6 +151,7 @@ gap_steer_trigger_frac: 0.35
 gap_steer_yaw_relax: 0.5
 sector_frac: 0.33
 sector_audit: 'off'
+robot_length_m: 0.35
 robot_width_m: 0.45
 rerun: false
 rerun_addr: null
