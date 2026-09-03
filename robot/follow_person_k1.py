@@ -2431,7 +2431,14 @@ class Follower:
             self._last_gap_log = time.monotonic()
             log("GAP-STEER bias %+.2f rad/s (bearing %+.0fdeg, centre blocked) -> routing around"
                 % (_gap, math.degrees(bearing)))
-        vyaw = self._slew(self._prev_vyaw, -self.a.k_yaw * bearing + _gap, self.vyaw_slew)
+        # A detour has to be allowed to WIN or it never happens. yaw = -k*bearing + gap, so the
+        # tracking term cancels the bias at bearing = gap/k -- with k=0.9 and gap=0.20 that is
+        # only ~13 deg: a nudge, not a route around. While a detour is COMMITTED, relax the
+        # operator-tracking gain so the equilibrium moves out to a useful angle (~25 deg at
+        # relax 0.5). The operator stays inside the 105.8 deg FOV throughout, and full gain is
+        # restored the moment the corridor clears and _gap returns to 0.
+        _k = self.a.k_yaw * (self.a.gap_steer_yaw_relax if _gap != 0.0 else 1.0)
+        vyaw = self._slew(self._prev_vyaw, -_k * bearing + _gap, self.vyaw_slew)
         vyaw = clamp(vyaw, self.vyaw_min, self.vyaw_max)
         if rng is not None:
             err = rng - self.a.standoff_m
@@ -3101,6 +3108,11 @@ def parse_args(argv):
     p.add_argument("--gap-steer-rate", type=float, default=0.20,
                    help="yaw bias (rad/s) applied toward the clear side; bounded and still subject "
                         "to the yaw slew limiter and the hard vyaw clamp.")
+    p.add_argument("--gap-steer-yaw-relax", type=float, default=0.5,
+                   help="scale the operator-tracking yaw gain WHILE a detour is committed. The"
+                        " tracking term cancels the gap bias at bearing = gap/k_yaw (~13 deg at"
+                        " defaults), so without this the robot only nudges and never routes"
+                        " around. 0.5 moves that equilibrium to ~25 deg. 1.0 disables.")
     p.add_argument("--gap-steer-trigger-frac", type=float, default=0.35,
                    help="how far INTO the braking zone the corridor must be before steering "
                         "engages, as a fraction from brake-stop to brake-start. 0.35 with the "
