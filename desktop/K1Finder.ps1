@@ -1106,6 +1106,16 @@ function Get-TrackExtraArgs {
         # room. The reflex triggered on the 8th percentile of corridor depth with only 40 valid
         # pixels, so a handful of close returns (a glancing table edge, a depth speckle) could
         # latch a full stop. Now it must see a REAL object:
+        # RE-SENSITISED 2026-09-03 after a field cliff: CLEARANCE went 1.41 -> 0.43 m in ONE 1 Hz
+        # sample while travelling only ~0.18 m, i.e. the obstacle APPEARED rather than approached.
+        # Cause was min-valid 150: a chair leg or table edge subtends few depth pixels at 1.5 m and
+        # plenty at 0.4 m, so requiring 150 made thin objects invisible until close. Walked back:
+        #   pctile 20 -> 12     react to nearer returns sooner (still robust vs a raw min)
+        #   min-valid 150 -> 70 thin/distant objects register again
+        #   brake-stop .6 -> .7 stop ~10 cm further out
+        #   aged stays 5        that is the anti-glitch guard, NOT a sensitivity knob
+        #   brake-start stays 1.5 -- raising it would put the 1.98 m floor return inside the zone
+        # Superseded settings (kept for the record):
         #   pctile 8 -> 20      ignore the closest few % (noise/thin edges stop dominating)
         #   min-valid 40 -> 150 require a genuine footprint, not a speckle
         #   aged 3 -> 5         longer median; a transient cannot latch a stop
@@ -1114,8 +1124,8 @@ function Get-TrackExtraArgs {
         # returns at 1.98 m, so a 2.0 m trigger would brake on the ground continuously.
         # NOTE this trades margin for smoothness in the fail-DANGEROUS direction (brakes later,
         # less). Pair with --vx-max 0.15 indoors; a gait cannot stop instantly inside 0.6 m.
-        $a += ('--obstacle-brake --obstacle-band-bot 0.75 --obstacle-pctile 20 ' +
-               '--obstacle-min-valid 150 --obstacle-aged 5 --obstacle-brake-stop 0.6')
+        $a += ('--obstacle-brake --obstacle-band-bot 0.75 --obstacle-pctile 12 ' +
+               '--obstacle-min-valid 70 --obstacle-aged 5 --obstacle-brake-stop 0.7')
     }
     # Rerun observability -> record a scrubbable .rrd on the robot. Default OFF; byte-identical when off.
     # The node auto-disables Rerun (RERUN-DISABLED-SLOW) if the loop goes over budget with it on, so the
