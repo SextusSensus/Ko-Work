@@ -607,6 +607,41 @@ Still open:
 - `LOOP-MS n=600 p50=116 p90=146 p99=179 max=241 budget=100 rerun=off` — the loop is 79% over budget
   at p99 even without Rerun; 2.2x margin to the 400 ms watchdog tier (P4.4 holds).
 
+## Compute manager Phase 1 — per-stage cost attribution (measurement only, 2026-09-03)
+
+The loop runs `p50 116 / p90 146 / p99 179 ms` against a 100 ms budget (measured with Rerun OFF),
+and the stack already carries THREE independent ad-hoc shed mechanisms — `_rr_overrun_streak`
+(Rerun auto-disable), `_gesture_overrun_streak` (gesture auto-disable) and the ReID watchdog — each
+with its own counter and threshold. What was missing is **attribution**: the loop reported a TOTAL
+only, so there was no way to know which stage to shed first. A shed ladder built on that would be
+guesswork (shedding an 8 ms Rerun to fix a 45 ms overrun is theatre).
+
+`common.PERF` (`_StageTimer`) is a bounded rolling per-stage millisecond accountant. Five cost
+centres in the control loop are instrumented: `detect` (YOLO), `pose` (gesture/lock trigger),
+`reid` (OSNet `embed_batch`), `emit` (JPEG encode + stdout for `--stream`), `track` (tracker
+update). `LOOP-MS` now carries `| stage p50/p90: ...` **ordered by p90 DESCENDING**, so it reads
+left-to-right as "what is actually expensive" — the shed-priority question. Stats reset per 10 s
+window, matching the existing LOOP-MS cadence.
+
+**MEASUREMENT ONLY — nothing sheds, gates, or degrades on these numbers.** The diff is timing calls
+plus one log line; no decision path is touched (verified: the only non-timing/non-log line in the
+whole diff is the `common` import). Cost is one `perf_counter` pair + a list append per stage
+(~1 us, ~0.005% of a 116 ms frame). Unit-checked on the robot: ordering and reset behave.
+
+### The design Phase 2 will implement (NOT built yet — awaiting the measured breakdown)
+A single accountant replacing the three counters, shedding in tiers, escalate-fast/restore-slow:
+
+| tier | contents | shed order |
+|---|---|---|
+| **Safety — NEVER shed** | depth read, obstacle brake, control law, velocity clamps, bridge write, staleness watchdog, heartbeat | never |
+| Comfort | Rerun logging, JPEG `--stream`, odometry recording | first |
+| Trigger | pose/gesture model — only while LOCKED, never during SEARCH | second |
+| Identity | ReID embed rate (`--reid-every-n`), detection input size | last |
+
+The governing principle: **obstacle and wall avoidance are what the budget BUYS, never what gets
+cut.** The manager may only DISABLE optional work — it can never enable anything and never touches
+the safety path, the same discipline as the obstacle brake only ever REDUCING vx.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
