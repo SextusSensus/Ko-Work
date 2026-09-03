@@ -932,6 +932,37 @@ requests are in genuine tension (fewer nuisance stops vs earlier detection) and 
 is not a single number but better SENSING -- floor-plane rejection would let the band see low objects
 without the false-brake risk that forced the desensitisation in the first place.
 
+## Gap steering now completes the detour -- the tracking term was cancelling it (2026-09-03)
+
+Field: "obstacle detection works well for chairs, now I want it to automatically walk around and
+continue follow mode." The previous run DID steer (18 `GAP-STEER` engagements, zero full stops, zero
+losses) but never routed around, and the control law says why:
+```
+vyaw = -k_yaw * bearing + gap_bias      ->  equilibrium at bearing = gap/k_yaw
+                                            0.20 / 0.9 = 0.22 rad = ~13 deg
+```
+The gap bias turns away from the obstacle; the operator-tracking term pulls straight back. They
+cancel ~13 deg off the operator, so the robot NUDGES and then holds -- it can never commit to a route
+around, because following fights the manoeuvre the whole way.
+
+`--gap-steer-yaw-relax` (0.5) scales the tracking gain WHILE a detour is committed, moving that
+equilibrium out to a useful angle, and restores full gain the instant the corridor clears and the
+bias returns to 0 -- which is also what resumes normal following without any extra state.
+
+| relax | detour settles at |
+|---|---|
+| 1.00 (before) | 13 deg -- a nudge |
+| **0.50 (now)** | **25 deg -- a real diagonal past a chair** |
+| 0.35 | 36 deg -- past the 35 deg lock-protection guard, would clip |
+
+The operator stays inside the 105.8 deg FOV throughout, and `--gap-steer-max-bearing-deg 35` still
+refuses to steer them toward the frame edge. Note how close 0.35 lands to that guard: relax and the
+guard are coupled, so lowering relax further without raising the guard just makes the steer clip.
+
+Previous-run evidence that the earlier two fixes hold: clearance stepped smoothly
+(0.89 1.07 0.90 0.88 0.87 ... 0.80 0.78 0.75) rather than cliffing, and the steer sign HELD for 16
+consecutive decisions instead of alternating.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
