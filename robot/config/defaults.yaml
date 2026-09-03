@@ -64,7 +64,7 @@ fault_stand_k: 5
 gallery_size: 8
 gate: 0.85
 gesture_debug: false
-gesture_every_n: 3
+gesture_every_n: 0
 gesture_hold: 6
 gesture_hold_floor: 3
 gesture_hold_s: 0.9
@@ -97,15 +97,15 @@ max_seconds: 120.0
 min_depth_fps: 5.0
 min_safe_range: 0.6
 obstacle_aged: 3
-obstacle_band_bot: 0.68
+obstacle_band_bot: 0.75
 obstacle_band_top: 0.3
 obstacle_brake: false
 obstacle_brake_start: 1.5
 obstacle_brake_stop: 0.7
-obstacle_corridor_frac: 0.35
+obstacle_corridor_frac: 0.55
 obstacle_max_m: 5.0
-obstacle_min_valid: 40
-obstacle_pctile: 8.0
+obstacle_min_valid: 70
+obstacle_pctile: 12.0
 obstacle_target_margin: 0.4
 odom_topic: ''   # P6.1a: planar odometry (booster_interface/msg/Odometer). '' = no subscription (byte-identical). capture.yaml sets '/odometer_state'.
 park_timeout: 0.0
