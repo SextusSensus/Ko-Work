@@ -124,6 +124,37 @@ def main():
     # ... and the same scene with the operator far away must still steer
     check("still steers when the target is far", f._gap_steer_bias(0.0, s["C"], 3.0), 0.24)
 
+    # --- head-scan direction mapping ---------------------------------------------------------
+    # The first on-robot scan measured cx-evidence -90 px/rad: as yaw increases the scene slides
+    # LEFT in the image, so +yaw points the camera RIGHT. The code had been assuming +yaw = LEFT
+    # from --head-yaw-sign and would have steered toward the WORSE side. head_yaw_sign was only
+    # ever verified as command-vs-readback consistency INSIDE the head frame; it never established
+    # the mapping into the image frame. These pin the measured mapping.
+    print("\nhead-scan direction mapping (measured, not assumed):")
+    rad = math.radians
+
+    def hint(scan_map):
+        f._scan_map = scan_map
+        f._scan_hint = 0
+        f._head_scan_finish(0.0)
+        return f._scan_hint
+
+    # slope < 0  =>  +yaw is RIGHT. Freest heading at +23 deg must steer RIGHT (-1).
+    check("+yaw=RIGHT, gap at +23deg -> steer RIGHT",
+          hint([(rad(-23), 0.6, 300.0), (rad(0), 0.9, 250.0), (rad(23), 3.0, 200.0)]), -1)
+    # mirrored scene: gap at -23 deg must steer LEFT (+1)
+    check("+yaw=RIGHT, gap at -23deg -> steer LEFT",
+          hint([(rad(-23), 3.0, 300.0), (rad(0), 0.9, 250.0), (rad(23), 0.6, 200.0)]), 1)
+    # opposite optical convention (slope > 0 => +yaw is LEFT) must flip the answer
+    check("+yaw=LEFT,  gap at +23deg -> steer LEFT",
+          hint([(rad(-23), 0.6, 200.0), (rad(0), 0.9, 250.0), (rad(23), 3.0, 300.0)]), 1)
+    # no operator visible across the sweep -> direction unresolved -> refuse to steer
+    check("no cx evidence -> refuse to steer",
+          hint([(rad(-23), 0.6, None), (rad(0), 0.9, None), (rad(23), 3.0, None)]), 0)
+    # nothing clear enough anywhere -> no hint regardless of direction
+    check("nothing meets the clearance bar -> no hint",
+          hint([(rad(-23), 0.6, 300.0), (rad(0), 0.9, 250.0), (rad(23), 1.1, 200.0)]), 0)
+
     print("")
     if fails:
         print("SECTOR-SELFTEST-FAIL %d: %s" % (len(fails), ", ".join(fails)))

@@ -977,6 +977,7 @@ class Follower:
         # only as command-vs-readback consistency (both in the head frame), NOT as a mapping into
         # the image/bearing frame. Logged every scan so the convention is measured, not assumed.
         eviden = ""
+        slope = None
         pts = [(y, cx) for (y, _c, cx) in self._scan_map if cx is not None]
         if len(pts) >= 2 and abs(pts[-1][0] - pts[0][0]) > math.radians(4.0):
             slope = (pts[-1][1] - pts[0][1]) / (pts[-1][0] - pts[0][0])
@@ -994,9 +995,24 @@ class Follower:
         if abs(best_yaw) <= dead:
             self._scan_hint = 0
         else:
-            # +yaw maps to LEFT under head_yaw_sign=+1, the same convention _head_track uses to
-            # fold head yaw back into bearing. Printed below so an inverted result is obvious.
-            self._scan_hint = 1 if (self.a.head_yaw_sign * best_yaw) > 0 else -1
+            # WHICH WAY IS +yaw? Prefer the MEASURED answer over the configured one.
+            # As the head pans, a fixed scene point slides the opposite way in the image, so
+            # slope = d(cx)/d(yaw) < 0 means +yaw turns the camera toward image-RIGHT. The first
+            # on-robot scan measured -90 px/rad -- +yaw is RIGHT -- while this code had been
+            # assuming +yaw = LEFT from head_yaw_sign, i.e. exactly inverted. It would have
+            # steered toward the WORSE side. head_yaw_sign was only ever verified as
+            # command-vs-readback consistency inside the head frame; it never established the
+            # mapping into the image frame, and this is that mapping.
+            # No usable evidence (operator not visible across the sweep) -> refuse rather than
+            # guess: a wrong side is a detour into the obstacle, and the whole point of the scan
+            # is to stop guessing.
+            if slope is None:
+                self._scan_hint = 0
+                eviden += "  [no cx evidence -> direction unresolved, refusing to steer]"
+            else:
+                _plus_is_left = (slope > 0.0)
+                _left = (best_yaw > 0.0) == _plus_is_left
+                self._scan_hint = 1 if _left else -1
         self._scan_hint_t = time.monotonic()
         log("HEAD-SCAN map [%s] centred %+.1fdeg -> freest %+.0fdeg (%.2fm) hint=%s%s"
             % (", ".join(parts), math.degrees(hy_centre), math.degrees(best_yaw), best_clr,
