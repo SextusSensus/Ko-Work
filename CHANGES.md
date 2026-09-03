@@ -963,6 +963,32 @@ Previous-run evidence that the earlier two fixes hold: clearance stepped smoothl
 (0.89 1.07 0.90 0.88 0.87 ... 0.80 0.78 0.75) rather than cliffing, and the steer sign HELD for 16
 consecutive decisions instead of alternating.
 
+## Wider berth around obstacles -- widened by turning EARLIER, not harder (2026-09-03)
+
+Field: "needs to take a wider turn round the object." Two ways to widen, and they are not equally
+good:
+- **Turn harder** (bigger yaw bias): widens the arc but raises PEAK BEARING, and peak bearing is
+  exactly what costs the lock -- all three losses today were at -27, -32 and +31 deg.
+- **Turn earlier** (engage further out): same lateral clearance from a GENTLER arc at a SMALLER peak
+  bearing. Strictly better on the axis that was failing.
+
+So mostly the second, with a small rate bump:
+
+| knob | was | now | effect |
+|---|---|---|---|
+| `--gap-steer-trigger-frac` | 0.35 | **0.65** | engage below **1.22 m** instead of 0.98 m (+0.24 m runway) |
+| `--gap-steer-rate` | 0.20 | **0.24** | slightly firmer arc |
+| `--gap-steer-max-bearing-deg` | 35 | **40** | headroom for the resulting 31 deg |
+
+Verified on the robot: engages below 1.22 m, detour settles at **31 deg** (was 25), guard at 40 deg
+has headroom, and 22 deg of FOV margin remains before the operator would leave frame.
+
+**The honest limit.** 31 deg is close to where the lock has actually been breaking today (27-32 deg).
+Turning earlier buys clearance more cheaply than turning harder, but it does not remove the underlying
+constraint: on a FIXED head, every degree of detour is spent from the same budget that keeps the
+operator in frame. Head tracking is the structural fix -- the head absorbs the detour and the operator
+stays centred -- and it remains blocked only on the ~11 deg head-motion test.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).

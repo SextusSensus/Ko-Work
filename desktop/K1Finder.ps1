@@ -1088,7 +1088,14 @@ function Get-TrackExtraArgs {
     if($trackGap -and $trackGap.SelectedItem -and [string]$trackGap.SelectedItem -ne 'off'){
         $g = [string]$trackGap.SelectedItem
         if($g -eq 'audit'){ $a += '--gap-steer audit --sector-audit audit' }
-        else               { $a += '--gap-steer on' }
+        # WIDER BERTH (2026-09-03): widen by turning EARLIER, not harder. Engaging late (0.98 m)
+        # forces a sharp deviation; engaging at ~1.22 m gives 0.24 m more runway for the same
+        # lateral clearance at a SMALLER peak bearing -- and peak bearing is exactly what costs
+        # the lock (today's three losses were at -27, -32 and +31 deg).
+        #   trigger-frac 0.35 -> 0.65   engage below ~1.22 m instead of ~0.98 m
+        #   rate 0.20 -> 0.24           slightly firmer arc (settles ~30 deg at relax 0.5)
+        #   max-bearing 35 -> 40        headroom for that 30 deg, still 13 deg inside the FOV edge
+        else               { $a += '--gap-steer on --gap-steer-trigger-frac 0.65 --gap-steer-rate 0.24 --gap-steer-max-bearing-deg 40' }
     }
     # Obstacle brake: depth forward-clearance reflex. Only ever REDUCES forward vx (yaw untouched),
     # ignores the operator being followed, and fails to stop when depth is missing -- it composes with
