@@ -642,6 +642,48 @@ The governing principle: **obstacle and wall avoidance are what the budget BUYS,
 cut.** The manager may only DISABLE optional work — it can never enable anything and never touches
 the safety path, the same discipline as the obstacle brake only ever REDUCING vx.
 
+## Obstacle brake desensitised + the loop's real cost found to be CONTENTION (2026-09-03)
+
+**Brake tuning (operator request: "less sensitive, more sentient").** In a cluttered room the reflex
+held `vx-cap 0.00` continuously. It triggered on the **8th percentile** of corridor depth with only
+**40 valid pixels**, so a handful of close returns (a glancing table edge, a depth speckle) could latch
+a full stop. It now has to see a real object. App emits, alongside the band fix:
+
+| knob | was | now | why |
+|---|---|---|---|
+| `--obstacle-pctile` | 8 | **20** | ignore the closest few % -- noise/thin edges stop dominating |
+| `--obstacle-min-valid` | 40 | **150** | require a genuine footprint, not a speckle |
+| `--obstacle-aged` | 3 | **5** | longer median; a transient cannot latch a stop |
+| `--obstacle-brake-stop` | 0.7 | **0.6** | ~10 cm closer before forward is refused |
+| `--obstacle-brake-start` | 1.5 | 1.5 | UNCHANGED -- coupled to the band (floor returns at 1.98 m) |
+
+Verified on the robot via `parse_args` (no node, no motion): grading at `--vx-max 0.15` is full speed
+>=1.5 m, 0.067 @1.0 m, 0.033 @0.8 m, **0.000 <=0.6 m**.
+
+**This trades margin in the fail-DANGEROUS direction** (brakes later and less) -- recorded plainly
+because it is the first change in this stack that does so. Pair with `--vx-max 0.15` indoors; a gait
+cannot stop instantly inside 0.6 m. "More sentient" proper (mask YOLO person boxes out of the depth
+corridor so bystanders do not read as furniture -- geometry triggers, class modulates) is Phase 3's
+open TODO and deliberately still unbuilt.
+
+### The compute finding that changes the manager's target
+Both YOLO models were measured standalone on the robot:
+```
+detect  providers=['CUDAExecutionProvider','CPUExecutionProvider']  input=[1,3,640,640]  p50=19ms
+pose    providers=['CUDAExecutionProvider','CPUExecutionProvider']  input=[1,3,640,640]  p50=19ms
+```
+**19 ms each in isolation, but 60 ms (detect) and 111 ms (pose) inside the control loop.** The models
+are not slow -- they are 3-6x slower *in situ*. Neither is on TensorRT, but moving them there would
+optimise the 19 ms while the 40-90 ms of CONTENTION is the actual cost: OSNet TRT, the camera pipeline
+(`nv12_jpeg` ~24% CPU), `motion` ~28%, and `polkitd` at **55% CPU** driven by the robot's own
+`service_status.log` loop running `sudo systemctl status` on a tight cadence -- on a box already at
+load 9-12 with 6 cores.
+
+Consequence for the compute manager: a shed ladder over the optional tier (Rerun ~0, `emit` 5 ms,
+odom) recovers ~15 ms of a 118 ms loop. **The lever is contention, not features.** Reducing background
+load (that 55% polkitd is a logging loop, not work) plausibly returns more than shedding everything
+the follow owns. Phase 2 should target scheduling/contention, not feature shedding.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).

@@ -1070,7 +1070,20 @@ function Get-TrackExtraArgs {
         # the band sees above 0.38 m at 1 m while the FLOOR does not appear until 1.98 m, safely outside
         # the 1.5 m trigger. Do NOT also raise --obstacle-brake-start to 2.0: it would put that floor
         # return inside the braking zone and brake on the ground continuously.
-        $a += '--obstacle-brake --obstacle-band-bot 0.75'
+        # DESENSITISED 2026-09-03 after the brake held vx=0.00 on edges/speckle in a cluttered
+        # room. The reflex triggered on the 8th percentile of corridor depth with only 40 valid
+        # pixels, so a handful of close returns (a glancing table edge, a depth speckle) could
+        # latch a full stop. Now it must see a REAL object:
+        #   pctile 8 -> 20      ignore the closest few % (noise/thin edges stop dominating)
+        #   min-valid 40 -> 150 require a genuine footprint, not a speckle
+        #   aged 3 -> 5         longer median; a transient cannot latch a stop
+        #   brake-stop .7 -> .6 ~10 cm closer before forward is refused
+        # brake-start stays 1.5: it is COUPLED to the band -- at band-bot 0.75 the floor first
+        # returns at 1.98 m, so a 2.0 m trigger would brake on the ground continuously.
+        # NOTE this trades margin for smoothness in the fail-DANGEROUS direction (brakes later,
+        # less). Pair with --vx-max 0.15 indoors; a gait cannot stop instantly inside 0.6 m.
+        $a += ('--obstacle-brake --obstacle-band-bot 0.75 --obstacle-pctile 20 ' +
+               '--obstacle-min-valid 150 --obstacle-aged 5 --obstacle-brake-stop 0.6')
     }
     # Rerun observability -> record a scrubbable .rrd on the robot. Default OFF; byte-identical when off.
     # The node auto-disables Rerun (RERUN-DISABLED-SLOW) if the loop goes over budget with it on, so the
