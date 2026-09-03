@@ -88,7 +88,7 @@ from common import (  # noqa: E402
     HARD_VX_LIMIT, HARD_VYAW_LIMIT, DEPTH_WARMUP_S, DEPTH_FRESH_S, DEPTH_DOWN_S, PERSON_CLS, LL_DARK_THRESH,
     LockHint, KP_L_SHOULDER, KP_R_SHOULDER, KP_L_WRIST, KP_R_WRIST,
     S_SEARCH, S_TRACK, S_REACQUIRE, S_PARKED, S_SEARCHING, TS_LOCKED, TS_COASTING, TS_RELOCALIZING,
-    clamp, to_bgr, depth_to_meters, iou_xyxy, log, emit_frame, gdbg, EventLog,
+    clamp, to_bgr, depth_to_meters, iou_xyxy, log, emit_frame, gdbg, EventLog, PERF,
 )
 from bridge import Bridge  # noqa: E402  (P3.1: loco_follow_bridge process wrapper)
 from tracking import MultiTracker, max_iou_other, _point_box_dist  # noqa: E402  (P3.2)
@@ -1191,9 +1191,15 @@ class Follower:
                     _xs = sorted(self._loop_ms_hist)
                     _n = len(_xs)
                     _pct = lambda p: _xs[min(_n - 1, int(p * _n))]
+                    # Per-stage attribution (compute-manager Phase 1): stages ordered by p90
+                    # DESCENDING, so the most expensive stage reads first -- that is the shed
+                    # question. Measurement only; nothing sheds on it yet.
+                    _stages = PERF.summary()
                     log("LOOP-MS n=%d p50=%.0f p90=%.0f p99=%.0f max=%.0f budget=%.0f rerun=%s"
+                        " | stage p50/p90: %s"
                         % (_n, _pct(0.5), _pct(0.9), _pct(0.99), _xs[-1], period * 1000.0,
-                           "on" if rerun_sink._RR.ok else "off"))
+                           "on" if rerun_sink._RR.ok else "off", _stages or "(none)"))
+                    PERF.reset()   # per-window stats, matching the 10s LOOP-MS cadence
                 # Stage 1 slow-frame guard: surface a perception overrun in the
                 # log (visible in --preview) before it ever matters under --drive.
                 if dt > period:
@@ -1366,14 +1372,18 @@ class Follower:
         cv2.rectangle(frame, (0, 0), (w, 30), bcol, -1)
         cv2.putText(frame, banner, (10, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     (255, 255, 255), 2, cv2.LINE_AA)
+        _pt = time.perf_counter()
         emit_frame(status, frame, self.a.stream_quality)
+        PERF.add("emit", (time.perf_counter() - _pt) * 1000.0)
 
     # -- per-frame state machine -------------------------------------------
     def _process_frame(self, frame):
         h_img, w_img = frame.shape[:2]
 
         # YOLO persons every frame (defensive; [] on any failure).
+        _pt = time.perf_counter()
         persons = self.det.detect(frame)
+        PERF.add("detect", (time.perf_counter() - _pt) * 1000.0)
         self._frame_idx += 1   # Stage 2: monotonic frame counter (admit spacing)
 
         # Stage 1: stamp a stable track_id + motion prediction on each person.
@@ -1381,7 +1391,9 @@ class Follower:
         # leaves persons untouched so we degrade to the stateless path.
         if self.tracker is not None:
             try:
+                _pt = time.perf_counter()
                 self.tracker.update(persons)
+                PERF.add("track", (time.perf_counter() - _pt) * 1000.0)
             except Exception as e:  # noqa: BLE001 -- tracking must never kill the loop
                 log("TRACK-ERR %s (stateless fallback this frame)" % e)
 
@@ -1405,7 +1417,9 @@ class Follower:
         # The trigger PRODUCES the lock point mc (ArUco marker, or a raised hand); the
         # streak math below is byte-identical to the original marker block, and with
         # --lock-trigger aruco the trigger returns exactly marker_center(frame).
+        _pt = time.perf_counter()
         hint = self._lock_trigger.detect(frame, persons, self.state, w_img, h_img)
+        PERF.add("pose", (time.perf_counter() - _pt) * 1000.0)
         self._lock_hint = hint
         mc = hint.point if hint is not None else None
         if mc is not None:
@@ -2051,7 +2065,9 @@ class Follower:
             else:
                 p["_ph"] = cached[1]
         if boxes:
+            _pt = time.perf_counter()
             feats = self.reid.embed_batch(frame, boxes)
+            PERF.add("reid", (time.perf_counter() - _pt) * 1000.0)
             any_valid = False
             for k, i in enumerate(need):
                 f = feats[k] if k < len(feats) else None
