@@ -51,9 +51,15 @@ if [ "$MODE" = "drive" ]; then
   # app re-pushes loco_follow_bridge.cpp on EVERY launch, so mtime alone cannot tell whether $BIN
   # is the ROS build or a stale SDK build compiled over it -- only the content can.
   if [ -f "$ROS_SRC" ]; then
+    # CONTENT-keyed, not mtime-keyed: the app re-pushes loco_follow_bridge_ros.cpp on EVERY
+    # launch, so any mtime test rebuilds every single time -- a ~40 s cmake burning CPU on an
+    # Orin that is already load-9+ and about to need every cycle for the camera pipeline.
+    # Hash the source instead and rebuild only when it actually changed.
+    _RH=$(md5sum "$ROS_SRC" 2>/dev/null | cut -d" " -f1)
+    _RH_FILE=/home/booster/.bridge_ros.md5
     NEED=0
     [ -x "$BIN" ] || NEED=1
-    [ "$ROS_SRC" -nt "$BIN" ] && NEED=1
+    [ "$(cat "$_RH_FILE" 2>/dev/null)" = "$_RH" ] || NEED=1
     grep -aq booster_rpc_service "$BIN" 2>/dev/null || NEED=1
     if [ "$NEED" = 1 ]; then
       echo "[run_follow] compiling loco_follow_bridge (ROS transport) ..."
@@ -77,6 +83,7 @@ CML
       install -m 755 "$BROS/build/loco_follow_bridge_ros" "$BIN" \
         || { echo "BRIDGE install FAILED" >>/home/booster/k1_compile.err; echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
       : > /home/booster/k1_compile.err   # success -> empty, matching the g++ path's contract
+      echo "$_RH" > "$_RH_FILE"   # remember what this binary was built from
       echo "[run_follow] compiled OK (ROS transport)."
     fi
   elif [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
