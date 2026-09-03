@@ -798,7 +798,7 @@ class Follower:
     #     guess a direction.
     #   * It stops adding bias once the operator approaches the frame edge: the point of turning is to
     #     keep following them, and a detour that loses the lock has failed even if it misses the chair.
-    def _gap_steer_bias(self, bearing, clr_centre):
+    def _gap_steer_bias(self, bearing, clr_centre, target_range=None):
         """Yaw bias (rad/s) toward the freest side when the CENTRE corridor is blocked; 0.0 = none.
         Sign convention (verified against field logs): POSITIVE vyaw turns LEFT.
 
@@ -817,6 +817,20 @@ class Follower:
         bp = self.a.obstacle_brake_stop
         # Engage part-way down the grading zone, not at its very top.
         trig = bp + (bs - bp) * max(0.0, min(1.0, self.a.gap_steer_trigger_frac))
+        # THE OPERATOR IS NOT AN OBSTACLE (field fix 2026-09-03, operator report).
+        # _obstacle_vx_cap() already refuses to brake when the nearest corridor return IS the
+        # followed target -- the person is in the forward corridor BY DEFINITION. Gap steer was
+        # reading _corridor_clearance() RAW and so never applied that test, which at a tight
+        # --standoff-m put the operator inside the trigger zone and made the robot try to route
+        # AROUND the very person it was following.
+        # Same margin and same semantics as the brake, so the two reflexes agree on what an
+        # obstacle IS. Applied to the CENTRE only: target_range - margin is a loose bound (at
+        # standoff 0.7 it is ~0.3 m), and using it to clear a SIDE sector would call a chair at
+        # 0.5 m "free" and steer into it. Side detection is deliberately left untouched.
+        if (clr_centre is not None and target_range is not None
+                and clr_centre > (target_range - self.a.obstacle_target_margin)):
+            self._gap_dir = 0                      # the "block" is the operator -> nothing to route around
+            return 0.0
         if clr_centre is None or clr_centre >= trig:
             self._gap_dir = 0                      # path clear -> release the commitment
             return 0.0
@@ -2595,7 +2609,7 @@ class Follower:
         # keystone below, so a steer can never authorise driving at something unseen: the
         # robot turns toward the gap with vx capped, and forward resumes by itself once the
         # ROTATION has put the clear sector in the centre corridor and the brake releases.
-        _gap = self._gap_steer_bias(bearing, self._corridor_clearance())
+        _gap = self._gap_steer_bias(bearing, self._corridor_clearance(), rng)
         if self.a.gap_steer == "audit" and _gap != 0.0:
             if (time.monotonic() - getattr(self, "_last_gap_log", 0.0)) >= 1.0:
                 self._last_gap_log = time.monotonic()
