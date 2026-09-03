@@ -1113,6 +1113,13 @@ function Get-TrackExtraArgs {
         # room. The reflex triggered on the 8th percentile of corridor depth with only 40 valid
         # pixels, so a handful of close returns (a glancing table edge, a depth speckle) could
         # latch a full stop. Now it must see a REAL object:
+        # WIDER CORRIDOR 2026-09-03 (corridor-frac 0.35 -> 0.55): the robot KEPT RUNNING INTO A
+        # CHAIR. The 49.6 deg cone shrinks with range and at 0.5 m covered 0.46 m -- the robot is
+        # 0.45 m wide, so an obstacle just outside the cone was invisible to the brake while still
+        # squarely in the shoulder path. Gap steering compounded it: as the body turned, the chair
+        # slid out of the CENTRE corridor, centre read clear, the brake released, and it drove
+        # diagonally into the thing it was avoiding. 0.55 = 72 deg -> 1.02 m at 0.7 m and 0.73 m at
+        # 0.5 m, i.e. body width plus real margin all the way to contact range.
         # RE-SENSITISED 2026-09-03 after a field cliff: CLEARANCE went 1.41 -> 0.43 m in ONE 1 Hz
         # sample while travelling only ~0.18 m, i.e. the obstacle APPEARED rather than approached.
         # Cause was min-valid 150: a chair leg or table edge subtends few depth pixels at 1.5 m and
@@ -1131,7 +1138,7 @@ function Get-TrackExtraArgs {
         # returns at 1.98 m, so a 2.0 m trigger would brake on the ground continuously.
         # NOTE this trades margin for smoothness in the fail-DANGEROUS direction (brakes later,
         # less). Pair with --vx-max 0.15 indoors; a gait cannot stop instantly inside 0.6 m.
-        $a += ('--obstacle-brake --obstacle-band-bot 0.75 --obstacle-pctile 12 ' +
+        $a += ('--obstacle-brake --obstacle-band-bot 0.75 --obstacle-corridor-frac 0.55 --obstacle-pctile 12 ' +
                '--obstacle-min-valid 70 --obstacle-aged 5 --obstacle-brake-stop 0.7')
     }
     # Rerun observability -> record a scrubbable .rrd on the robot. Default OFF; byte-identical when off.
