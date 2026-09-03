@@ -1271,8 +1271,13 @@ class Follower:
         _odom_topic = getattr(self.a, "odom_topic", "") or ""
         if _odom_topic.lower() == "none":
             _odom_topic = ""
-        # Head pose subscribed ONLY when head tracking is enabled -> off stays byte-identical.
-        _head_topic = self.a.head_pose_topic if self.a.head_track != "off" else ""
+        # Head pose subscribed when head tracking is enabled OR --head-probe is set -- off stays
+        # byte-identical. The probe MUST be included: it reads the pose back to measure the yaw
+        # sign, so gating the subscription on head_track alone made --head-probe a silent no-op
+        # ("HEAD-PROBE SKIP /head_pose unavailable") for the common case of probing BEFORE
+        # enabling tracking, which is the only sane order to do it in.
+        _head_topic = (self.a.head_pose_topic
+                       if (self.a.head_track != "off" or self.a.head_probe) else "")
         self.node = CamNode(topics, depth_topic, odom_topic=_odom_topic, head_pose_topic=_head_topic)
         # FR-1 (CRITICAL): service CamNode on a DEDICATED background executor thread. The old
         # one-spin_once-per-10Hz-tick pattern measured the LOOP's callback-servicing rate, not the
