@@ -613,9 +613,35 @@ class Follower:
                 _hy = self.node.head_yaw()
                 if _hy is not None:
                     _hshift = -self.a.head_yaw_sign * _hy * focal_px(w, self.a.hfov_deg)
+            y0 = int(h * self.a.obstacle_band_top); y1 = int(h * self.a.obstacle_band_bot)
+            if self.a.corridor_mode == "footprint":
+                # SELF-AWARE CORRIDOR. A fixed image fraction is the wrong shape for this job:
+                # the physical width it covers scales with range. At corridor-frac 0.55 and this
+                # FOV it spans 0.58 m at 0.4 m -- barely wider than the 0.45 m robot -- but 2.91 m
+                # at 2 m and 5.09 m at 3.5 m, so the brake fires for furniture over a metre off the
+                # shoulder that the robot was never going to touch. That is a direct source of the
+                # false stops that freeze the follow.
+                #
+                # Instead, keep a depth pixel only if the point it represents lies within the
+                # ROBOT'S OWN width (plus a clearance margin) of the centreline. For a pixel at
+                # column u with depth z, the lateral offset is z * (u - centre) / focal, so the
+                # test is per-pixel and the selected wedge automatically narrows with range and
+                # widens up close -- the shape the robot actually sweeps.
+                f = focal_px(w, self.a.hfov_deg)
+                half = 0.5 * max(0.05, self.a.robot_width_m) + max(0.0, self.a.corridor_margin_m)
+                band = d[y0:y1, :]
+                u = (np.arange(w, dtype=np.float32) - (w * 0.5 + _hshift)) / max(f, 1.0)
+                lat = np.abs(band * u[None, :])
+                v = band[(band > 0.15) & (band < self.a.obstacle_max_m)
+                         & np.isfinite(band) & (lat <= half)]
+                if v.size < self.a.obstacle_min_valid:
+                    return None
+                clr = float(np.percentile(v, self.a.obstacle_pctile))
+                self._clr_hist.append(clr)
+                self._clr_hist = self._clr_hist[-max(1, self.a.obstacle_aged):]
+                return float(sorted(self._clr_hist)[len(self._clr_hist) // 2])
             x0 = int(max(0, min(w - 2, w * (0.5 - cf / 2.0) + _hshift)))
             x1 = int(max(x0 + 1, min(w, w * (0.5 + cf / 2.0) + _hshift)))
-            y0 = int(h * self.a.obstacle_band_top); y1 = int(h * self.a.obstacle_band_bot)
             band = d[y0:y1, x0:x1]
             v = band[(band > 0.15) & (band < self.a.obstacle_max_m) & np.isfinite(band)]
             if v.size < self.a.obstacle_min_valid:
@@ -3667,6 +3693,22 @@ def parse_args(argv):
                    help="corridor clearance (m) at/below which vx starts grading down")
     p.add_argument("--obstacle-brake-stop", type=float, default=0.7,
                    help="corridor clearance (m) at/below which forward vx is capped to 0 (turn/back only)")
+    p.add_argument("--corridor-mode", choices=("frac", "footprint"), default="frac",
+                   help="how the forward corridor is defined. frac = a fixed fraction of the IMAGE "
+                        "(--obstacle-corridor-frac), whose PHYSICAL width scales with range: at "
+                        "0.55 it spans 0.58 m at 0.4 m but 5.09 m at 3.5 m, so the brake fires for "
+                        "furniture metres off the shoulder. footprint = keep only depth points "
+                        "within the ROBOT'S OWN width (--robot-width-m) plus --corridor-margin-m of "
+                        "the centreline, which narrows with range and widens up close -- the shape "
+                        "the robot actually sweeps. Default frac (unchanged behaviour).")
+    p.add_argument("--robot-width-m", type=float, default=0.45,
+                   help="the robot's own width (m). Used by --corridor-mode footprint to decide "
+                        "what is actually in its path. Nothing else in the stack knew the robot's "
+                        "physical size.")
+    p.add_argument("--corridor-margin-m", type=float, default=0.15,
+                   help="clearance added EACH SIDE of the robot width in footprint mode, covering "
+                        "gait sway, depth noise and tracking error. Total swept width is "
+                        "robot_width + 2 x margin.")
     p.add_argument("--obstacle-corridor-frac", type=float, default=0.35,
                    help="central fraction of image WIDTH treated as the forward corridor")
     p.add_argument("--obstacle-band-top", type=float, default=0.30,

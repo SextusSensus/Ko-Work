@@ -53,6 +53,8 @@ depth_max_dispersion_m: 0.5
 depth_max_skew_ms: 250.0
 depth_min_valid_frac: 0.3
 depth_starved_margin: 1.0
+corridor_margin_m: 0.15
+corridor_mode: 'frac'
 depth_topic: '/boostercamera/head/depth'
 distractor_size: 32
 drive: false
@@ -149,6 +151,7 @@ gap_steer_trigger_frac: 0.35
 gap_steer_yaw_relax: 0.5
 sector_frac: 0.33
 sector_audit: 'off'
+robot_width_m: 0.45
 rerun: false
 rerun_addr: null
 rerun_dir: '/home/booster/rerun'

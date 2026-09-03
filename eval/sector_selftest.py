@@ -187,6 +187,31 @@ def main():
     check("nothing meets the clearance bar -> no hint",
           hint([(rad(-23), 0.6, 150.0), (rad(0), 0.9, 232.0), (rad(23), 1.1, 315.0)]), 0)
 
+    # --- self-aware corridor (--corridor-mode footprint) --------------------------------------
+    # A fixed image fraction covers a physical width that scales with range, so it is simultaneously
+    # too wide far away and too diluted close in. The case below is the one that matters: an object
+    # 0.30-0.37 m off the centreline at 0.5 m is INSIDE the robot's 0.375 m half-width -- a genuine
+    # collision -- and frac mode reports the corridor CLEAR because 28 near columns are averaged
+    # away by the percentile across a 1.45 m-wide corridor.
+    print("\nself-aware corridor (footprint vs image-fraction):")
+
+    def clearance(mode, depth):
+        g = build(m, ["--corridor-mode", mode])
+        g._clr_hist = []
+        g.node = FakeNode(None, None, None)
+        g.node.d = depth
+        return g._corridor_clearance()
+
+    f_px = (544.0 / 2.0) / math.tan(math.radians(105.8) / 2.0)
+    near = np.full((448, 544), 4.0, dtype=np.float32)
+    near[:, 118:150] = 0.5                     # |lateral| 0.30..0.37 m -> inside the footprint
+    off = np.full((448, 544), 4.0, dtype=np.float32)
+    off[:, 130:190] = 2.5                      # |lateral| 1.00..1.73 m -> outside the footprint
+    check("in-path object at 0.5m -> footprint BRAKES", clearance("footprint", near) < 1.5, True)
+    check("...and image-fraction MISSES it", clearance("frac", near) > 1.5, True)
+    check("off-path object -> footprint ignores", clearance("footprint", off) > 1.5, True)
+    check("swept width is constant in metres", abs(2 * (0.5 * 0.45 + 0.15) - 0.75) < 1e-9, True)
+
     print("")
     if fails:
         print("SECTOR-SELFTEST-FAIL %d: %s" % (len(fails), ", ".join(fails)))
