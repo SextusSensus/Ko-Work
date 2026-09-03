@@ -1022,6 +1022,43 @@ symptom to appear, which is why threshold-tuning alone kept not fixing it.
 robot would have missed. That is the correct direction to err for a walking humanoid, but expect more
 stops in cluttered rooms.
 
+
+## Field 2026-09-03 (cont.) — sector decoupling, and what the head probe uncovered
+
+**Gap-steer oscillation returned, from the opposite end.** Widening the corridor to 0.55 (so it was
+finally wider than the robot) shrank the side sectors, because sectors were defined as whatever lay
+OUTSIDE the corridor: ~32% of the frame each -> ~22%. That put them under `--obstacle-min-valid`, so
+the committed side failed its clearance check every few frames, the hysteresis fell through, and the
+steer oscillated again. Sectors are now fixed thirds (`--sector-frac 0.33`) and no longer move when
+the corridor is retuned. Measured L 180 / C 185 / R 180 px, against 122 px per side before.
+
+**RotateHead is mode-gated — this is the finding that matters.** Head scanning was blocked on not
+knowing which way positive yaw turns. That could not be measured on a parked robot: in `kPrepare`
+the firmware answers **400 (bad request)** to `RotateHead`. The control that proves it is
+`Move(0,0,0)` — the call the bridge drives with every day — which **also** answers 400 in kPrepare.
+So 400 is a mode gate, not a malformed body, and motion RPCs are only accepted in `kWalking`.
+
+Two wrong readings were corrected on the way here, both mine: a first pass parsed `position.z`
+instead of `orientation.z` from `/head_pose` and reported the head at 82.5 deg (it is centred, +0.1);
+and a first verdict of "RotateHead not actuated on this firmware" was premature — it was simply
+tested in a mode where no motion command would have been accepted.
+
+**`--head-probe` (default off)** therefore rides a real session. It runs at the one point where
+`kWalking` is reached but `self.walking` is still False, so the velocity gate is shut and the only
+thing that can move is the head. Commands +0.20 rad, reads `/head_pose` back, re-centres
+unconditionally *before* interpreting anything, verifies centre, and logs the measured
+`--head-yaw-sign` against the configured one. Any failure (no pose, no motion, no re-centre) sets
+`_head_ok False`, which makes `_head_track` behave exactly as `off` — an unverified head never
+silently offsets bearings.
+
+Supporting facts established: `/head_pose` is firmware feedback (1 publisher, 0 subscribers, bare
+DDS app); units are radians per the SDK docstring; no head *command* topic exists, so RPC is the
+only path.
+
+**Still open:** the stationary head scan the operator asked for (scan the room while stopped at a
+blocked corridor, then choose the detour from the scanned map rather than from one 105 deg snapshot)
+is designed but NOT built — it is gated on the probe returning a verified sign.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
