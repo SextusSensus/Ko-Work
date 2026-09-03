@@ -27,6 +27,10 @@ auto_reacquire: false
 bank_floor: null
 bbox_iou_isolate: 0.1
 bridge: './loco_follow_bridge'
+head_pose_topic: '/head_pose'
+head_track: 'off'
+head_track_deadband_deg: 6.0
+head_track_max_deg: 30.0
 calibration: null
 cmd_file: '/tmp/k1_cmd'
 coast_frames: 0

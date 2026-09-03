@@ -983,7 +983,9 @@ class Follower:
         _odom_topic = getattr(self.a, "odom_topic", "") or ""
         if _odom_topic.lower() == "none":
             _odom_topic = ""
-        self.node = CamNode(topics, depth_topic, odom_topic=_odom_topic)
+        # Head pose subscribed ONLY when head tracking is enabled -> off stays byte-identical.
+        _head_topic = self.a.head_pose_topic if self.a.head_track != "off" else ""
+        self.node = CamNode(topics, depth_topic, odom_topic=_odom_topic, head_pose_topic=_head_topic)
         # FR-1 (CRITICAL): service CamNode on a DEDICATED background executor thread. The old
         # one-spin_once-per-10Hz-tick pattern measured the LOOP's callback-servicing rate, not the
         # sensor: with 2 RGB subs + depth at KEEP_LAST 1, depth was serviced at <=3.3-5Hz on a
@@ -2852,6 +2854,26 @@ def parse_args(argv):
     p.add_argument("--topic", default=DEF_TOPIC)
     p.add_argument("--depth-topic", default="/boostercamera/head/depth",
                    help="depth image topic ('none' to disable)")
+    # ---- HEAD TRACKING (stage 3). DEFAULT OFF + byte-identical when off. -------------------
+    # off   : head is never commanded, head_yaw is FORCED to 0.0, and every bearing/corridor
+    #         expression is literally the one that shipped -- provable with replay_eval compare.
+    # audit : compute and LOG what would be commanded and what the corrections would be; send
+    #         NOTHING and apply NOTHING. This is how the numbers get checked before the head moves.
+    # on    : pan the head to keep the operator centred, correct bearing by the OBSERVED head yaw,
+    #         and shift the obstacle corridor so it keeps watching BODY-forward, not head-forward.
+    # Fails closed: head pose stale/absent in `on` -> recentre + forward vx suppressed.
+    p.add_argument("--head-track", choices=("off", "audit", "on"), default="off",
+                   help="head tracks the operator (off|audit|on). Default off = byte-identical.")
+    p.add_argument("--head-pose-topic", default="/head_pose",
+                   help="geometry_msgs/Pose topic giving the CURRENT head orientation; subscribed "
+                        "only when --head-track is not off. Bearing correction REQUIRES it -- an "
+                        "assumed head yaw is the silent-corruption case.")
+    p.add_argument("--head-track-max-deg", type=float, default=30.0,
+                   help="max commanded head yaw (deg); kept inside the bridge clamp (34 deg) so "
+                        "body-forward stays well inside the 105.8 deg camera FOV.")
+    p.add_argument("--head-track-deadband-deg", type=float, default=6.0,
+                   help="do not chase bearing errors smaller than this (deg) -- stops the head "
+                        "hunting on tracker jitter.")
     p.add_argument("--odom-topic", default="",
                    help="P6.1a: planar base odometry topic (booster_interface/msg/Odometer {x,y,theta}); "
                         "'' disables (default -> no subscription, byte-identical). Recording only -- feeds "

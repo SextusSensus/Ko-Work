@@ -719,6 +719,61 @@ must manage CONTENTION and detect starvation, not shed features. Concretely it s
 the gesture owner-guard refuses repeatedly (correctly; it will not risk seeding the wrong person), and
 the same overlap produced a `LOST target (ambiguous)`. Single-person runs give far cleaner data.
 
+## Head tracking stages 1-2: bridge `head` command + observed head yaw (DEFAULT OFF, 2026-09-03)
+
+Goal (operator): head tracks the operator so the body can steer around obstacles without swinging the
+person out of frame -- the prerequisite for automatic re-routing.
+
+**The coupling that dictates the whole design.** `bearing_from_x()` derives target bearing purely from
+PIXEL offset, so image-centre == body-forward is an ASSUMPTION, and nothing had ever commanded the
+head, so it always held. Pan the head and three things break at once: (1) yaw control steers by the
+pan angle, (2) the obstacle corridor watches head-forward instead of body-forward -- a safety
+INVERSION, since it would report clear while the robot walks into something, and (3) range/target-point
+inherit the same error. Therefore head yaw must be **observed, never assumed**.
+
+Measured first: `/head_pose` reports `yaw +0.3 deg, pitch +1.0 deg` -- the head IS centred today, so
+there is no latent steering offset, and the ~1 deg pitch independently corroborates the near-horizontal
+optical axis the obstacle-band floor fit assumed.
+
+**Stage 1 -- bridge (`loco_follow_bridge_ros.cpp`).** New `head <pitch_rad> <yaw_rad>` command ->
+`RotateHead` api **2004**, body `{"pitch","yaw"}` (read from the SDK's own `RotateHeadParameter::ToJson`,
+not guessed). Fire-and-forget like Move because it is streamed at tracking rate, clamped in
+`loco_head()` as the last line of defence exactly like velocity: **yaw +/-0.60 rad (34 deg)**, chosen so
+body-forward stays inside the 105.8 deg camera FOV with ~19 deg to spare; pitch +/-0.35 rad. NOT covered
+by the velocity staleness watchdog -- a stale head command cannot run the robot away, and zeroing head
+yaw mid-stride would be worse than leaving it. `safe_shutdown()` re-centres the head, deliberately
+placed AFTER the stop+PREP sequence so the safety ordering is untouched. Compiles on the robot.
+
+**Stage 2 -- observed head yaw (`perception.CamNode`).** Optional `/head_pose`
+(`geometry_msgs/Pose`) subscription, guarded exactly like odom: absent topic or failed import ->
+`head_yaw()` returns **None**, meaning UNKNOWN, and callers must fail closed. Freshness window 0.5 s
+(same contract as depth): a pose older than that cannot be trusted mid-stride.
+
+**Flags: `--head-track off|audit|on`, DEFAULT off.**
+- `off` -- head never commanded, no `/head_pose` subscription at all, head yaw forced 0.0, every
+  bearing/corridor expression literally the one that shipped (byte-identical; provable via
+  `replay_eval compare`).
+- `audit` -- compute and LOG what would be commanded and what the corrections would be; send nothing,
+  apply nothing. This is how the numbers get checked before the head ever moves.
+- `on` -- pan to keep the operator centred, correct bearing by the OBSERVED yaw, shift the obstacle
+  corridor to keep watching body-forward. Fails closed: head pose stale/absent -> recentre + forward
+  suppressed.
+
+Verified on the robot: `preview/default` and `drive/default` both give `head_track=off` with
+`pose_topic_subscribed=(none)`, and the node did not fail-closed -> `defaults.yaml` key set still
+matches argparse.
+
+**NOT YET DONE / NOT SAFE TO ENABLE:** the head command is built but **UNTESTED on hardware** (the
+motion test was deliberately deferred), and the stage-3 tracking logic (bearing correction, corridor
+shift, head command loop) is not written. `--head-track on` must not be used until api 2004 is proven
+to actually move the head.
+
+### Corrected premise worth recording
+`OBSTACLE_LABELING_PLAN.md` forbids steering around because it "swings the operator out of the ~70 deg
+FOV". The camera is **105.8 deg** (measured from `camera_info`), and head tracking removes the rest of
+the objection. The reactive gap-following that becomes possible is still NOT route planning -- with one
+forward cone and no SLAM it can steer around a chair, not route around a wall into another room.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).

@@ -206,7 +206,7 @@ def low_light_boost(bgr, on=True, thresh=LL_DARK_THRESH):
 # ROS node -- BEST_EFFORT camera (both head topics, deduped) + depth.
 # ---------------------------------------------------------------------------
 class CamNode(Node):
-    def __init__(self, topics, depth_topic, odom_topic=""):
+    def __init__(self, topics, depth_topic, odom_topic="", head_pose_topic=""):
         super().__init__("k1_follow_person")
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -226,6 +226,23 @@ class CamNode(Node):
         # plain ssh may not have sourced -- a failed import or subscribe just disables odom recording
         # (latest_odom() stays None) and NEVER stops the follow. Default odom_topic '' = no subscription
         # (byte-identical). The capture profile turns it on for P8 map stitching.
+        # HEAD POSE (head-tracking stage 2): OPTIONAL, read-only, and guarded exactly like odom.
+        # WHY it matters beyond tracking: the follow derives target bearing from PIXEL offset and
+        # assumes image-centre == body-forward. That is only true while the head is centred. Once
+        # anything pans the head, every bearing is wrong by the pan angle -- so the pan angle must
+        # be OBSERVED, never assumed. Absent topic / failed import -> head_yaw() returns None and
+        # the caller fails closed. Default  = no subscription at all (byte-identical).
+        self._head_lock = threading.Lock()
+        self._head_yaw = None      # radians, +ve = panned toward image-right
+        self._head_pitch = None
+        self._head_stamp = 0.0
+        if head_pose_topic:
+            try:
+                from geometry_msgs.msg import Pose as _HeadPose
+                self.create_subscription(_HeadPose, head_pose_topic, self._head_cb, qos)
+            except Exception as e:  # noqa: BLE001 -- absent topic/type -> head pose stays None
+                print("HEAD-POSE subscribe failed (%s) -> head yaw unknown (head tracking will refuse)" % e)
+
         self._odom_lock = threading.Lock()
         self._odom = None          # (x, y, theta) planar pose, or None until first message
         self._odom_stamp = 0.0
@@ -324,6 +341,41 @@ class CamNode(Node):
             rerun_sink._RR.scalar("/odom/x", x)
             rerun_sink._RR.scalar("/odom/y", y)
             rerun_sink._RR.scalar("/odom/theta", th)
+
+    def _head_cb(self, msg):
+        """Stash head yaw/pitch from the quaternion. Never raises: a malformed message must not
+        kill the cam-spin thread (same contract as _odom_cb)."""
+        try:
+            q = msg.orientation
+            yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            _s = max(-1.0, min(1.0, 2.0 * (q.w * q.y - q.z * q.x)))
+            pitch = math.asin(_s)
+        except Exception:  # noqa: BLE001
+            return
+        with self._head_lock:
+            self._head_yaw = float(yaw)
+            self._head_pitch = float(pitch)
+            self._head_stamp = time.monotonic()
+
+    def head_yaw(self, max_age=0.5):
+        """Head yaw in radians if FRESH within max_age, else None. None means UNKNOWN, and the
+        caller must fail closed -- an assumed-zero yaw is exactly the silent-corruption case.
+        Same freshness window as depth: a pose older than that cannot be trusted mid-stride."""
+        with self._head_lock:
+            if self._head_yaw is None:
+                return None
+            if (time.monotonic() - self._head_stamp) > max_age:
+                return None
+            return self._head_yaw
+
+    def head_pitch(self, max_age=0.5):
+        """Head pitch in radians if fresh, else None (see head_yaw)."""
+        with self._head_lock:
+            if self._head_pitch is None:
+                return None
+            if (time.monotonic() - self._head_stamp) > max_age:
+                return None
+            return self._head_pitch
 
     def latest_odom(self, max_age=1.0):
         """Latest (x, y, theta) planar pose if fresh within max_age, else None. Odometry publishes
