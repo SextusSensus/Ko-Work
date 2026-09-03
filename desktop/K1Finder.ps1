@@ -1055,7 +1055,23 @@ function Get-TrackExtraArgs {
     # Arming is meaningless without the vote running, so ensure --auto-reacquire is present too.
     if($trackArmReloc -and $trackArmReloc.Checked -and $app -eq 'osnet'){
         if(-not ($trackReacq -and $trackReacq.Checked)){ $a += '--auto-reacquire' }
-        $a += '--arm-reacquire'
+        # STRICTER ARMED RE-LOCK (2026-09-03, operator request: must not re-lock onto ANOTHER
+        # person after a loss). Armed re-lock has DRIVE authority -- a wrong re-lock walks the
+        # robot at a stranger -- so it is gated harder than the audit vote:
+        #   --reloc-arm-margin 0.35 (was 0.30): the winner must beat the RUNNER-UP by this much.
+        #     This is the real anti-wrong-person guard: a look-alike can score high in absolute
+        #     terms, but should not out-score you by a wide gap. Only bites in multi-person
+        #     scenes, which is exactly the risk case. NOT set higher: at 0.45 a DECISIVE win
+        #     (g=0.85 vs runner-up 0.50, gap 0.35) is refused too. 0.35 ADMITS that clear win while
+        #     still refusing a look-alike gap (g=0.90 vs 0.62 = 0.28). Set higher and armed re-lock
+        #     effectively never fire and push every loss back to manual re-seeding.
+        #   --reloc-arm-streak 12 (was 8): consecutive confirming frames before it may re-lock.
+        #   --reloc-floor 0.68 (osnet-resolved default 0.55): raises the absolute bar. Field
+        #     relocks were observed at g=0.63/0.72/0.77 -- 0.68 refuses the weakest of those.
+        # Ladder invariants hold: reloc_floor > anchor_floor 0.35; arm_margin >= reloc_margin
+        # 0.20; arm_streak >= reloc_streak 5. Cost of strictness: more manual re-seeding after
+        # a hard loss, which is the SAFE direction to fail.
+        $a += '--arm-reacquire --reloc-arm-margin 0.35 --reloc-arm-streak 12 --reloc-floor 0.68'
     }
     if($trackFence -and $trackFence.Checked){ $a += '--max-follow-range 4.0' }
     # Obstacle brake: depth forward-clearance reflex. Only ever REDUCES forward vx (yaw untouched),

@@ -1,0 +1,36 @@
+# Pin the Orin's clocks at boot.
+#
+# WHY: jetson_clocks does NOT persist across a reboot. The GPU drops back to its 306 MHz floor
+# every boot, and that has already cost real debugging time twice -- once as a mysterious loop-p99
+# regression, once as a "no camera frame within 25s" DRIVE-ABORT that looked like a dead camera and
+# was partly a starved one. A boot-persistent unit was installed on 2026-07-14 and did not survive
+# the robot's re-image (systemctl reports "Unit jetson-clocks.service could not be found").
+#
+# WHAT IT COSTS: higher idle power and heat -- clocks stay at maximum rather than scaling down.
+# This is a deliberate power/thermal trade, which is why run_follow.sh only ever WARNS about
+# unpinned clocks and never escalates privilege to fix them itself.
+#
+#   sudo install -m 644 jetson-clocks.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now jetson-clocks.service
+#   systemctl status jetson-clocks        # Active: active (exited) once applied
+#   cat /sys/class/devfreq/17000000.gpu/min_freq   # == max_freq when pinned
+#
+# To undo:  sudo systemctl disable --now jetson-clocks.service && sudo jetson_clocks --restore
+[Unit]
+Description=Pin Jetson Orin CPU/GPU/EMC clocks for the K1 follow control loop
+# nvpmodel sets the power mode; clocks must be pinned AFTER it or they get re-scaled underneath us.
+After=nvpmodel.service multi-user.target
+Wants=nvpmodel.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Settle first: on this board the devfreq nodes are not always writable the instant multi-user is
+# reached, and jetson_clocks silently does nothing if it runs too early.
+ExecStartPre=/bin/sleep 20
+ExecStart=/usr/bin/jetson_clocks
+# Report what actually took effect, so `journalctl -u jetson-clocks -b` answers "did it pin?"
+ExecStartPost=/bin/sh -c 'echo "gpu min/max now $(cat /sys/class/devfreq/17000000.gpu/min_freq)/$(cat /sys/class/devfreq/17000000.gpu/max_freq)"'
+
+[Install]
+WantedBy=multi-user.target

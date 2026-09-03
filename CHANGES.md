@@ -774,6 +774,53 @@ FOV". The camera is **105.8 deg** (measured from `camera_info`), and head tracki
 the objection. The reactive gap-following that becomes possible is still NOT route planning -- with one
 forward cone and no SLAM it can steer around a chair, not route around a wall into another room.
 
+## Stricter armed re-lock + clocks boot unit + a CORRECTED contention claim (2026-09-03)
+
+**1. Armed re-lock gated harder (operator: "must not find another person on re-lock").** Armed
+re-lock has DRIVE authority -- a wrong re-lock walks the robot at a stranger -- so the app now emits,
+alongside `--arm-reacquire`:
+
+| knob | was | now | why |
+|---|---|---|---|
+| `--reloc-arm-margin` | 0.30 | **0.35** | winner must beat the RUNNER-UP by this; the real anti-wrong-person guard |
+| `--reloc-arm-streak` | 8 | **12** | consecutive confirming frames before re-lock is permitted |
+| `--reloc-floor` | 0.55 (osnet-resolved) | **0.68** | raises the absolute bar; field relocks were seen at g=0.63/0.72/0.77 |
+
+Verified on the robot (`parse_args`, no motion) that the floor ladder still holds -- **LADDER-OK**, so
+armed re-lock stays ARMED rather than silently dropping to audit-only (which would LOOK like it
+worked). Effect on realistic cases:
+```
+g=0.63 runner-up=0.10  weak field relock          -> refused: below floor
+g=0.72 / 0.77          mid + strong field relocks -> re-locks
+g=0.85 runner-up=0.50  decisive win (gap 0.35)    -> re-locks
+g=0.90 runner-up=0.62  LOOK-ALIKE close (gap 0.28)-> REFUSED   <- the case that was asked for
+```
+`arm-margin` was first set to 0.45 and **corrected down to 0.35 after verification showed 0.45 also
+refuses a decisive win** (g=0.85 vs 0.50). Too strict is not free: it converts every loss into manual
+re-seeding, which is how a safety knob becomes an annoyance that gets switched off.
+
+**2. `robot/ops/jetson-clocks.service` -- installed and enabled.** `jetson_clocks` does not survive a
+reboot; the GPU drops to its 306 MHz floor every boot. That cost two debugging sessions -- once as a
+loop-p99 regression, once as a `no camera frame within 25s` DRIVE-ABORT that looked like a dead camera
+and was partly a starved one. The 2026-07-14 unit did not survive the re-image. Unit ordered
+`After=nvpmodel.service` (clocks pinned BEFORE the power mode get re-scaled underneath them) with a
+20 s settle -- the devfreq nodes are not reliably writable the instant multi-user is reached and
+`jetson_clocks` silently no-ops if it runs too early. Verified `enabled` + `active`, clocks
+`1173000000/1173000000`. Costs idle power/heat, which is why `run_follow.sh` still only WARNS and
+never escalates privilege itself.
+
+**3. CORRECTION: `polkitd` is NOT a 55% CPU runaway.** An earlier entry claimed it was "the largest
+single recoverable cost", based on a single `top` snapshot taken during a busy moment. Measured
+properly (mean of 5 samples over 20 s):
+```
+35.9% nv12_jpeg   28.7% motion   11.3% device_gateway   11.0% default   3.5% polkitd
+```
+polkitd averages **3.5%**. There is no runaway; the background load is legitimate services. The
+largest is `nv12_jpeg` (the Auki camera NV12->JPEG converter, ~36%), which may be sheddable if nothing
+consumes the video stream -- but that is a Booster/Auki service and wants understanding before being
+touched. The compute-manager conclusion is unchanged (contention, not features) but the specific
+target named earlier was wrong.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
