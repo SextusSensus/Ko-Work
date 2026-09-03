@@ -473,6 +473,9 @@ class Follower:
         self._idsw_pending = None    # Phase 2.4 ID-stability debounce: track_id of an unconfirmed id-switch
         self._idsw_frames = 0        # Phase 2.4: consecutive frames the pending new track_id has persisted
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
+        self._gap_dir = 0            # GAP-STEER committed side (+1 left, -1 right, 0 none):
+                                     # hysteresis, so a detour is committed to instead of
+                                     # re-decided every frame (the first field run oscillated)
         self._last_clr_log = 0.0     # 1Hz throttle for the CLEARANCE observability line
         self._reacq_range_id = None
         self._postrelock_noforward = False
@@ -638,25 +641,44 @@ class Follower:
     #     keep following them, and a detour that loses the lock has failed even if it misses the chair.
     def _gap_steer_bias(self, bearing, clr_centre):
         """Yaw bias (rad/s) toward the freest side when the CENTRE corridor is blocked; 0.0 = none.
-        Sign convention (verified against field logs): POSITIVE vyaw turns LEFT."""
+        Sign convention (verified against field logs): POSITIVE vyaw turns LEFT.
+
+        FIELD FIX 2026-09-03 -- the first live run oscillated (-0.20/+0.20/+0.20/-0.20 on near
+        identical bearings), so the biases cancelled and the robot drove straight on while wobbling:
+          * TRIGGER: it fired whenever clearance was below --obstacle-brake-start (1.5 m), i.e. the
+            moment the brake merely began grading, with the path still essentially clear. It now
+            fires only once meaningfully blocked, a configurable fraction INTO the grading zone.
+          * HYSTERESIS: it re-decided the side every frame and the sector clearances flicker, so the
+            choice flipped. It now COMMITS to a side and holds it while that side stays clear,
+            releasing only when the centre is clear again. A detour has to be committed to be a
+            detour."""
         if self.a.gap_steer == "off":
             return 0.0
         bs = self.a.obstacle_brake_start
-        if clr_centre is None or clr_centre >= bs:
-            return 0.0                       # centre not blocked -> nothing to route around
+        bp = self.a.obstacle_brake_stop
+        # Engage part-way down the grading zone, not at its very top.
+        trig = bp + (bs - bp) * max(0.0, min(1.0, self.a.gap_steer_trigger_frac))
+        if clr_centre is None or clr_centre >= trig:
+            self._gap_dir = 0                      # path clear -> release the commitment
+            return 0.0
         s = self._sector_clearances()
         left_ok = s["L"] is not None and s["L"] >= bs
         right_ok = s["R"] is not None and s["R"] >= bs
         if not (left_ok or right_ok):
-            return 0.0                       # boxed in -> brake handles it; never guess
-        if left_ok and right_ok:
-            want_left = bearing < 0.0        # both open -> least detour off the follow line
+            self._gap_dir = 0                      # boxed in -> brake handles it; never guess
+            return 0.0
+        if self._gap_dir > 0 and left_ok:          # HOLD the committed side while it stays clear
+            want_left = True
+        elif self._gap_dir < 0 and right_ok:
+            want_left = False
+        elif left_ok and right_ok:
+            want_left = bearing < 0.0              # fresh choice: least detour off the follow line
         else:
             want_left = left_ok
-        # Refuse to steer FURTHER toward the edge the operator is already near.
         edge = math.radians(self.a.gap_steer_max_bearing_deg)
         if abs(bearing) >= edge and ((bearing < 0.0) == want_left):
-            return 0.0
+            return 0.0                             # would push the operator out of frame
+        self._gap_dir = 1 if want_left else -1
         return self.a.gap_steer_rate * (1.0 if want_left else -1.0)
 
     def _sector_audit(self, target_bearing_rad, clr_centre):
@@ -3079,6 +3101,11 @@ def parse_args(argv):
     p.add_argument("--gap-steer-rate", type=float, default=0.20,
                    help="yaw bias (rad/s) applied toward the clear side; bounded and still subject "
                         "to the yaw slew limiter and the hard vyaw clamp.")
+    p.add_argument("--gap-steer-trigger-frac", type=float, default=0.35,
+                   help="how far INTO the braking zone the corridor must be before steering "
+                        "engages, as a fraction from brake-stop to brake-start. 0.35 with the "
+                        "0.6..1.5 zone = engage below ~0.92 m. The first field run fired at "
+                        "1.49 m -- the moment grading began, path still clear -- and oscillated.")
     p.add_argument("--gap-steer-max-bearing-deg", type=float, default=35.0,
                    help="stop biasing further toward the frame edge the operator is already near -- "
                         "a detour that loses the lock has failed even if it misses the obstacle.")

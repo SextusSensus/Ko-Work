@@ -873,6 +873,35 @@ Defaults verified `gap_steer=off`, `sector_audit=off`, and the config key set st
 `SECTOR L=.. C=.. R=.. -> would-steer=..` and `GAP-AUDIT would-bias ..` while commanding nothing, so
 the decisions can be read against the real room before anything steers.
 
+## Gap steering FIELD FIX -- it oscillated and cancelled itself (2026-09-03, first live run)
+
+First live `--gap-steer on` run. The BRAKE worked exactly as designed:
+```
+CLEARANCE 1.49 -> vx-cap 0.18   1.33 -> 0.15   0.99 -> 0.08   0.61 -> 0.00
+TRACK ... range=1.99[depth] vx=+0.00        <- forward genuinely cut to zero
+```
+The STEERING did not. It flipped direction frame to frame on near-identical bearings, so the biases
+cancelled and the robot wobbled straight on:
+```
+GAP-STEER bias -0.20 (bearing +3deg)   GAP-STEER bias +0.20 (bearing +8deg)
+GAP-STEER bias +0.20 (bearing -5deg)   GAP-STEER bias -0.20 (bearing -8deg)
+GAP-STEER bias +0.20 (bearing -6deg)   GAP-STEER bias -0.20 (bearing -7deg)
+```
+Two defects, both mine:
+
+1. **No hysteresis.** The side was re-decided every frame and the per-sector clearances flicker, so
+   the choice flipped. `_gap_dir` now COMMITS to a side and holds it while that side stays clear,
+   releasing only when the centre is clear again or the robot is boxed in. A detour has to be
+   committed to in order to be a detour.
+2. **Trigger far too early.** It engaged whenever clearance fell below `--obstacle-brake-start`
+   (1.5 m) -- the instant the brake merely began grading, with the path still essentially clear
+   (`GAP-STEER` appears alongside `CLEARANCE 1.49m` above). New `--gap-steer-trigger-frac` (0.35)
+   engages a fraction INTO the braking zone instead: with a 0.6..1.5 zone that is below ~0.92 m,
+   i.e. when actually blocked rather than merely approaching.
+
+This is precisely the class of defect the audit pass exists to catch, and it was found in one live
+run instead of by reasoning -- worth remembering next time the temptation is to skip audit.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
