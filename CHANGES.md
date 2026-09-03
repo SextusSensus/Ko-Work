@@ -1059,6 +1059,36 @@ only path.
 blocked corridor, then choose the detour from the scanned map rather than from one 105 deg snapshot)
 is designed but NOT built — it is gated on the probe returning a verified sign.
 
+
+## Field 2026-09-03 (cont.) — the operator was being treated as an obstacle
+
+Operator report: "the person shouldn't be an obstacle". Correct, and the cause was a split
+definition of "obstacle" between the two reflexes.
+
+`_obstacle_vx_cap()` has always refused to brake when the nearest corridor return IS the followed
+target -- the operator stands in the forward corridor by definition, so braking for them would
+fight the follow's own standoff control. **Gap steer never applied that test**: it called
+`_corridor_clearance()` raw, saw the operator as "centre blocked", and tried to route AROUND the
+person it was following.
+
+Hidden at `--standoff-m 1.0` (operator at 2.9-4.1 m, outside the 0.7..1.5 m band, so a centre block
+really was furniture). Exposed at `--standoff-m 0.7`, which puts the operator inside the band. The
+signature in the logs was the two reflexes disagreeing about one scene: **4 full stops across 59
+clearance events, against 30 gap-steer "centre blocked" routes**.
+
+Gap steer now applies the brake's target-margin test, so both share one definition.
+
+**Centre only, deliberately.** `target_range - obstacle_target_margin` is a loose bound -- about
+0.3 m at standoff 0.7 -- and using it to clear a SIDE sector would call a chair at 0.5 m free and
+steer into it. Side detection is untouched.
+
+Also measured this session, and it supports the head-scan design: gap steer holds its committed
+direction perfectly while following (9 events, 0 sign flips) and only breaks down at the 0.39-0.56 m
+full stops (5 events, 3 flips). At that range the obstacle fills the corridor AND both side sectors,
+so no side can pass its clearance check and the hysteresis has nothing to hold. That is a
+VISIBILITY limit, not a tuning one -- which is the argument for scanning with the head before
+committing, since a stationary sweep is the only way to see past an obstacle that close.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
