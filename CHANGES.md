@@ -684,6 +684,41 @@ odom) recovers ~15 ms of a 118 ms loop. **The lever is contention, not features.
 load (that 55% polkitd is a logging loop, not work) plausibly returns more than shedding everything
 the follow owns. Phase 2 should target scheduling/contention, not feature shedding.
 
+## Band fix VALIDATED + the loop came in UNDER budget (FIELD, 2026-09-03 10:17)
+
+**Obstacle band (0.68 -> 0.75) validated on the robot.** The clearance sequence no longer cliffs:
+```
+band 0.75 (this session): 0.61 0.93 0.80 1.07 0.76 0.77 0.81 0.83 1.09 1.43 1.32
+band 0.68 (yesterday):    1.38 -> 0.59        <- 0.79 m in ONE step, straight past the grading zone
+```
+Clearance now moves in smooth increments instead of materialising inside the stop band, and the
+session produced exactly ONE `vx-cap 0.00` versus the continuous pinning before. Combined with the
+desensitising (pctile 20 / min-valid 150 / aged 5 / stop 0.6), the reflex grades instead of slamming.
+`WATCHDOG stale = 0` again, this time at `--vx-max 0.3`.
+
+**The loop is under budget for the first time.**
+```
+BEFORE  p50=118 p90=189 p99=329 | detect=60/79 reid=19/31 track=14/30 emit=5/12
+AFTER   p50=79  p90=119 p99=152 | detect=33/43 reid=10/20 track=10/16 emit=2/6  pose=40/65
+```
+detect 60->33 ms, pose 111->40 ms, reid 19->10 ms -- **every stage ~45% cheaper at once**, with NO
+code, model or flag change between the two measurements. What changed was contention: GPU clocks
+pinned (`jetson_clocks`, which does not survive a reboot) and the wedged camera daemon restarted.
+Simultaneous across-the-board improvement is the signature of resource starvation lifting, not of any
+single optimisation.
+
+**This settles the compute-manager design.** A shed ladder over the optional tier (Rerun, `emit`
+2-5 ms, odom) was worth ~15 ms; clock state plus a healthy camera daemon were worth ~40 ms. Phase 2
+must manage CONTENTION and detect starvation, not shed features. Concretely it should:
+1. detect and report the starvation signature (all stages inflating together) rather than blaming one;
+2. assert clock state at startup (pinned or warn loudly -- the boot service the re-image deleted);
+3. treat the `polkitd` 55% CPU (the robot's own `systemctl status` logging loop) as the largest single
+   recoverable cost, ahead of anything the follow itself owns.
+
+**Also observed:** `ARM-DISOWNED` x13 in one session -- with two people overlapping at iou 0.94-0.97
+the gesture owner-guard refuses repeatedly (correctly; it will not risk seeding the wrong person), and
+the same overlap produced a `LOST target (ambiguous)`. Single-person runs give far cleaner data.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).
