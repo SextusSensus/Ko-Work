@@ -682,7 +682,14 @@ class Follower:
         try:
             h, w = d.shape[:2]
             y0 = int(h * self.a.obstacle_band_top); y1 = int(h * self.a.obstacle_band_bot)
-            cf = max(0.05, min(1.0, self.a.obstacle_corridor_frac))
+            # SECTORS ARE INDEPENDENT OF THE CORRIDOR (field fix 2026-09-03). They used to be
+            # defined as whatever lay OUTSIDE the corridor, so widening corridor-frac 0.35 -> 0.55
+            # shrank each side sector from ~32% to ~22% of the frame. Fewer pixels -> they kept
+            # falling under --obstacle-min-valid -> the committed side failed its check every few
+            # frames -> the gap-steer hysteresis fell through to a fresh decision and OSCILLATED
+            # again. Fixed thirds keep each sector large enough to judge reliably, whatever the
+            # corridor is set to.
+            sf = max(0.15, min(0.45, self.a.sector_frac))
             # HEAD-PAN CORRECTION: the corridor must track BODY-forward, not head-forward.
             # With the head panned by hy, body-forward sits at -hy in the image, so shift the
             # window by -hy*focal px. Without this the brake watches wherever the head looks --
@@ -694,7 +701,7 @@ class Follower:
                 _hy = self.node.head_yaw()
                 if _hy is not None:
                     _hshift = -self.a.head_yaw_sign * _hy * focal_px(w, self.a.hfov_deg)
-            cx0 = int(w * (0.5 - cf / 2.0)); cx1 = int(w * (0.5 + cf / 2.0))
+            cx0 = int(w * sf); cx1 = int(w * (1.0 - sf))
             for key, (sx0, sx1) in (("L", (0, cx0)), ("C", (cx0, cx1)), ("R", (cx1, w))):
                 if sx1 - sx0 < 8:
                     continue
@@ -3223,6 +3230,12 @@ def parse_args(argv):
     # the free space beside an obstacle is already visible every frame and simply never consulted.
     # 'audit' LOGS where the gaps are and which way a steering layer would go; it commands NOTHING
     # and changes no control value. Default off = byte-identical.
+    p.add_argument("--sector-frac", type=float, default=0.33,
+                   help="width of each SIDE sector as a fraction of the frame (centre gets the"
+                        " rest). Independent of --obstacle-corridor-frac ON PURPOSE: sectors used"
+                        " to be the corridor leftovers, so widening the corridor shrank them until"
+                        " they fell under --obstacle-min-valid and the gap-steer hysteresis kept"
+                        " falling through to a fresh decision, which oscillated.")
     p.add_argument("--sector-audit", choices=("off", "audit"), default="off",
                    help="log per-sector (L/C/R) depth clearance and the gap a steering layer would "
                         "pick. Observation only -- never steers.")

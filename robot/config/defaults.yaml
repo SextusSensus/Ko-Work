@@ -137,6 +137,7 @@ gap_steer_max_bearing_deg: 35.0
 gap_steer_rate: 0.2
 gap_steer_trigger_frac: 0.35
 gap_steer_yaw_relax: 0.5
+sector_frac: 0.33
 sector_audit: 'off'
 rerun: false
 rerun_addr: null
