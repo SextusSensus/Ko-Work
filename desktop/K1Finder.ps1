@@ -820,6 +820,13 @@ $trackApp=New-Object System.Windows.Forms.ComboBox; $trackApp.DropDownStyle='Dro
 $trackCoast=New-Object System.Windows.Forms.CheckBox; $trackCoast.Text='Coast occlusions'; $trackCoast.AutoSize=$true; $trackCoast.Location='192,110'; $grpTrackCtl.Controls.Add($trackCoast)
 $trackReacq=New-Object System.Windows.Forms.CheckBox; $trackReacq.Text='Auto re-acq'; $trackReacq.AutoSize=$true; $trackReacq.Location='322,110'; $trackReacq.Checked=$true; $grpTrackCtl.Controls.Add($trackReacq)
 $trackFence=New-Object System.Windows.Forms.CheckBox; $trackFence.Text='Range fence'; $trackFence.AutoSize=$true; $trackFence.Location='416,110'; $grpTrackCtl.Controls.Add($trackFence)
+# OBSTACLE BRAKE (--obstacle-brake, OBSTACLE_LABELING_PLAN.md Phase 3). Depth forward-clearance
+# reflex: grades forward vx down from --obstacle-brake-start (1.5 m) to ZERO at --obstacle-brake-stop
+# (0.7 m). Percentile + aged-median (never a raw min -> a single depth glitch cannot false-brake),
+# IGNORES the followed operator (--obstacle-target-margin), yaw untouched, fail-to-stop with no depth.
+# Only ever REDUCES vx, so it cannot make the forward path less safe. DEFAULT ON: it was built
+# 2026-07-04 but never wired here, so every session before 2026-09-03 drove with NO obstacle braking.
+$trackObstacle=New-Object System.Windows.Forms.CheckBox; $trackObstacle.Text='Obstacle brake'; $trackObstacle.AutoSize=$true; $trackObstacle.Location='610,110'; $trackObstacle.ForeColor=$accent; $trackObstacle.Font=$fontBold; $trackObstacle.Checked=$true; $grpTrackCtl.Controls.Add($trackObstacle)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
 $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
@@ -1051,6 +1058,10 @@ function Get-TrackExtraArgs {
         $a += '--arm-reacquire'
     }
     if($trackFence -and $trackFence.Checked){ $a += '--max-follow-range 4.0' }
+    # Obstacle brake: depth forward-clearance reflex. Only ever REDUCES forward vx (yaw untouched),
+    # ignores the operator being followed, and fails to stop when depth is missing -- it composes with
+    # the forbid_forward keystone rather than adding a second forward-authorizing path.
+    if($trackObstacle -and $trackObstacle.Checked){ $a += '--obstacle-brake' }
     # Rerun observability -> record a scrubbable .rrd on the robot. Default OFF; byte-identical when off.
     # The node auto-disables Rerun (RERUN-DISABLED-SLOW) if the loop goes over budget with it on, so the
     # gait is never held hostage to logging -- but the loop-cost gate (RERUN_PLAN.md) is still the
