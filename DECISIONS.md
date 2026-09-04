@@ -615,3 +615,56 @@ gating on it kills speckle at the source and distinguishes "no return" from "low
 which is exactly the distinction both bugs turn on.
   Check:  ros2 topic list | grep -i 'depth\|conf'
           ros2 topic info /boostercamera/head/depth
+
+---
+
+## CORRECTION (2026-09-04): commit 07b4b68's diagnosis was WRONG. The fix stands; the reason does not.
+
+`07b4b68` claims depth speckle latched the brake and pinned vx to 0.00. **The speckle diagnosis is
+refuted.** Anyone reading that commit message should read this first.
+
+**How it was refuted.** The run's own Rerun recording is readable offline and nobody had looked:
+`runs/20260904T014601Z_a23969b/k1_follow_1788486361.rrd` holds 91 depth frames (float32 m, 544x448).
+Replaying the a23969b hit box over them gives a largest-near-blob-per-frame distribution of:
+0 px on 58 frames, 1 px on 2, then 55, 616, 664, 834, 2949 ... 53992. **Nothing between 1 and 55 px.**
+Strongly bimodal; `obstacle_min_blob_px: 12` sits in an empty gap.
+
+**The methodological error, which is the part worth remembering.** The commit's evidence was the blob
+sizes in `OBSTACLE-NODATA` lines: 0,1,2,4,5,6,9,10,11 px, read as "a smooth noise tail running through
+the threshold". But `OBSTACLE-NODATA` only prints **rejected** blobs. The sample was censored at the
+threshold by construction, so it could only ever look like a tail ending at 11. *No* conclusion about
+bimodality was available from that log. The recorded frames were there the whole time.
+
+**What the freeze actually was -- two geometric false positives, not noise:**
+
+1. **The floor, promoted into the hit box by unmodelled camera pitch** (the 0.5-1.0 m readings).
+   `_corridor_clearance` computes height as `camera_height_m - z*(v-cy)/f`, which assumes a LEVEL
+   camera. RANSAC on frame 1423 fits the camera 0.92 m up and tilted ~10 deg. The resulting height
+   error GROWS with range (+0.079 m at 0.6-0.8 m, +0.233 m at 1.5-2.0 m) -- the signature of a pitch
+   term, not an offset -- lifting the entire floor above `floor_margin_m: 0.06`. Sweeping *only* the
+   assumed pitch on genuinely-open recorded frames reproduces the log exactly: 12 deg -> 11-35 px
+   (the `blob=11px` lines at k1_follow.err L799/L888); 14 deg -> 316-882 px at 0.97-1.01 m (the
+   `CLEARANCE 0.96/0.97m` lines at L1082/L1104/L1123). One degree of pitch on a real floor produced
+   the whole "noise tail".
+2. **The robot's own left shoulder/arm** (the 0.22-0.38 m readings) -- see the commit message of
+   c43f161. This one is confirmed twice, from field log and from recorded depth.
+
+**Therefore the top of the fix list is NOT noise filtering.** It is (a) model the camera pitch (or
+subscribe to it) instead of assuming level, and (b) land a self-mask. Both are geometry.
+
+**What survives from 07b4b68.** The latch WAS real -- `_clr_hist` was fed only detections and could
+never report clear -- and voting is still the right shape. But its headline number is wrong too:
+`_corridor_clearance()` is called TWICE per tracked frame (follow_person_k1.py:1573 for the brake and
+:3309 as an unconditionally-evaluated argument to `_gap_steer_bias`), so `obstacle_aged: 7` is really
+a 3.5-frame window. Measured through the real two-calls-per-frame pattern the improvement is
+**44.2% -> 39.5%** brake-engaged, not the 43.6% -> 3.2% the commit claims; that figure came from a
+test harness that calls the function once per frame and so models the wrong loop.
+
+**Two open items this leaves:**
+- **The double call** wastes a full-frame numpy pass on a loop already over budget (dt 137-199 ms vs
+  a 100 ms target) AND double-counts every vote. Memoizing per depth frame fixes both. Not yet done.
+- **The majority vote has a couch trade** that was not measured before shipping: for an object seen
+  only p of the time, p=0.70 improves (71.8->81.0%) but p=0.30 REGRESSES (32.2->24.8%) and p=0.20
+  regresses (21.8->12.5%). The crossover is p~0.5 by construction. The couch is exactly a
+  sub-0.5 detection case (it returns nothing but edges), so the vote may have made the couch
+  false-negative WORSE. Measure before trusting the brake around soft furniture.
