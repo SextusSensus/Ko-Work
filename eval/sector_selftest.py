@@ -18,6 +18,7 @@ Cases:
 
 Usage:  python sector_selftest.py [--node <follow_person_k1.py>]
 """
+import random
 import argparse
 import importlib.util
 import math
@@ -237,6 +238,50 @@ def main():
     check("...and image-fraction sees it too now", near(clearance("frac", near_d)), True)
     check("off-path object -> footprint ignores", near(clearance("footprint", off)), False)
     check("swept width is constant in metres", abs(2 * (0.5 * 0.45 + 0.15) - 0.75) < 1e-9, True)
+
+    # --- TEMPORAL: the aged-median filter, scored over a SEQUENCE ---------------------------
+    # WHY THIS BLOCK EXISTS. Every assertion above scores ONE frame, and the 2026-09-04 field
+    # failure was a MULTI-FRAME bug: _clr_hist was appended to only on the detection path, so the
+    # median was computed from a list of nothing but detections and could never report clear.
+    # A single-frame suite is structurally incapable of catching that -- each individual frame was
+    # scored correctly. The filter is a temporal object and has to be tested as one, by driving a
+    # sequence through ONE Follower and scoring the RATE, not by asserting on a frame.
+    print("\ntemporal aged-median (sequence, not single frame):")
+
+    def brake_rate(p_detect, blob, n=400, seed=5):
+        """Fraction of frames the brake would cap vx, over a sequence sharing one _clr_hist."""
+        rnd = random.Random(seed)
+        g = build(m, ["--corridor-mode", "footprint"])
+        g._clr_hist = []
+        g.node = FakeNode(None, None, None)
+        capped = 0
+        for _ in range(n):
+            d = np.full((448, 544), 4.0, dtype=np.float32)   # open space: everything far
+            if rnd.random() < p_detect:
+                r0, r1, c0, c1, z = blob(rnd)
+                d[r0:r1, c0:c1] = z
+            g.node.d = d
+            c = g._corridor_clearance()
+            capped += (c is not None and c <= 0.7)           # obstacle_brake_start stop end
+        return capped / float(n)
+
+    # Speckle: a ~25px near-range artefact at a random range, present in 45% of frames --
+    # the measured field distribution. A real object at this range fills thousands of px.
+    def speckle(rnd):
+        r = rnd.randrange(235, 250)
+        c = rnd.randrange(258, 285)
+        return r, r + 5, c, c + 5, rnd.uniform(0.50, 0.96)
+
+    # A real object: large, contiguous, stable range, present in ~every frame.
+    def solid(_rnd):
+        return 200, 280, 240, 300, 0.60
+
+    sp = brake_rate(0.45, speckle)
+    rl = brake_rate(0.98, solid)
+    print("  (speckle brake rate %.1f%%, real-object brake rate %.1f%%)" % (100 * sp, 100 * rl))
+    check("45%% speckle does NOT hold the brake down", sp < 0.15, True)
+    check("a real object still brakes in ~every frame", rl > 0.90, True)
+    check("...so the two are actually separated", (rl - sp) > 0.75, True)
 
     print("")
     if fails:
