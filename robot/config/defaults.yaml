@@ -165,7 +165,7 @@ floor_margin_m: 0.06
 gap_steer: 'off'
 gap_steer_max_bearing_deg: 35.0
 gap_steer_rate: 0.2
-gap_steer_trigger_frac: 0.35
+gap_steer_trigger_frac: 0.80
 gap_steer_yaw_relax: 0.5
 sector_frac: 0.33
 reverse_cooldown_s: 10.0

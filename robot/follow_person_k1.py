@@ -4282,11 +4282,23 @@ def parse_args(argv):
                         " tracking term cancels the gap bias at bearing = gap/k_yaw (~13 deg at"
                         " defaults), so without this the robot only nudges and never routes"
                         " around. 0.5 moves that equilibrium to ~25 deg. 1.0 disables.")
-    p.add_argument("--gap-steer-trigger-frac", type=float, default=0.35,
+    p.add_argument("--gap-steer-trigger-frac", type=float, default=0.80,
                    help="how far INTO the braking zone the corridor must be before steering "
-                        "engages, as a fraction from brake-stop to brake-start. 0.35 with the "
-                        "0.6..1.5 zone = engage below ~0.92 m. The first field run fired at "
-                        "1.49 m -- the moment grading began, path still clear -- and oscillated.")
+                        "engages, as a fraction from brake-stop to brake-start. "
+                        "RAISED 0.35 -> 0.80 on 2026-09-04 so the robot commits to going AROUND "
+                        "something before it is stopped by it. Two reasons. "
+                        "(1) It is measured in a zone that MOVED: this trigger is relative, so "
+                        "narrowing obstacle-brake-start 1.5 -> 1.15 silently pulled the engage "
+                        "point from 0.98 m in to 0.86 m -- the speed fix made steering start LATER. "
+                        "(2) 0.86 m leaves only 0.16 m before the 0.7 m full stop, which at "
+                        "vx_max 0.18 is ~0.9 s and ~12 deg of heading at the 0.24 rad/s bias -- not "
+                        "enough to route around anything, so the robot stopped and then steered. "
+                        "0.80 engages at ~1.06 m: ~2 s and ~27 deg, enough to curve past. "
+                        "THE ORIGINAL 0.35 EXISTS FOR A REASON -- the first field run fired at the "
+                        "top of the zone (1.49 m), with the path still essentially clear, and "
+                        "oscillated as opposing biases cancelled. What makes a higher value safe "
+                        "now is the _gap_dir commitment added in the same fix: a chosen side is "
+                        "HELD while it stays clear instead of being re-decided every frame.")
     p.add_argument("--gap-steer-max-bearing-deg", type=float, default=35.0,
                    help="stop biasing further toward the frame edge the operator is already near -- "
                         "a detour that loses the lock has failed even if it misses the obstacle.")
