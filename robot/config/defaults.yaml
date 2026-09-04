@@ -114,6 +114,12 @@ obstacle_brake: false
 obstacle_brake_start: 1.15
 obstacle_brake_stop: 0.7
 ground_reject: "off"
+localmap: "off"
+localmap_res_m: 0.10
+localmap_ttl_s: 8.0
+localmap_range_m: 3.0
+localmap_stride: 12
+localmap_max_cells: 4000
 ground_corr: -0.75
 ground_min_px: 500
 obstacle_corridor_frac: 0.55

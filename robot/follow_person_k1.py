@@ -492,6 +492,8 @@ class Follower:
         self._idsw_frames = 0        # Phase 2.4: consecutive frames the pending new track_id has persisted
         self._scan_blocked_since = None   # when the CURRENT continuous block began (head-scan dwell)
         self._scan_barren = None          # odom (x,y) where a scan found NO clear heading, else None
+        self._lm = {}                     # LOCALMAP: sparse cell key -> last-seen monotonic time
+        self._lm_swept = 0.0              # last TTL sweep (amortised, not every frame)
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
         # One corridor evaluation per depth frame (see _corridor_clearance). Keyed on the frame
         # OBJECT: a new frame is a new array, so this needs no frame counter and no loop cooperation.
@@ -771,6 +773,115 @@ class Follower:
             "(blind rearward; only over ground just walked)"
             % (clr if clr is not None else float("nan"), budget))
         return -abs(self.a.reverse_speed)
+
+    def _localmap_update(self, d, hgt, lat_signed):
+        """Fold this depth frame into a short-horizon, robot-centred occupancy buffer.
+
+        WHAT THIS IS NOT. Not a map, not SLAM: no loop closure, no relocalization, nothing kept
+        across runs, and no global frame. Cells expire after --localmap-ttl-s seconds, which is also
+        what makes odometry drift a non-problem -- nothing lives long enough to drift meaningfully.
+        A cross-run map would be actively harmful here: the furniture moves between sessions and
+        there is no relocalization to notice.
+
+        WHY IT EXISTS. The obstacle layer has almost no state. _obstacle_memory holds exactly ONE
+        obstacle and wipes it on any turn beyond --obstacle-memory-max-turn-deg (25), so the moment
+        the robot turns away from something it forgets it completely; the 360 body scan builds a
+        full picture of the room and then throws all of it away except one heading. Odometry is
+        already published and was simply unused, and it is exactly what lets one frame's observation
+        be placed relative to the next.
+
+        THE SAFETY PROPERTY, and the reason this can ship at all: the buffer may only ever REDUCE
+        clearance, never raise it (see _localmap_clearance). It can report an obstacle the live view
+        has lost; it can never clear one the live view can see. A bug in here therefore degrades to
+        over-braking, not to a collision.
+
+        Cells are sparse (a dict keyed by integer grid coords) so there are no bounds to re-anchor
+        and no array to shift as the robot moves -- only the cells actually observed exist, and the
+        TTL sweep keeps the count bounded."""
+        if self.a.localmap != "on":
+            return
+        od = self._odom_xy()
+        th = None
+        try:
+            _o = self.node.latest_odom() if self.node is not None else None
+            th = float(_o[2]) if _o else None
+        except Exception:  # noqa: BLE001
+            th = None
+        if od is None or th is None:
+            return                                   # no pose -> no memory. Fail closed: contribute
+                                                     # nothing rather than place points wrongly.
+        now = time.monotonic()
+        try:
+            step = max(2, int(self.a.localmap_stride))
+            sub_d = d[::step, ::step]
+            sub_h = hgt[::step, ::step]
+            sub_l = lat_signed[::step, ::step]
+            sel = (np.isfinite(sub_d) & (sub_d > max(0.15, self.a.obstacle_self_range_m))
+                   & (sub_d < self.a.localmap_range_m)
+                   & (sub_h >= self.a.floor_margin_m) & (sub_h <= max(0.2, self.a.robot_height_m)))
+            if not sel.any():
+                return
+            fwd = sub_d[sel].astype(np.float64)
+            # lat_signed is +right in the image; robot frame is +LEFT (REP-103), hence the negation.
+            left = -sub_l[sel].astype(np.float64)
+            c, s = math.cos(th), math.sin(th)
+            wx = od[0] + fwd * c - left * s
+            wy = od[1] + fwd * s + left * c
+            res = max(0.02, self.a.localmap_res_m)
+            keys = (np.round(wx / res).astype(np.int32).astype(np.int64) << 20) \
+                + np.round(wy / res).astype(np.int32).astype(np.int64)
+            for k in np.unique(keys):
+                self._lm[int(k)] = now
+            # TTL sweep, amortised: only every so often, and only when the dict has grown.
+            if len(self._lm) > self.a.localmap_max_cells or (now - self._lm_swept) > 1.0:
+                self._lm_swept = now
+                ttl = max(0.5, self.a.localmap_ttl_s)
+                self._lm = {k: t for k, t in self._lm.items() if (now - t) <= ttl}
+        except Exception as e:  # noqa: BLE001 -- memory must never break the loop
+            if (now - getattr(self, "_lm_err_t", 0.0)) > 10.0:
+                self._lm_err_t = now
+                log("LOCALMAP-ERR %s (memory skipped this frame)" % e)
+
+    def _localmap_clearance(self, half):
+        """Nearest REMEMBERED obstacle in the forward corridor (m), or None.
+
+        Only ever used to take a MINIMUM against the live reading, so it can tighten the brake and
+        never loosen it. Returns None whenever the pose is unknown, which is the same fail-closed
+        posture as the update side: without a pose the cells cannot be placed relative to the robot,
+        and a wrong placement would be worse than no memory at all."""
+        if self.a.localmap != "on" or not self._lm:
+            return None
+        od = self._odom_xy()
+        try:
+            _o = self.node.latest_odom() if self.node is not None else None
+            th = float(_o[2]) if _o else None
+        except Exception:  # noqa: BLE001
+            th = None
+        if od is None or th is None:
+            return None
+        now = time.monotonic()
+        ttl = max(0.5, self.a.localmap_ttl_s)
+        res = max(0.02, self.a.localmap_res_m)
+        c, s = math.cos(th), math.sin(th)
+        best = None
+        for k, t in self._lm.items():
+            if (now - t) > ttl:
+                continue
+            gx = (k >> 20)
+            gy = k - (gx << 20)
+            if gy > (1 << 19):
+                gy -= (1 << 20)
+            dx = gx * res - od[0]
+            dy = gy * res - od[1]
+            fwd = dx * c + dy * s
+            if fwd <= 0.0 or fwd >= self.a.localmap_range_m:
+                continue
+            left = -dx * s + dy * c
+            if abs(left) > half:
+                continue
+            if best is None or fwd < best:
+                best = fwd
+        return best
 
     def _obstacle_memory(self, live):
         """Carry a seen obstacle forward using odometry. Returns the clearance to USE.
@@ -1160,7 +1271,19 @@ class Follower:
                     return 0.0                           # unusable mask -> blind, forward forbidden
                 # hgt goes in so a blob can be tested for being the FLOOR (see _is_ground). Only
                 # this path has a height model; the image-fraction path below does not.
+                # The same height model is what lets the short-horizon memory place points, so it
+                # is fed here and nowhere else.
+                self._localmap_update(band, hgt, band * u[None, :])
                 clr, blob = self._nearest_blob(band, sel, hgt)
+                _lm = self._localmap_clearance(half)
+                if _lm is not None and (clr is None or _lm < clr):
+                    # REMEMBERED obstacle is nearer than anything visible right now. Only ever a
+                    # MINIMUM -- memory can tighten the brake, never release it.
+                    if (time.monotonic() - getattr(self, "_lm_log_t", 0.0)) >= 1.0:
+                        self._lm_log_t = time.monotonic()
+                        log("LOCALMAP %.2fm from memory beats live %s (%d cells) -> braking on it"
+                            % (_lm, ("%.2fm" % clr) if clr is not None else "clear", len(self._lm)))
+                    return self._clr_vote(_lm)
                 if clr is None:
                     return self._nodata(band, blob, "footprint")
                 return self._clr_vote(clr)
@@ -4336,6 +4459,36 @@ def parse_args(argv):
                         "silently kills the 360 escape sweep (it did exactly that until c43f161).")
     p.add_argument("--obstacle-brake-stop", type=float, default=0.7,
                    help="corridor clearance (m) at/below which forward vx is capped to 0 (turn/back only)")
+    p.add_argument("--localmap", choices=("off", "on"), default="off",
+                   help="short-horizon robot-centred occupancy memory built from depth + odometry. "
+                        "NOT a map: cells expire after --localmap-ttl-s, nothing persists across "
+                        "runs, there is no loop closure and no global frame -- which is also why "
+                        "odometry drift does not matter, since nothing lives long enough to drift. "
+                        "WHY: the obstacle layer has almost no state. _obstacle_memory holds ONE "
+                        "obstacle and wipes it on any turn past 25 deg, and the 360 body scan "
+                        "throws away everything it saw except a single heading. "
+                        "SAFETY: the memory may only ever REDUCE clearance, never raise it, so it "
+                        "can report an obstacle the live view has lost but can never clear one the "
+                        "live view sees -- a bug degrades to over-braking, not a collision. "
+                        "REQUIRES --odom-topic (defaults to '' = no subscription); without a pose "
+                        "it contributes nothing rather than placing points wrongly. Default off.")
+    p.add_argument("--localmap-res-m", type=float, default=0.10,
+                   help="cell size (m). 0.10 is well under the robot's 0.45 m width, so a cell "
+                        "cannot straddle the difference between passable and not.")
+    p.add_argument("--localmap-ttl-s", type=float, default=8.0,
+                   help="how long a cell survives unseen. This is the memory horizon AND the drift "
+                        "bound: 8 s at 0.18 m/s is ~1.4 m of travel, far less than odometry drifts "
+                        "over. Long enough to survive a body rotation, short enough that a chair "
+                        "someone moved does not haunt the robot.")
+    p.add_argument("--localmap-range-m", type=float, default=3.0,
+                   help="ignore returns beyond this when writing or reading cells")
+    p.add_argument("--localmap-stride", type=int, default=12,
+                   help="pixel subsample stride when folding a frame in. The loop is already over "
+                        "budget (measured dt p50 137-144 ms against a 100 ms target), so this is "
+                        "deliberately coarse: stride 12 on 544x448 is ~1700 points, vectorised.")
+    p.add_argument("--localmap-max-cells", type=int, default=4000,
+                   help="sweep expired cells once the dict exceeds this, so memory stays bounded "
+                        "even if the TTL sweep is starved")
     p.add_argument("--ground-reject", choices=("off", "on"), default="off",
                    help="drop blobs that are the FLOOR seen obliquely rather than an object. The "
                         "hit box assumes a level camera; the real pitch is ~10 deg, and the "

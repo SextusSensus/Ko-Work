@@ -293,6 +293,56 @@ def main():
     check("a real object still brakes in ~every frame", rl > 0.90, True)
     check("...so the two are actually separated", (rl - sp) > 0.75, True)
 
+    # --- LOCALMAP: short-horizon memory. The transform, and the safety property ---------------
+    # A world<-robot placement error is silent and would put remembered obstacles in the wrong
+    # place, so the round trip is asserted directly rather than inferred from behaviour. The
+    # conservative-only property is the reason this feature can ship at all, so it is asserted too.
+    print("\nlocalmap (odom-anchored short-horizon memory):")
+
+    class OdomNode(FakeNode):
+        def __init__(self, d, pose):
+            FakeNode.__init__(self, None, None, None)
+            self.d = d
+            self._pose = pose
+
+        def latest_odom(self, max_age=1.0):
+            return self._pose
+
+    gl = build(m, ["--corridor-mode", "footprint", "--localmap", "on"])
+    check("OFF by default -> no memory is written", len(build(m)._lm), 0)
+
+    # An object dead ahead at 1.0 m, robot at the origin facing +x.
+    dep = np.full((448, 544), 4.0, dtype=np.float32)
+    dep[200:260, 258:286] = 1.0
+    gl.node = OdomNode(dep, (0.0, 0.0, 0.0))
+    gl._clr_hist = []
+    gl._corridor_clearance()
+    check("a frame writes cells", len(gl._lm) > 0, True)
+    seen_here = gl._localmap_clearance(0.379)
+    check("remembers it ahead at ~1.0 m", seen_here is not None and abs(seen_here - 1.0) < 0.25, True)
+
+    # ROUND TRIP: rotate the robot 90 deg about the same spot. The object is now to its RIGHT,
+    # so it must LEAVE the forward corridor -- if the sign convention were wrong it would stay.
+    gl.node._pose = (0.0, 0.0, math.pi / 2.0)
+    check("after turning 90 deg it is no longer ahead", gl._localmap_clearance(0.379), None)
+    # ...and turning back must recover it, proving the cells are anchored in the world and not
+    # smeared by the rotation.
+    gl.node._pose = (0.0, 0.0, 0.0)
+    back = gl._localmap_clearance(0.379)
+    check("turning back recovers it", back is not None and abs(back - 1.0) < 0.25, True)
+    # Driving forward 0.5 m must bring it 0.5 m closer.
+    gl.node._pose = (0.5, 0.0, 0.0)
+    closer = gl._localmap_clearance(0.379)
+    check("driving 0.5 m forward closes the range by ~0.5 m",
+          closer is not None and abs((back - closer) - 0.5) < 0.15, True)
+
+    # FAIL CLOSED: no pose -> contribute nothing, rather than placing cells wrongly.
+    gl.node._pose = None
+    check("no odometry -> memory reads nothing", gl._localmap_clearance(0.379), None)
+    n_before = len(gl._lm)
+    gl._corridor_clearance()
+    check("no odometry -> memory writes nothing", len(gl._lm), n_before)
+
     # --- GROUND REJECTION: a path that DELETES obstacles needs its own gate ------------------
     # The floor is a plane seen obliquely, so corr(depth, height) across it is strongly negative;
     # a compact object's is not. Measured on recorded frames: floor -0.76..-0.94, near objects
