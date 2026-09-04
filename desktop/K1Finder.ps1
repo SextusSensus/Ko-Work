@@ -1229,7 +1229,16 @@ function Get-TrackExtraArgs {
     # The scan needs /head_pose, which the node only subscribes when a head feature asks for it --
     # --head-scan does, so no extra flag is required here.
     if($trackScan -and $trackScan.SelectedItem -and [string]$trackScan.SelectedItem -ne 'off'){
-        $a += ('--head-scan ' + [string]$trackScan.SelectedItem)
+        # 'patient' is a UI-ONLY name and must be TRANSLATED, not passed through: --head-scan takes
+        # only off/audit/on, and sending it verbatim made argparse reject the whole command line and
+        # the node refuse to start. It means "on, but wait longer before sweeping".
+        $scanMode = [string]$trackScan.SelectedItem
+        if($scanMode -eq 'patient'){
+            $a += '--head-scan on'
+            $a += '--head-scan-dwell-s 4.0'
+        } else {
+            $a += ('--head-scan ' + $scanMode)
+        }
     }
     if ($trackHeadProbe.Checked) {
         $a += '--head-probe'
