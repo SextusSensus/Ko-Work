@@ -4290,7 +4290,7 @@ def parse_args(argv):
                         "distances a real obstacle occupies, so no --obstacle-self-range-m value "
                         "separates them. Empty = off (range cut only). A path that will not load "
                         "is fatal, not ignored.")
-    p.add_argument("--obstacle-self-range-m", type=float, default=0.22,
+    p.add_argument("--obstacle-self-range-m", type=float, default=0.45,
                    help="ignore depth returns nearer than this (m) -- that close, the camera is "
                         "looking at the ROBOT, not the world. The head camera sits at 0.86 m with a "
                         "94.9 deg vertical FOV, so its lower rows see the robot's own chest and "
@@ -4298,11 +4298,20 @@ def parse_args(argv):
                         "box and it detects itself. Measured in the field as a clearance pinned at "
                         "0.15-0.20 m on every frame, vx capped to zero, the robot turning on the "
                         "spot and never walking. The old row band hid this by accident. "
-                        "SET FROM THE MEASUREMENT, not a guess: every self-return in that session "
-                        "was 0.15-0.20 m and none exceeded 0.20, so 0.22 clears the robot while "
-                        "still seeing a real obstacle at 0.25 m. A blunt 0.35 was tried first and "
-                        "it silently undid the hand-height fix -- self and world OVERLAP in range, "
-                        "so this cut can only be as high as the self-returns actually reach.")
+                        "RAISED 0.22 -> 0.45 on 2026-09-04. 0.22 was set from one session where "
+                        "self-returns never exceeded 0.20 m, and a blunt 0.35 was rejected then for "
+                        "'blinding the robot to real obstacles at 0.25-0.30 m'. Recorded depth says "
+                        "those were the ARM, not obstacles -- the same misreading that had the "
+                        "0.5-1.0 m floor returns down as speckle. Replaying the archive, raising the "
+                        "cut to 0.45 (and 0.50) suppresses 255 blobs and 255 of 255 sit in the "
+                        "left-edge arm region, centroid column 27 of 544; in a run where the arm was "
+                        "not in view it suppresses nothing at all. Field cost of leaving it at 0.22: "
+                        "109 of 173 clearance readings were the arm, every one a full stop. "
+                        "THE COST OF THIS SETTING: the robot is blind inside 0.45 m. That is only "
+                        "safe because the brake stops at 0.7 m, so nothing should legitimately get "
+                        "closer -- but the couch false-negative (DECISIONS.md) is exactly the case "
+                        "where it does not stop, and then nothing catches it. This is a STOPGAP for "
+                        "--self-mask, which excludes the body by POSITION and costs no close range.")
     p.add_argument("--floor-margin-m", type=float, default=0.06,
                    help="ignore returns below this height (m) -- that is the floor. Doing it by "
                         "GEOMETRY is what lets the row band be dropped entirely: the old fixed "
