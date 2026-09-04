@@ -491,6 +491,7 @@ class Follower:
         self._idsw_pending = None    # Phase 2.4 ID-stability debounce: track_id of an unconfirmed id-switch
         self._idsw_frames = 0        # Phase 2.4: consecutive frames the pending new track_id has persisted
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
+        self._obs_mem = None         # (range, odom_x, odom_y, theta, t) of the last SEEN obstacle
         self._gap_dir = 0            # GAP-STEER committed side (+1 left, -1 right, 0 none):
                                      # hysteresis, so a detour is committed to instead of
                                      # re-decided every frame (the first field run oscillated)
@@ -585,6 +586,70 @@ class Follower:
     # as an obstacle enters the forward corridor. It ONLY ever REDUCES forward vx (never authorizes
     # it), yaw is untouched, and it composes with the forbid_forward keystone -- so it cannot make the
     # forward path less safe, only more cautious. Default-off (--obstacle-brake); byte-identical off.
+    def _obstacle_memory(self, live):
+        """Carry a seen obstacle forward using odometry. Returns the clearance to USE.
+
+        THE PROBLEM. The robot has no memory at all: an obstacle tracked cleanly from 1.0 m down
+        to 0.5 m ceases to exist the moment it leaves the sensing window -- the last 20 cm of the
+        approach, which is exactly where contact happens. Widening the window helps but can never
+        fully close it: something a hand's width away is always at the edge of what a head-mounted
+        camera can see.
+
+        THE SIMPLEST THING THAT WORKS. Not a map -- one number. Remember the range when it was
+        last seen and where the robot was, then subtract the distance travelled since. An obstacle
+        seen at 0.8 m that the robot has since advanced 0.3 m toward is now 0.5 m away, whether or
+        not it is still visible.
+
+        SAFETY RULE, and the whole reason this is safe to add: memory may only ever make the robot
+        MORE cautious. The caller takes the MINIMUM of live and remembered, so memory can lower a
+        clearance but never raise one. A stale memory costs a needless stop; it can never
+        authorise motion. Same posture as the brake, which only reduces vx and never grants it.
+
+        Fails closed in the ordinary sense too: no odometry, expired, or the robot has TURNED
+        appreciably (a heading change invalidates a forward-only estimate -- what was ahead is no
+        longer ahead) -> forget it and use whatever the sensor says now."""
+        if not self.a.obstacle_memory_s:
+            return live
+        now = time.monotonic()
+        od = self.node.latest_odom() if self.node is not None else None
+        if od is None:
+            self._obs_mem = None
+            return live
+        x, y, th = od
+
+        # Predict from the EXISTING memory BEFORE touching it. Refreshing first was a bug the
+        # test caught: a bad far reading (the blob detector losing a near object and reporting
+        # the wall behind it) overwrote the good near memory, so there was nothing left to
+        # compare against and the clearance jumped to the wall. Compare, then refresh.
+        pred = None
+        m = self._obs_mem
+        if m is not None:
+            r0, x0, y0, th0, t0 = m
+            dth = abs((th - th0 + math.pi) % (2.0 * math.pi) - math.pi)
+            if (now - t0) > self.a.obstacle_memory_s:
+                self._obs_mem = None                     # too old to trust
+            elif dth > math.radians(self.a.obstacle_memory_max_turn_deg):
+                self._obs_mem = None                     # turned: forward-only estimate is void
+            else:
+                p = r0 - math.hypot(x - x0, y - y0)
+                if p <= self.a.obstacle_self_range_m:
+                    self._obs_mem = None                 # driven past it -- no phantom brake
+                else:
+                    pred = p
+
+        # Only let LIVE become the memory when it is the nearer evidence, so a far reading cannot
+        # erase a near obstacle; the old one then ages out on its own timer instead.
+        if live is not None and (pred is None or live <= pred):
+            self._obs_mem = (live, x, y, th, now)
+
+        if pred is None:
+            return live
+        if live is None:
+            if (now - getattr(self, "_mem_log_t", 0.0)) >= 1.0:
+                self._mem_log_t = now
+                log("OBSTACLE-MEMORY unseen: dead-reckoned to %.2fm" % pred)
+            return pred
+        return min(live, pred)                           # memory may only LOWER a clearance
     def _nearest_blob(self, band, sel):
         """Range of the nearest CONTIGUOUS obstacle inside `sel`, or None, plus the largest blob.
 
@@ -1271,7 +1336,7 @@ class Follower:
         in the way."""
         if not self.a.obstacle_brake:
             return None, None
-        clr = self._corridor_clearance()
+        clr = self._obstacle_memory(self._corridor_clearance())
         if clr is None:
             return None, None
         if target_range is not None and clr > (target_range - self.a.obstacle_target_margin):
@@ -3823,6 +3888,17 @@ def parse_args(argv):
     p.add_argument("--robot-height-m", type=float, default=1.00,
                    help="top of the robot's collision volume above the floor (m). Anything taller "
                         "than this passes overhead and is not a collision.")
+    p.add_argument("--obstacle-memory-s", type=float, default=2.0,
+                   help="how long an unseen obstacle is carried forward by dead reckoning (s). "
+                        "0 disables the memory. The robot has none otherwise: an obstacle tracked "
+                        "from 1.0 m to 0.5 m vanishes over the last 20 cm of the approach, which "
+                        "is where contact happens. Memory may only ever LOWER a clearance -- the "
+                        "minimum of live and remembered is used -- so a stale memory costs a "
+                        "needless stop and can never authorise motion.")
+    p.add_argument("--obstacle-memory-max-turn-deg", type=float, default=25.0,
+                   help="forget the remembered obstacle once the robot has turned this far since "
+                        "seeing it. The estimate is forward-only, and after a turn what was ahead "
+                        "is no longer ahead.")
     p.add_argument("--obstacle-self-range-m", type=float, default=0.22,
                    help="ignore depth returns nearer than this (m) -- that close, the camera is "
                         "looking at the ROBOT, not the world. The head camera sits at 0.86 m with a "

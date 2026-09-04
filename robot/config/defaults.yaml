@@ -108,6 +108,8 @@ obstacle_brake_stop: 0.7
 obstacle_corridor_frac: 0.55
 obstacle_self_range_m: 0.22
 obstacle_max_m: 5.0
+obstacle_memory_max_turn_deg: 25.0
+obstacle_memory_s: 2.0
 obstacle_min_blob_px: 12
 obstacle_min_valid: 70
 obstacle_pctile: 12.0
