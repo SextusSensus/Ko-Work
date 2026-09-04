@@ -502,7 +502,7 @@ $script:HbProc=$null   # Deadman-HB relay ssh process (P2 #12); alive only while
 $script:trackMs=$null; $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1
 $script:TrackStart=[datetime]::MinValue
 $script:TrackRerunOn=$false      # P6.2b: did the current/last Tracker session record a .rrd? -> post-run offload
-$script:TrackMaxSec=315          # UI-side hard session watchdog BACKSTOP; node --max-seconds 300 stops first (graceful settle), this only fires if the node hangs
+$script:TrackMaxSec=1260         # UI-side hard session watchdog BACKSTOP; node --max-seconds 1200 stops first (graceful settle), this only fires if the node hangs. MUST STAY ABOVE the node's --max-seconds or the UI kills the session before the node can settle gracefully.
 $script:TrackToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 $ctrlSync = [hashtable]::Synchronized(@{ Log=(New-Object System.Collections.Queue); Stop=$false })
 $script:LiveProc=$null; $script:LivePS=$null; $script:LiveRS=$null; $script:LiveOn=$false
@@ -516,7 +516,7 @@ $script:MotionButtons=@()
 $followSync = [hashtable]::Synchronized(@{ Log=(New-Object System.Collections.Queue); Stop=$false })
 $script:FollowProc=$null; $script:FollowPS=$null; $script:FollowRS=$null; $script:FollowOn=$false; $script:FollowDrive=$false
 $script:FollowStart=[datetime]::MinValue
-$script:FollowMaxSec=315          # UI-side hard session watchdog BACKSTOP; node --max-seconds 300 stops first (graceful settle), this only fires if the node hangs
+$script:FollowMaxSec=1260        # UI-side hard session watchdog BACKSTOP; node --max-seconds 1200 stops first (graceful settle), this only fires if the node hangs. MUST STAY ABOVE the node's --max-seconds or the UI kills the session before the node can settle gracefully.
 $script:FollowToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 
 # ============================================================================
@@ -1259,7 +1259,10 @@ function Get-TrackExtraArgs {
     # around / sustained pass follow). Raise to 300s. The node still stops first (with _graceful_stop
     # safing the robot); the deadman + operator STOP stay live so you can stop earlier anytime; the app
     # backstop (Track/FollowMaxSec=315) only fires if the node hangs past its own stop.
-    $a += '--max-seconds 300'
+    # 300 -> 1200 s (4x) on request. The UI backstops at TrackMaxSec/FollowMaxSec must stay ABOVE
+    # this or they fire first and kill the session instead of letting the node stop gracefully --
+    # they were 315 against 300, so raising this alone would have changed nothing.
+    $a += '--max-seconds 1200'
     if($trackRerun -and $trackRerun.Checked){ $a += ('--rerun --rerun-mode save --rerun-dir {0} --odom-topic /odometer_state --rerun-image-every-n 5 --rerun-overrun-frames 24' -f $script:RerunDir) }
     # Deadman HB: node gates velocity on a fresh /tmp/k1_hb mtime AND env-arms the bridge's own
     # heartbeat watchdog. The app-side relay (Start-HbRelay) is started by Start-Tracker.
