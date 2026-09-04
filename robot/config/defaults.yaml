@@ -42,6 +42,7 @@ head_track_deadband_deg: 6.0
 head_track_max_deg: 30.0
 head_yaw_sign: 1.0
 calibration: null
+camera_height_m: 0.86
 cmd_file: '/tmp/k1_cmd'
 coast_frames: 0
 coast_vx_scale: 0.0
@@ -144,6 +145,7 @@ reloc_sep: 0.15
 reloc_streak: 5
 reloc_view_floor: null
 require_heartbeat: false
+floor_margin_m: 0.06
 gap_steer: 'off'
 gap_steer_max_bearing_deg: 35.0
 gap_steer_rate: 0.2
@@ -151,6 +153,7 @@ gap_steer_trigger_frac: 0.35
 gap_steer_yaw_relax: 0.5
 sector_frac: 0.33
 sector_audit: 'off'
+robot_height_m: 1.00
 robot_length_m: 0.35
 robot_width_m: 0.45
 rerun: false

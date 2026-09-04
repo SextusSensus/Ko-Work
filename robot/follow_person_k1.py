@@ -639,11 +639,30 @@ class Follower:
                 _hd = 0.5 * max(0.0, self.a.robot_length_m)
                 _turning = abs(getattr(self, "_prev_vyaw", 0.0)) > 0.05
                 half = (math.hypot(_hw, _hd) if _turning else _hw) + max(0.0, self.a.corridor_margin_m)
-                band = d[y0:y1, :]
+                # HEIGHT -- the third dimension, and what makes this a HIT BOX rather than a
+                # footprint. The row band (obstacle_band_top/bot) is a fixed IMAGE fraction, so the
+                # physical height its lower edge reaches RISES as range closes: 0.62 m at 0.5 m but
+                # 0.72 m at 0.3 m. The hands ride at 0.67 m (URDF), so inside ~0.4 m anything at
+                # hand height falls out of the band and goes invisible -- the robot tracks an
+                # obstacle from 1.0 m down to 0.5 m and then loses it over the last 20 cm, which is
+                # exactly where the hands reach it. That is the reported hand-clipping.
+                #
+                # So test HEIGHT per pixel instead of slicing rows: for depth z at row v,
+                # height = camera_height - z * (v - centre) / focal. The row band is then not
+                # needed at all, and the whole frame can be used.
+                #
+                # This also removes the reason band_bot was capped: FLOOR returns have height ~0,
+                # below --floor-margin-m, so they are excluded by the geometry rather than by
+                # hoping a fixed row cut keeps them out.
+                band = d
                 u = (np.arange(w, dtype=np.float32) - (w * 0.5 + _hshift)) / max(f, 1.0)
+                vv = (np.arange(h, dtype=np.float32) - (h * 0.5)) / max(f, 1.0)
                 lat = np.abs(band * u[None, :])
+                hgt = self.a.camera_height_m - band * vv[:, None]
                 v = band[(band > 0.15) & (band < self.a.obstacle_max_m)
-                         & np.isfinite(band) & (lat <= half)]
+                         & np.isfinite(band) & (lat <= half)
+                         & (hgt >= self.a.floor_margin_m)
+                         & (hgt <= max(0.2, self.a.robot_height_m))]
                 if v.size < self.a.obstacle_min_valid:
                     return None
                 clr = float(np.percentile(v, self.a.obstacle_pctile))
@@ -3717,6 +3736,19 @@ def parse_args(argv):
                         "avoidance, which is what a torso-width value produces: the hands sit "
                         "outside the sensed corridor. 0.45 is a shoulder-width ESTIMATE with no "
                         "measured source -- measure the arm span and set it.")
+    p.add_argument("--camera-height-m", type=float, default=0.86,
+                   help="height of the depth camera above the floor (m). Measured by floor-plane "
+                        "fit; the URDF puts head_pitch 0.747 m above the feet, with the camera "
+                        "mounted above that. Sets the datum for every height test, so an error "
+                        "here shifts the whole hit box vertically.")
+    p.add_argument("--robot-height-m", type=float, default=1.00,
+                   help="top of the robot's collision volume above the floor (m). Anything taller "
+                        "than this passes overhead and is not a collision.")
+    p.add_argument("--floor-margin-m", type=float, default=0.06,
+                   help="ignore returns below this height (m) -- that is the floor. Doing it by "
+                        "GEOMETRY is what lets the row band be dropped entirely: the old fixed "
+                        "band_bot existed to keep the floor out of frame, and capping it is what "
+                        "made the hit box go blind at hand height up close.")
     p.add_argument("--robot-length-m", type=float, default=0.35,
                    help="the robot's front-to-back depth (m). Used with --robot-width-m to get the "
                         "CIRCUMSCRIBED radius hypot(w/2, l/2), which is the half-width the robot "
