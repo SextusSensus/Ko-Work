@@ -2135,6 +2135,23 @@ class Follower:
                         rerun_sink._RR.scalar("/health/depth_fps", _dfps)
                         rerun_sink._RR.scalar("/health/rgb_fps", self.node.rgb_fps())
                         rerun_sink._RR.scalar("/health/depth_starved", 1.0 if self._depth_starved else 0.0)
+                        # HEAD POSE, logged so a run can be diagnosed OFFLINE. Its absence cost real
+                        # time: the 2026-09-04 floor false-positive traced to the hit box assuming a
+                        # LEVEL camera while the real pitch was ~10 deg, and no recording carried the
+                        # head pose, so 64 .rrd files could not say whether that pitch is a fixed
+                        # mounting offset or swings with the gait -- which is what decides the fix.
+                        # NaN (not 0.0) when unknown: an assumed-zero pose is exactly the silent-
+                        # corruption case this is here to expose.
+                        try:
+                            _hy_l = self.node.head_yaw()
+                            _hp_l = self.node.head_pitch()
+                            rerun_sink._RR.scalar("/head/yaw_deg",
+                                                  math.degrees(_hy_l) if _hy_l is not None else float("nan"))
+                            rerun_sink._RR.scalar("/head/pitch_deg",
+                                                  math.degrees(_hp_l) if _hp_l is not None else float("nan"))
+                            rerun_sink._RR.scalar("/head/known", 1.0 if _hp_l is not None else 0.0)
+                        except Exception:  # noqa: BLE001 -- telemetry must never break the loop
+                            pass
                 if frame is not None:
                     ever_framed = True
                     last_frame_mono = now
