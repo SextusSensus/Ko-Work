@@ -574,3 +574,44 @@ of the loop budget, measured under the same combined YOLO+ReID load as P7.3.
    shield build being enabled. **Enabling actuation is a code change through review — never a
    runtime flag, config default, or env var.**
 
+
+---
+
+## OPEN BUG (2026-09-04): an absorbing surface is INVISIBLE to the obstacle brake
+
+**Status: located in code, NOT fixed. This is the couch collision.**
+
+`depth_to_meters()` documents "Zeros = no data". Every corridor selection then filters
+`band > 0.15`, so a no-data pixel is *excluded from the selection entirely* rather than
+treated as unknown. The consequence:
+
+- dark / IR-absorbing upholstery returns **0** over the whole area it occupies
+- those pixels drop out of `sel`, so the couch contributes **no** connected component
+- `_nearest_blob` returns `None` -> `_nodata` -> the frame is scored **"window empty, clear"**
+- the brake releases and the robot drives into it
+
+The blind check in `_nodata` does not catch this, because it is a **whole-frame** test
+(`fv < max(0.02*size, 4*obstacle_min_valid)`). A couch-shaped hole in an otherwise valid
+frame leaves `fv` high, so the frame reads healthy while the corridor specifically is blind.
+That is the exact inversion of the sector logic, which has always treated
+"stays None == unknown == blocked".
+
+**The asymmetry to keep in mind:** speckle (fixed 2026-09-04 in `_clr_vote`) made the brake
+fire when nothing was there. This makes it fail to fire when something IS there. They push in
+opposite directions, so they must not be tuned against each other -- raising
+`obstacle_min_blob_px` to suppress speckle makes THIS worse, which is why the speckle fix was
+a temporal vote instead.
+
+**Proposed fix (needs a human call before implementing):** measure invalid-pixel *density
+inside the corridor wedge only*, and treat a large near-field hole as **occupied at the range
+implied by its surroundings**, not as clear. Risk to weigh: the corridor is often legitimately
+empty (open doorway, sky, beyond max range), so a naive "hole == obstacle" rule reintroduces
+false stops -- it needs the hole to be *bounded by* valid near returns to count.
+
+**Cheaper thing to check first:** does the vendor publish a depth **confidence/quality**
+channel or a second topic alongside `/boostercamera/head/depth`? Nothing in this repo consumes
+one, and the node only ever reads a single-channel 16UC1/32FC1 image. If confidence exists,
+gating on it kills speckle at the source and distinguishes "no return" from "low confidence",
+which is exactly the distinction both bugs turn on.
+  Check:  ros2 topic list | grep -i 'depth\|conf'
+          ros2 topic info /boostercamera/head/depth
