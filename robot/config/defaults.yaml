@@ -106,6 +106,7 @@ obstacle_brake: false
 obstacle_brake_start: 1.5
 obstacle_brake_stop: 0.7
 obstacle_corridor_frac: 0.55
+obstacle_self_range_m: 0.22
 obstacle_max_m: 5.0
 obstacle_min_valid: 70
 obstacle_pctile: 12.0

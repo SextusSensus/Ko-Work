@@ -659,7 +659,15 @@ class Follower:
                 vv = (np.arange(h, dtype=np.float32) - (h * 0.5)) / max(f, 1.0)
                 lat = np.abs(band * u[None, :])
                 hgt = self.a.camera_height_m - band * vv[:, None]
-                v = band[(band > 0.15) & (band < self.a.obstacle_max_m)
+                # SELF-EXCLUSION. Dropping the row band cured the hand-height blindness but exposed
+                # something that band had been hiding by accident: the lower rows look down at the
+                # ROBOT'S OWN chest and arms. Its hands sit at 0.67 m and its chest near 0.8 m --
+                # both inside the height window and dead centre laterally -- so the hit box saw
+                # ITSELF. In the field that pinned clearance at a constant 0.15-0.20 m, capped vx
+                # to zero every frame, and the robot turned on the spot without ever walking.
+                # Anything nearer than --obstacle-self-range-m is the robot, not the world.
+                v = band[(band > max(0.15, self.a.obstacle_self_range_m))
+                         & (band < self.a.obstacle_max_m)
                          & np.isfinite(band) & (lat <= half)
                          & (hgt >= self.a.floor_margin_m)
                          & (hgt <= max(0.2, self.a.robot_height_m))]
@@ -3744,6 +3752,19 @@ def parse_args(argv):
     p.add_argument("--robot-height-m", type=float, default=1.00,
                    help="top of the robot's collision volume above the floor (m). Anything taller "
                         "than this passes overhead and is not a collision.")
+    p.add_argument("--obstacle-self-range-m", type=float, default=0.22,
+                   help="ignore depth returns nearer than this (m) -- that close, the camera is "
+                        "looking at the ROBOT, not the world. The head camera sits at 0.86 m with a "
+                        "94.9 deg vertical FOV, so its lower rows see the robot's own chest and "
+                        "arms; with hands at 0.67 m and chest near 0.8 m they land inside the hit "
+                        "box and it detects itself. Measured in the field as a clearance pinned at "
+                        "0.15-0.20 m on every frame, vx capped to zero, the robot turning on the "
+                        "spot and never walking. The old row band hid this by accident. "
+                        "SET FROM THE MEASUREMENT, not a guess: every self-return in that session "
+                        "was 0.15-0.20 m and none exceeded 0.20, so 0.22 clears the robot while "
+                        "still seeing a real obstacle at 0.25 m. A blunt 0.35 was tried first and "
+                        "it silently undid the hand-height fix -- self and world OVERLAP in range, "
+                        "so this cut can only be as high as the self-returns actually reach.")
     p.add_argument("--floor-margin-m", type=float, default=0.06,
                    help="ignore returns below this height (m) -- that is the floor. Doing it by "
                         "GEOMETRY is what lets the row band be dropped entirely: the old fixed "
