@@ -672,7 +672,27 @@ class Follower:
                          & (hgt >= self.a.floor_margin_m)
                          & (hgt <= max(0.2, self.a.robot_height_m))]
                 if v.size < self.a.obstacle_min_valid:
-                    return None
+                    # TOO FEW RETURNS. This used to just `return None`, and None means NO CAP in
+                    # _obstacle_vx_cap -- so the brake FAILED OPEN, silently, at full speed. The
+                    # sectors have always done the opposite (see _sector_clearances: "stays None
+                    # == unknown == blocked"); the corridor picked the unsafe reading of the same
+                    # situation, and nothing was logged either way. It is how the robot drove into
+                    # a couch with the brake enabled and not one CLEARANCE line to show for it.
+                    #
+                    # Distinguish the two causes, because they need opposite answers:
+                    #   * the frame is HEALTHY and the wedge is simply empty -> genuinely clear
+                    #     (open space returns nothing within obstacle_max_m), so no cap;
+                    #   * the frame ITSELF is sparse -> the sensor cannot see, which is not the
+                    #     same as nothing being there -> report BLOCKED so forward is suppressed.
+                    _fv = int(np.count_nonzero(np.isfinite(band) & (band > 0.15)
+                                               & (band < self.a.obstacle_max_m)))
+                    _blind = _fv < max(4 * self.a.obstacle_min_valid, 400)
+                    if (time.monotonic() - getattr(self, "_nodata_log_t", 0.0)) >= 1.0:
+                        self._nodata_log_t = time.monotonic()
+                        log("OBSTACLE-NODATA wedge=%d need=%d frame_valid=%d -> %s"
+                            % (v.size, self.a.obstacle_min_valid, _fv,
+                               "SENSOR BLIND, forward suppressed" if _blind else "wedge empty, clear"))
+                    return 0.0 if _blind else None
                 clr = float(np.percentile(v, self.a.obstacle_pctile))
                 self._clr_hist.append(clr)
                 self._clr_hist = self._clr_hist[-max(1, self.a.obstacle_aged):]
