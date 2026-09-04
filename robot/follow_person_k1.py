@@ -585,6 +585,73 @@ class Follower:
     # as an obstacle enters the forward corridor. It ONLY ever REDUCES forward vx (never authorizes
     # it), yaw is untouched, and it composes with the forbid_forward keystone -- so it cannot make the
     # forward path less safe, only more cautious. Default-off (--obstacle-brake); byte-identical off.
+    def _nearest_blob(self, band, sel):
+        """Range of the nearest CONTIGUOUS obstacle inside `sel`, or None, plus the largest blob.
+
+        WHY CONTIGUITY. The old gate was a bare pixel COUNT -- "N valid pixels anywhere" -- so
+        scattered sensor speckle counted exactly the same as a solid chair. That forced
+        --obstacle-min-valid high enough to reject noise (70), which is precisely what made
+        sparse-but-real scenes fall under it and take the no-data path. One threshold could not
+        serve both jobs.
+        A real obstacle is CONNECTED; noise is not. Requiring a connected blob lets the size floor
+        drop by ~5x while being MORE selective: 12 contiguous pixels is an object, 70 scattered
+        ones are probably not. It also removes the percentile dilution that hid a genuine in-path
+        object at 0.30 m -- the range is now measured WITHIN the nearest blob, not across the whole
+        window where a few near pixels get averaged away.
+        Falls back to the old count when scipy is unavailable, so the brake degrades rather than
+        disappears."""
+        try:
+            from scipy import ndimage
+        except Exception:  # noqa: BLE001 -- no scipy: degrade to the legacy count, never to nothing
+            v = band[sel]
+            if v.size < self.a.obstacle_min_valid:
+                return None, int(v.size)
+            return float(np.percentile(v, self.a.obstacle_pctile)), int(v.size)
+        # CANDIDATES MUST BE NEAR. Selecting every VALID pixel makes the far background one huge
+        # connected region with the object inside it, so labelling changes nothing. Measured: a
+        # solid object and pure speckle both returned the same range, and the wide corridor missed
+        # a real object entirely by diluting it in a percentile. An obstacle is a connected region
+        # of NEAR depth -- anything beyond --obstacle-brake-start cannot brake anyway.
+        sel = sel & (band < self.a.obstacle_brake_start)
+        lab, n = ndimage.label(sel)
+        if n <= 0:
+            return None, 0
+        sizes = np.bincount(lab.ravel())
+        sizes[0] = 0
+        keep = np.flatnonzero(sizes >= max(1, int(self.a.obstacle_min_blob_px)))
+        if keep.size == 0:
+            return None, int(sizes.max() if sizes.size else 0)
+        # Nearest blob wins. Its range is a percentile WITHIN the blob, keeping the existing
+        # anti-glitch posture (a single bad pixel must not define the obstacle).
+        best = None
+        for li in keep[:16]:                       # bounded: many blobs means noise, not a scene
+            vv = band[lab == li]
+            if vv.size:
+                r = float(np.percentile(vv, self.a.obstacle_pctile))
+                if best is None or r < best:
+                    best = r
+        return best, int(sizes.max())
+
+    def _nodata(self, band, blob_px, where):
+        """Decide what 'not enough obstacle evidence' MEANS, and say so out loud.
+
+        This used to be a bare `return None`, and None means NO CAP in _obstacle_vx_cap -- so the
+        brake failed OPEN, at full speed, with nothing logged. The sectors have always taken the
+        opposite reading of the same situation ("stays None == unknown == blocked"). The robot
+        drove into a couch through this hole.
+        A healthy frame with an empty window is genuinely clear -- open space returns nothing
+        inside obstacle_max_m. A SPARSE FRAME means the sensor cannot see, which is not the same
+        as nothing being there, so forward is suppressed."""
+        fv = int(np.count_nonzero(np.isfinite(band) & (band > 0.15)
+                                  & (band < self.a.obstacle_max_m)))
+        blind = fv < max(0.02 * float(band.size), 4.0 * self.a.obstacle_min_valid)
+        if (time.monotonic() - getattr(self, "_nodata_log_t", 0.0)) >= 1.0:
+            self._nodata_log_t = time.monotonic()
+            log("OBSTACLE-NODATA %s blob=%dpx need=%dpx frame_valid=%d -> %s"
+                % (where, blob_px, self.a.obstacle_min_blob_px, fv,
+                   "SENSOR BLIND, forward suppressed" if blind else "window empty, clear"))
+        return 0.0 if blind else None
+
     def _corridor_clearance(self, apply_head_shift=True):
         """Robust nearest-obstacle range (m) in the forward corridor, or None. Cheap: a percentile
         over the central band of the depth map (excludes the floor via a mid-vertical band). Uses a
@@ -666,44 +733,28 @@ class Follower:
                 # ITSELF. In the field that pinned clearance at a constant 0.15-0.20 m, capped vx
                 # to zero every frame, and the robot turned on the spot without ever walking.
                 # Anything nearer than --obstacle-self-range-m is the robot, not the world.
-                v = band[(band > max(0.15, self.a.obstacle_self_range_m))
-                         & (band < self.a.obstacle_max_m)
-                         & np.isfinite(band) & (lat <= half)
-                         & (hgt >= self.a.floor_margin_m)
-                         & (hgt <= max(0.2, self.a.robot_height_m))]
-                if v.size < self.a.obstacle_min_valid:
-                    # TOO FEW RETURNS. This used to just `return None`, and None means NO CAP in
-                    # _obstacle_vx_cap -- so the brake FAILED OPEN, silently, at full speed. The
-                    # sectors have always done the opposite (see _sector_clearances: "stays None
-                    # == unknown == blocked"); the corridor picked the unsafe reading of the same
-                    # situation, and nothing was logged either way. It is how the robot drove into
-                    # a couch with the brake enabled and not one CLEARANCE line to show for it.
-                    #
-                    # Distinguish the two causes, because they need opposite answers:
-                    #   * the frame is HEALTHY and the wedge is simply empty -> genuinely clear
-                    #     (open space returns nothing within obstacle_max_m), so no cap;
-                    #   * the frame ITSELF is sparse -> the sensor cannot see, which is not the
-                    #     same as nothing being there -> report BLOCKED so forward is suppressed.
-                    _fv = int(np.count_nonzero(np.isfinite(band) & (band > 0.15)
-                                               & (band < self.a.obstacle_max_m)))
-                    _blind = _fv < max(4 * self.a.obstacle_min_valid, 400)
-                    if (time.monotonic() - getattr(self, "_nodata_log_t", 0.0)) >= 1.0:
-                        self._nodata_log_t = time.monotonic()
-                        log("OBSTACLE-NODATA wedge=%d need=%d frame_valid=%d -> %s"
-                            % (v.size, self.a.obstacle_min_valid, _fv,
-                               "SENSOR BLIND, forward suppressed" if _blind else "wedge empty, clear"))
-                    return 0.0 if _blind else None
-                clr = float(np.percentile(v, self.a.obstacle_pctile))
+                sel = ((band > max(0.15, self.a.obstacle_self_range_m))
+                       & (band < self.a.obstacle_max_m)
+                       & np.isfinite(band) & (lat <= half)
+                       & (hgt >= self.a.floor_margin_m)
+                       & (hgt <= max(0.2, self.a.robot_height_m)))
+                clr, blob = self._nearest_blob(band, sel)
+                if clr is None:
+                    return self._nodata(band, blob, "footprint")
                 self._clr_hist.append(clr)
                 self._clr_hist = self._clr_hist[-max(1, self.a.obstacle_aged):]
                 return float(sorted(self._clr_hist)[len(self._clr_hist) // 2])
             x0 = int(max(0, min(w - 2, w * (0.5 - cf / 2.0) + _hshift)))
             x1 = int(max(x0 + 1, min(w, w * (0.5 + cf / 2.0) + _hshift)))
             band = d[y0:y1, x0:x1]
-            v = band[(band > 0.15) & (band < self.a.obstacle_max_m) & np.isfinite(band)]
-            if v.size < self.a.obstacle_min_valid:
-                return None
-            clr = float(np.percentile(v, self.a.obstacle_pctile))
+            # Same contiguity + fail-closed treatment as the footprint path. This branch carried
+            # the ORIGINAL bare `return None`, so it fails OPEN on sparse depth exactly as the
+            # footprint one did -- and it is the DEFAULT mode, so the fix has to land here or the
+            # safety hole stays open for everyone who has not opted into the hit box.
+            sel = (band > 0.15) & (band < self.a.obstacle_max_m) & np.isfinite(band)
+            clr, blob = self._nearest_blob(band, sel)
+            if clr is None:
+                return self._nodata(band, blob, "frac")
         except Exception:  # noqa: BLE001 -- a reflex must never break the loop
             return None
         self._clr_hist.append(clr)
@@ -3809,6 +3860,14 @@ def parse_args(argv):
                    help="ignore corridor depth beyond this (m)")
     p.add_argument("--obstacle-pctile", type=float, default=8.0,
                    help="robust-near percentile of corridor depth (not raw min -> glitch-resistant)")
+    p.add_argument("--obstacle-min-blob-px", type=int, default=12,
+                   help="minimum CONTIGUOUS pixels for a depth return to count as an obstacle. "
+                        "Replaces the bare --obstacle-min-valid count, which treated scattered "
+                        "speckle the same as a solid chair and therefore had to be set high (70) "
+                        "to reject noise -- which is what made sparse-but-real scenes fall through "
+                        "to the no-data path. A connected blob is a far better object test, so this "
+                        "can be ~5x smaller and still be more selective. --obstacle-min-valid is "
+                        "still used for the frame-health check and as the no-scipy fallback.")
     p.add_argument("--obstacle-min-valid", type=int, default=40,
                    help="min valid corridor depth pixels to trust a clearance reading")
     p.add_argument("--obstacle-aged", type=int, default=3,

@@ -69,14 +69,34 @@ def sectors(f, left, centre, right):
 
 
 def live_session():
-    """True if a follow session is running. Bracket in the pattern so this process cannot match
-    ITSELF -- pgrep -f matches the whole command line, and a naive pattern here would find this
-    very script and report a session that does not exist."""
+    """True if a follow session is actually DRIVING the robot.
+
+    The obvious check is a self-match trap, and it caught me: this script is invoked as
+    `sector_selftest.py --node .../follow_person_k1.py`, so its own command line contains the node
+    filename and `pgrep -f` matched THIS PROCESS. The bracket trick does not help -- it stops the
+    pattern text from matching itself, not the real path in our own argv. The guard therefore
+    reported a live session every time and refused to run for two days.
+
+    So identify a session by what only a real one has: the node running WITH --drive, and not us."""
     try:
         import subprocess
-        r = subprocess.run(["pgrep", "-f", "follow_pe[r]son_k1.py"],
+        r = subprocess.run(["pgrep", "-f", "follow_person_k1.py"],
                            capture_output=True, text=True, timeout=10)
-        return bool(r.stdout.strip())
+        me = {os.getpid(), os.getppid()}
+        for tok in r.stdout.split():
+            if not tok.strip().isdigit():
+                continue
+            pid = int(tok)
+            if pid in me:
+                continue
+            try:
+                with open("/proc/%d/cmdline" % pid, "rb") as f:
+                    cl = f.read().decode("utf-8", "ignore").replace("\0", " ")
+            except OSError:
+                continue
+            if "follow_person_k1.py" in cl and "--drive" in cl and "selftest" not in cl:
+                return True
+        return False
     except Exception:  # noqa: BLE001
         return False
 
@@ -203,13 +223,19 @@ def main():
         return g._corridor_clearance()
 
     f_px = (544.0 / 2.0) / math.tan(math.radians(105.8) / 2.0)
-    near = np.full((448, 544), 4.0, dtype=np.float32)
-    near[:, 118:150] = 0.5                     # |lateral| 0.30..0.37 m -> inside the footprint
+    near_d = np.full((448, 544), 4.0, dtype=np.float32)
+    near_d[:, 118:150] = 0.5                     # |lateral| 0.30..0.37 m -> inside the footprint
     off = np.full((448, 544), 4.0, dtype=np.float32)
     off[:, 130:190] = 2.5                      # |lateral| 1.00..1.73 m -> outside the footprint
-    check("in-path object at 0.5m -> footprint BRAKES", clearance("footprint", near) < 1.5, True)
-    check("...and image-fraction MISSES it", clearance("frac", near) > 1.5, True)
-    check("off-path object -> footprint ignores", clearance("footprint", off) > 1.5, True)
+    def near(x):
+        """A clearance that would BRAKE. None now means 'no near blob' i.e. CLEAR, which is a
+        correct answer and not a missing one -- the contiguity change made that the normal reply
+        for an empty window, and this assertion used to assume a float and crashed on it."""
+        return x is not None and x < 1.5
+
+    check("in-path object at 0.5m -> footprint BRAKES", near(clearance("footprint", near_d)), True)
+    check("...and image-fraction sees it too now", near(clearance("frac", near_d)), True)
+    check("off-path object -> footprint ignores", near(clearance("footprint", off)), False)
     check("swept width is constant in metres", abs(2 * (0.5 * 0.45 + 0.15) - 0.75) < 1e-9, True)
 
     print("")
