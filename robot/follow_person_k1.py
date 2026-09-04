@@ -490,6 +490,7 @@ class Follower:
         self._reacq_range_streak = 0
         self._idsw_pending = None    # Phase 2.4 ID-stability debounce: track_id of an unconfirmed id-switch
         self._idsw_frames = 0        # Phase 2.4: consecutive frames the pending new track_id has persisted
+        self._scan_blocked_since = None   # when the CURRENT continuous block began (head-scan dwell)
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
         # One corridor evaluation per depth frame (see _corridor_clearance). Keyed on the frame
         # OBJECT: a new frame is a new array, so this needs no frame counter and no loop cooperation.
@@ -1445,6 +1446,20 @@ class Follower:
 
         if self._scan_state == "idle":
             if not blocked:
+                self._scan_blocked_since = None       # the block cleared: dwell restarts
+                return False
+            # DWELL. The scan used to start on the FIRST blocked frame, so a momentary stop was
+            # enough to launch a full sweep. Stops flicker -- CLEARANCE then blob=0px clear then
+            # CLEARANCE -- so the robot scanned constantly and mostly aborted mid-sweep when the
+            # state changed under it (16 starts, most ending "ABORT orphaned", in one 300 s run).
+            # Requiring the block to PERSIST separates a real obstacle, which stays, from the
+            # flicker, which does not. This is the lever for "stop scanning so often": a distance
+            # threshold cannot do it, because the brake already caps vx to zero at
+            # --obstacle-brake-stop, so the robot never approaches nearer than that and a tighter
+            # range gate would simply never fire.
+            if self._scan_blocked_since is None:
+                self._scan_blocked_since = now
+            if (now - self._scan_blocked_since) < max(0.0, self.a.head_scan_dwell_s):
                 return False
             if (now - self._scan_last_t) < max(0.0, self.a.head_scan_cooldown_s):
                 return False
@@ -4330,6 +4345,17 @@ def parse_args(argv):
                    help="sweep rate (rad/s) for the body scan.")
     p.add_argument("--body-scan-max-rev", type=float, default=1.0,
                    help="revolutions to sweep before deciding. 1.0 = a full 360.")
+    p.add_argument("--head-scan-dwell-s", type=float, default=0.0,
+                   help="the way ahead must stay blocked CONTINUOUSLY for this long before the head "
+                        "scan starts. 0 = the shipped behaviour (scan on the first blocked frame). "
+                        "WHY: stops flicker -- CLEARANCE, then blob=0px clear, then CLEARANCE -- so "
+                        "a momentary stop launched a full sweep, and the robot scanned constantly "
+                        "and mostly aborted mid-sweep when the state changed under it (16 starts, "
+                        "most 'ABORT orphaned', in one 300 s run). A real obstacle keeps the block "
+                        "up; flicker does not. Try 2.0. "
+                        "NOTE this is the right lever, not a distance gate: --obstacle-brake-stop "
+                        "already caps vx to zero at 0.7 m, so the robot never gets nearer than that "
+                        "and a tighter range trigger would never fire at all.")
     p.add_argument("--body-scan-clear-m", type=float, default=1.15,
                    help="a heading must reach this clearance to be worth turning to. If nothing "
                         "does in a whole revolution the robot is genuinely enclosed and the scan "
