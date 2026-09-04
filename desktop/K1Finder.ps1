@@ -864,6 +864,18 @@ $trackScan=New-Object System.Windows.Forms.ComboBox; $trackScan.DropDownStyle='D
 # Dimensions come from the robot's own URDF: 0.457 m lateral, 0.192 m deep, hands at 0.67 m.
 $lblHit=New-Object System.Windows.Forms.Label; $lblHit.Text='Hit box'; $lblHit.AutoSize=$true; $lblHit.Location='716,156'; $grpTrackCtl.Controls.Add($lblHit)
 $trackHitBox=New-Object System.Windows.Forms.ComboBox; $trackHitBox.DropDownStyle='DropDownList'; $trackHitBox.Size='90,24'; $trackHitBox.Location='778,152'; [void]$trackHitBox.Items.AddRange(@('frac','footprint')); $trackHitBox.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackHitBox)
+
+# ESCAPE (--body-scan / --reverse-when-stuck). What to do when the brake has stopped the robot and
+# NEITHER gap steer nor the head scan can find a way past. That is not stubbornness: from 0.35 m off
+# a wide obstacle the gap sits ~68 deg off-centre, outside the head sweep (+/-23) AND the camera
+# half-field (52.9), so it is unobservable from there. Measured as every head-scan direction
+# returning 0.33-0.41 m while the robot shuffled and never committed.
+#   spin    = rotate a full turn sampling free space per heading, then face the middle of the widest
+#             gap. Rotating is NOT blind -- the robot sees everything it turns past.
+#   spin+back = also allow a short bounded REVERSE as a last resort when a turn finds nothing. That
+#             one IS blind (no rear sensor), so it only ever retraces ground just walked forward.
+$lblEsc=New-Object System.Windows.Forms.Label; $lblEsc.Text='Escape'; $lblEsc.AutoSize=$true; $lblEsc.Location='716,178'; $grpTrackCtl.Controls.Add($lblEsc)
+$trackEscape=New-Object System.Windows.Forms.ComboBox; $trackEscape.DropDownStyle='DropDownList'; $trackEscape.Size='90,24'; $trackEscape.Location='778,174'; [void]$trackEscape.Items.AddRange(@('off','spin','spin+back')); $trackEscape.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackEscape)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
 $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
@@ -1172,6 +1184,12 @@ function Get-TrackExtraArgs {
     }
     # Head probe: one-shot startup head calibration (see the checkbox comment). Independent of
     # every follow feature -- it only measures and logs, then re-centres the head.
+    # Escape behaviour when stopped with no reachable heading. Both are new motion, so they are
+    # opt-in; spin is preferred over reverse because rotating keeps the sensors on the world.
+    if($trackEscape -and $trackEscape.SelectedItem -and [string]$trackEscape.SelectedItem -ne 'off'){
+        $a += '--body-scan on'
+        if([string]$trackEscape.SelectedItem -eq 'spin+back'){ $a += '--reverse-when-stuck on' }
+    }
     # Hit box: select depth by the robot's real extent (width, depth, height) instead of an image
     # fraction. Sends the URDF-derived dimensions explicitly so the geometry is visible in the log.
     if($trackHitBox -and $trackHitBox.SelectedItem -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
