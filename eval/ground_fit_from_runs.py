@@ -105,6 +105,14 @@ def ground(d, hfov, pitches, tans, bins, step, zmin, zmax, min_support):
     sup = best_n / float(Z.size)
     if sup < min_support:
         return None
+    # PLAUSIBILITY GATE ON THE RESULT, not just on plane support. Support alone says "many points
+    # lie on SOME plane", which a wall or a table satisfies perfectly. The physical check is the
+    # implied camera height: this camera is ~0.86-0.93 m off the floor and cannot be anywhere else.
+    # Without this the tool accepted a fit implying 0.41 m, and that single impossible frame was
+    # enough to swing an SD-based "the pitch varies" verdict off n=4. A wrong verdict here sends
+    # the floor fix down the wrong road entirely, so the gate belongs in the tool, not the reader.
+    if not (0.70 <= best_c <= 1.10):
+        return None
     return math.degrees(pitches[best_i]), float(best_c), sup
 
 
