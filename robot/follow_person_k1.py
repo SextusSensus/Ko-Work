@@ -492,6 +492,9 @@ class Follower:
         self._idsw_frames = 0        # Phase 2.4: consecutive frames the pending new track_id has persisted
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
         self._obs_mem = None         # (range, odom_x, odom_y, theta, t) of the last SEEN obstacle
+        self._rev_state = None       # (x0, y0, t0, budget_m) while backing off, else None
+        self._bs = None              # body-scan state while sweeping a full turn, else None
+        self._clear_pose = None      # last odom pose where the way ahead was CLEAR (retrace anchor)
         self._gap_dir = 0            # GAP-STEER committed side (+1 left, -1 right, 0 none):
                                      # hysteresis, so a detour is committed to instead of
                                      # re-decided every frame (the first field run oscillated)
@@ -586,6 +589,165 @@ class Follower:
     # as an obstacle enters the forward corridor. It ONLY ever REDUCES forward vx (never authorizes
     # it), yaw is untouched, and it composes with the forbid_forward keystone -- so it cannot make the
     # forward path less safe, only more cautious. Default-off (--obstacle-brake); byte-identical off.
+    def _body_scan_step(self, active, clr):
+        """Rotate in place through a full revolution, sampling free space per heading, then face
+        the best one. Returns a vyaw to command while scanning, or None when not scanning.
+
+        WHY THE BODY AND NOT THE HEAD. From 0.35 m off a wide obstacle the escape sits ~68 deg
+        off-centre -- beyond the head sweep (+/-23 deg) AND beyond the camera half-field (52.9),
+        so no head scan can reach it. The body can. Measured in the field as every head-scan
+        direction returning 0.33-0.41 m while the robot shuffled and never committed.
+
+        WHY THIS IS SAFER THAN REVERSING. Rotating in place is NOT blind -- the robot sweeps its
+        eyes and depth sensor across everything it turns past, gaining information the whole way.
+        Backing up is dead reckoning into a region with no sensor at all.
+
+        NO MAP. Samples live only for this sweep and are thrown away after the decision, exactly
+        like the head-scan hint. The robot uses the sensors it has to choose a heading NOW; it does
+        not build or keep a model of the room.
+
+        Re-acquiring the operator is NOT handled here. If the tracker re-locks mid-sweep the normal
+        control path takes over and the scan is abandoned -- the existing relock machinery is
+        better at that than anything this could add, and rotating is exactly what gives it new
+        views to work with.
+
+        Fails closed: no odometry (rotation would be unmeasurable) -> never runs. Bounded by a
+        revolution cap, a timeout, and a cooldown."""
+        if self.a.body_scan == "off":
+            return None
+        now = time.monotonic()
+        od = self.node.latest_odom() if self.node is not None else None
+        if od is None:
+            self._bs = None
+            return None
+        th = od[2]
+
+        if self._bs is None:
+            if not active:
+                return None
+            if (now - getattr(self, "_bs_last_t", -1e9)) < self.a.body_scan_cooldown_s:
+                return None
+            self._bs = {"phase": "sweep", "t0": now, "th0": th, "prev": th, "turned": 0.0,
+                        "runs": [], "cur": None, "best_clr": -1.0, "best_off": 0.0, "n": 0}
+            log("BODY-SCAN start: no heading within reach of the head -- sweeping a full turn "
+                "(rotating is not blind; it sees everything it turns past)")
+            return self.a.body_scan_yaw
+
+        b = self._bs
+        d = (th - b["prev"] + math.pi) % (2.0 * math.pi) - math.pi   # shortest signed step
+        b["turned"] += abs(d)
+        b["prev"] = th
+        off = (th - b["th0"] + math.pi) % (2.0 * math.pi) - math.pi  # heading vs where we began
+        if (now - b["t0"]) > self.a.body_scan_timeout_s:
+            self._bs = None
+            self._bs_last_t = now
+            log("BODY-SCAN abort: timeout")
+            return None
+
+        if b["phase"] == "sweep":
+            # WIDEST GAP, NOT BEST SAMPLE. Taking the first heading that hits maximum clearance
+            # aims at the NEAR EDGE of a gap -- measured: a gap centred at +100 deg was entered at
+            # +58, which is where the robot would clip the obstacle on the way through. Track
+            # contiguous runs of clear headings and aim at the MIDDLE of the widest one.
+            ok = clr is not None and clr >= self.a.body_scan_clear_m
+            if ok:
+                b["n"] += 1
+                if b["cur"] is None:
+                    b["cur"] = b["turned"]
+                if clr > b["best_clr"]:
+                    b["best_clr"] = clr
+            elif b["cur"] is not None:
+                b["runs"].append((b["cur"], b["turned"]))
+                b["cur"] = None
+            if b["turned"] < (2.0 * math.pi * self.a.body_scan_max_rev):
+                return self.a.body_scan_yaw
+            if b["cur"] is not None:
+                b["runs"].append((b["cur"], b["turned"]))
+                b["cur"] = None
+            if not b["runs"]:
+                self._bs = None
+                self._bs_last_t = now
+                log("BODY-SCAN no heading reached %.2fm anywhere in a full turn -- genuinely "
+                    "enclosed; leaving it to the brake" % self.a.body_scan_clear_m)
+                return None
+            s, e = max(b["runs"], key=lambda r: r[1] - r[0])
+            mid = 0.5 * (s + e)
+            b["best_off"] = (mid + math.pi) % (2.0 * math.pi) - math.pi
+            b["phase"] = "align"
+            log("BODY-SCAN swept %.0f deg: widest gap %.0f deg wide, aiming at its middle "
+                "%+.0f deg (best %.2fm)"
+                % (math.degrees(b["turned"]), math.degrees(e - s),
+                   math.degrees(b["best_off"]), b["best_clr"]))
+            return self.a.body_scan_yaw
+        err = (b["best_off"] - off + math.pi) % (2.0 * math.pi) - math.pi
+        if abs(err) <= math.radians(8.0):
+            self._bs = None
+            self._bs_last_t = now
+            log("BODY-SCAN aligned to the freest heading (%.2fm) -- resuming" % b["best_clr"])
+            return None
+        return math.copysign(self.a.body_scan_yaw, err)
+
+    def _reverse_step(self, stuck, clr):
+        """Back off when stopped with no visible way around. Returns a reverse vx, or None.
+
+        WHY IT IS NEEDED, and it is geometry rather than tuning. At 0.35 m from a ~2 m couch,
+        seeing past its edge needs a look angle of about 68 deg. The head reaches +/-23 deg and
+        even the full camera half-field is 52.9 deg, so NO amount of head or body scanning can
+        reveal the gap from there -- the field measurement was every scan direction returning
+        0.33-0.41 m. The robot was searching for a gap from the one position where a gap is
+        unobservable, which is exactly the reported "shifts head and body but will not commit".
+        Back off to ~1 m and the same edge sits near 45 deg, inside the field of view.
+
+        REVERSING IS BLIND -- there is no rear sensor at all. So the only defensible version is a
+        RETRACE: never reverse further than the robot has recently advanced, so it backs over floor
+        it just walked forward through and found clear. That bound, not the distance cap, is what
+        makes this safe; the cap is only a second belt.
+
+        Every other guard is fail-closed: needs odometry (no odom, no reverse -- distance would be
+        unmeasurable), a full stop with no clear heading, a hard distance cap, a timeout, and a
+        cooldown so it cannot oscillate. Any of them failing stops the reverse."""
+        if self.a.reverse_when_stuck == "off":
+            return None
+        now = time.monotonic()
+        od = self.node.latest_odom() if self.node is not None else None
+        if od is None:                                   # blind AND unmeasurable -> never
+            self._rev_state = None
+            return None
+        x, y, _th = od
+
+        if self._rev_state is not None:                  # ---- already reversing
+            x0, y0, t0, budget = self._rev_state
+            back = math.hypot(x - x0, y - y0)
+            opened = clr is not None and clr >= self.a.obstacle_brake_start
+            done = (back >= budget or (now - t0) > self.a.reverse_timeout_s or opened)
+            if done:
+                self._rev_state = None
+                self._rev_last_t = now
+                log("REVERSE end after %.2fm in %.1fs -> %s"
+                    % (back, now - t0,
+                       "a heading opened" if opened else
+                       "budget reached" if back >= budget else "timeout"))
+                return None
+            return -abs(self.a.reverse_speed)
+        if not stuck:                                    # ---- track clear ground while moving
+            if clr is None or clr >= self.a.obstacle_brake_start:
+                self._clear_pose = (x, y, now)
+            return None
+        if (now - getattr(self, "_rev_last_t", -1e9)) < self.a.reverse_cooldown_s:
+            return None
+        # RETRACE BUDGET: only as far back as the last position where the way ahead was clear.
+        cp = getattr(self, "_clear_pose", None)
+        if cp is None:
+            return None                                  # never seen clear ground -> nothing known
+        budget = min(self.a.reverse_max_m, math.hypot(x - cp[0], y - cp[1]))
+        if budget < 0.05:
+            return None                                  # nothing to retrace
+        self._rev_state = (x, y, now, budget)
+        log("REVERSE start: stopped at %.2fm with no clear heading -> retracing %.2fm "
+            "(blind rearward; only over ground just walked)"
+            % (clr if clr is not None else float("nan"), budget))
+        return -abs(self.a.reverse_speed)
+
     def _obstacle_memory(self, live):
         """Carry a seen obstacle forward using odometry. Returns the clearance to USE.
 
@@ -3131,6 +3293,23 @@ class Follower:
         # Stage-4 gap audit: log where the free space is and which way a steering layer WOULD
         # go. Observation only -- no command, and nothing below reads its result.
         self._sector_audit(bearing, _clr)
+        # STAGE 7: BACK OFF WHEN STUCK. Last resort, after the brake has stopped us AND neither
+        # gap steer nor the head scan found a heading. From close to a wide obstacle the gap is
+        # geometrically outside what the sensor can see, so no further scanning helps -- only
+        # changing position does. Retraces ground just walked; see _reverse_step.
+        _stuck = (_obs_cap is not None and _obs_cap <= 0.01
+                  and _gap == 0.0 and self._gap_dir == 0
+                  and rng is not None and rng > (self.a.standoff_m + 0.25))
+        _bs_yaw = self._body_scan_step(_stuck, _clr)
+        if _bs_yaw is not None:
+            vx = 0.0                        # rotate in place only -- never translate while sweeping
+            vyaw = self._slew(self._prev_vyaw, _bs_yaw, self.vyaw_slew)
+            _rev = None                     # a sweep outranks a blind reverse
+        else:
+            _rev = self._reverse_step(_stuck, _clr)
+        if _rev is not None:
+            vx = _rev                       # overrides the brake's zero: deliberately backwards
+            vyaw = self._slew(self._prev_vyaw, 0.0, self.vyaw_slew)   # straight back, no turning
         # STAGE 6: STATIONARY HEAD SCAN. Fires only once the brake has forward motion FULLY stopped
         # while the follow still wants to advance (operator beyond the standoff) -- exactly the
         # freeze case: stopped close to something, no side it can justify, nothing left to try.
@@ -3888,6 +4067,44 @@ def parse_args(argv):
     p.add_argument("--robot-height-m", type=float, default=1.00,
                    help="top of the robot's collision volume above the floor (m). Anything taller "
                         "than this passes overhead and is not a collision.")
+    p.add_argument("--body-scan", choices=("off", "on"), default="off",
+                   help="when stopped with no heading the head can reach, rotate in place through "
+                        "a full turn sampling free space per heading, then face the freest one. "
+                        "From 0.35 m off a wide obstacle the escape sits ~68 deg off-centre, "
+                        "outside BOTH the head sweep (+/-23 deg) and the camera half-field (52.9), "
+                        "so only turning the body can find it. Rotating is not blind -- unlike "
+                        "reversing, the robot sees everything it turns past. No map is kept: the "
+                        "samples are discarded after the decision. Off by default (new motion).")
+    p.add_argument("--body-scan-yaw", type=float, default=0.30,
+                   help="sweep rate (rad/s) for the body scan.")
+    p.add_argument("--body-scan-max-rev", type=float, default=1.0,
+                   help="revolutions to sweep before deciding. 1.0 = a full 360.")
+    p.add_argument("--body-scan-clear-m", type=float, default=1.5,
+                   help="a heading must reach this clearance to be worth turning to. If nothing "
+                        "does in a whole revolution the robot is genuinely enclosed and the scan "
+                        "defers to the brake rather than picking the least-bad direction.")
+    p.add_argument("--body-scan-timeout-s", type=float, default=30.0,
+                   help="hard abort for a sweep that never completes.")
+    p.add_argument("--body-scan-cooldown-s", type=float, default=15.0,
+                   help="minimum gap between sweeps, so it cannot spin repeatedly.")
+    p.add_argument("--reverse-when-stuck", choices=("off", "on"), default="off",
+                   help="back off when fully stopped with NO clear heading. At 0.35 m from a wide "
+                        "obstacle the gap sits ~68 deg off-centre, beyond both the head sweep "
+                        "(+/-23 deg) and the camera half-field (52.9 deg), so no scan can find it "
+                        "from there -- measured as every scan direction returning 0.33-0.41 m. "
+                        "Backing up to ~1 m puts the same edge near 45 deg, in view. REVERSING IS "
+                        "BLIND (no rear sensor), so it only ever RETRACES ground just walked "
+                        "forward. Off by default -- this is new motion.")
+    p.add_argument("--reverse-speed", type=float, default=0.05,
+                   help="reverse speed (m/s, magnitude). Deliberately slower than forward: the "
+                        "robot cannot see behind itself.")
+    p.add_argument("--reverse-max-m", type=float, default=0.35,
+                   help="hard cap on one back-off. The real bound is the RETRACE distance (how far "
+                        "it advanced since the way ahead was last clear); this is the second belt.")
+    p.add_argument("--reverse-timeout-s", type=float, default=8.0,
+                   help="abort a back-off that has not finished in this long.")
+    p.add_argument("--reverse-cooldown-s", type=float, default=10.0,
+                   help="minimum gap between back-offs, so it cannot oscillate forward and back.")
     p.add_argument("--obstacle-memory-s", type=float, default=2.0,
                    help="how long an unseen obstacle is carried forward by dead reckoning (s). "
                         "0 disables the memory. The robot has none otherwise: an obstacle tracked "

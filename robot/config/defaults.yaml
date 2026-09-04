@@ -41,6 +41,12 @@ head_track: 'off'
 head_track_deadband_deg: 6.0
 head_track_max_deg: 30.0
 head_yaw_sign: 1.0
+body_scan: 'off'
+body_scan_clear_m: 1.5
+body_scan_cooldown_s: 15.0
+body_scan_max_rev: 1.0
+body_scan_timeout_s: 30.0
+body_scan_yaw: 0.30
 calibration: null
 camera_height_m: 0.86
 cmd_file: '/tmp/k1_cmd'
@@ -156,6 +162,11 @@ gap_steer_rate: 0.2
 gap_steer_trigger_frac: 0.35
 gap_steer_yaw_relax: 0.5
 sector_frac: 0.33
+reverse_cooldown_s: 10.0
+reverse_max_m: 0.35
+reverse_speed: 0.05
+reverse_timeout_s: 8.0
+reverse_when_stuck: 'off'
 sector_audit: 'off'
 robot_height_m: 1.00
 robot_length_m: 0.35
