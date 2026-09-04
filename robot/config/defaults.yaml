@@ -42,7 +42,7 @@ head_track_deadband_deg: 6.0
 head_track_max_deg: 30.0
 head_yaw_sign: 1.0
 body_scan: 'off'
-body_scan_clear_m: 1.5
+body_scan_clear_m: 1.15
 body_scan_cooldown_s: 15.0
 body_scan_max_rev: 1.0
 body_scan_timeout_s: 30.0
@@ -109,7 +109,7 @@ obstacle_aged: 7
 obstacle_band_bot: 0.75
 obstacle_band_top: 0.3
 obstacle_brake: false
-obstacle_brake_start: 1.5
+obstacle_brake_start: 1.15
 obstacle_brake_stop: 0.7
 obstacle_corridor_frac: 0.55
 self_mask: ""

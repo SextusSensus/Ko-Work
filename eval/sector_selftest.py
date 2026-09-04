@@ -293,6 +293,32 @@ def main():
     check("a real object still brakes in ~every frame", rl > 0.90, True)
     check("...so the two are actually separated", (rl - sp) > 0.75, True)
 
+    # --- CONFIG INVARIANT: body_scan_clear_m must stay reachable -----------------------------
+    # Clearance can never exceed obstacle_brake_start: _nearest_blob discards returns beyond it,
+    # and _clr_vote votes "clear" AT it. So body_scan_clear_m > obstacle_brake_start is not a
+    # stricter setting, it is an UNREACHABLE one -- `clr >= body_scan_clear_m` never fires and the
+    # 360 escape sweep can never mark a heading clear. That shipped: BODY-SCAN start / abort:
+    # timeout in runs/20260904T021434Z_cfe43b6. Read the SHIPPED defaults, not the test's overrides,
+    # or lowering brake-start in defaults.yaml would re-break it with the gate still green.
+    print("\nconfig invariant (shipped defaults, not this test's overrides):")
+    _dy = {}
+    _cfg = os.path.join(os.path.dirname(os.path.abspath(a.node)), "config", "defaults.yaml")
+    try:
+        with open(_cfg, encoding="utf-8") as _fh:
+            for _ln in _fh:
+                _ln = _ln.strip()
+                if _ln and not _ln.startswith("#") and ":" in _ln:
+                    _k, _, _v = _ln.partition(":")
+                    _dy[_k.strip()] = _v.strip()
+    except OSError:
+        pass
+    _bs = float(_dy.get("obstacle_brake_start", "nan"))
+    _bc = float(_dy.get("body_scan_clear_m", "nan"))
+    _st = float(_dy.get("obstacle_brake_stop", "nan"))
+    print("  (defaults: brake_start=%.2f  body_scan_clear=%.2f  brake_stop=%.2f)" % (_bs, _bc, _st))
+    check("body_scan_clear_m <= obstacle_brake_start (escape reachable)", _bc <= _bs, True)
+    check("obstacle_brake_stop < obstacle_brake_start (ramp has width)", _st < _bs, True)
+
     # --- SELF-MASK: head-pan shift, and the no-wrap guarantee -------------------------------
     print("\nself-mask (head-pan shift):")
     gm = build(m, ["--corridor-mode", "footprint"])

@@ -4209,8 +4209,19 @@ def parse_args(argv):
                    help="grade forward vx down as an obstacle enters the forward DEPTH corridor "
                         "(geometry-triggered forward-clearance reflex; yaw untouched; only ever "
                         "REDUCES vx). Off by default. Composes with the forbid_forward keystone.")
-    p.add_argument("--obstacle-brake-start", type=float, default=1.5,
-                   help="corridor clearance (m) at/below which vx starts grading down")
+    p.add_argument("--obstacle-brake-start", type=float, default=1.15,
+                   help="corridor clearance (m) at/below which vx starts grading down. "
+                        "LOWERED 1.5 -> 1.15 on 2026-09-04 because the ramp was the source of the "
+                        "robot's hesitancy: the cap is vx_max*(clr-stop)/(start-stop), so at the "
+                        "measured MEDIAN clearance of 0.85 m a 1.5 start yielded 0.034 m/s -- 19% "
+                        "of full speed -- and the robot crept through open corridors. At 1.15 the "
+                        "same reading gives 0.060 m/s, +78%. Safe on its own terms: with vx_max "
+                        "0.18 and vx_slew 0.06 at 10 Hz the robot stops in about 3 cm, so 1.5 m was "
+                        "~50x its stopping distance and 1.15 m is still ~38x. "
+                        "COUPLED -- KEEP body_scan_clear_m <= THIS. _nearest_blob only considers "
+                        "returns nearer than this, and _clr_vote votes 'clear' AT this value, so a "
+                        "body_scan_clear_m above it makes 'this heading is clear' unreachable and "
+                        "silently kills the 360 escape sweep (it did exactly that until c43f161).")
     p.add_argument("--obstacle-brake-stop", type=float, default=0.7,
                    help="corridor clearance (m) at/below which forward vx is capped to 0 (turn/back only)")
     p.add_argument("--corridor-mode", choices=("frac", "footprint"), default="frac",
@@ -4247,10 +4258,14 @@ def parse_args(argv):
                    help="sweep rate (rad/s) for the body scan.")
     p.add_argument("--body-scan-max-rev", type=float, default=1.0,
                    help="revolutions to sweep before deciding. 1.0 = a full 360.")
-    p.add_argument("--body-scan-clear-m", type=float, default=1.5,
+    p.add_argument("--body-scan-clear-m", type=float, default=1.15,
                    help="a heading must reach this clearance to be worth turning to. If nothing "
                         "does in a whole revolution the robot is genuinely enclosed and the scan "
-                        "defers to the brake rather than picking the least-bad direction.")
+                        "defers to the brake rather than picking the least-bad direction. "
+                        "MUST BE <= --obstacle-brake-start: clearance can never exceed that value "
+                        "(_nearest_blob discards farther returns, _clr_vote votes clear AT it), so "
+                        "a larger value here is not 'stricter', it is UNREACHABLE and disables the "
+                        "escape sweep entirely. Enforced by sector_selftest.")
     p.add_argument("--body-scan-timeout-s", type=float, default=30.0,
                    help="hard abort for a sweep that never completes.")
     p.add_argument("--body-scan-cooldown-s", type=float, default=15.0,
