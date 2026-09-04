@@ -293,6 +293,29 @@ def main():
     check("a real object still brakes in ~every frame", rl > 0.90, True)
     check("...so the two are actually separated", (rl - sp) > 0.75, True)
 
+    # --- GROUND REJECTION: a path that DELETES obstacles needs its own gate ------------------
+    # The floor is a plane seen obliquely, so corr(depth, height) across it is strongly negative;
+    # a compact object's is not. Measured on recorded frames: floor -0.76..-0.94, near objects
+    # +0.45..+0.96. These assertions pin the direction of the test and, more importantly, that it
+    # stays INERT by default -- this is the one piece of today's work that can hide a real obstacle.
+    print("\nground rejection (default OFF, opt-in):")
+    gg_off = build(m, ["--corridor-mode", "footprint"])
+    n = 400
+    z_plane = np.linspace(0.5, 1.4, n)              # a plane: height tracks depth
+    h_plane = 0.86 - 0.62 * z_plane
+    z_obj = np.full(n, 0.60) + np.random.RandomState(3).normal(0, 0.01, n)
+    h_obj = np.linspace(0.30, 0.95, n)              # upright object: height varies, depth does not
+    check("OFF by default -> a floor-like plane is still an obstacle",
+          gg_off._is_ground(z_plane, h_plane, 3000), False)
+
+    gg = build(m, ["--corridor-mode", "footprint", "--ground-reject", "on"])
+    check("ON -> large oblique plane is rejected as ground", gg._is_ground(z_plane, h_plane, 3000), True)
+    check("ON -> upright object is NOT rejected", gg._is_ground(z_obj, h_obj, 3000), False)
+    check("ON -> a SMALL plane is kept (ambiguous stays braking)",
+          gg._is_ground(z_plane, h_plane, 100), False)
+    check("ON -> no height model (frac path) -> never rejects",
+          gg._is_ground(z_plane, None, 3000), False)
+
     # --- CONFIG INVARIANT: body_scan_clear_m must stay reachable -----------------------------
     # Clearance can never exceed obstacle_brake_start: _nearest_blob discards returns beyond it,
     # and _clr_vote votes "clear" AT it. So body_scan_clear_m > obstacle_brake_start is not a

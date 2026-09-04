@@ -834,7 +834,7 @@ class Follower:
                 log("OBSTACLE-MEMORY unseen: dead-reckoned to %.2fm" % pred)
             return pred
         return min(live, pred)                           # memory may only LOWER a clearance
-    def _nearest_blob(self, band, sel):
+    def _nearest_blob(self, band, sel, hgt=None):
         """Range of the nearest CONTIGUOUS obstacle inside `sel`, or None, plus the largest blob.
 
         WHY CONTIGUITY. The old gate was a bare pixel COUNT -- "N valid pixels anywhere" -- so
@@ -852,6 +852,8 @@ class Follower:
         try:
             from scipy import ndimage
         except Exception:  # noqa: BLE001 -- no scipy: degrade to the legacy count, never to nothing
+            # No ground rejection on this path: without labelling there are no per-blob statistics
+            # to test, and guessing would be worse than braking.
             v = band[sel]
             if v.size < self.a.obstacle_min_valid:
                 return None, int(v.size)
@@ -874,12 +876,59 @@ class Follower:
         # anti-glitch posture (a single bad pixel must not define the obstacle).
         best = None
         for li in keep[:16]:                       # bounded: many blobs means noise, not a scene
-            vv = band[lab == li]
-            if vv.size:
-                r = float(np.percentile(vv, self.a.obstacle_pctile))
-                if best is None or r < best:
-                    best = r
+            m = (lab == li)
+            vv = band[m]
+            if not vv.size:
+                continue
+            if self._is_ground(vv, hgt[m] if hgt is not None else None, int(sizes[li])):
+                continue                           # the floor is not an obstacle
+            r = float(np.percentile(vv, self.a.obstacle_pctile))
+            if best is None or r < best:
+                best = r
         return best, int(sizes.max())
+
+    def _is_ground(self, z, h, npx):
+        """True if this blob is the FLOOR seen obliquely rather than an object. Default OFF.
+
+        THE PROBLEM. _corridor_clearance computes height as camera_height - z*(v-cy)/f, which
+        assumes a LEVEL optical axis. Measured 2026-09-04 the camera sits ~10 deg off level, and the
+        resulting error is z*sin(pitch) -- it scales with RANGE, so the floor plane tilts in the
+        height model and climbs above --floor-margin-m into the hit box. Field result: clearances of
+        0.43-0.80 m on open floor, vx capped to zero, the robot refusing to cross an empty room.
+        Correcting the pitch directly needs to know it, and it could not be measured: only 4 of
+        ~1000 archived frames yield a confident ground fit (the floor is too small a share of these
+        views) and no recording before cfdcb14 carries the head pose.
+
+        WHAT THIS USES INSTEAD -- no pitch value required. The floor is a PLANE SEEN OBLIQUELY, so
+        computed height and depth are strongly correlated across it; a compact object is not.
+        Measured on recorded frames:
+            floor blobs      corr(z,h) = -0.76 .. -0.94,  thousands of px
+            near-object blobs corr(z,h) = +0.45 .. +0.96,  height span 0.06-0.15 m
+        Opposite signs, no overlap.
+
+        WHY THE THRESHOLDS ARE CONSERVATIVE AND WHY THIS IS OFF BY DEFAULT. A tabletop is also a
+        horizontal plane and correlates the same way, and blobs of 24-131 px at corr -0.89..-0.97
+        appear in the archive that I could not confidently label floor-or-object. Requiring a LARGE
+        area as well means this only fires on the corridor-filling floor and leaves every ambiguous
+        blob braking. That is the safe direction: a missed floor rejection costs a stall, a wrong
+        one costs a collision. Validated only against two recordings -- enough to ship as an opt-in,
+        not enough to make it the default."""
+        if self.a.ground_reject != "on" or h is None:
+            return False
+        if npx < self.a.ground_min_px or z.size < 8:
+            return False
+        zs = z.astype(np.float64)
+        hs = h.astype(np.float64)
+        if zs.std() < 1e-9 or hs.std() < 1e-9:       # degenerate: no plane to speak of
+            return False
+        c = float(np.corrcoef(zs, hs)[0, 1])
+        if not np.isfinite(c) or c >= self.a.ground_corr:
+            return False
+        if (time.monotonic() - getattr(self, "_ground_log_t", 0.0)) >= 1.0:
+            self._ground_log_t = time.monotonic()
+            log("GROUND-REJECT %dpx at %.2fm corr=%+.2f (<%.2f) -> floor plane, not an obstacle"
+                % (npx, float(np.percentile(zs, 20)), c, self.a.ground_corr))
+        return True
 
     def _self_mask_ok(self, sel, shape, sl=None, hshift=0.0):
         """Drop the robot's OWN pixels from an obstacle selection. Returns the new sel, or None if
@@ -1107,7 +1156,9 @@ class Follower:
                 sel = self._self_mask_ok(sel, d.shape, hshift=_hshift)
                 if sel is None:
                     return 0.0                           # unusable mask -> blind, forward forbidden
-                clr, blob = self._nearest_blob(band, sel)
+                # hgt goes in so a blob can be tested for being the FLOOR (see _is_ground). Only
+                # this path has a height model; the image-fraction path below does not.
+                clr, blob = self._nearest_blob(band, sel, hgt)
                 if clr is None:
                     return self._nodata(band, blob, "footprint")
                 return self._clr_vote(clr)
@@ -4224,6 +4275,27 @@ def parse_args(argv):
                         "silently kills the 360 escape sweep (it did exactly that until c43f161).")
     p.add_argument("--obstacle-brake-stop", type=float, default=0.7,
                    help="corridor clearance (m) at/below which forward vx is capped to 0 (turn/back only)")
+    p.add_argument("--ground-reject", choices=("off", "on"), default="off",
+                   help="drop blobs that are the FLOOR seen obliquely rather than an object. The "
+                        "hit box assumes a level camera; the real pitch is ~10 deg, and the "
+                        "resulting z*sin(pitch) error tilts the floor plane up into the height "
+                        "window -- measured as 0.43-0.80 m clearances on open floor with vx capped "
+                        "to zero. Rather than correct a pitch that could not be measured (only 4 of "
+                        "~1000 archived frames give a confident ground fit, and no recording before "
+                        "cfdcb14 carries the head pose), this uses the SHAPE: a plane seen obliquely "
+                        "has height strongly correlated with depth, a compact object does not. "
+                        "DEFAULT OFF -- validated against two recordings only, and a tabletop is "
+                        "also a plane. Turn it on deliberately and watch for GROUND-REJECT lines.")
+    p.add_argument("--ground-corr", type=float, default=-0.75,
+                   help="corr(depth,height) below which a blob is the ground. Measured: floor "
+                        "-0.76..-0.94, near objects +0.45..+0.96 -- opposite signs, no overlap. "
+                        "The default sits at the conservative end of the floor's own range.")
+    p.add_argument("--ground-min-px", type=int, default=500,
+                   help="a blob must ALSO be at least this large to be called ground. The real "
+                        "floor fills the corridor (thousands of px); the archive also holds 24-131 "
+                        "px blobs at corr -0.89..-0.97 that could not be confidently labelled "
+                        "floor-or-object, and this keeps every one of them braking. A missed floor "
+                        "rejection costs a stall; a wrong one costs a collision.")
     p.add_argument("--corridor-mode", choices=("frac", "footprint"), default="frac",
                    help="how the forward corridor is defined. frac = a fixed fraction of the IMAGE "
                         "(--obstacle-corridor-frac), whose PHYSICAL width scales with range: at "
