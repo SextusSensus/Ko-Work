@@ -491,6 +491,11 @@ class Follower:
         self._idsw_pending = None    # Phase 2.4 ID-stability debounce: track_id of an unconfirmed id-switch
         self._idsw_frames = 0        # Phase 2.4: consecutive frames the pending new track_id has persisted
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
+        # One corridor evaluation per depth frame (see _corridor_clearance). Keyed on the frame
+        # OBJECT: a new frame is a new array, so this needs no frame counter and no loop cooperation.
+        self._clr_cache_d = None
+        self._clr_cache_hs = None
+        self._clr_cache = None
         # SELF-MASK: which depth pixels are the ROBOT (built by selfmask.py, see _self_mask_ok).
         # Default off -> inert, so the shipped behaviour is unchanged until a mask is captured.
         self._self_mask = None
@@ -965,10 +970,35 @@ class Follower:
         return self._clr_vote(self.a.obstacle_brake_start)   # a clear frame VOTES clear
 
     def _corridor_clearance(self, apply_head_shift=True):
+        """ONE evaluation per depth frame. Memoized on the frame OBJECT, not on a frame counter, so
+        it is correct for every caller and needs no cooperation from the loop.
+
+        WHY. Two call sites sit on the tracked path -- the brake, and _gap_steer_bias's ARGUMENT,
+        which Python evaluates even when gap steer is off. Both cast a vote through _clr_vote, so
+        every tracked frame voted TWICE: obstacle_aged=7 was really a 3.5-frame window, and the
+        depth of the filter silently depended on whether obstacle_brake was armed (1 vote/frame
+        off, 2 on). It also paid for a second full-frame numpy pass on a loop already over budget
+        (measured dt p50 137-144 ms against a 100 ms target).
+        Memoizing fixes the vote arithmetic and gives the pass back. It also makes the offline gate
+        honest: a harness calling this once per frame now models the real loop exactly."""
+        if self.node is None:
+            return None
+        _d0 = self.node.latest_depth()
+        if (_d0 is not None and _d0 is self._clr_cache_d
+                and apply_head_shift is self._clr_cache_hs):
+            return self._clr_cache
+        _v = self._corridor_clearance_uncached(apply_head_shift)
+        self._clr_cache_d = _d0
+        self._clr_cache_hs = apply_head_shift
+        self._clr_cache = _v
+        return _v
+
+    def _corridor_clearance_uncached(self, apply_head_shift=True):
         """Robust nearest-obstacle range (m) in the forward corridor, or None. Cheap: a percentile
         over the central band of the depth map (excludes the floor via a mid-vertical band). Uses a
         PERCENTILE (not raw min) + an AGED-MEDIAN history -- Phase-2 finding: a single depth-glitch
-        pixel at a raw min would FALSE-BRAKE (the relock-lunge failure class)."""
+        pixel at a raw min would FALSE-BRAKE (the relock-lunge failure class).
+        Call _corridor_clearance(), never this: this one votes every time it runs."""
         if self.node is None:
             return None
         # FIX (audit 2026-07-04): use latest_depth()'s default freshness (max_age=0.5 == DEPTH_FRESH_S),
@@ -1614,6 +1644,15 @@ class Follower:
         Wrapped so a bridge write failure can never crash the loop."""
         try:
             self._hold()   # zero velocity first (no-op if already not walking)
+            # DROP THE CORRIDOR WINDOW. Votes are only produced on the TRACKED path, so across any
+            # non-tracked interval (stand, search, park, reacquire) _clr_hist freezes and the first
+            # frames after resuming are decided by evidence from before the gap -- from a different
+            # pose, possibly a different room. Whichever way it froze it is wrong: all-detections
+            # brakes for an obstacle that is gone; all-clear releases the brake on first sight of a
+            # wall. Clearing costs at most obstacle_aged frames of re-fill, during which the median
+            # is the CURRENT frame -- i.e. it degrades toward the raw reading, not toward silence.
+            self._clr_hist = []
+            self._clr_cache_d = None
             if self.drive and self.walking and self.bridge is not None and not self.standing:
                 self.bridge.prep()       # ChangeMode(kPrepare)
                 self.walking = False     # gate velocity off until we re-walk

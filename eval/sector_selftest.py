@@ -261,7 +261,17 @@ def main():
                 r0, r1, c0, c1, z = blob(rnd)
                 d[r0:r1, c0:c1] = z
             g.node.d = d
+            # CALL IT TWICE, LIKE THE LOOP DOES. The tracked path evaluates the corridor at the
+            # brake AND as _gap_steer_bias's argument. When those each cast a vote, a harness
+            # calling it once modelled a 7-deep window that was really 3.5 deep, and reported a
+            # speckle rate of 2.8% where the loop's own was ~10%. Memoization now collapses both to
+            # one evaluation per frame, so these two calls SHOULD agree -- and this line is what
+            # keeps that true: if the memo is ever broken, the double vote comes back and this
+            # measurement moves, instead of the gate quietly modelling a loop that does not exist.
             c = g._corridor_clearance()
+            c2 = g._corridor_clearance()
+            if c2 != c and not (c is None and c2 is None):
+                raise AssertionError("corridor memo broken: %r then %r on one frame" % (c, c2))
             capped += (c is not None and c <= 0.7)           # obstacle_brake_start stop end
         return capped / float(n)
 
