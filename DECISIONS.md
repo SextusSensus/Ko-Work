@@ -668,3 +668,43 @@ test harness that calls the function once per frame and so models the wrong loop
   regresses (21.8->12.5%). The crossover is p~0.5 by construction. The couch is exactly a
   sub-0.5 detection case (it returns nothing but edges), so the vote may have made the couch
   false-negative WORSE. Measure before trusting the brake around soft furniture.
+
+---
+
+## CLOSED (2026-09-04): the static SELF-MASK cannot work on this robot. The range cut is correct.
+
+**Do not re-attempt a pixel-position self-mask without reading this.** It looks like the obviously
+right answer, and it is not — twice now the reasoning has led back to it.
+
+**THE MEASUREMENT.** 1392 depth frames across 39 recordings, asking of every pixel: of the frames
+where it returned anything at all, what fraction read nearer than 0.45 m?
+
+    best pixel in the entire frame   0.207     (p99.99)
+    pixels near in >= 70% of frames  0
+    pixels near in >= 90% of frames  0
+
+The most consistently-near pixel in the image is near only **21%** of the time. An earlier build
+using per-pixel MAX gave zero masked pixels with the smallest per-pixel max at **3.33 m**.
+
+**WHY.** The method assumes the robot's body occupies FIXED PIXELS. First guess was that head
+panning broke it (head scan, probe) and that accumulating in the body frame would fix it. That is
+wrong — head motion alone cannot scatter a fixed structure this far. **The arms SWING with the
+gait.** The arm is a moving limb, not a fixed occluder, so no set of pixels is reliably "robot".
+
+**THE CONSEQUENCE, which reverses the earlier framing in this file.** `obstacle_self_range_m: 0.45`
+was described as a stopgap for the "proper" mask fix. It is the other way round: **the range cut is
+the right tool for a swinging limb**, because range is the thing that stays consistent about the arm
+while its image position does not. The 0.45 m blind spot is the price of the arm being where it is,
+not a compromise awaiting a better answer.
+
+**WHAT IS STILL TRUE.** `--self-mask` (c43f161, head-pan shift 4bfbccb) remains in the tree, default
+off and inert, and is still correct for a genuinely fixed occluder — a bracket, a cable, a mount. It
+is simply not the answer for a limb. `eval/selfmask_from_runs.py` is likewise still the right way to
+build one, and now prints the near-fraction distribution so an empty mask reads as THIS finding
+rather than as "no robot found".
+
+**THE ACTUAL PROPER FIX, if the 0.45 blind spot ever proves too costly:** forward kinematics from the
+arm joint angles. The robot knows where its own arms are; it can project them into the depth image
+per frame instead of inferring them from statistics. That is real work — a joint-state subscription
+plus a kinematic chain — not a config change, and it should be scoped only against evidence that
+0.45 m of blindness actually costs something in the field.
