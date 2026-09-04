@@ -888,8 +888,11 @@ $trackEscape=New-Object System.Windows.Forms.ComboBox; $trackEscape.DropDownStyl
 # plane, so this is the only control on this page that can HIDE a real obstacle. It is gated on a
 # large blob so ambiguous ones keep braking. Turn it on, then watch the log for GROUND-REJECT lines
 # and check each one was really floor.
-$lblFloor=New-Object System.Windows.Forms.Label; $lblFloor.Text='Floor rej'; $lblFloor.AutoSize=$true; $lblFloor.Location='716,204'; $grpTrackCtl.Controls.Add($lblFloor)
-$trackFloor=New-Object System.Windows.Forms.ComboBox; $trackFloor.DropDownStyle='DropDownList'; $trackFloor.Size='90,24'; $trackFloor.Location='778,200'; [void]$trackFloor.Items.AddRange(@('off','on')); $trackFloor.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackFloor)
+# PLACEMENT: the group's row is RowStyles Absolute 226, so anything past y~190 renders BELOW the
+# visible client area. The first version of this control sat at y=200 and was invisible -- the
+# control existed, the flag was wired, and there was simply no way to reach it. y=72 is the button
+# row, empty right of x~700.
+$trackFloor=New-Object System.Windows.Forms.CheckBox; $trackFloor.Text='Floor reject'; $trackFloor.AutoSize=$true; $trackFloor.Location='716,72'; $trackFloor.ForeColor=$accent; $trackFloor.Font=$fontBold; $grpTrackCtl.Controls.Add($trackFloor)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
 $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
@@ -1207,7 +1210,7 @@ function Get-TrackExtraArgs {
     # Floor reject: stop reading the floor plane as an obstacle (see the control's comment). Only
     # meaningful with the footprint hit box, which is the only path carrying a height model -- the
     # node ignores it otherwise, but sending it on the frac path would imply it does something.
-    if($trackFloor -and $trackFloor.SelectedItem -and [string]$trackFloor.SelectedItem -eq 'on' -and
+    if($trackFloor -and $trackFloor.Checked -and
        $trackHitBox -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
         $a += '--ground-reject on'
     }
