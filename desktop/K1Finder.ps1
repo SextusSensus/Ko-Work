@@ -853,6 +853,17 @@ $trackGap=New-Object System.Windows.Forms.ComboBox; $trackGap.DropDownStyle='Dro
 # also how the head yaw -> left/right convention gets confirmed from the cx-evidence field.
 $lblScan=New-Object System.Windows.Forms.Label; $lblScan.Text='Head scan'; $lblScan.AutoSize=$true; $lblScan.Location='716,134'; $grpTrackCtl.Controls.Add($lblScan)
 $trackScan=New-Object System.Windows.Forms.ComboBox; $trackScan.DropDownStyle='DropDownList'; $trackScan.Size='74,24'; $trackScan.Location='778,130'; [void]$trackScan.Items.AddRange(@('off','audit','on')); $trackScan.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackScan)
+
+# HIT BOX (--corridor-mode footprint). Selects depth returns by the robot's OWN physical extent
+# instead of a fixed image fraction. Fixes three measured faults of the fraction corridor:
+#   * it goes BLIND at hand height (0.67 m) inside 0.4 m, which is the clipped-hands report --
+#     an obstacle is tracked from 1.0 m down to 0.5 m then lost over the final 20 cm;
+#   * it MISSES an in-path object 0.30 m off centre at 0.5 m (reports it clear);
+#   * it is absurdly over-wide at range (5.09 m at 3.5 m), braking for furniture off the shoulder.
+# Also excludes the floor by GEOMETRY, so the band cap that caused the blindness is not needed.
+# Dimensions come from the robot's own URDF: 0.457 m lateral, 0.192 m deep, hands at 0.67 m.
+$lblHit=New-Object System.Windows.Forms.Label; $lblHit.Text='Hit box'; $lblHit.AutoSize=$true; $lblHit.Location='716,156'; $grpTrackCtl.Controls.Add($lblHit)
+$trackHitBox=New-Object System.Windows.Forms.ComboBox; $trackHitBox.DropDownStyle='DropDownList'; $trackHitBox.Size='90,24'; $trackHitBox.Location='778,152'; [void]$trackHitBox.Items.AddRange(@('frac','footprint')); $trackHitBox.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackHitBox)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
 $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
@@ -1161,6 +1172,13 @@ function Get-TrackExtraArgs {
     }
     # Head probe: one-shot startup head calibration (see the checkbox comment). Independent of
     # every follow feature -- it only measures and logs, then re-centres the head.
+    # Hit box: select depth by the robot's real extent (width, depth, height) instead of an image
+    # fraction. Sends the URDF-derived dimensions explicitly so the geometry is visible in the log.
+    if($trackHitBox -and $trackHitBox.SelectedItem -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
+        $a += ('--corridor-mode footprint --robot-width-m 0.46 --robot-length-m 0.20 ' +
+               '--robot-height-m 1.00 --camera-height-m 0.86 --floor-margin-m 0.06 ' +
+               '--corridor-margin-m 0.15')
+    }
     # Head scan: sweep the head when the brake has us stopped and pick the freest heading.
     # The scan needs /head_pose, which the node only subscribes when a head feature asks for it --
     # --head-scan does, so no extra flag is required here.
