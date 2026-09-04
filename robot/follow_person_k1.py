@@ -491,6 +491,23 @@ class Follower:
         self._idsw_pending = None    # Phase 2.4 ID-stability debounce: track_id of an unconfirmed id-switch
         self._idsw_frames = 0        # Phase 2.4: consecutive frames the pending new track_id has persisted
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
+        # SELF-MASK: which depth pixels are the ROBOT (built by selfmask.py, see _self_mask_ok).
+        # Default off -> inert, so the shipped behaviour is unchanged until a mask is captured.
+        self._self_mask = None
+        self._self_mask_warned = False
+        if getattr(args, "self_mask", ""):
+            try:
+                _m = np.load(args.self_mask).astype(bool)
+            except Exception as e:  # noqa: BLE001
+                # FAIL CLOSED. Asking for a self-mask and silently continuing without one drops
+                # straight back to the range cut that pinned vx at 0.00 for a whole session.
+                raise SystemExit("SELF-MASK-ERROR cannot load %s (%s) -- refusing to start. "
+                                 "Capture one with selfmask.py, or drop --self-mask."
+                                 % (args.self_mask, e))
+            self._self_mask = _m
+            log("SELF-MASK %s loaded: %dx%d, %d px (%.1f%%) are the robot"
+                % (args.self_mask, _m.shape[1], _m.shape[0], int(_m.sum()),
+                   100.0 * float(_m.sum()) / max(1, _m.size)))
         self._obs_mem = None         # (range, odom_x, odom_y, theta, t) of the last SEEN obstacle
         self._rev_state = None       # (x0, y0, t0, budget_m) while backing off, else None
         self._bs = None              # body-scan state while sweeping a full turn, else None
@@ -859,6 +876,39 @@ class Follower:
                     best = r
         return best, int(sizes.max())
 
+    def _self_mask_ok(self, sel, shape, sl=None):
+        """Drop the robot's OWN pixels from an obstacle selection. Returns the new sel, or None if
+        the mask is unusable (caller must then treat the frame as blind, never as clear).
+
+        WHY POSITION AND NOT RANGE. --obstacle-self-range-m is a range cut, and range cannot
+        separate the robot from the world: measured on 2026-09-04 the body returned 0.22-0.35 m,
+        the same distances a real obstacle occupies. Every threshold therefore either lets the body
+        through (0.22: clearance pinned at 0.22-0.35 m, vx=+0.00 for a whole session with the
+        operator 4.39 m away) or blinds the robot to genuine obstacles (0.35 measured doing exactly
+        that). The run that proved it: across 57 deg of body rotation at the 0.30 rad/s yaw clamp
+        and operator ranges from 1.00 m to 4.39 m, the near return never left 0.22-0.35 m. Nothing
+        in the world is rigid to the robot like that -- it was the robot.
+        Position DOES separate them, which is the same asymmetry selfmask.py exploits to build the
+        mask (per-pixel max over time: a world pixel varies, a body pixel never does).
+
+        SHAPE MISMATCH IS FAIL-CLOSED. A mask built at another resolution would blank the WRONG
+        pixels -- it would hide part of the world and expose part of the robot, silently. So a
+        mismatch disables forward drive rather than being ignored."""
+        if self._self_mask is None:
+            return sel
+        m = self._self_mask
+        if m.shape != shape:
+            if not self._self_mask_warned:
+                self._self_mask_warned = True
+                log("SELF-MASK-SHAPE mask is %s but depth is %s -- refusing to use it, and "
+                    "forbidding forward (a mask for the wrong resolution masks the wrong pixels). "
+                    "Re-run selfmask.py against this camera, or drop --self-mask."
+                    % (m.shape, shape))
+            return None
+        if sl is not None:
+            m = m[sl]
+        return sel & ~m
+
     def _clr_vote(self, clr):
         """Aged median over EVERY evaluated frame -- the clear ones as well as the detections.
 
@@ -877,8 +927,19 @@ class Follower:
         (both mean 'no cap' to _obstacle_vx_cap; None keeps the clear case off the CLEARANCE log)."""
         self._clr_hist.append(float(clr))
         self._clr_hist = self._clr_hist[-max(1, self.a.obstacle_aged):]
-        m = float(sorted(self._clr_hist)[len(self._clr_hist) // 2])
-        return None if m >= self.a.obstacle_brake_start else m
+        return float(sorted(self._clr_hist)[len(self._clr_hist) // 2])
+        # ALWAYS A FLOAT, NEVER None. The first cut of this returned None when the median reached
+        # obstacle_brake_start, reasoning that None and a large float both mean "no cap" to
+        # _obstacle_vx_cap. They do -- but None is NOT synonymous downstream: _obstacle_vx_cap,
+        # _gap_steer_bias and _reverse_step:733 read None as CLEAR, while _head_scan_finish,
+        # _body_scan_step and _reverse_step:721 read it as BLOCKED (fail-closed "cannot see !=
+        # nothing there"). _reverse_step therefore contradicted itself twelve lines apart, and
+        # because body_scan_clear_m (1.5) == obstacle_brake_start (1.5), `clr >= body_scan_clear_m`
+        # became unreachable and the 360 escape sweep could never mark ANY heading clear -- field
+        # confirmation in runs/20260904T021434Z_cfe43b6/k1_follow.err: BODY-SCAN start at L974 and
+        # L1486, BODY-SCAN abort: timeout at L1264. Returning the float keeps one meaning for None
+        # ("no depth frame at all", set at the top of _corridor_clearance) and lets every consumer
+        # keep its own reading of a number.
 
     def _nodata(self, band, blob_px, where):
         """Decide what 'not enough obstacle evidence' MEANS, and say so out loud.
@@ -989,6 +1050,11 @@ class Follower:
                        & np.isfinite(band) & (lat <= half)
                        & (hgt >= self.a.floor_margin_m)
                        & (hgt <= max(0.2, self.a.robot_height_m)))
+                # The range cut above is a BACKSTOP once a self-mask is loaded; the mask is what
+                # actually separates body from world (see _self_mask_ok).
+                sel = self._self_mask_ok(sel, d.shape)
+                if sel is None:
+                    return 0.0                           # unusable mask -> blind, forward forbidden
                 clr, blob = self._nearest_blob(band, sel)
                 if clr is None:
                     return self._nodata(band, blob, "footprint")
@@ -1001,6 +1067,9 @@ class Follower:
             # footprint one did -- and it is the DEFAULT mode, so the fix has to land here or the
             # safety hole stays open for everyone who has not opted into the hit box.
             sel = (band > 0.15) & (band < self.a.obstacle_max_m) & np.isfinite(band)
+            sel = self._self_mask_ok(sel, d.shape, (slice(y0, y1), slice(x0, x1)))
+            if sel is None:
+                return 0.0                               # unusable mask -> blind, forward forbidden
             clr, blob = self._nearest_blob(band, sel)
             if clr is None:
                 return self._nodata(band, blob, "frac")
@@ -4136,6 +4205,12 @@ def parse_args(argv):
                    help="forget the remembered obstacle once the robot has turned this far since "
                         "seeing it. The estimate is forward-only, and after a turn what was ahead "
                         "is no longer ahead.")
+    p.add_argument("--self-mask", default="",
+                   help="path to a boolean .npy from selfmask.py marking the robot's OWN depth "
+                        "pixels. Position beats range here: the body returns 0.22-0.35 m, the same "
+                        "distances a real obstacle occupies, so no --obstacle-self-range-m value "
+                        "separates them. Empty = off (range cut only). A path that will not load "
+                        "is fatal, not ignored.")
     p.add_argument("--obstacle-self-range-m", type=float, default=0.22,
                    help="ignore depth returns nearer than this (m) -- that close, the camera is "
                         "looking at the ROBOT, not the world. The head camera sits at 0.86 m with a "
