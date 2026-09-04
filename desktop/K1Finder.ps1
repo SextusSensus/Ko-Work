@@ -876,6 +876,20 @@ $trackHitBox=New-Object System.Windows.Forms.ComboBox; $trackHitBox.DropDownStyl
 #             one IS blind (no rear sensor), so it only ever retraces ground just walked forward.
 $lblEsc=New-Object System.Windows.Forms.Label; $lblEsc.Text='Escape'; $lblEsc.AutoSize=$true; $lblEsc.Location='716,178'; $grpTrackCtl.Controls.Add($lblEsc)
 $trackEscape=New-Object System.Windows.Forms.ComboBox; $trackEscape.DropDownStyle='DropDownList'; $trackEscape.Size='90,24'; $trackEscape.Location='778,174'; [void]$trackEscape.Items.AddRange(@('off','spin','spin+back')); $trackEscape.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackEscape)
+# FLOOR REJECT (--ground-reject). The hit box computes a pixel's height assuming a LEVEL camera;
+# the real pitch is ~10 deg, and the resulting z*sin(pitch) error scales with RANGE, so the floor
+# plane tilts up into the height window and open floor reads as an obstacle at 0.43-0.80 m with vx
+# capped to zero -- 97 of 219 clearance readings in one 300 s run, AFTER the robot's own arm had
+# already been excluded. The pitch itself could not be measured (only 4 of ~1000 archived frames
+# give a confident ground fit, and no recording carries the head pose), so this identifies the floor
+# by SHAPE instead: a plane seen obliquely has height strongly correlated with depth (-0.76..-0.94
+# measured) where a compact object does not (+0.45..+0.96).
+# DEFAULT OFF, and deliberately a choice rather than a default: a tabletop is also a horizontal
+# plane, so this is the only control on this page that can HIDE a real obstacle. It is gated on a
+# large blob so ambiguous ones keep braking. Turn it on, then watch the log for GROUND-REJECT lines
+# and check each one was really floor.
+$lblFloor=New-Object System.Windows.Forms.Label; $lblFloor.Text='Floor rej'; $lblFloor.AutoSize=$true; $lblFloor.Location='716,204'; $grpTrackCtl.Controls.Add($lblFloor)
+$trackFloor=New-Object System.Windows.Forms.ComboBox; $trackFloor.DropDownStyle='DropDownList'; $trackFloor.Size='90,24'; $trackFloor.Location='778,200'; [void]$trackFloor.Items.AddRange(@('off','on')); $trackFloor.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackFloor)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
 $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
@@ -1189,6 +1203,13 @@ function Get-TrackExtraArgs {
     if($trackEscape -and $trackEscape.SelectedItem -and [string]$trackEscape.SelectedItem -ne 'off'){
         $a += '--body-scan on'
         if([string]$trackEscape.SelectedItem -eq 'spin+back'){ $a += '--reverse-when-stuck on' }
+    }
+    # Floor reject: stop reading the floor plane as an obstacle (see the control's comment). Only
+    # meaningful with the footprint hit box, which is the only path carrying a height model -- the
+    # node ignores it otherwise, but sending it on the frac path would imply it does something.
+    if($trackFloor -and $trackFloor.SelectedItem -and [string]$trackFloor.SelectedItem -eq 'on' -and
+       $trackHitBox -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
+        $a += '--ground-reject on'
     }
     # Hit box: select depth by the robot's real extent (width, depth, height) instead of an image
     # fraction. Sends the URDF-derived dimensions explicitly so the geometry is visible in the log.
