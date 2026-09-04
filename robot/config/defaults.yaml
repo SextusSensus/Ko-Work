@@ -31,7 +31,8 @@ head_pose_topic: '/head_pose'
 head_probe: false
 head_scan: 'off'
 head_scan_cooldown_s: 6.0
-head_scan_dwell_s: 0.0
+head_scan_dwell_s: 2.0
+head_scan_move_m: 0.30
 head_scan_hint_ttl_s: 8.0
 head_scan_max_deg: 30.0
 head_scan_settle_s: 1.0

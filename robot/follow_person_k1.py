@@ -491,6 +491,7 @@ class Follower:
         self._idsw_pending = None    # Phase 2.4 ID-stability debounce: track_id of an unconfirmed id-switch
         self._idsw_frames = 0        # Phase 2.4: consecutive frames the pending new track_id has persisted
         self._scan_blocked_since = None   # when the CURRENT continuous block began (head-scan dwell)
+        self._scan_barren = None          # odom (x,y) where a scan found NO clear heading, else None
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
         # One corridor evaluation per depth frame (see _corridor_clearance). Keyed on the frame
         # OBJECT: a new frame is a new array, so this needs no frame counter and no loop cooperation.
@@ -1463,6 +1464,18 @@ class Follower:
                 return False
             if (now - self._scan_last_t) < max(0.0, self.a.head_scan_cooldown_s):
                 return False
+            # Refuse to repeat a sweep that already came up empty from this spot (see
+            # _head_scan_finish). Fail OPEN, deliberately: with no odometry we cannot tell whether
+            # the robot moved, so we allow the scan rather than suppress it forever -- a needless
+            # sweep is cheap, a permanently disabled escape is not.
+            if self._scan_barren is not None:
+                _now_xy = self._odom_xy()
+                if _now_xy is not None:
+                    _moved = math.hypot(_now_xy[0] - self._scan_barren[0],
+                                        _now_xy[1] - self._scan_barren[1])
+                    if _moved < max(0.0, self.a.head_scan_move_m):
+                        return False
+                self._scan_barren = None
             if self.node is None or self.node.head_yaw(max_age=1.0) is None:
                 if (now - getattr(self, "_scan_warn_t", 0.0)) > 10.0:
                     self._scan_warn_t = now
@@ -1526,11 +1539,27 @@ class Follower:
             return True
         return False
 
+    def _odom_xy(self):
+        """(x, y) planar odometry, or None when it is absent or stale. None means UNKNOWN, and
+        every caller must fail open on it -- odom_topic defaults to '' (no subscription at all)."""
+        try:
+            od = self.node.latest_odom() if self.node is not None else None
+        except Exception:  # noqa: BLE001
+            return None
+        return (float(od[0]), float(od[1])) if od else None
+
     def _head_scan_finish(self, hy_centre):
         """Turn the sweep into a committed side, logging the whole map so a wrong call is
         diagnosable from the log alone rather than by re-running the robot."""
         self._scan_state = "idle"
         self._scan_last_t = time.monotonic()
+        # FRUITLESS-SCAN BACKOFF. A sweep that finds no clear heading will find no clear heading
+        # again if nothing has changed -- same robot, same pose, same room -- so repeating it on the
+        # base cooldown is pure cost: the robot holds still, sweeps, concludes nothing, and does it
+        # again. Measured 16 starts in one 300 s run. _scan_barren records where a scan came up
+        # empty; the idle branch then refuses to re-sweep until the robot has actually MOVED past
+        # --head-scan-move-m or the way ahead has cleared. A useful scan clears it immediately, so
+        # a scan that DOES find a way is never penalised.
         parts = []
         best_clr = None
         best_yaw = 0.0
@@ -1556,10 +1585,15 @@ class Follower:
         bs = self.a.obstacle_brake_start
         if best_clr is None or best_clr < bs:
             self._scan_hint = 0
+            # Came up empty: remember WHERE, so we do not immediately repeat it from the same spot.
+            self._scan_barren = self._odom_xy()
             log("HEAD-SCAN map [%s] centred %+.1fdeg -> NO clear heading (best %s, need >=%.2fm)%s"
+                "  [no re-scan until the robot moves %.2fm or the way clears]"
                 % (", ".join(parts), math.degrees(hy_centre),
-                   ("%.2fm" % best_clr) if best_clr is not None else "none", bs, eviden))
+                   ("%.2fm" % best_clr) if best_clr is not None else "none", bs, eviden,
+                   self.a.head_scan_move_m))
             return
+        self._scan_barren = None            # a useful scan is never penalised
         dead = math.radians(max(1.0, self.a.head_scan_tol_deg))
         if abs(best_yaw) <= dead:
             self._scan_hint = 0
@@ -4345,7 +4379,15 @@ def parse_args(argv):
                    help="sweep rate (rad/s) for the body scan.")
     p.add_argument("--body-scan-max-rev", type=float, default=1.0,
                    help="revolutions to sweep before deciding. 1.0 = a full 360.")
-    p.add_argument("--head-scan-dwell-s", type=float, default=0.0,
+    p.add_argument("--head-scan-move-m", type=float, default=0.30,
+                   help="after a sweep finds NO clear heading, refuse to sweep again until the "
+                        "robot has moved at least this far (or the way ahead clears). Repeating a "
+                        "fruitless scan from the same pose returns the same answer at the cost of "
+                        "holding the robot still -- a scan that DOES find a way clears the backoff "
+                        "immediately, so the useful stop-scan-steer path is never penalised. "
+                        "Fails OPEN without odometry (odom_topic defaults to ''): a needless sweep "
+                        "is cheap, a permanently disabled escape is not.")
+    p.add_argument("--head-scan-dwell-s", type=float, default=2.0,
                    help="the way ahead must stay blocked CONTINUOUSLY for this long before the head "
                         "scan starts. 0 = the shipped behaviour (scan on the first blocked frame). "
                         "WHY: stops flicker -- CLEARANCE, then blob=0px clear, then CLEARANCE -- so "

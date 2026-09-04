@@ -852,7 +852,11 @@ $trackGap=New-Object System.Windows.Forms.ComboBox; $trackGap.DropDownStyle='Dro
 # Start on 'audit' -- it performs the sweep and logs the HEAD-SCAN map without steering, which is
 # also how the head yaw -> left/right convention gets confirmed from the cx-evidence field.
 $lblScan=New-Object System.Windows.Forms.Label; $lblScan.Text='Head scan'; $lblScan.AutoSize=$true; $lblScan.Location='716,134'; $grpTrackCtl.Controls.Add($lblScan)
-$trackScan=New-Object System.Windows.Forms.ComboBox; $trackScan.DropDownStyle='DropDownList'; $trackScan.Size='74,24'; $trackScan.Location='778,130'; [void]$trackScan.Items.AddRange(@('off','audit','on')); $trackScan.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackScan)
+# 'patient' == on, but the way ahead must stay blocked 2 s before it sweeps. The scan otherwise
+# starts on the FIRST blocked frame, and stops flicker (CLEARANCE, then blob=0px clear, then
+# CLEARANCE), so it swept constantly and mostly aborted mid-sweep -- 16 starts in one 300 s run,
+# most ending "ABORT orphaned". A real obstacle holds the block; flicker does not.
+$trackScan=New-Object System.Windows.Forms.ComboBox; $trackScan.DropDownStyle='DropDownList'; $trackScan.Size='74,24'; $trackScan.Location='778,130'; [void]$trackScan.Items.AddRange(@('off','audit','on','patient')); $trackScan.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackScan)
 
 # HIT BOX (--corridor-mode footprint). Selects depth returns by the robot's OWN physical extent
 # instead of a fixed image fraction. Fixes three measured faults of the fraction corridor:
