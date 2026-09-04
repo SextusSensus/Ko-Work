@@ -4500,7 +4500,7 @@ def parse_args(argv):
                         "has height strongly correlated with depth, a compact object does not. "
                         "DEFAULT OFF -- validated against two recordings only, and a tabletop is "
                         "also a plane. Turn it on deliberately and watch for GROUND-REJECT lines.")
-    p.add_argument("--ground-corr", type=float, default=-0.75,
+    p.add_argument("--ground-corr", type=float, default=-0.60,
                    help="corr(depth,height) below which a blob is the ground. Measured: floor "
                         "-0.76..-0.94, near objects +0.45..+0.96 -- opposite signs, no overlap. "
                         "The default sits at the conservative end of the floor's own range.")
