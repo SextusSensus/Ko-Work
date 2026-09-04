@@ -859,6 +859,27 @@ class Follower:
                     best = r
         return best, int(sizes.max())
 
+    def _clr_vote(self, clr):
+        """Aged median over EVERY evaluated frame -- the clear ones as well as the detections.
+
+        The window used to be appended to ONLY on the detection path: a frame that found no
+        obstacle returned early, so its verdict never entered the filter. That made the median a
+        LATCH rather than a vote -- computed from a list holding nothing but detections, it could
+        only ever report an obstacle, and a single speckle blob held the brake down until three
+        further detections replaced it, which clear frames were unable to do.
+        Field evidence, run 20260904T014601Z: depth speckle cleared the 12px blob threshold in 45%
+        of frames at a random 0.5-1.0 m range; those were the only frames recorded; the brake pinned
+        vx to 0.00 for a whole session in open space while gap steer rotated against a phantom.
+        A REAL obstacle is detected in ~every frame and still wins the median, so voting rejects
+        speckle WITHOUT weakening the brake -- which is why this is the fix and not a higher blob
+        threshold, since that would trade this false positive for more of the couch false negative.
+        Returns the median, or None when the median sits at/beyond the range where braking begins
+        (both mean 'no cap' to _obstacle_vx_cap; None keeps the clear case off the CLEARANCE log)."""
+        self._clr_hist.append(float(clr))
+        self._clr_hist = self._clr_hist[-max(1, self.a.obstacle_aged):]
+        m = float(sorted(self._clr_hist)[len(self._clr_hist) // 2])
+        return None if m >= self.a.obstacle_brake_start else m
+
     def _nodata(self, band, blob_px, where):
         """Decide what 'not enough obstacle evidence' MEANS, and say so out loud.
 
@@ -877,7 +898,10 @@ class Follower:
             log("OBSTACLE-NODATA %s blob=%dpx need=%dpx frame_valid=%d -> %s"
                 % (where, blob_px, self.a.obstacle_min_blob_px, fv,
                    "SENSOR BLIND, forward suppressed" if blind else "window empty, clear"))
-        return 0.0 if blind else None
+        if blind:
+            return 0.0          # fail closed, and deliberately NOT a vote: a blind frame is not
+                                # evidence of clear, so it must not dilute the window either way.
+        return self._clr_vote(self.a.obstacle_brake_start)   # a clear frame VOTES clear
 
     def _corridor_clearance(self, apply_head_shift=True):
         """Robust nearest-obstacle range (m) in the forward corridor, or None. Cheap: a percentile
@@ -968,9 +992,7 @@ class Follower:
                 clr, blob = self._nearest_blob(band, sel)
                 if clr is None:
                     return self._nodata(band, blob, "footprint")
-                self._clr_hist.append(clr)
-                self._clr_hist = self._clr_hist[-max(1, self.a.obstacle_aged):]
-                return float(sorted(self._clr_hist)[len(self._clr_hist) // 2])
+                return self._clr_vote(clr)
             x0 = int(max(0, min(w - 2, w * (0.5 - cf / 2.0) + _hshift)))
             x1 = int(max(x0 + 1, min(w, w * (0.5 + cf / 2.0) + _hshift)))
             band = d[y0:y1, x0:x1]
@@ -984,9 +1006,7 @@ class Follower:
                 return self._nodata(band, blob, "frac")
         except Exception:  # noqa: BLE001 -- a reflex must never break the loop
             return None
-        self._clr_hist.append(clr)
-        self._clr_hist = self._clr_hist[-max(1, self.a.obstacle_aged):]
-        return float(sorted(self._clr_hist)[len(self._clr_hist) // 2])   # aged-median
+        return self._clr_vote(clr)   # aged-median vote over detections AND clear frames
 
     # ---- HEAD TRACKING (stage 3). Point the head at the operator so the BODY is free to turn --
     # a detour then costs no lock margin, which is the constraint every gap-steer loss hit today
@@ -4163,7 +4183,7 @@ def parse_args(argv):
                         "still used for the frame-health check and as the no-scipy fallback.")
     p.add_argument("--obstacle-min-valid", type=int, default=40,
                    help="min valid corridor depth pixels to trust a clearance reading")
-    p.add_argument("--obstacle-aged", type=int, default=3,
+    p.add_argument("--obstacle-aged", type=int, default=7,
                    help="aged-median window (frames) over the clearance -> a single glitch can't brake")
     p.add_argument("--obstacle-target-margin", type=float, default=0.4,
                    help="don't brake unless the corridor obstacle is at least this much CLOSER than "

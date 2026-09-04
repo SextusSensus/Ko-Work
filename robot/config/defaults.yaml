@@ -105,7 +105,7 @@ max_follow_range: 0.0
 max_seconds: 120.0
 min_depth_fps: 5.0
 min_safe_range: 0.6
-obstacle_aged: 3
+obstacle_aged: 7
 obstacle_band_bot: 0.75
 obstacle_band_top: 0.3
 obstacle_brake: false
