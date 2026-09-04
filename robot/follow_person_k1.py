@@ -881,9 +881,21 @@ class Follower:
                     best = r
         return best, int(sizes.max())
 
-    def _self_mask_ok(self, sel, shape, sl=None):
+    def _self_mask_ok(self, sel, shape, sl=None, hshift=0.0):
         """Drop the robot's OWN pixels from an obstacle selection. Returns the new sel, or None if
         the mask is unusable (caller must then treat the frame as blind, never as clear).
+
+        THE HEAD PANS, SO THE MASK MUST TOO. A pixel mask assumes the body sits at FIXED pixels,
+        which holds only for a camera bolted rigidly to the body. This head yaws, so the arm SWEEPS
+        across the image and a mask captured at one head angle is wrong at every other. Measured
+        2026-09-04: per-pixel max depth over 1023 frames from 31 recordings masked ZERO pixels at
+        0.45 m -- not because the arm is absent (it is in 87% of one run's frames) but because with
+        the head panning, every pixel eventually sees something far, and one far reading unmasks a
+        pixel permanently. That is also why the original live capture was untrustworthy.
+        The arm is body-fixed, exactly like body-forward, so it moves in the image by the SAME
+        -head_yaw*focal term the corridor already applies. The mask is therefore captured HEAD
+        CENTRED and shifted by that term here. Shifting fills with False (not wrap): a column
+        rotated in from the far edge would mask real world.
 
         WHY POSITION AND NOT RANGE. --obstacle-self-range-m is a range cut, and range cannot
         separate the robot from the world: measured on 2026-09-04 the body returned 0.22-0.35 m,
@@ -910,6 +922,16 @@ class Follower:
                     "Re-run selfmask.py against this camera, or drop --self-mask."
                     % (m.shape, shape))
             return None
+        k = int(round(hshift))
+        if k:
+            sh = np.zeros_like(m)
+            if k > 0:
+                if k < m.shape[1]:
+                    sh[:, k:] = m[:, :-k]
+            else:
+                if -k < m.shape[1]:
+                    sh[:, :k] = m[:, -k:]
+            m = sh                                   # False-filled, never wrapped
         if sl is not None:
             m = m[sl]
         return sel & ~m
@@ -1082,7 +1104,7 @@ class Follower:
                        & (hgt <= max(0.2, self.a.robot_height_m)))
                 # The range cut above is a BACKSTOP once a self-mask is loaded; the mask is what
                 # actually separates body from world (see _self_mask_ok).
-                sel = self._self_mask_ok(sel, d.shape)
+                sel = self._self_mask_ok(sel, d.shape, hshift=_hshift)
                 if sel is None:
                     return 0.0                           # unusable mask -> blind, forward forbidden
                 clr, blob = self._nearest_blob(band, sel)
@@ -1097,7 +1119,8 @@ class Follower:
             # footprint one did -- and it is the DEFAULT mode, so the fix has to land here or the
             # safety hole stays open for everyone who has not opted into the hit box.
             sel = (band > 0.15) & (band < self.a.obstacle_max_m) & np.isfinite(band)
-            sel = self._self_mask_ok(sel, d.shape, (slice(y0, y1), slice(x0, x1)))
+            sel = self._self_mask_ok(sel, d.shape, (slice(y0, y1), slice(x0, x1)),
+                                     hshift=_hshift)
             if sel is None:
                 return 0.0                               # unusable mask -> blind, forward forbidden
             clr, blob = self._nearest_blob(band, sel)

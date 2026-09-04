@@ -293,6 +293,35 @@ def main():
     check("a real object still brakes in ~every frame", rl > 0.90, True)
     check("...so the two are actually separated", (rl - sp) > 0.75, True)
 
+    # --- SELF-MASK: head-pan shift, and the no-wrap guarantee -------------------------------
+    print("\nself-mask (head-pan shift):")
+    gm = build(m, ["--corridor-mode", "footprint"])
+    gm.node = FakeNode(None, None, None)
+    msk = np.zeros((448, 544), dtype=bool)
+    msk[200:260, 20:60] = True                     # a body blob near the LEFT edge, as measured
+    gm._self_mask = msk
+    gm._self_mask_warned = False
+    base = np.ones((448, 544), dtype=bool)
+
+    def masked_cols(hshift):
+        out = gm._self_mask_ok(base.copy(), (448, 544), hshift=hshift)
+        cols = np.where((~out).any(axis=0))[0]      # columns holding ANY masked pixel
+        return (int(cols.min()), int(cols.max())) if cols.size else None
+
+    check("head centred -> mask sits where captured", masked_cols(0.0), (20, 59))
+    check("head panned -> mask moves with the body", masked_cols(+40.0), (60, 99))
+    check("...and the other way too", masked_cols(-15.0), (5, 44))
+    # A wrapped shift would rotate the blob in from the far edge and mask real world there.
+    far = gm._self_mask_ok(base.copy(), (448, 544), hshift=-30.0)
+    check("shift FILLS, never wraps (right edge stays visible)", bool(far[:, 500:].all()), True)
+    gm._self_mask = None                            # default state: the feature is off
+    check("no mask loaded -> selection untouched",
+          bool(gm._self_mask_ok(base.copy(), (448, 544)).all()), True)
+    gm._self_mask = msk
+    # Fail-closed: a mask built at another resolution must disable forward, not be ignored.
+    check("wrong-resolution mask -> None (forbids forward)",
+          gm._self_mask_ok(base.copy(), (240, 320)), None)
+
     print("")
     if fails:
         print("SECTOR-SELFTEST-FAIL %d: %s" % (len(fails), ", ".join(fails)))

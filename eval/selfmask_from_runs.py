@@ -96,6 +96,10 @@ def main():
     ap.add_argument("--min-frames", type=int, default=200,
                     help="refuse to write a mask built on less evidence than this")
     ap.add_argument("--report", action="store_true", help="print mask geometry, write nothing")
+    ap.add_argument("--save-max", default="",
+                    help="also write the raw per-pixel MAX-depth map (.npy). Decoding the archive "
+                         "takes ~13 min; with this map every later threshold question is instant, "
+                         "and it is the artefact that shows WHY a mask came out empty")
     a = ap.parse_args()
 
     dirs = sorted(d for d in glob.glob(os.path.join(a.runs, "*"))
@@ -130,6 +134,23 @@ def main():
               "that silently blinds pixels" % (n_frames, a.min_frames))
         return 1
 
+    if a.save_max:
+        os.makedirs(os.path.dirname(os.path.abspath(a.save_max)) or ".", exist_ok=True)
+        np.save(a.save_max, mx)
+        print("wrote per-pixel max-depth map -> %s" % a.save_max)
+    # WHY THE MASK CAN COME OUT EMPTY, and it is not a threshold to fiddle with. This method
+    # assumes the robot's body sits at FIXED PIXELS. That holds only for a camera rigidly bolted to
+    # the body. The K1 PANS ITS HEAD (head tracking, head scan), so the camera rotates relative to
+    # the body and the arm SWEEPS across the image; a single far reading through a pixel unmasks it
+    # forever. Measured 2026-09-04: 1023 frames over 31 recordings produced ZERO masked pixels at
+    # 0.45 m. Print the near-miss distribution so an empty mask reads as this, not as "no robot".
+    finite = mx[np.isfinite(mx)]
+    if finite.size:
+        print("\nper-pixel MAX depth (a pixel is masked when its max stays below --near-m):")
+        for q in (0.0, 0.01, 0.1, 1.0, 5.0):
+            print("   p%-5s %.2f m" % (q, float(np.percentile(finite, q))))
+        for t in (0.30, 0.45, 0.60, 0.80, 1.00):
+            print("   pixels always nearer than %.2f m: %d" % (t, int((mx < t).sum())))
     mask = (mx < a.near_m)
     h, w = mask.shape
     frac = 100.0 * mask.sum() / mask.size
