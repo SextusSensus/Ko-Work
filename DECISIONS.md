@@ -854,3 +854,35 @@ LOCALIZATION PROVEN END-TO-END + VERIFIED SDK API (2026-09-07, on the laptop)
   usb_eth0, robot on 192.168.11.x (DHCP or static); (b) prove RELOC-OK on the robot; (c) measure
   --yaw-offset-deg with the bridge's --verify-frame (drive a known straight line + 90 deg turn);
   (d) run the bridge, follow with --odom-topic /aurora_odom --localmap on.
+
+MAP-ASSIST -- prebuilt map REINFORCES a confirmed live obstacle (2026-09-07, commit e4346d8)
+  The follow's reactive avoidance stays the authority; the pre-built Aurora 3D map is ASSISTIVE. In
+  the footprint clearance path, after the localmap tightening, _map_assist_confirm can only return a
+  SMALLER clearance, and only when the LIVE view already sees an obstacle at ~the same range (within
+  --map-assist-confirm-m, default 0.5). A map obstacle the live view does not confirm is DISCARDED; a
+  blind (0.0) or clear (None) frame is returned untouched. So the map NEVER brakes alone and NEVER
+  releases -- a wrong map or anchor just fails to confirm and live avoidance runs unchanged. Pose is
+  the robot's OWN odometry (--odom-topic), so the Aurora's divergent head-mounted VIO never enters the
+  control loop; the Aurora is used only for the static map. Off (byte-identical) unless --map-assist
+  set. Verified: SECTOR-SELFTEST-OK + the confirm gate proven directly (clear+map->no brake; blind->
+  untouched; agree->reinforce; disagree->trust live; no odom->untouched). App toggle 'Map assist' in
+  K1Finder.ps1, footprint-gated, points at ~/localmap/latest_localmap_3d.ply.
+
+  THE DIVERGENCE FINDING: the Aurora's VIO diverges on the robot -- head-mounted mapping AND handheld
+  standalone mapping both produced maps with a room-scale CORE (~17x16x3 m) but outlier landmarks
+  flung to 70-260 m by momentary tracking loss (gait/handoff). Map-assist tolerates this: the height-
+  band filter drops z-outliers, the localmap range drops far x/y ones, the confirm-gate drops the
+  rest. The handheld core is a real ~18x16x3.3 m room -> usable as the map-assist source.
+
+  THE ANCHOR (pending, user "wait on that"): map-assist places the map via the robot's odometry, which
+  starts at the session origin, NOT the map origin -- so odom and the Aurora map frame are misaligned
+  by an unknown transform. Misaligned -> nothing confirms -> map-assist safely inert. To make it FIRE:
+  either start the robot at the map origin (manual), or AUTO-ANCHOR (chosen design, not built):
+  record robot odom + Aurora bridge pose SIMULTANEOUSLY over a short slow calibration pass, rigid-fit
+  the two trajectories -> the transform is the anchor, the fit residual is the cross-verification (tight
+  fit -> trust; loose -> Aurora too noisy -> no anchor, fail-closed). NO existing run has paired
+  (Aurora pose, odom) -- follow .rrd logs log /odometer_state only, and the Aurora reloc data went to
+  laptop logs and diverged. So the calibration must be captured fresh, and it hinges on the Aurora
+  giving usable pose (GATING TEST: is reloc stable STATIONARY + gentle on the robot? diverges walking).
+  Next evolution the operator wants after the anchor: map fills LOW-CONFIDENCE depth regions (a step
+  beyond confirm-only -- must stay fail-closed, brake-only), and arm-workspace clearance from the map.
