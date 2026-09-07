@@ -1157,7 +1157,13 @@ function Get-TrackExtraArgs {
         #   trigger-frac 0.35 -> 0.65   engage below ~1.22 m instead of ~0.98 m
         #   rate 0.20 -> 0.24           slightly firmer arc (settles ~30 deg at relax 0.5)
         #   max-bearing 35 -> 40        headroom for that 30 deg, still 13 deg inside the FOV edge
-        else               { $a += '--gap-steer on --gap-steer-trigger-frac 0.65 --gap-steer-rate 0.24 --gap-steer-max-bearing-deg 40' }
+        # NO --gap-steer-trigger-frac HERE. The 0.65 override predated the node's 2026-09-04 raise
+        # to 0.80, which existed precisely to undo the engage-point shrink caused by lowering
+        # brake_start 1.5 -> 1.15 (the trigger is a FRACTION of the brake zone, so narrowing the
+        # zone silently pulled the engage point in). With the stale override the app engaged at
+        # 0.99 m instead of 1.06 m -- deeper into the bearing regime where locks drop. Letting the
+        # node default rule steers strictly EARLIER and touches no brake value.
+        else               { $a += '--gap-steer on --gap-steer-rate 0.24 --gap-steer-max-bearing-deg 40' }
     }
     # Obstacle brake: depth forward-clearance reflex. Only ever REDUCES forward vx (yaw untouched),
     # ignores the operator being followed, and fails to stop when depth is missing -- it composes with

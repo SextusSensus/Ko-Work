@@ -1864,7 +1864,15 @@ class Follower:
         else:
             want_left = left_ok
         edge = math.radians(self.a.gap_steer_max_bearing_deg)
-        if abs(bearing) >= edge and ((bearing < 0.0) == want_left):
+        # SIGN: bearing is POSITIVE to the right (perception.py bearing_from_x) and positive vyaw
+        # turns LEFT, so a LEFT steer drives the operator's bearing MORE POSITIVE. The guard must
+        # therefore fire when the operator is already far to the RIGHT and we want to keep steering
+        # left -- i.e. (bearing > 0) == want_left. The original test had it inverted and so could
+        # never fire on the drift it was written to stop: field-confirmed in run
+        # 20260904T052605Z_48cba54:165, GAP-STEER bias +0.24 held at bearing +44 deg, past the
+        # 40 deg edge, pushing the operator toward the 52.9 deg half-FOV and a lock loss.
+        # Failing this test is SAFE: bias -> 0 restores full tracking gain and pulls them back.
+        if abs(bearing) >= edge and ((bearing > 0.0) == want_left):
             return 0.0                             # would push the operator out of frame
         self._gap_dir = 1 if want_left else -1
         return self.a.gap_steer_rate * (1.0 if want_left else -1.0)

@@ -366,6 +366,23 @@ def main():
     check("ON -> no height model (frac path) -> never rejects",
           gg._is_ground(z_plane, None, 3000), False)
 
+    # --- MAX-BEARING GUARD: the sign that decides whether it can fire at all -------------------
+    # bearing is +ve to the RIGHT; +ve vyaw turns LEFT; so a held LEFT steer drives bearing MORE
+    # POSITIVE. The guard exists to stop a detour pushing the operator out of frame, and with the
+    # test inverted it could only fire on the side that was already coming back -- field-confirmed
+    # by a +0.24 bias held at bearing +44 deg, past the 40 deg edge.
+    print("\ngap-steer max-bearing guard (outward drift must be cut):")
+    gb = build(m, ["--gap-steer", "on", "--gap-steer-max-bearing-deg", "40",
+                   "--gap-steer-rate", "0.24"])
+    s_left = sectors(gb, 3.0, 0.8, 0.8)            # only the LEFT sector is open
+    gb._gap_dir = 1                                 # already committed LEFT
+    far_right = math.radians(44.0)                  # operator far to the RIGHT, drifting further
+    check("held LEFT steer at +44deg is CUT", gb._gap_steer_bias(far_right, s_left["C"], 3.0), 0.0)
+    gb._gap_dir = 1
+    far_left = math.radians(-44.0)                  # same steer, operator returning toward centre
+    check("...but the same steer at -44deg still runs",
+          gb._gap_steer_bias(far_left, s_left["C"], 3.0), 0.24)
+
     # --- RAW SCAN READS + TURN WIPE (2026-09-05 audit regressions, adversarially confirmed) ---
     # The head scan's samples must read the heading being LOOKED AT, not the shared aged median:
     # routed through the vote, a robot stopped at an obstacle had its window saturated with near
