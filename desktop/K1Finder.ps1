@@ -988,16 +988,19 @@ $mapLayout.Controls.Add($mapBar,0,0); $mapLayout.Controls.Add($mapPic,0,1)
 $tabMap.Controls.Add($mapLayout)
 $btnMapRender.Add_Click({
     $ofd=New-Object System.Windows.Forms.OpenFileDialog
-    $ofd.Filter='SLAM maps (*.stcm;*.vslam)|*.stcm;*.vslam|All files (*.*)|*.*'
+    $ofd.Filter='SLAM maps + clouds (*.stcm;*.vslam;*.ply)|*.stcm;*.vslam;*.ply|All files (*.*)|*.*'
     $ofd.InitialDirectory=[Environment]::GetFolderPath('Desktop')
     if($ofd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK){ return }
     $map=$ofd.FileName
+    $isPly = ([IO.Path]::GetExtension($map).ToLower() -eq '.ply')
     # Resolve a REAL python (anaconda first; never the WindowsApps stub, which pops the Store).
     $py=$null
     foreach($cand in @((Join-Path $env:USERPROFILE 'anaconda3\python.exe'),(Join-Path $env:USERPROFILE 'AppData\Local\anaconda3\python.exe'),(Join-Path $env:USERPROFILE 'miniconda3\python.exe'))){ if(Test-Path $cand){ $py=$cand; break } }
     if(-not $py){ try{ $g=(Get-Command python.exe -ErrorAction SilentlyContinue); if($g -and ($g.Source -notmatch 'WindowsApps')){ $py=$g.Source } }catch{} }
     if(-not $py){ $mapInfo.Text='No Python found. The map renderer needs anaconda (numpy + PIL).'; return }
-    $tool=Join-Path $REPO_ROOT 'eval\stcm_grid.py'
+    # .stcm/.vslam -> the 2D occupancy grid (stcm_grid.py); .ply -> a 3D point cloud top-down (ply_view.py)
+    $rel = if($isPly){'eval\ply_view.py'}else{'eval\stcm_grid.py'}
+    $tool=Join-Path $REPO_ROOT $rel
     if(-not (Test-Path $tool)){ $mapInfo.Text=("Renderer not found at {0}" -f $tool); return }
     $png=Join-Path $env:TEMP ('k1_map_{0}.png' -f ([guid]::NewGuid().ToString('N')))
     $mapInfo.Text='Rendering (large maps take a few seconds)...'; $mapInfo.Refresh()
@@ -1008,9 +1011,11 @@ $btnMapRender.Add_Click({
             $bytes=[IO.File]::ReadAllBytes($png)            # load via bytes so the file isn't locked
             $ms=New-Object System.IO.MemoryStream(,$bytes)
             $mapPic.Image=[System.Drawing.Image]::FromStream($ms)
-            $meta=($out -split "`n" | Where-Object { $_ -match 'grid .+@ .+ m' } | Select-Object -First 1)
+            # both renderers print a one-line summary ending in metres ("grid ... m" / "cloud ... m")
+            $meta=($out -split "`n" | Where-Object { $_ -match '(grid|cloud) .+ m' } | Select-Object -First 1)
             if(-not $meta){ $meta='' }
-            $mapInfo.Text=("{0}   |   {1}" -f (Split-Path $map -Leaf), $meta.Trim())
+            $kind = if($isPly){'3D cloud'}else{'2D grid'}
+            $mapInfo.Text=("{0}  [{1}]   |   {2}" -f (Split-Path $map -Leaf), $kind, $meta.Trim())
         } else {
             $mapInfo.Text=("Render failed: {0}" -f ($out.Trim() -replace "`r?`n",'  '))
         }
