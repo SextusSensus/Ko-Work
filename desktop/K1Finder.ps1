@@ -898,6 +898,13 @@ $trackEscape=New-Object System.Windows.Forms.ComboBox; $trackEscape.DropDownStyl
 # control existed, the flag was wired, and there was simply no way to reach it. y=72 is the button
 # row, empty right of x~700.
 $trackFloor=New-Object System.Windows.Forms.CheckBox; $trackFloor.Text='Floor reject'; $trackFloor.AutoSize=$true; $trackFloor.Location='716,72'; $trackFloor.ForeColor=$accent; $trackFloor.Font=$fontBold; $grpTrackCtl.Controls.Add($trackFloor)
+# LOCAL MAP (--localmap): a short-horizon occupancy memory from the robot's OWN depth + odometry, so
+# it remembers an obstacle after turning away from it instead of forgetting it (obstacle_memory holds
+# ONE, wiped past a 25 deg turn). Only ever REDUCES clearance -- it can brake for something the live
+# view has lost, never release the brake for something it can see. Needs --odom-topic (added below).
+# The three 2026-09-05 audit defects (blind-frame release, cell-key sign, operator-wake writes) are
+# fixed and gated. Default OFF; footprint hit box only (its height model is what places cells).
+$trackLocalMap=New-Object System.Windows.Forms.CheckBox; $trackLocalMap.Text='Local map'; $trackLocalMap.AutoSize=$true; $trackLocalMap.Location='830,72'; $trackLocalMap.ForeColor=$accent; $trackLocalMap.Font=$fontBold; $grpTrackCtl.Controls.Add($trackLocalMap)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
 $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
@@ -1282,6 +1289,16 @@ function Get-TrackExtraArgs {
     if($trackFloor -and $trackFloor.Checked -and
        $trackHitBox -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
         $a += '--ground-reject on'
+    }
+    # Local map: short-horizon occupancy memory (see the control's comment). Footprint-gated for the
+    # same reason as Floor reject -- the cell placement uses the hit box's height model, so it is inert
+    # (and misleading) on the image-fraction path. Needs odometry to place cells in a stable frame;
+    # --odom-topic is idempotent (argparse keeps the last), so a duplicate of the Escape/Rerun line is
+    # harmless. Only ever REDUCES clearance; the three 2026-09-05 audit defects are fixed and gated.
+    if($trackLocalMap -and $trackLocalMap.Checked -and
+       $trackHitBox -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
+        $a += '--localmap on'
+        $a += '--odom-topic /odometer_state'
     }
     # Hit box: select depth by the robot's real extent (width, depth, height) instead of an image
     # fraction. Sends the URDF-derived dimensions explicitly so the geometry is visible in the log.
