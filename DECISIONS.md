@@ -708,3 +708,47 @@ arm joint angles. The robot knows where its own arms are; it can project them in
 per frame instead of inferring them from statistics. That is real work — a joint-state subscription
 plus a kinematic chain — not a config change, and it should be scoped only against evidence that
 0.45 m of blindness actually costs something in the field.
+
+---
+
+## Aurora A1M1 SLAM integration -- bring-up state (2026-09-07)
+
+**Architecture (A) is confirmed available and the robot meets every prerequisite.** The online path
+-- Aurora rides the robot, streams live in-map pose -- is real, not assumed. Verified from the
+vendor's own repo (github.com/Slamtec/py_aurora_remote) and the robot itself.
+
+ROBOT PREREQUISITES (all PASS, checked 2026-09-07 on 192.168.9.75):
+  glibc 2.35 (SDK needs >= 2.31) | aarch64 / JetPack 6 R36.4.3 | Python 3.10.12 | NumPy 1.26.3
+  | pip 25.1.1 + internet to PyPI | 300 GB free | ROS2 Humble | USB 3.1 hub with spare ports.
+
+SDK INSTALLED on the robot: slamtec-aurora-python-sdk-linux-aarch64 2.1.1, editable install from
+~/aurora/py_aurora_remote/python_bindings. The native lib
+cpp_sdk/aurora_remote_public/lib/linux_aarch64/libslamtec_aurora_remote_sdk.so is present (it is in
+the cpp_sdk git submodule -- a shallow clone WITHOUT --recurse-submodules will silently omit it).
+`import slamtec_aurora_sdk` -> IMPORT-OK 2.1.1; API surface confirmed: AuroraSDK.get_current_pose,
+.connect/.is_connected, .map_manager, .require_mapping_mode, .get_map_info.
+
+NETWORK TOPOLOGY is already correct for the safety contract: the Aurora belongs on the WIRED
+USB-ethernet link (usb_eth0 192.168.127.101, SLAMTEC's default subnet), physically separate from the
+WiFi (wlP1p1s0 192.168.9.75) that carries the operator deadman. Confirmed the deadman link and the
+pose link are different interfaces -- the "never put pose on the deadman WiFi" rule is satisfied by
+the existing wiring.
+
+STILL UNPROVEN (needs the device physically connected -- cannot check from the desktop):
+  1. get_current_pose() actually streams over the link. Probe staged: robot/aurora/aurora_pose_probe.py
+     (also on the robot at ~/aurora/). Run with the Aurora plugged in and powered.
+  2. THE MAP FORMAT PROBLEM IS CONFIRMED REAL, not hypothetical: the SDK loads/saves .vslam
+     (load_vslam_map/save_vslam_map). The operator's saved map is map.stcm -- a VIEWER export from
+     aurora_remote.exe, six layers, no dense cloud (see eval/stcm_grid.py + the 7cdce09 entry). The
+     robot-side SDK is not documented to load .stcm. A fresh .vslam export from the device or SDK is
+     very likely required before relocalization can be tested.
+  3. Whether Aurora VISUAL-INERTIAL tracking survives a bipedal gait (its IMU expects smoother
+     motion) -- the Stage-1 walk test, still owed.
+
+NOT STARTED and gated behind the above: any follow_person_k1.py change. Nothing touches velocity
+until the pose chain is proven on hardware and a shadow-mode corpus exists. --localmap remains the
+intended consumer (feed Aurora pose in place of drifting odometry); it still has the 2026-09-05
+audit defects to fix first.
+
+DEMO: none of this happens before the imminent demo, INCLUDING mounting the ~505 g device on the
+trunk -- that is a physical change to a machine two audits cleared as GO.
