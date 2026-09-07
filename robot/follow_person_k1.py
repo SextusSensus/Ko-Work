@@ -495,6 +495,16 @@ class Follower:
         self._lm = {}                     # LOCALMAP: sparse cell key -> last-seen monotonic time
         self._lm_target_range = None      # followed operator's range, so their pixels aren't mapped
         self._lm_swept = 0.0              # last TTL sweep (amortised, not every frame)
+        self._ma = None                   # MAP-ASSIST prebuilt obstacle points (map-frame x,y), or None
+        _ma_path = getattr(self.a, "map_assist", "") or ""
+        if _ma_path:
+            try:
+                self._ma = self._load_map_assist(_ma_path)
+                log("MAP-ASSIST %d obstacle points from %s (reinforces confirmed live obstacles only)"
+                    % (len(self._ma), _ma_path))
+            except Exception as e:  # noqa: BLE001
+                self._ma = None
+                log("MAP-ASSIST load failed (%s) -> off; live avoidance unchanged" % e)
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
         # One corridor evaluation per depth frame (see _corridor_clearance). Keyed on the frame
         # OBJECT: a new frame is a new array, so this needs no frame counter and no loop cooperation.
@@ -899,6 +909,53 @@ class Follower:
             if best is None or fwd < best:
                 best = fwd
         return best
+
+    def _load_map_assist(self, path):
+        """Prebuilt 3D map .ply -> (N,2) obstacle points in the MAP frame (x,y), filtered to the hit
+        box's height window (the map is z-up). A static prior, read once; never edited at runtime."""
+        pts = []
+        with open(path) as f:
+            body = False
+            for line in f:
+                if not body:
+                    if line.strip() == "end_header":
+                        body = True
+                    continue
+                c = line.split()
+                if len(c) < 3:
+                    continue
+                z = float(c[2])
+                if self.a.floor_margin_m <= z <= max(0.2, self.a.robot_height_m):
+                    pts.append((float(c[0]), float(c[1])))
+        return np.array(pts, dtype=np.float64) if pts else np.empty((0, 2))
+
+    def _map_assist_confirm(self, half, eff):
+        """ASSIST: let the prebuilt map REINFORCE a live obstacle it agrees with, nothing more.
+        The map can only return a SMALLER clearance, and only when the live view independently sees an
+        obstacle at ~the same range (--map-assist-confirm-m). An unconfirmed map obstacle is discarded;
+        a blind (0.0) or clear (None) frame is returned untouched -- the map never brakes alone and
+        never releases. Pose is the robot's OWN odometry, so a wrong map/anchor just fails to confirm
+        and the live avoidance is unchanged."""
+        if self._ma is None or len(self._ma) == 0 or eff is None or eff == 0.0:
+            return eff
+        try:
+            od = self.node.latest_odom() if self.node is not None else None
+        except Exception:  # noqa: BLE001
+            od = None
+        if od is None:
+            return eff
+        c, s = math.cos(od[2]), math.sin(od[2])
+        dx = self._ma[:, 0] - od[0]
+        dy = self._ma[:, 1] - od[1]
+        fwd = dx * c + dy * s
+        left = -dx * s + dy * c
+        m = (fwd > 0.0) & (fwd < self.a.localmap_range_m) & (np.abs(left) <= half)
+        if not m.any():
+            return eff
+        map_rng = float(fwd[m].min())
+        if abs(map_rng - eff) <= self.a.map_assist_confirm_m:
+            return min(eff, map_rng)
+        return eff
 
     def _obstacle_memory(self, live):
         """Carry a seen obstacle forward using odometry. Returns the clearance to USE.
@@ -1333,13 +1390,18 @@ class Follower:
                 # raised by memory -- that was the fail-open bug (audit 2026-09-05): a remembered
                 # range overrode the blind 0.0 and released the brake while sensor-blind. Memory now
                 # only fills a genuinely-clear frame (live is None) or beats a farther live reading.
+                _eff = live
                 if _lm is not None and live != 0.0 and (live is None or _lm < live):
                     if (time.monotonic() - getattr(self, "_lm_log_t", 0.0)) >= 1.0:
                         self._lm_log_t = time.monotonic()
                         log("LOCALMAP %.2fm from memory beats live %s (%d cells) -> braking on it"
                             % (_lm, ("%.2fm" % live) if live is not None else "clear", len(self._lm)))
-                    return _lm
-                return live
+                    _eff = _lm
+                # MAP-ASSIST: the prebuilt Aurora map can only REINFORCE a live obstacle it agrees
+                # with (same range in the corridor); a map obstacle the live view does not confirm is
+                # discarded, and it never releases the brake. Pose is the robot's OWN odometry, so the
+                # Aurora's walking VIO never enters the loop. Off (no-op) unless --map-assist is set.
+                return self._map_assist_confirm(half, _eff)
             x0 = int(max(0, min(w - 2, w * (0.5 - cf / 2.0) + _hshift)))
             x1 = int(max(x0 + 1, min(w, w * (0.5 + cf / 2.0) + _hshift)))
             band = d[y0:y1, x0:x1]
@@ -4563,6 +4625,14 @@ def parse_args(argv):
     p.add_argument("--localmap-max-cells", type=int, default=4000,
                    help="sweep expired cells once the dict exceeds this, so memory stays bounded "
                         "even if the TTL sweep is starved")
+    p.add_argument("--map-assist", default="",
+                   help="ASSISTIVE prebuilt-map layer (Aurora 3D .ply, map frame). It NEVER brakes on "
+                        "its own: it only REINFORCES a live-depth obstacle the local avoidance already "
+                        "sees at the same range (within --map-assist-confirm-m); a map obstacle the "
+                        "live view does not confirm is discarded, and it never releases the brake. Pose "
+                        "is the robot's OWN odometry (--odom-topic), not the Aurora. Empty = off.")
+    p.add_argument("--map-assist-confirm-m", type=float, default=0.5,
+                   help="a map obstacle counts only when the live clearance is within this of it")
     p.add_argument("--ground-reject", choices=("off", "on"), default="off",
                    help="drop blobs that are the FLOOR seen obliquely rather than an object. The "
                         "hit box assumes a level camera; the real pitch is ~10 deg, and the "

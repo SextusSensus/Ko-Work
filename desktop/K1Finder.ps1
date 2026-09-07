@@ -905,6 +905,11 @@ $trackFloor=New-Object System.Windows.Forms.CheckBox; $trackFloor.Text='Floor re
 # The three 2026-09-05 audit defects (blind-frame release, cell-key sign, operator-wake writes) are
 # fixed and gated. Default OFF; footprint hit box only (its height model is what places cells).
 $trackLocalMap=New-Object System.Windows.Forms.CheckBox; $trackLocalMap.Text='Local map'; $trackLocalMap.AutoSize=$true; $trackLocalMap.Location='830,72'; $trackLocalMap.ForeColor=$accent; $trackLocalMap.Font=$fontBold; $grpTrackCtl.Controls.Add($trackLocalMap)
+# MAP ASSIST (--map-assist): the pre-built Aurora 3D map REINFORCES a live obstacle the local
+# avoidance already sees at the same range; a map obstacle the live view does not confirm is
+# discarded, and it never releases the brake. Pose comes from the robot's OWN odometry, not the
+# Aurora. Assistive, not primary. Footprint hit box only; default OFF, byte-identical when off.
+$trackMapAssist=New-Object System.Windows.Forms.CheckBox; $trackMapAssist.Text='Map assist'; $trackMapAssist.AutoSize=$true; $trackMapAssist.Location='924,72'; $trackMapAssist.ForeColor=$accent; $trackMapAssist.Font=$fontBold; $grpTrackCtl.Controls.Add($trackMapAssist)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
 $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
@@ -1298,6 +1303,14 @@ function Get-TrackExtraArgs {
     if($trackLocalMap -and $trackLocalMap.Checked -and
        $trackHitBox -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
         $a += '--localmap on'
+        $a += '--odom-topic /odometer_state'
+    }
+    # Map assist: the pre-built Aurora 3D map reinforces a live obstacle the local avoidance already
+    # sees (confirm-only, never brakes alone, never releases). Pose from the robot's own odometry.
+    # Footprint-gated like Local map. Points at the offload tool's latest 3D layer on the robot.
+    if($trackMapAssist -and $trackMapAssist.Checked -and
+       $trackHitBox -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
+        $a += '--map-assist /home/booster/localmap/latest_localmap_3d.ply'
         $a += '--odom-topic /odometer_state'
     }
     # Hit box: select depth by the robot's real extent (width, depth, height) instead of an image
