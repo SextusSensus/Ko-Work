@@ -95,10 +95,13 @@ def main():
         print("wrote", a.npy)
     if a.png:
         from PIL import Image
-        # Render for a human: unknown grey, everything else on a light->dark ramp so walls read.
-        img = np.full(g.shape, 128, dtype=np.uint8)
-        known = g > 0
-        img[known] = 255 - g[known]
+        # Three classes, because that is what the grid means and a ramp hid it: unknown mid-grey,
+        # free light, occupied near-black. Occupied (>=128) is walls; free (127) is the walked
+        # interior; 1-126 are partial/ray returns rendered a shade darker than free.
+        img = np.full(g.shape, 150, dtype=np.uint8)          # unknown
+        img[(g >= 1) & (g <= 126)] = 205                     # partial
+        img[g == 127] = 245                                  # free
+        img[g >= 128] = 25                                   # occupied (walls)
         Image.fromarray(img).save(a.png)
         print("wrote", a.png)
     return 0

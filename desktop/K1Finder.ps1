@@ -562,7 +562,8 @@ $tabLive=New-Object System.Windows.Forms.TabPage; $tabLive.Text='  3. Live View 
 $tabCtrl=New-Object System.Windows.Forms.TabPage; $tabCtrl.Text='  4. Control  '; $tabCtrl.BackColor=[System.Drawing.Color]::White
 $tabFiles=New-Object System.Windows.Forms.TabPage; $tabFiles.Text='  5. Robot Files  '; $tabFiles.BackColor=[System.Drawing.Color]::White
 $tabTrack=New-Object System.Windows.Forms.TabPage; $tabTrack.Text='  6. Tracker  '; $tabTrack.BackColor=[System.Drawing.Color]::White
-[void]$tabs.TabPages.AddRange(@($tabDiscover,$tabSsh,$tabLive,$tabCtrl,$tabFiles,$tabTrack))
+$tabMap=New-Object System.Windows.Forms.TabPage; $tabMap.Text='  7. SLAM Map  '; $tabMap.BackColor=[System.Drawing.Color]::White
+[void]$tabs.TabPages.AddRange(@($tabDiscover,$tabSsh,$tabLive,$tabCtrl,$tabFiles,$tabTrack,$tabMap))
 
 $form.Controls.Add($header); $form.Controls.Add($status); $form.Controls.Add($tabs); $tabs.BringToFront()
 
@@ -968,6 +969,53 @@ $trackLog=New-Object System.Windows.Forms.RichTextBox; $trackLog.ReadOnly=$true;
 
 $trackLayout.Controls.Add($grpTrackCtl,0,0); $trackLayout.Controls.Add($trackPic,0,1); $trackLayout.Controls.Add($trackBadge,0,2); $trackLayout.Controls.Add($trackLog,0,3)
 $tabTrack.Controls.Add($trackLayout)
+
+# ============================================================================
+#  TAB 7 - SLAM MAP  (render the Aurora occupancy grid so the operator can SEE the space)
+# ============================================================================
+# Static map view: shells to eval/stcm_grid.py (anaconda python + numpy + PIL) to render a chosen
+# .stcm/.vslam into a PNG, then shows it. The occupancy layer is 2D; a LIVE pose-on-map overlay is
+# the next step and is gated on the pose chain proving out on hardware (see robot/aurora/).
+$mapLayout=New-Object System.Windows.Forms.TableLayoutPanel; $mapLayout.Dock='Fill'; $mapLayout.ColumnCount=1; $mapLayout.RowCount=2; $mapLayout.Padding='10,8,10,8'
+[void]$mapLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,52)))
+[void]$mapLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,100)))
+$mapBar=New-Object System.Windows.Forms.Panel; $mapBar.Dock='Fill'
+$btnMapRender=New-Object System.Windows.Forms.Button; $btnMapRender.Text='Render map...'; $btnMapRender.Size='110,32'; $btnMapRender.Location='0,6'; $btnMapRender.FlatStyle='Flat'; $btnMapRender.Font=$fontBold
+$mapInfo=New-Object System.Windows.Forms.Label; $mapInfo.AutoSize=$false; $mapInfo.Size='860,40'; $mapInfo.Location='122,6'; $mapInfo.TextAlign='MiddleLeft'; $mapInfo.Text='Pick a .stcm / .vslam to render.  Legend once shown: dark = walls, light = free floor, grey = never observed.'
+$mapBar.Controls.AddRange(@($btnMapRender,$mapInfo))
+$mapPic=New-Object System.Windows.Forms.PictureBox; $mapPic.Dock='Fill'; $mapPic.SizeMode='Zoom'; $mapPic.BackColor=[System.Drawing.Color]::FromArgb(60,60,64)
+$mapLayout.Controls.Add($mapBar,0,0); $mapLayout.Controls.Add($mapPic,0,1)
+$tabMap.Controls.Add($mapLayout)
+$btnMapRender.Add_Click({
+    $ofd=New-Object System.Windows.Forms.OpenFileDialog
+    $ofd.Filter='SLAM maps (*.stcm;*.vslam)|*.stcm;*.vslam|All files (*.*)|*.*'
+    $ofd.InitialDirectory=[Environment]::GetFolderPath('Desktop')
+    if($ofd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK){ return }
+    $map=$ofd.FileName
+    # Resolve a REAL python (anaconda first; never the WindowsApps stub, which pops the Store).
+    $py=$null
+    foreach($cand in @((Join-Path $env:USERPROFILE 'anaconda3\python.exe'),(Join-Path $env:USERPROFILE 'AppData\Local\anaconda3\python.exe'),(Join-Path $env:USERPROFILE 'miniconda3\python.exe'))){ if(Test-Path $cand){ $py=$cand; break } }
+    if(-not $py){ try{ $g=(Get-Command python.exe -ErrorAction SilentlyContinue); if($g -and ($g.Source -notmatch 'WindowsApps')){ $py=$g.Source } }catch{} }
+    if(-not $py){ $mapInfo.Text='No Python found. The map renderer needs anaconda (numpy + PIL).'; return }
+    $tool=Join-Path $REPO_ROOT 'eval\stcm_grid.py'
+    if(-not (Test-Path $tool)){ $mapInfo.Text=("Renderer not found at {0}" -f $tool); return }
+    $png=Join-Path $env:TEMP ('k1_map_{0}.png' -f ([guid]::NewGuid().ToString('N')))
+    $mapInfo.Text='Rendering (large maps take a few seconds)...'; $mapInfo.Refresh()
+    try{
+        $out = & $py $tool $map '--png' $png 2>&1 | Out-String
+        if(Test-Path $png){
+            if($mapPic.Image){ $mapPic.Image.Dispose() }
+            $bytes=[IO.File]::ReadAllBytes($png)            # load via bytes so the file isn't locked
+            $ms=New-Object System.IO.MemoryStream(,$bytes)
+            $mapPic.Image=[System.Drawing.Image]::FromStream($ms)
+            $meta=($out -split "`n" | Where-Object { $_ -match 'grid .+@ .+ m' } | Select-Object -First 1)
+            if(-not $meta){ $meta='' }
+            $mapInfo.Text=("{0}   |   {1}" -f (Split-Path $map -Leaf), $meta.Trim())
+        } else {
+            $mapInfo.Text=("Render failed: {0}" -f ($out.Trim() -replace "`r?`n",'  '))
+        }
+    }catch{ $mapInfo.Text=("Render error: {0}" -f $_) }
+})
 
 # ============================================================================
 #  Log helpers
