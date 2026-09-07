@@ -819,3 +819,38 @@ LOCALIZATION DESIGN -- "adding the 3D map to the local map" (2026-09-07)
   ROOT BLOCKER is unchanged: the robot<->Aurora SDK link (README (2)). Retry after a clean device
   power-up on the robot's link, or DHCP on usb_eth0; the bridge and the whole design are ready the
   moment aurora_upload_reloc.py prints RELOC-OK on the robot.
+
+LOCALIZATION PROVEN END-TO-END + VERIFIED SDK API (2026-09-07, on the laptop)
+  The full chain was run against the real device and RELOCALIZED: connect -> upload map.vslam ->
+  pure-localization mode -> relocalize -> a real drift-free pose (0.66, 0.89, z~0.005) at ~95 Hz.
+  Three things this pinned down, all now baked into the code:
+  1. THE SDK API (my first scripts were wrong -- guessed from a doc summary). Relocalization is on
+     s.CONTROLLER, not s: controller.require_pure_localization_mode(); controller.require_relocalization().
+     s.require_relocalization does NOT exist. Map load is map_manager.start_upload_session(path) + wait.
+     Lock signal: data_provider.get_relocalization_status() -> (state, ts), SUCCEED == 2 (NONE 0 /
+     IN_PROGRESS 1 / FAILED 3). aurora_upload_reloc.py + aurora_odom_bridge.py corrected to match.
+  2. THE MAP FRAME IS Z-UP. In the relocalized pose the z component stays ~0.005 m and constant while
+     x,y carry the motion -> ground plane = (x,y), yaw about z. That is exactly what pose_to_planar()
+     assumed, so the bridge math is CORRECT (resolves council finding A3's "what if y-up" worry).
+     pose_to_planar on the captured pose gives theta -8.48 deg, and is quaternion-sign-invariant
+     (q and -q give the same planar pose) -- validated.
+  3. THE MAP DOES NOT PERSIST across an SDK session -- a fresh connect finds an empty device
+     (all_map_info == []). So the map must be uploaded every session; the bridge + probe both do
+     (upload only if get_all_map_info() is empty). Relocalization only SUCCEEDs once the device SEES
+     the mapped space AND moves -- stationary it sits at FAILED (that was the earlier 60 s of FAILED,
+     not a bug).
+
+  COUNCIL FINDING A1 IMPLEMENTED: the bridge now publishes ONLY while get_relocalization_status is
+  SUCCEED, and drops a per-frame jump > --max-step-m. Lost lock / unmapped space -> it goes quiet ->
+  latest_odom() staleout -> live-depth-only. The documented fail-closed guarantee is now real code,
+  not a comment.
+
+  CONNECTION REALITY (K1 has NO free USB port): the Aurora serves its SDK over ETHERNET at
+  192.168.11.1 (proven: the laptop reached it through a USB-ethernet adapter, got a 192.168.11.120
+  DHCP lease, SDK live). So the robot does NOT need a USB port -- it connects over ethernet via its
+  USB-ethernet dongle (usb_eth0). The earlier robot failure (1445 closed, device at 192.168.127.10,
+  no DHCP offer, discovery 0) was a SUBNET/mode mismatch: usb_eth0 was static 192.168.127.101 while
+  the Aurora serves 192.168.11.x. REMAINING to run the robot path: (a) Aurora ethernet -> robot
+  usb_eth0, robot on 192.168.11.x (DHCP or static); (b) prove RELOC-OK on the robot; (c) measure
+  --yaw-offset-deg with the bridge's --verify-frame (drive a known straight line + 90 deg turn);
+  (d) run the bridge, follow with --odom-topic /aurora_odom --localmap on.
