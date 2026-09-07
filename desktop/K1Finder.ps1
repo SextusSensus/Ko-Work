@@ -1210,6 +1210,12 @@ function Get-TrackExtraArgs {
     if($trackEscape -and $trackEscape.SelectedItem -and [string]$trackEscape.SelectedItem -ne 'off'){
         $a += '--body-scan on'
         if([string]$trackEscape.SelectedItem -eq 'spin+back'){ $a += '--reverse-when-stuck on' }
+        # Escape's retrace anchor, the reverse distance budget, and the obstacle-memory dead
+        # reckoning all read odometry, and --odom-topic was only ever supplied by the Rerun
+        # checkbox -- with Rerun off, arming Escape produced features that silently did nothing
+        # (2026-09-05 audit, confirmed: _body_scan_step and _reverse_step bail on latest_odom None).
+        # A duplicate of the Rerun line's identical flag is harmless: argparse keeps the last one.
+        $a += '--odom-topic /odometer_state'
     }
     # Floor reject: stop reading the floor plane as an obstacle (see the control's comment). Only
     # meaningful with the footprint hit box, which is the only path carrying a height model -- the

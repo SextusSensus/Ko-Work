@@ -366,6 +366,37 @@ def main():
     check("ON -> no height model (frac path) -> never rejects",
           gg._is_ground(z_plane, None, 3000), False)
 
+    # --- RAW SCAN READS + TURN WIPE (2026-09-05 audit regressions, adversarially confirmed) ---
+    # The head scan's samples must read the heading being LOOKED AT, not the shared aged median:
+    # routed through the vote, a robot stopped at an obstacle had its window saturated with near
+    # detections, so every sweep sample read "blocked" and the scan could never conclude. And a
+    # window of pre-turn CLEAR votes must not outvote an obstacle a turn has just revealed.
+    print("\nraw scan reads + turn wipe:")
+    gr = build(m, ["--corridor-mode", "footprint", "--obstacle-aged", "5"])
+    near_lr = np.full((448, 544), 4.0, dtype=np.float32)
+    near_lr[:, 118:150] = 0.5
+    clear_fr = np.full((448, 544), 4.0, dtype=np.float32)
+    gr.node = FakeNode(None, None, None)
+    gr._clr_hist = []
+    gr.node.d = near_lr
+    for _ in range(5):
+        gr._clr_cache_d = None
+        gr._corridor_clearance()
+    gr.node.d = clear_fr
+    gr._clr_cache_d = None
+    voted = gr._corridor_clearance()
+    nv = len(gr._clr_hist)
+    rawv = gr._corridor_clearance(apply_head_shift=False, raw=True)
+    check("saturated window still reads blocked (the brake's job)", voted < 0.7, True)
+    check("RAW read of a clear heading reaches body_scan_clear_m", rawv >= 1.15, True)
+    check("a raw read casts no vote", len(gr._clr_hist), nv)
+    gr._clr_hist = [1.15] * 5
+    gr._prev_vyaw = 0.30
+    gr.node.d = near_lr
+    gr._clr_cache_d = None
+    check("turning onto an obstacle brakes on frame ONE", gr._corridor_clearance() < 0.7, True)
+    gr._prev_vyaw = 0.0
+
     # --- CONFIG INVARIANT: body_scan_clear_m must stay reachable -----------------------------
     # Clearance can never exceed obstacle_brake_start: _nearest_blob discards returns beyond it,
     # and _clr_vote votes "clear" AT it. So body_scan_clear_m > obstacle_brake_start is not a

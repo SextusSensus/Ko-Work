@@ -1112,8 +1112,19 @@ class Follower:
         A REAL obstacle is detected in ~every frame and still wins the median, so voting rejects
         speckle WITHOUT weakening the brake -- which is why this is the fix and not a higher blob
         threshold, since that would trade this false positive for more of the couch false negative.
-        Returns the median, or None when the median sits at/beyond the range where braking begins
-        (both mean 'no cap' to _obstacle_vx_cap; None keeps the clear case off the CLEARANCE log)."""
+        Always returns the median as a FLOAT (see the note below the return: None must keep its
+        single meaning of 'no depth frame at all')."""
+        # TURN WIPE. The window's evidence is heading-specific, and rotation invalidates it in
+        # BOTH directions -- but the dangerous one is a window of pre-turn CLEAR votes outvoting a
+        # real obstacle the turn has just put in front of the robot: measured ~2 frames
+        # (~0.3-0.5 s at the field loop rate) of uncapped forward drive at something already
+        # inside stop range (2026-09-05 audit, adversarially confirmed at the app's shipped
+        # --obstacle-aged 5). Mirrors _obstacle_memory's own turn-wipe doctrine, keyed on the
+        # velocity actually SENT last tick (which exists without odometry): while yawing fast,
+        # the median degrades to the current frame's own reading, so a detection bites on frame
+        # one instead of being outvoted by a heading that no longer exists.
+        if abs(getattr(self, "_prev_vyaw", 0.0)) > 0.15:
+            self._clr_hist = []
         self._clr_hist.append(float(clr))
         self._clr_hist = self._clr_hist[-max(1, self.a.obstacle_aged):]
         return float(sorted(self._clr_hist)[len(self._clr_hist) // 2])
@@ -1130,7 +1141,7 @@ class Follower:
         # ("no depth frame at all", set at the top of _corridor_clearance) and lets every consumer
         # keep its own reading of a number.
 
-    def _nodata(self, band, blob_px, where):
+    def _nodata(self, band, blob_px, where, raw=False):
         """Decide what 'not enough obstacle evidence' MEANS, and say so out loud.
 
         This used to be a bare `return None`, and None means NO CAP in _obstacle_vx_cap -- so the
@@ -1151,9 +1162,14 @@ class Follower:
         if blind:
             return 0.0          # fail closed, and deliberately NOT a vote: a blind frame is not
                                 # evidence of clear, so it must not dilute the window either way.
+        if raw:
+            # A genuinely clear frame, read raw, IS clearance at the top of the measurable range
+            # (candidates beyond brake_start are discarded by _nearest_blob) -- the value the head
+            # scan compares against body_scan_clear_m. No vote: raw reads must not touch the window.
+            return self.a.obstacle_brake_start
         return self._clr_vote(self.a.obstacle_brake_start)   # a clear frame VOTES clear
 
-    def _corridor_clearance(self, apply_head_shift=True):
+    def _corridor_clearance(self, apply_head_shift=True, raw=False):
         """ONE evaluation per depth frame. Memoized on the frame OBJECT, not on a frame counter, so
         it is correct for every caller and needs no cooperation from the loop.
 
@@ -1167,6 +1183,16 @@ class Follower:
         honest: a harness calling this once per frame now models the real loop exactly."""
         if self.node is None:
             return None
+        if raw:
+            # RAW: this frame's own reading, no vote and no cache. The head scan needs the
+            # clearance of the heading it is LOOKING AT RIGHT NOW; routing its samples through the
+            # shared aged median made every sample the median of the last N FORWARD frames instead
+            # -- and since the scan only runs while the robot is stopped at an obstacle, that
+            # window is full of near detections, so the sweep was arithmetically incapable of ever
+            # reporting a clear heading (2026-09-05 audit, adversarially confirmed: it froze,
+            # swept, and concluded nothing, in every shipped configuration). Raw reads also cast
+            # no vote, which removes the scan's double-vote pollution of the brake's own window.
+            return self._corridor_clearance_uncached(apply_head_shift, raw=True)
         _d0 = self.node.latest_depth()
         if (_d0 is not None and _d0 is self._clr_cache_d
                 and apply_head_shift is self._clr_cache_hs):
@@ -1177,7 +1203,7 @@ class Follower:
         self._clr_cache = _v
         return _v
 
-    def _corridor_clearance_uncached(self, apply_head_shift=True):
+    def _corridor_clearance_uncached(self, apply_head_shift=True, raw=False):
         """Robust nearest-obstacle range (m) in the forward corridor, or None. Cheap: a percentile
         over the central band of the depth map (excludes the floor via a mid-vertical band). Uses a
         PERCENTILE (not raw min) + an AGED-MEDIAN history -- Phase-2 finding: a single depth-glitch
@@ -1275,6 +1301,8 @@ class Follower:
                 # is fed here and nowhere else.
                 self._localmap_update(band, hgt, band * u[None, :])
                 clr, blob = self._nearest_blob(band, sel, hgt)
+                if raw and clr is not None:
+                    return clr
                 _lm = self._localmap_clearance(half)
                 if _lm is not None and (clr is None or _lm < clr):
                     # REMEMBERED obstacle is nearer than anything visible right now. Only ever a
@@ -1285,7 +1313,7 @@ class Follower:
                             % (_lm, ("%.2fm" % clr) if clr is not None else "clear", len(self._lm)))
                     return self._clr_vote(_lm)
                 if clr is None:
-                    return self._nodata(band, blob, "footprint")
+                    return self._nodata(band, blob, "footprint", raw=raw)
                 return self._clr_vote(clr)
             x0 = int(max(0, min(w - 2, w * (0.5 - cf / 2.0) + _hshift)))
             x1 = int(max(x0 + 1, min(w, w * (0.5 + cf / 2.0) + _hshift)))
@@ -1300,8 +1328,10 @@ class Follower:
             if sel is None:
                 return 0.0                               # unusable mask -> blind, forward forbidden
             clr, blob = self._nearest_blob(band, sel)
+            if raw and clr is not None:
+                return clr
             if clr is None:
-                return self._nodata(band, blob, "frac")
+                return self._nodata(band, blob, "frac", raw=raw)
         except Exception as e:  # noqa: BLE001 -- a reflex must never break the loop
             # FAIL CLOSED, and say so. This was `return None`, and None means NO CAP downstream in
             # _obstacle_vx_cap -- so any exception in the corridor math silently DISABLED the
@@ -1647,7 +1677,7 @@ class Follower:
                 # Sample where the CAMERA points (no body-forward shift), labelled with the
                 # OBSERVED yaw -- never the commanded one, so a servo that fell short is recorded
                 # as where it actually looked.
-                clr = self._corridor_clearance(apply_head_shift=False)
+                clr = self._corridor_clearance(apply_head_shift=False, raw=True)
                 self._scan_map.append((hy, clr, cx_img))
                 self._scan_i += 1
                 self._scan_cmd_t = now
