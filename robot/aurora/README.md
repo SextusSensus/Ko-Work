@@ -25,11 +25,26 @@ DHCP lease the Aurora hands the host).
    recording, upload/relocalize) runs on the robot. Likely fix to try WITH the device on the robot:
    set usb_eth0 to DHCP so it negotiates a 192.168.11.x lease like the laptop does.
 
+## Localization path -- built, VERIFY ON ROBOT (blocked on the link, not the code)
+- `aurora_odom_bridge.py` -- **the localization integration.** Relocalizes the Aurora in a saved
+  map, then republishes its drift-free pose as `booster_interface/msg/Odometer{x,y,theta}` on
+  `/aurora_odom`. The follow's `--localmap` already reads that message from `--odom-topic` and fails
+  closed when it is stale, so localizing the robot in the pre-built map reduces to
+  `--odom-topic /aurora_odom` with **zero change to the safety-critical follow node**. Details, the
+  safety argument, and the one calibration (`--yaw-offset-deg`, a single mount scalar) are in the
+  script header. Inert until run; needs the robot<->Aurora SDK link (blocked by (2) below).
+- Two levels, in order. **A (safe, first):** the bridge's pose replaces drifting wheel odometry, so
+  the local map's own depth observations persist correctly across larger motions (a longer memory
+  horizon). Same safety envelope -- memory only ever tightens the brake, and a lost relocalization
+  just goes quiet -> live-depth-only. **B (later, needs proof):** seed the local map from the
+  pre-built occupancy grid (stcm_grid.py) transformed by the relocalized pose -- this is where the
+  map's *own* obstacles enter perception. It must be relocalization-confidence-gated and purge on
+  reloc loss; NOT into the brake until that gate is proven. The map must never place a phantom wall.
+
 ## Not done, and why
 - **Dense 3D cloud**: blocked by (1). Options: get COLMAP recording working (firmware/SLAMTEC
   support), or write a converter (map.vslam keyframe poses + RAW images -> COLMAP sparse/ -> densify)
   -- real work, coordinate-frame + timestamp matching, not built speculatively.
-- **Follow-mode integration**: blocked by (2), and additionally would need live relocalization for a
-  map prior. The honest first integration once the link works is the Aurora's live depth/LiDAR as an
-  EGOCENTRIC obstacle input to the brake -- no localization required. Not wired into
-  follow_person_k1.py; nothing touches velocity until proven on hardware.
+- **Level B map-into-perception**: needs the link (2), a confirmed reloc-confidence API, and the
+  ground-plane axis mapping verified on a live pose dump (see pose_to_planar() in the bridge). The
+  bridge (Level A) is the prerequisite and is done; B builds on a proven A.

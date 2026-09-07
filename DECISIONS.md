@@ -789,3 +789,33 @@ SEQUENCE TO PROVE THE ONLINE PATH (no follow-node changes, no walking):
   3. robot:  python3 aurora_upload_reloc.py map.vslam
              -> UPLOAD-OK, RELOC-OK, POSE-RATE > 0  proves the whole chain
 Only after that proves out does any follow-node integration begin, and not before the demo.
+
+LOCALIZATION DESIGN -- "adding the 3D map to the local map" (2026-09-07)
+  The question was how the robot localizes in the pre-built Aurora map so the map can help it. Two
+  ways to get a pose in the map frame: (1) the Aurora provides it (it runs the SLAM; once relocalized,
+  get_current_pose is drift-free in the map frame), or (2) the robot relocalizes itself from its own
+  RGB-D. (2) is a research problem -- the map's feature DB is the Aurora's visual-inertial keyframes,
+  not matchable by the robot's forward 106-deg depth cam, and there is no 360 lidar for a 2D
+  scan-match. So (1) is the only tractable path, and the whole robot-side integration is then just
+  "consume the Aurora pose."
+
+  THE CLEAN INTEGRATION (chosen): the follow's --localmap already consumes booster_interface/msg/
+  Odometer{x,y,theta} from --odom-topic and fails closed on staleness. So publishing the relocalized
+  Aurora pose as that message on /aurora_odom, and running the follow with --odom-topic /aurora_odom,
+  localizes the robot in the map with ZERO change to the safety-critical node. Built:
+  robot/aurora/aurora_odom_bridge.py (VERIFY ON ROBOT; inert until run). One calibration: the yaw
+  offset between Aurora-forward and robot-forward (--yaw-offset-deg), a single mount scalar; the mount
+  translation is a constant shift on an 8 s-TTL robot-centric buffer and is ignored as noise.
+
+  WHY THIS AND NOT map-into-the-brake: even with a pose, feeding the pre-built map straight into the
+  brake means a relocalization dropout or a stale pose plants a PHANTOM WALL -> phantom braking/freeze
+  -- the same fail-wrong class just closed on the local map. The safe envelope is that the map only
+  ever reaches the brake THROUGH the local map, whose invariant is "memory may only reduce clearance,
+  never raise it": a wrong Aurora pose can over-brake but never release a real obstacle, and a lost
+  reloc just goes quiet -> live-depth-only. Level A (pose -> drift-free local map) ships first; Level B
+  (seed the local map's cells from the pre-built occupancy grid, reloc-confidence-gated, purge on
+  loss) builds on a proven A and is not started yet.
+
+  ROOT BLOCKER is unchanged: the robot<->Aurora SDK link (README (2)). Retry after a clean device
+  power-up on the robot's link, or DHCP on usb_eth0; the bridge and the whole design are ready the
+  moment aurora_upload_reloc.py prints RELOC-OK on the robot.
