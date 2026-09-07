@@ -752,3 +752,40 @@ audit defects to fix first.
 
 DEMO: none of this happens before the imminent demo, INCLUDING mounting the ~505 g device on the
 trunk -- that is a physical change to a machine two audits cleared as GO.
+
+---
+
+## Aurora bring-up (2026-09-07, cont.) -- map round-trip tooling + corrected findings
+
+TWO EARLIER CLAIMS CORRECTED by evidence:
+  1. Map save/load is NOT save_vslam_map/load_vslam_map (those names came from a doc summary).
+     The real API is map_manager sessions: start_download_session (device -> .vslam file) and
+     start_upload_session (.vslam file -> device), with is_session_active/query_session_status/
+     wait_for_completion. Confirmed by dir(map_manager) on both installed SDKs.
+  2. The Aurora was NOT unreachable on the robot due to a subnet mismatch. Its MAC
+     (c6:0b:a6:89:0d:04) sits at 192.168.127.10 on the robot's usb_eth0 (192.168.127.101/24) --
+     same subnet, pings 0.26 ms. On the laptop the same device was 192.168.11.1. So it takes a
+     per-host address and IS reachable from the robot. The earlier connect failure was the SDK
+     server port being closed (mode/timing on the device), not the network. Re-probe after a clean
+     device power-up with the pose probe.
+
+SDK NOW INSTALLED ON BOTH ENDS:
+  robot:  slamtec-aurora-python-sdk-linux-aarch64 2.1.1  (~/aurora/py_aurora_remote)
+  laptop: slamtec-aurora-python-sdk-win64-x64     2.1.1  (C:/Users/toddm/aurora_sdk/py_aurora_remote)
+
+THE MAP ROUND-TRIP TOOLS (vendored in robot/aurora/, also staged on each machine):
+  save_vslam.py         -- LAPTOP: download the live map off the device -> map.vslam
+  aurora_upload_reloc.py -- ROBOT: upload map.vslam onto the device, relocalize, sample pose
+  aurora_pose_probe.py / aurora_check.py -- connect + live-pose / import + API-surface probes
+None touch follow_person_k1.py. No motion. Standalone bring-up only.
+
+MAP STATE: today's laptop map was NOT saved to disk (only the old viewer-export map.stcm and two
+0-byte failed .stcm saves exist). The robot SDK needs .vslam. Capture it with save_vslam.py while
+the device is on the laptop, before it is lost.
+
+SEQUENCE TO PROVE THE ONLINE PATH (no follow-node changes, no walking):
+  1. laptop: python save_vslam.py            -> map.vslam
+  2. scp map.vslam to the robot
+  3. robot:  python3 aurora_upload_reloc.py map.vslam
+             -> UPLOAD-OK, RELOC-OK, POSE-RATE > 0  proves the whole chain
+Only after that proves out does any follow-node integration begin, and not before the demo.
