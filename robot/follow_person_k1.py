@@ -493,6 +493,7 @@ class Follower:
         self._scan_blocked_since = None   # when the CURRENT continuous block began (head-scan dwell)
         self._scan_barren = None          # odom (x,y) where a scan found NO clear heading, else None
         self._lm = {}                     # LOCALMAP: sparse cell key -> last-seen monotonic time
+        self._lm_target_range = None      # followed operator's range, so their pixels aren't mapped
         self._lm_swept = 0.0              # last TTL sweep (amortised, not every frame)
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
         # One corridor evaluation per depth frame (see _corridor_clearance). Keyed on the frame
@@ -774,7 +775,19 @@ class Follower:
             % (clr if clr is not None else float("nan"), budget))
         return -abs(self.a.reverse_speed)
 
-    def _localmap_update(self, d, hgt, lat_signed):
+    # LOCALMAP cell-key packing. Each axis is biased by +LM_BIAS before packing so both halves are
+    # ALWAYS non-negative -- the earlier scheme added a signed gy directly, and a negative gy
+    # borrowed from gx, displacing every negative-world-y cell by one cell in x (audit 2026-09-05).
+    LM_BIAS = 1 << 19        # 524288 cells; +/-52 km at 0.10 m -- far beyond any real run
+    LM_MASK = (1 << 20) - 1
+
+    def _lm_key(self, gx, gy):
+        return ((gx.astype(np.int64) + self.LM_BIAS) << 20) + (gy.astype(np.int64) + self.LM_BIAS)
+
+    def _lm_unkey(self, k):
+        return ((k >> 20) - self.LM_BIAS, (k & self.LM_MASK) - self.LM_BIAS)
+
+    def _localmap_update(self, d, hgt, lat_signed, target_range=None):
         """Fold this depth frame into a short-horizon, robot-centred occupancy buffer.
 
         WHAT THIS IS NOT. Not a map, not SLAM: no loop closure, no relocalization, nothing kept
@@ -819,6 +832,14 @@ class Follower:
             sel = (np.isfinite(sub_d) & (sub_d > max(0.15, self.a.obstacle_self_range_m))
                    & (sub_d < self.a.localmap_range_m)
                    & (sub_h >= self.a.floor_margin_m) & (sub_h <= max(0.2, self.a.robot_height_m)))
+            # EXCLUDE THE OPERATOR. The followed person sits in the forward corridor by definition,
+            # so their pixels would be written as obstacles and the robot would brake on their own
+            # WAKE (audit 2026-09-05). Drop returns within a margin of the target's range -- the
+            # same exclusion the brake already applies (obstacle_target_margin). Done per frame, so
+            # the operator's trail is never written in the first place.
+            if target_range is not None:
+                m = self.a.obstacle_target_margin
+                sel = sel & ~(sub_d > (target_range - m))
             if not sel.any():
                 return
             fwd = sub_d[sel].astype(np.float64)
@@ -828,8 +849,7 @@ class Follower:
             wx = od[0] + fwd * c - left * s
             wy = od[1] + fwd * s + left * c
             res = max(0.02, self.a.localmap_res_m)
-            keys = (np.round(wx / res).astype(np.int32).astype(np.int64) << 20) \
-                + np.round(wy / res).astype(np.int32).astype(np.int64)
+            keys = self._lm_key(np.round(wx / res), np.round(wy / res))
             for k in np.unique(keys):
                 self._lm[int(k)] = now
             # TTL sweep, amortised: only every so often, and only when the dict has grown.
@@ -867,10 +887,7 @@ class Follower:
         for k, t in self._lm.items():
             if (now - t) > ttl:
                 continue
-            gx = (k >> 20)
-            gy = k - (gx << 20)
-            if gy > (1 << 19):
-                gy -= (1 << 20)
+            gx, gy = self._lm_unkey(k)
             dx = gx * res - od[0]
             dy = gy * res - od[1]
             fwd = dx * c + dy * s
@@ -1299,22 +1316,30 @@ class Follower:
                 # this path has a height model; the image-fraction path below does not.
                 # The same height model is what lets the short-horizon memory place points, so it
                 # is fed here and nowhere else.
-                self._localmap_update(band, hgt, band * u[None, :])
+                self._localmap_update(band, hgt, band * u[None, :], self._lm_target_range)
                 clr, blob = self._nearest_blob(band, sel, hgt)
                 if raw and clr is not None:
                     return clr
+                # Resolve the LIVE clearance FULLY first: 0.0 (blind, forward forbidden), None
+                # (clear -> no cap), or a voted float. Memory is applied AFTER, as a pure tightening.
+                if clr is None:
+                    live = self._nodata(band, blob, "footprint", raw=raw)
+                else:
+                    live = self._clr_vote(clr)
+                if raw:
+                    return live
                 _lm = self._localmap_clearance(half)
-                if _lm is not None and (clr is None or _lm < clr):
-                    # REMEMBERED obstacle is nearer than anything visible right now. Only ever a
-                    # MINIMUM -- memory can tighten the brake, never release it.
+                # Memory may only ever REDUCE clearance. A BLIND live frame (live == 0.0) is NEVER
+                # raised by memory -- that was the fail-open bug (audit 2026-09-05): a remembered
+                # range overrode the blind 0.0 and released the brake while sensor-blind. Memory now
+                # only fills a genuinely-clear frame (live is None) or beats a farther live reading.
+                if _lm is not None and live != 0.0 and (live is None or _lm < live):
                     if (time.monotonic() - getattr(self, "_lm_log_t", 0.0)) >= 1.0:
                         self._lm_log_t = time.monotonic()
                         log("LOCALMAP %.2fm from memory beats live %s (%d cells) -> braking on it"
-                            % (_lm, ("%.2fm" % clr) if clr is not None else "clear", len(self._lm)))
-                    return self._clr_vote(_lm)
-                if clr is None:
-                    return self._nodata(band, blob, "footprint", raw=raw)
-                return self._clr_vote(clr)
+                            % (_lm, ("%.2fm" % live) if live is not None else "clear", len(self._lm)))
+                    return _lm
+                return live
             x0 = int(max(0, min(w - 2, w * (0.5 - cf / 2.0) + _hshift)))
             x1 = int(max(x0 + 1, min(w, w * (0.5 + cf / 2.0) + _hshift)))
             band = d[y0:y1, x0:x1]
@@ -3728,6 +3753,7 @@ class Follower:
         # OBSTACLE-BRAKE (Phase 3): cap forward vx by the corridor clearance -- computed ONCE here,
         # applied before the slew (so the slew ramps toward the cap) and re-applied after (like
         # forbid_forward). Only ever reduces forward vx; yaw untouched. Inert unless --obstacle-brake.
+        self._lm_target_range = rng     # so the local map excludes the operator's own pixels
         _obs_cap, _clr = self._obstacle_vx_cap(rng)
         # Stage-4 gap audit: log where the free space is and which way a steering layer WOULD
         # go. Observation only -- no command, and nothing below reads its result.

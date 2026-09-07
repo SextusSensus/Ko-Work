@@ -343,6 +343,30 @@ def main():
     gl._corridor_clearance()
     check("no odometry -> memory writes nothing", len(gl._lm), n_before)
 
+    # AUDIT REGRESSION 1 -- memory must never RAISE clearance on a BLIND live frame. Prime memory
+    # with a far obstacle, then feed a sensor-blind frame; the corridor must still read blind (0.0),
+    # not the remembered range. This was the fail-open: a remembered 2 m released the brake while
+    # blind.
+    gb = build(m, ["--corridor-mode", "footprint", "--localmap", "on", "--obstacle-brake"])
+    gb.node = OdomNode(np.full((448, 544), 4.0, dtype=np.float32), (0.0, 0.0, 0.0))
+    gb._clr_hist = []
+    far = np.full((448, 544), 4.0, dtype=np.float32); far[220:240, 262:282] = 2.0
+    gb.node.d = far; gb._clr_cache_d = None; gb._corridor_clearance()   # remember a 2 m obstacle
+    blind = np.full((448, 544), np.nan, dtype=np.float32)               # sensor sees nothing
+    gb.node.d = blind; gb._clr_cache_d = None
+    check("memory does NOT release the brake on a blind frame", gb._corridor_clearance(), 0.0)
+
+    # AUDIT REGRESSION 3 -- the followed operator's pixels are not written as obstacles. A person
+    # dead ahead at the target range must leave the memory empty when target_range is supplied.
+    gw = build(m, ["--corridor-mode", "footprint", "--localmap", "on"])
+    gw.node = OdomNode(np.full((448, 544), 4.0, dtype=np.float32), (0.0, 0.0, 0.0))
+    gw._clr_hist = []
+    person = np.full((448, 544), 4.0, dtype=np.float32); person[180:300, 240:304] = 2.0
+    gw.node.d = person
+    gw._lm_target_range = 2.0            # the operator is at 2.0 m -> their pixels excluded
+    gw._clr_cache_d = None; gw._corridor_clearance()
+    check("operator's own pixels are NOT written to memory", len(gw._lm), 0)
+
     # --- GROUND REJECTION: a path that DELETES obstacles needs its own gate ------------------
     # The floor is a plane seen obliquely, so corr(depth, height) across it is strongly negative;
     # a compact object's is not. Measured on recorded frames: floor -0.76..-0.94, near objects
