@@ -1302,8 +1302,18 @@ class Follower:
             clr, blob = self._nearest_blob(band, sel)
             if clr is None:
                 return self._nodata(band, blob, "frac")
-        except Exception:  # noqa: BLE001 -- a reflex must never break the loop
-            return None
+        except Exception as e:  # noqa: BLE001 -- a reflex must never break the loop
+            # FAIL CLOSED, and say so. This was `return None`, and None means NO CAP downstream in
+            # _obstacle_vx_cap -- so any exception in the corridor math silently DISABLED the
+            # obstacle brake at full speed, every frame, for as long as it kept throwing. That is
+            # the exact hole 3a91550 closed for the sparse-depth case, reopened for the error case.
+            # 0.0 means blind, and blind means forward forbidden; the robot stands instead of
+            # driving unbraked. Confirmed by the 2026-09-05 demo-readiness audit as the one
+            # remaining fail-open from that day's changes.
+            if (time.monotonic() - getattr(self, "_clr_err_t", 0.0)) >= 1.0:
+                self._clr_err_t = time.monotonic()
+                log("OBSTACLE-ERR %s -> treating frame as BLIND (forward forbidden)" % e)
+            return 0.0
         return self._clr_vote(clr)   # aged-median vote over detections AND clear frames
 
     # ---- HEAD TRACKING (stage 3). Point the head at the operator so the BODY is free to turn --
