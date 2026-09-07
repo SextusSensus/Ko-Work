@@ -21,11 +21,29 @@ import sys
 import numpy as np
 
 
+def layers(b):
+    """Every layer declared in the file, in offset order. Printed on every run because the FIRST
+    read of this format saw only the grid layer in the first 8 KB and concluded that was the whole
+    map -- it is one of five, and the 3D data is elsewhere."""
+    out = []
+    for m in re.finditer(rb"vnd\.slamtec\.map-layer/(vnd\.[!-~]+)", b):
+        kind = m.group(1).decode(errors="replace")
+        after = [t.decode() for t in re.findall(rb"[ -~]{3,}", b[m.end():m.end() + 120])]
+        out.append((m.start(), kind, after[1] if len(after) > 1 else "?"))
+    return sorted(set(out))
+
+
 def load(path):
     """-> (grid uint8 [H,W], meta dict). Raises on anything it cannot recognise."""
     b = open(path, "rb").read()
     if b[16:20] != b"STCM":
         raise SystemExit("not a STCM file (magic at 0x10 is %r)" % b[16:20])
+    print("layers in this map:")
+    for off, kind, usage in layers(b):
+        print("  0x%09x  %-38s usage=%s" % (off, kind, usage))
+    print("  (this tool reads the grid layer only; the vslam feature map is the device's "
+          "relocalization data, and a DENSE POINT CLOUD is not stored here -- it is a separate\n"
+          "   export from aurora_map_densifier.exe)")
     toks = [t.decode() for t in re.findall(rb"[ -~]{3,}", b[:8192])]
     meta = {}
     for i, t in enumerate(toks):
