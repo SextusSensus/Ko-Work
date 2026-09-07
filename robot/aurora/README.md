@@ -1,50 +1,54 @@
-# Aurora A1M1 integration -- capability map (2026-09-07)
+# Aurora A1M1 integration -- capability map (updated 2026-09-07 pm)
 
-SDK: slamtec-aurora-python-sdk 2.1.1, installed on both the robot (linux-aarch64) and the laptop
-(win64). The device connects and serves its SDK **on the laptop** (192.168.11.1, reached via the
-DHCP lease the Aurora hands the host).
+SDK: slamtec-aurora-python-sdk 2.1.1, on both the robot (linux-aarch64) and the laptop (win64). The
+Aurora serves its SDK over ethernet at **192.168.11.1**. The robot reaches it via its RJ45
+(`enP9p1s0`) with a non-destructive secondary IP (keeps the 192.168.10.102 control net):
+`sudo ip addr add 192.168.11.50/24 dev enP9p1s0`. The K1 has no free USB port; ethernet is the link.
 
-## What works (proven on the laptop)
-- `save_vslam.py`   -- download the device map -> map.vslam (got 41 MB / 8786-point map)
-- `export_3d.py`    -- export the sparse 3D landmark cloud -> map_3d.ply (viewable in the app)
-- `sfm_record.py`   -- record a **RAW** dataset (stereo images + IMU + timestamps). ~15 fps/cam.
-- `aurora_pose_probe.py` / `aurora_check.py` -- connect + live pose / import + API-surface probes
-- App "SLAM Map" tab -- renders .stcm/.vslam (2D grid) and .ply (3D cloud)
+## What works (PROVEN)
+- Robot <-> Aurora SDK over ethernet: `192.168.11.1:1445` open from the robot, `connect()` OK.
+- `aurora_upload_reloc.py` -- upload map.vslam -> pure-localization mode -> relocalize -> pose. On the
+  laptop (device handheld + moving) this RELOCALIZED: real pose (0.66, 0.89), ~95 Hz, map frame z-up.
+- `aurora_odom_bridge.py` -- republishes the relocalized pose as `booster_interface/msg/Odometer` on
+  `/aurora_odom`, publishing ONLY while relocalization == SUCCEED + a pose-jump guard (fail-closed).
+- `aurora_offload_map.py` -- **offload any run's map into the robot's local map (3D + 2D).** Pulls
+  get_map_data (enable_map_data_syncing + wait), writes `localmap_3d.ply` (sparse landmarks) and
+  `localmap_2d.npy/.png` (x,y projection of the height-band points), downloads the full `.vslam`,
+  timestamped under `~/localmap/run_<ts>/` + `~/localmap/latest_*`. Repeatable, one command per run.
+- `save_vslam.py` / `export_3d.py` / `sfm_record.py` (RAW) / `aurora_pose_probe.py` / `aurora_check.py`.
+- App "SLAM Map" tab renders .stcm/.vslam (2D grid) and .ply (3D cloud).
+- The pre-built map is already offloaded to the robot at `~/localmap/` (2D grid 994x1151 @ 5cm =
+  49.7x57.6 m; 3D cloud 8528 pts). Verified API + z-up + connection recipe in
+  `captures/AURORA_CAPTURE_SUMMARY_2026-09-07.txt` (laptop) and DECISIONS.md.
 
-## What is BLOCKED (device/firmware, not the tools)
-1. **COLMAP recording fails with error -2 (INVALID_ARGUMENT)** -- confirmed against the OFFICIAL SDK
-   example, so it is the device, not our code. The dense-cloud path needs COLMAP:
-   aurora_map_densifier.exe reads a COLMAP `sparse/cameras.bin` + `images/`, which only the COLMAP
-   recorder produces. RAW recording works but is the wrong layout for the densifier. Net: no dense
-   cloud from this device on the current firmware without a RAW->COLMAP converter (see below).
-   Signals pointing at a firmware capability gap: get_device_info -> NOT_READY (-7),
-   mapping_flags == 0, device status (0,0).
-2. **The robot cannot reach the Aurora SDK.** On the robot's wired link the device answers ping+SSH
-   at 192.168.127.10 but serves NO SDK port; the SDK server the laptop reaches at 192.168.11.1 is
-   not exposed over the robot's static-IP link. Until this is solved, nothing SDK-based (pose,
-   recording, upload/relocalize) runs on the robot. Likely fix to try WITH the device on the robot:
-   set usb_eth0 to DHCP so it negotiates a 192.168.11.x lease like the laptop does.
+## THE BLOCKER for follow/avoidance integration: head-mounted pose DIVERGES
+On the robot the Aurora is **head-mounted**. A robot run relocalized (status SUCCEED) but the pose
+then blew up to garbage (x/y/z into the millions) within seconds. Root cause, most likely: the map was
+built HANDHELD, so its viewpoint does not match the head-mounted camera; add the walking gait +
+head pan/tilt motion and the visual-inertial track diverges. Two consequences:
+1. A divergent pose CANNOT feed the obstacle brake -- it would place PHANTOM WALLS (the map's
+   obstacles at wildly wrong positions) -> the robot brakes on nothing / freezes / steers off open
+   space. This violates the standing rule: the Aurora map must never reach the brake without a
+   trustworthy live pose. (The bridge's SUCCEED-gate + jump-guard already refuse these frames, so it
+   degrades to live-depth-only -- safe, but non-functional.)
+2. The head-mount also means the reported pose is the HEAD's, not the body's; the localmap needs the
+   BODY pose, so the head pose must be composed with the live head-pan/tilt -- a moving extrinsic,
+   not the single `--yaw-offset-deg` scalar that a rigid body-mount would allow.
 
-## Localization path -- built, VERIFY ON ROBOT (blocked on the link, not the code)
-- `aurora_odom_bridge.py` -- **the localization integration.** Relocalizes the Aurora in a saved
-  map, then republishes its drift-free pose as `booster_interface/msg/Odometer{x,y,theta}` on
-  `/aurora_odom`. The follow's `--localmap` already reads that message from `--odom-topic` and fails
-  closed when it is stale, so localizing the robot in the pre-built map reduces to
-  `--odom-topic /aurora_odom` with **zero change to the safety-critical follow node**. Details, the
-  safety argument, and the one calibration (`--yaw-offset-deg`, a single mount scalar) are in the
-  script header. Inert until run; needs the robot<->Aurora SDK link (blocked by (2) below).
-- Two levels, in order. **A (safe, first):** the bridge's pose replaces drifting wheel odometry, so
-  the local map's own depth observations persist correctly across larger motions (a longer memory
-  horizon). Same safety envelope -- memory only ever tightens the brake, and a lost relocalization
-  just goes quiet -> live-depth-only. **B (later, needs proof):** seed the local map from the
-  pre-built occupancy grid (stcm_grid.py) transformed by the relocalized pose -- this is where the
-  map's *own* obstacles enter perception. It must be relocalization-confidence-gated and purge on
-  reloc loss; NOT into the brake until that gate is proven. The map must never place a phantom wall.
+## THE FIX that unblocks integration: re-map FROM THE HEAD
+Drive the robot once through the space with the Aurora on the head in MAPPING mode, so the map is
+built from the exact viewpoint + motion profile it will relocalize against. Then relocalization should
+lock with a SANE, stable pose (no divergence). `aurora_offload_map.py` captures that run's map.
+Only after a sane pose is proven does map-into-avoidance become safe.
+
+## Integration plan (in strict order; do not skip ahead)
+- **A. pose -> localmap** (safe first step): once a sane relocalized pose exists, run the bridge and
+  `follow ... --odom-topic /aurora_odom --localmap on`. The localmap's invariant (memory may only
+  REDUCE clearance) bounds the worst case to over-braking. Prereq: sane pose from a head-built map.
+- **B. map -> avoidance**: seed the localmap from the offloaded 2D grid, transformed by the live pose,
+  reloc-confidence-gated + purge-on-loss. NOT started -- builds on a proven A. Never a phantom wall.
 
 ## Not done, and why
-- **Dense 3D cloud**: blocked by (1). Options: get COLMAP recording working (firmware/SLAMTEC
-  support), or write a converter (map.vslam keyframe poses + RAW images -> COLMAP sparse/ -> densify)
-  -- real work, coordinate-frame + timestamp matching, not built speculatively.
-- **Level B map-into-perception**: needs the link (2), a confirmed reloc-confidence API, and the
-  ground-plane axis mapping verified on a live pose dump (see pose_to_planar() in the bridge). The
-  bridge (Level A) is the prerequisite and is done; B builds on a proven A.
+- **Dense 3D cloud**: COLMAP recording is device-blocked (error -2); the SDK gives sparse visual
+  landmarks only. A RAW->COLMAP converter is the path, not built speculatively.
+- **Map-into-avoidance (B)**: gated on a sane head-mounted pose (re-map from the head), then A proven.
