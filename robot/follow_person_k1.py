@@ -505,6 +505,40 @@ class Follower:
             except Exception as e:  # noqa: BLE001
                 self._ma = None
                 log("MAP-ASSIST load failed (%s) -> off; live avoidance unchanged" % e)
+        # MAP-CHANGE MANAGER (docs/MAP_CHANGE_PLAN.md). Pure OBSERVATION SINK: it records where the
+        # live view stops matching the prebuilt map and NEVER returns a clearance. Map-assist stays
+        # primary -- _map_assist_confirm's min()-only reinforcement is untouched, and nothing in the
+        # control path reads this object. Default OFF, so the decision stream is byte-identical
+        # unless --map-change on is passed. Needs the map prior AND a map-frame pose to mean
+        # anything, so it stays None otherwise rather than silently comparing across frames.
+        self._mc = None
+        self._mc_n = 0               # frames seen (for --map-change-stride decimation)
+        self._mc_report_t = 0.0
+        if getattr(self.a, "map_change", "off") == "on":
+            _ot = (getattr(self.a, "odom_topic", "") or "").strip().lower()
+            if self._ma is None or len(self._ma) == 0:
+                log("MAP-CHANGE on but no --map-assist map loaded -> inert (nothing to compare to)")
+            elif _ot in ("", "none", "/odometer_state", "odometer_state"):
+                # Same frame assertion the drive gate makes: /odometer_state is the ROBOT frame with
+                # a per-run origin, so comparing it against a map-frame prior is meaningless. Inert
+                # rather than wrong -- this is an observer, so it declines instead of aborting.
+                log("MAP-CHANGE on but --odom-topic is the robot frame (%s) -> inert; needs the "
+                    "MAP-frame pose (/aurora_odom) for the prior and the live view to share a frame"
+                    % (_ot or "unset"))
+            else:
+                try:
+                    from map_change import MapChangeManager
+                    self._mc = MapChangeManager(
+                        self._ma, map_id=os.path.basename(_ma_path).rsplit(".", 1)[0],
+                        res_m=self.a.localmap_res_m, range_m=self.a.localmap_range_m,
+                        min_votes=self.a.map_change_min_votes,
+                        min_parallax_deg=self.a.map_change_min_parallax_deg,
+                        min_prior_support=self.a.map_change_min_prior_support)
+                    log("MAP-CHANGE armed on %s (observation only -- changes no decision)"
+                        % self._mc.map_id)
+                except Exception as e:  # noqa: BLE001 -- an observer must never block startup
+                    self._mc = None
+                    log("MAP-CHANGE init failed (%s) -> off; nothing else is affected" % e)
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
         # One corridor evaluation per depth frame (see _corridor_clearance). Keyed on the frame
         # OBJECT: a new frame is a new array, so this needs no frame counter and no loop cooperation.
@@ -957,6 +991,69 @@ class Follower:
             return min(eff, map_rng)
         return eff
 
+    def _map_change_observe(self, band, hgt, lat_signed, sel):
+        """Feed one frame to the map-change manager. OBSERVATION ONLY -- returns nothing, and no
+        caller uses a return value. Deliberately fed the SAME self-masked selection the brake acts
+        on, so a finding corresponds to something the robot actually reacts to.
+
+        Decimated by --map-change-stride: findings need persistence across seconds, not every frame,
+        so there is no reason to pay the cost 10x/s. Wrapped whole -- an observer that can throw into
+        the control loop is a safety regression, not a feature."""
+        if self._mc is None:
+            return
+        try:
+            self._mc_n += 1
+            if (self._mc_n % max(1, int(self.a.map_change_stride))) != 0:
+                return
+            od = self.node.latest_odom(max_age=1.0) if self.node is not None else None
+            if od is None:
+                return                  # no fresh MAP-frame pose -> cannot place anything; skip
+            if not sel.any():
+                return
+            self._mc.observe((od[0], od[1], od[2]),
+                             band[sel].astype(np.float64),
+                             -lat_signed[sel].astype(np.float64),   # image +right -> robot +LEFT
+                             t=time.time())
+            now = time.monotonic()
+            if (now - self._mc_report_t) >= max(5.0, float(self.a.map_change_report_s)):
+                self._mc_report_t = now
+                self._map_change_report(final=False)
+        except Exception as e:  # noqa: BLE001 -- never break the loop for an observer
+            if (time.monotonic() - getattr(self, "_mc_err_t", 0.0)) > 30.0:
+                self._mc_err_t = time.monotonic()
+                log("MAP-CHANGE-ERR %s (observation skipped)" % e)
+
+    def _map_change_report(self, final=False):
+        """Emit current findings to the log + the forensic JSONL, and (on exit) fold them into the
+        cross-run ledger. Findings are recomputed from the accumulated votes, so this is safe to
+        call repeatedly; only the ledger write is once-per-run."""
+        if self._mc is None:
+            return
+        try:
+            regs = self._mc.findings()
+            st = self._mc.stats()
+            log("MAP-CHANGE %d finding(s) | %d obs, %d cells tracked%s"
+                % (len(regs), st["observations"], st["tracked_cells"], " [final]" if final else ""))
+            for r in regs:
+                log("  MAP-CHANGE %s at (%.2f,%.2f) ~%.2fx%.2fm conf=%.2f views=%d parallax=%.0fdeg"
+                    % (r["cls"], r["map_xy"][0], r["map_xy"][1], r["extent_m"][0], r["extent_m"][1],
+                       r["conf"], r["n_views"], r["parallax_deg"]))
+                self.events.tick(t=round(time.time(), 3), ev="map_change", cls=r["cls"],
+                                 map_xy=r["map_xy"], extent_m=r["extent_m"], cells=r["cells"],
+                                 votes=r["votes"], n_views=r["n_views"],
+                                 parallax_deg=r["parallax_deg"], conf=r["conf"],
+                                 nearest_prior_m=r["nearest_prior_m"], map=r["map"])
+            if final and regs:
+                from map_change import update_ledger
+                d = self.a.map_change_dir
+                os.makedirs(d, exist_ok=True)
+                p = os.path.join(d, "%s.json" % self._mc.map_id)
+                update_ledger(p, self._mc.map_id, self._mc.res, regs,
+                              run_id=time.strftime("%Y%m%d_%H%M%S"))
+                log("MAP-CHANGE ledger updated: %s" % p)
+        except Exception as e:  # noqa: BLE001
+            log("MAP-CHANGE report failed (%s) -- findings not persisted this run" % e)
+
     def _obstacle_memory(self, live):
         """Carry a seen obstacle forward using odometry. Returns the clearance to USE.
 
@@ -1374,6 +1471,9 @@ class Follower:
                 # The same height model is what lets the short-horizon memory place points, so it
                 # is fed here and nowhere else.
                 self._localmap_update(band, hgt, band * u[None, :], self._lm_target_range)
+                # OBSERVER, not a decision: records where the live view stops matching the prebuilt
+                # map. Returns nothing and is read by nothing below. No-op unless --map-change on.
+                self._map_change_observe(band, hgt, band * u[None, :], sel)
                 clr, blob = self._nearest_blob(band, sel, hgt)
                 if raw and clr is not None:
                     return clr
@@ -2707,6 +2807,7 @@ class Follower:
             except Exception:  # noqa: BLE001
                 pass
             self._gbind_session_log()   # A/B rollup (no-op unless --lock-trigger both)
+            self._map_change_report(final=True)   # no-op unless --map-change on; writes the ledger
             try:
                 self.events.close()     # P5.3: flush + close the forensic JSONL
             except Exception:  # noqa: BLE001
@@ -4633,6 +4734,33 @@ def parse_args(argv):
                         "is the robot's OWN odometry (--odom-topic), not the Aurora. Empty = off.")
     p.add_argument("--map-assist-confirm-m", type=float, default=0.5,
                    help="a map obstacle counts only when the live clearance is within this of it")
+    p.add_argument("--map-change", choices=("off", "on"), default="off",
+                   help="OBSERVATION-ONLY map-change manager: record where the live view stops "
+                        "matching the --map-assist prior, and document it in a cross-run ledger. "
+                        "It CHANGES NO DECISION -- map-assist stays primary and its min()-only "
+                        "reinforcement is untouched; nothing in the control path reads this. Needs "
+                        "--map-assist AND a MAP-frame --odom-topic (/aurora_odom); inert otherwise. "
+                        "Off by default, so decisions are byte-identical unless explicitly enabled. "
+                        "See docs/MAP_CHANGE_PLAN.md.")
+    p.add_argument("--map-change-stride", type=int, default=5,
+                   help="observe every Nth depth frame. Findings need persistence across seconds, "
+                        "not every frame, so there is no reason to pay the cost at full rate.")
+    p.add_argument("--map-change-min-votes", type=int, default=8,
+                   help="observations a cell needs before it can be part of a finding")
+    p.add_argument("--map-change-min-parallax-deg", type=float, default=25.0,
+                   help="a cell must be seen changed from viewpoints at least this far apart. This "
+                        "is what rejects BODY-FIXED artifacts (arm/rig/self-occlusion): they hold a "
+                        "constant robot-relative position, so in the map frame they smear across "
+                        "cells as the robot moves and can never accumulate in one.")
+    p.add_argument("--map-change-min-prior-support", type=int, default=3,
+                   help="raw map points a cell needs before it may be reported as VANISHED. Aurora "
+                        "maps carry a tail of stray single-point landmarks that are never pruned "
+                        "(force_map_global_optimization is device-blocked); walking through where "
+                        "one appears to be otherwise reports it as a change in the world.")
+    p.add_argument("--map-change-report-s", type=float, default=60.0,
+                   help="seconds between in-run map-change summaries (minimum 5)")
+    p.add_argument("--map-change-dir", default="/home/booster/map_changes",
+                   help="directory for the cross-run change ledger, one JSON per map")
     p.add_argument("--ground-reject", choices=("off", "on"), default="off",
                    help="drop blobs that are the FLOOR seen obliquely rather than an object. The "
                         "hit box assumes a level camera; the real pitch is ~10 deg, and the "

@@ -122,6 +122,15 @@ localmap_stride: 12
 localmap_max_cells: 4000
 map_assist: ""
 map_assist_confirm_m: 0.5
+# MAP-CHANGE MANAGER (docs/MAP_CHANGE_PLAN.md) -- OBSERVATION ONLY, changes no decision.
+# 'off' keeps the decision stream byte-identical; map-assist stays primary either way.
+map_change: 'off'
+map_change_stride: 5
+map_change_min_votes: 8
+map_change_min_parallax_deg: 25.0
+map_change_min_prior_support: 3
+map_change_report_s: 60.0
+map_change_dir: '/home/booster/map_changes'
 ground_corr: -0.60
 ground_min_px: 500
 obstacle_corridor_frac: 0.55
