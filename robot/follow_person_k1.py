@@ -884,6 +884,35 @@ class Follower:
             if target_range is not None:
                 m = self.a.obstacle_target_margin
                 sel = sel & ~(sub_d > (target_range - m))
+            # GROUND-REJECT INTO MEMORY (2026-09-09 field-run fix). _nearest_blob rejects
+            # oblique-floor blobs from the LIVE brake via _is_ground (10 deg camera tilt lifts
+            # the floor into the height gate, and per-pixel floor_margin cannot see it as a
+            # plane). But _localmap_update runs BEFORE _nearest_blob and never sees blob labels,
+            # so those same floor pixels get MEMORIZED at 0.4-0.7m. Result seen in the field:
+            # "GROUND-REJECT 52k px at 0.49m corr=-0.73 -> floor" followed by "LOCALMAP 0.38m
+            # from memory beats live 1.15m (280 cells)" -- live view is clear, memory pins the
+            # brake at 0.38m from the floor pixels it stored a moment ago. Applies the same
+            # _is_ground criterion here on the SUBSAMPLED grid, so ground-labeled blobs never
+            # enter the memory. min-px is scaled by step**2 to match the subsampling. When
+            # --ground-reject is off the localmap path also skips this (preserves parity).
+            if self.a.ground_reject == "on":
+                try:
+                    from scipy import ndimage
+                    lab, n = ndimage.label(sel)
+                    if n > 0:
+                        min_px_sub = max(20, int(self.a.ground_min_px // max(1, step * step)))
+                        for li in range(1, n + 1):
+                            bm = (lab == li)
+                            bpx = int(bm.sum())
+                            if bpx < min_px_sub:
+                                continue                    # too small to classify safely
+                            # Same signature as _nearest_blob's ground reject: (z, h, npx).
+                            # Pass ORIGINAL-scale bpx so the log's "GROUND-REJECT Npx" matches
+                            # the operator's mental scale, not the subsampled count.
+                            if self._is_ground(sub_d[bm], sub_h[bm], bpx * step * step):
+                                sel = sel & ~bm             # drop this blob from memory input
+                except Exception:  # noqa: BLE001 -- a filter must never break the loop
+                    pass
             if not sel.any():
                 return
             fwd = sub_d[sel].astype(np.float64)
