@@ -2,7 +2,11 @@
 # Launch the K1 person lock-and-handoff follow. args: <mode preview|drive> [topic]
 # Marker = one-time lock onto the human at the marker, then follows THAT PERSON (YOLO) markerlessly;
 # re-show the marker to re-seed/recover. preview = detect + print only (never moves). drive = walk to follow (ARM-gated by the app).
-# Compiles the loco bridge from source on first drive (ROS-transport preferred; see below).
+# Compiles the loco bridge from source on first drive, via the SHARED build step bridge_build.sh
+# (P1.9, 2026-09-08). Transport choice and the g++/cmake recipes live THERE, in one copy: the
+# 2026-05 firmware answers loco RPC only via the ROS2 /booster_rpc_service, and each launcher
+# keeping its own recipe is how the demo/capture launchers ended up compiling the dead SDK
+# transport over the working ROS binary this script had just built.
 source /opt/ros/humble/setup.bash 2>/dev/null
 source /opt/booster/BoosterRos2/install/setup.bash 2>/dev/null
 # P6.1a: also source the Booster interface workspace so booster_interface/msg/Odometer imports for the
@@ -22,82 +26,38 @@ _gmax=$(cat /sys/class/devfreq/17000000.gpu/max_freq 2>/dev/null)
 if [ -n "$_gmin" ] && [ -n "$_gmax" ] && [ "$_gmin" != "$_gmax" ]; then
   echo "[run_follow] WARN: Orin GPU clocks NOT pinned (${_gmin}/${_gmax} Hz). Run 'sudo jetson_clocks' before a session for ~25% lower loop p99 + far lower pose-latency tail." >&2
 fi
+# AUTO-TUNE HINTS (2026-09-09). The workstation's Auto-Tune-Loop.ps1 pulls each
+# finished run, runs eval/rerun_tune.py against it, and scp's the recommended
+# YAML patch back to /home/booster/tune_hints/latest.yaml. This block logs its
+# contents at the TOP of every follow's stderr so the operator sees the last
+# run's tuning recommendations before starting the next one. ADVISORY ONLY --
+# the launcher does NOT source or apply the patch (safety-critical config must
+# not silently mutate; merge into a profile deliberately). Absent file -> no-op.
+if [ -f /home/booster/tune_hints/latest.yaml ]; then
+  echo "==== TUNE HINTS from last run (advisory; not applied) ====" >&2
+  sed 's/^/[tune-hints] /' /home/booster/tune_hints/latest.yaml >&2
+  echo "==== end TUNE HINTS ====" >&2
+fi
 MODE="${1:-preview}"
 TOPIC="${2:-/boostercamera/head/raw/rgb}"
 shift 2 2>/dev/null || true   # remaining args ("$@") pass through to the node
                               # (e.g. --stream --standoff-m 1.2 --vx-max 0.18 from the Tracker page)
-# Booster SDK root, PROBED not hard-coded: the SDK drop moved (Workspace/booster_robotics_sdk ->
-# Workspace/sdk_release) and `sudo ./install.sh` also installs include/ + lib/ under /usr/local, so a
-# hard-coded root silently broke the bridge build (ld: cannot find libbooster_robotics_sdk.a).
-# Takes the first root that has BOTH the loco header and the static lib; $BOOSTER_SDK wins if set.
-# (Duplicated in run_follow{,_demo,_capture}.sh on purpose -- each launcher is deployed on its own and
-# must stand alone; a shared helper that failed to deploy would break every launch.)
-SDK_INC=""; SDK_LIB=""
-for _r in "$BOOSTER_SDK" /home/booster/Workspace/booster_robotics_sdk /home/booster/Workspace/sdk_release /usr/local; do
-  [ -n "$_r" ] && [ -f "$_r/include/booster/robot/b1/b1_loco_client.hpp" ] || continue
-  for _l in "$_r/lib/$(uname -m)/libbooster_robotics_sdk.a" "$_r/lib/libbooster_robotics_sdk.a"; do
-    [ -f "$_l" ] && { SDK_INC="$_r/include"; SDK_LIB="$_l"; break 2; }
-  done
-done
-BIN=/home/booster/loco_follow_bridge
-SRC=/home/booster/loco_follow_bridge.cpp
-ROS_SRC=/home/booster/loco_follow_bridge_ros.cpp
 if [ "$MODE" = "drive" ]; then
-  # BRIDGE TRANSPORT SELECTION (2026-09-02). The 2026-05 robot firmware answers loco RPC ONLY via
-  # the ROS2 service /booster_rpc_service; the raw SDK channel (B1LocoClient over rt/LocoApiTopic)
-  # times out 100 on every call, so the SDK-transport bridge ping-aborts every drive. When the
-  # ROS-transport twin's source is present, build+use IT; the SDK path below stays as the fallback
-  # for robots/firmware where the raw channel still answers. The `strings|grep` guard matters: the
-  # app re-pushes loco_follow_bridge.cpp on EVERY launch, so mtime alone cannot tell whether $BIN
-  # is the ROS build or a stale SDK build compiled over it -- only the content can.
-  if [ -f "$ROS_SRC" ]; then
-    # CONTENT-keyed, not mtime-keyed: the app re-pushes loco_follow_bridge_ros.cpp on EVERY
-    # launch, so any mtime test rebuilds every single time -- a ~40 s cmake burning CPU on an
-    # Orin that is already load-9+ and about to need every cycle for the camera pipeline.
-    # Hash the source instead and rebuild only when it actually changed.
-    _RH=$(md5sum "$ROS_SRC" 2>/dev/null | cut -d" " -f1)
-    _RH_FILE=/home/booster/.bridge_ros.md5
-    NEED=0
-    [ -x "$BIN" ] || NEED=1
-    [ "$(cat "$_RH_FILE" 2>/dev/null)" = "$_RH" ] || NEED=1
-    grep -aq booster_rpc_service "$BIN" 2>/dev/null || NEED=1
-    if [ "$NEED" = 1 ]; then
-      echo "[run_follow] compiling loco_follow_bridge (ROS transport) ..."
-      # Same diagnostics contract as the SDK path: k1_compile.err + BRIDGE stderr marker + exit 3.
-      BROS=/home/booster/bridge_ros_build
-      mkdir -p "$BROS"
-      cat > "$BROS/CMakeLists.txt" <<'CML'
-cmake_minimum_required(VERSION 3.16)
-project(loco_follow_bridge_ros CXX)
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-find_package(rclcpp REQUIRED)
-find_package(booster_interface REQUIRED)
-add_executable(loco_follow_bridge_ros /home/booster/loco_follow_bridge_ros.cpp)
-target_link_libraries(loco_follow_bridge_ros
-  rclcpp::rclcpp
-  booster_interface::booster_interface__rosidl_typesupport_cpp)
-CML
-      { cmake -B "$BROS/build" -S "$BROS" && cmake --build "$BROS/build"; } >/home/booster/k1_compile.err 2>&1 \
-        || { echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
-      install -m 755 "$BROS/build/loco_follow_bridge_ros" "$BIN" \
-        || { echo "BRIDGE install FAILED" >>/home/booster/k1_compile.err; echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
-      : > /home/booster/k1_compile.err   # success -> empty, matching the g++ path's contract
-      echo "$_RH" > "$_RH_FILE"   # remember what this binary was built from
-      echo "[run_follow] compiled OK (ROS transport)."
-    fi
-  elif [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
-    echo "[run_follow] compiling loco_follow_bridge ..."
-    # Compile diagnostics -> k1_compile.err (the app tails THAT file on exit 3; k1_follow.err still
-    # holds the PREVIOUS session here and would masquerade as the compile diagnosis). The BRIDGE-
-    # prefixed marker passes the app's stderr whitelist so the failure also shows live.
-    [ -n "$SDK_LIB" ] || { echo "no Booster SDK found (need <root>/include/booster/robot/b1/b1_loco_client.hpp + <root>/lib/<arch>/libbooster_robotics_sdk.a; probed BOOSTER_SDK, ~/Workspace/booster_robotics_sdk, ~/Workspace/sdk_release, /usr/local)" > /home/booster/k1_compile.err; echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
-    g++ -std=c++17 "$SRC" -I "$SDK_INC" "$SDK_LIB" -lfastrtps -lfastcdr -lpthread -o "$BIN" 2>/home/booster/k1_compile.err || { echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
-    echo "[run_follow] compiled OK."
-  fi
+  # The bridge build lives in ONE place (bridge_build.sh) so no launcher can compile a different
+  # transport over the binary another launcher just built -- see the P1.9 note at the top of that
+  # file. HARD-REQUIRED: refuse to drive if it is missing rather than falling back to a private
+  # copy of the recipe (fail-closed; the app deploys it alongside this script).
+  BRIDGE_BUILD=/home/booster/bridge_build.sh
+  [ -f "$BRIDGE_BUILD" ] || { echo "bridge_build.sh missing from /home/booster -- redeploy from the app (it is a hard-required helper)." > /home/booster/k1_compile.err; echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
+  K1_LAUNCHER=run_follow
+  . "$BRIDGE_BUILD"
+  k1_build_bridge   # exits 3 on failure; sets BRIDGE_BIN
+  # Belt-and-braces: a truncated/corrupt helper would source without defining the function, and
+  # the shell would sail past into an exec with an EMPTY --bridge. Refuse instead.
+  [ -x "${BRIDGE_BIN:-}" ] || { echo "bridge build produced no runnable binary (BRIDGE_BIN='${BRIDGE_BIN:-}') -- bridge_build.sh may be truncated or corrupt." > /home/booster/k1_compile.err; echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
   # stderr (the node's log lines in --stream mode) must flow to the ssh pipe so K1Finder can show
   # them; tee keeps an on-robot copy too. (Previously 2>file swallowed every diagnostic.)
-  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BIN" --topic "$TOPIC" "$@" 2> >(tee /home/booster/k1_follow.err >&2)
+  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BRIDGE_BIN" --topic "$TOPIC" "$@" 2> >(tee /home/booster/k1_follow.err >&2)
 else
   exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" "$@" 2> >(tee /home/booster/k1_follow.err >&2)
 fi

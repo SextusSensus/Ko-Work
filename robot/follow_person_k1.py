@@ -498,6 +498,8 @@ class Follower:
         self._lm_last_th = None           # yaw at last update; big yaw delta -> wipe memory (2026-09-09)
         self._corr_valid_hist = []        # DEPTH-HOLE: rolling window of recent corridor valid-pixel counts
         self._hole_log_t = 0.0            # rate-limit hole log to 1/s
+        self._hole_streak = 0             # DARK-OBSTACLE: consecutive frames with depth-hole (couch signature)
+        self._dark_obstacle_log_t = 0.0   # rate-limit dark-obstacle log to 1/s
         self._ma = None                   # MAP-ASSIST prebuilt obstacle points (map-frame x,y), or None
         _ma_path = getattr(self.a, "map_assist", "") or ""
         if _ma_path:
@@ -1729,12 +1731,34 @@ class Follower:
                         if med >= int(self.a.depth_hole_min_baseline_px):
                             ratio = cur_px / float(med) if med > 0 else 1.0
                             if ratio < max(0.0, min(1.0, self.a.depth_hole_ratio)):
+                                self._hole_streak += 1
                                 if (time.monotonic() - self._hole_log_t) >= 1.0:
                                     self._hole_log_t = time.monotonic()
                                     log("DEPTH-HOLE corridor valid=%dpx median=%dpx ratio=%.2f (<%.2f) "
-                                        "-> local blind, forward forbidden (yaw free)"
-                                        % (cur_px, med, ratio, self.a.depth_hole_ratio))
+                                        "streak=%d -> local blind, forward forbidden (yaw free)"
+                                        % (cur_px, med, ratio, self.a.depth_hole_ratio, self._hole_streak))
+                                # DARK-OBSTACLE (2026-09-09 couch fix). A dark, absorbent surface --
+                                # couch, dark chair, black fabric, dark carpet edge -- fail-opens the
+                                # depth sensor over a large, contiguous region for MANY consecutive
+                                # frames while the robot approaches. That is not a transient camera
+                                # blip; it is a real physical thing the robot cannot ignore. When the
+                                # streak crosses --dark-obstacle-frames, we CONCLUDE the corridor is
+                                # a fail-open surface (not a flicker), log it, and set a hint the
+                                # gap-steer path uses to widen its search. Still fail-closed on
+                                # forward: this ONLY expands lateral search, never lets vx > 0.
+                                if self._hole_streak >= max(1, int(self.a.dark_obstacle_frames)):
+                                    if (time.monotonic() - self._dark_obstacle_log_t) >= 2.0:
+                                        self._dark_obstacle_log_t = time.monotonic()
+                                        log("DARK-OBSTACLE persistent depth-hole (streak=%d, >=%d "
+                                            "frames) -> classified as fail-open surface (couch/dark "
+                                            "fabric); widening gap-steer search"
+                                            % (self._hole_streak, self.a.dark_obstacle_frames))
                                 return 0.0
+                            else:
+                                # Corridor came back to healthy -- streak resets.
+                                self._hole_streak = 0
+                        else:
+                            self._hole_streak = 0
                 # hgt goes in so a blob can be tested for being the FLOOR (see _is_ground). Only
                 # this path has a height model; the image-fraction path below does not.
                 # The same height model is what lets the short-horizon memory place points, so it
@@ -2394,7 +2418,19 @@ class Follower:
             want_left = bearing < 0.0              # fresh choice: least detour off the follow line
         else:
             want_left = left_ok
-        edge = math.radians(self.a.gap_steer_max_bearing_deg)
+        # DARK-OBSTACLE widening (2026-09-09 couch fix). When _corridor_clearance
+        # has classified the forward view as a persistent fail-open surface
+        # (couch/dark fabric), a normal gap-steer edge of 40 deg still leaves the
+        # robot pointing at the SAME dark surface after biasing -- a couch is
+        # 2 m wide and even a full 40 deg detour at 1 m clearance only steps 0.7 m
+        # sideways, not enough to see past it. Widen the allowed operator-bearing
+        # edge to --dark-obstacle-widen-deg so gap-steer can commit to a bigger
+        # detour AND the operator-out-of-frame guard reflects the same widened
+        # posture. Reverts the instant _hole_streak drops back to 0.
+        _edge_deg = self.a.gap_steer_max_bearing_deg
+        if getattr(self, "_hole_streak", 0) >= max(1, int(self.a.dark_obstacle_frames)):
+            _edge_deg = max(_edge_deg, self.a.dark_obstacle_widen_deg)
+        edge = math.radians(_edge_deg)
         # SIGN: bearing is POSITIVE to the right (perception.py bearing_from_x) and positive vyaw
         # turns LEFT, so a LEFT steer drives the operator's bearing MORE POSITIVE. The guard must
         # therefore fire when the operator is already far to the RIGHT and we want to keep steering
@@ -5159,6 +5195,15 @@ def parse_args(argv):
                    help="current corridor valid-pixels must fall BELOW ratio*median to be a hole. "
                         "0.25 = a 4x drop. Lower = more sensitive; too low fires on natural depth "
                         "flicker.")
+    p.add_argument("--dark-obstacle-frames", type=int, default=5,
+                   help="COUCH/DARK-FABRIC classifier. After this many consecutive DEPTH-HOLE frames "
+                        "(default 5 = 0.5s at 10Hz), the corridor is CLASSIFIED as a persistent "
+                        "fail-open surface (couch, dark chair, black fabric). Logs DARK-OBSTACLE and "
+                        "widens gap-steer's allowed detour bearing so a 2m-long couch can be routed "
+                        "around from a viewpoint the normal 40deg edge can't reach past.")
+    p.add_argument("--dark-obstacle-widen-deg", type=float, default=60.0,
+                   help="widened gap-steer max bearing edge while DARK-OBSTACLE is active. Reverts to "
+                        "--gap-steer-max-bearing-deg the instant the depth-hole streak clears.")
     p.add_argument("--follow-yaw-deadband-deg", type=float, default=1.5,
                    help="ROBUSTNESS: bearing under this magnitude contributes 0 to the follow "
                         "yaw term. Rejects tracker centroid jitter (measured at ~13%% of frames "
