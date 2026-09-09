@@ -987,6 +987,19 @@ class Follower:
         if eff == 0.0:
             self._ma_dbg("eff-blind")                  # live sensor-blind -> fail-closed; map never releases
             return eff
+        # SECONDARY POSTURE (2026-09-09): map-assist may only REFINE a live brake, never CREATE one.
+        # Without this, a live "vote-clear" from _nodata (eff = obstacle_brake_start = 1.15m) flows
+        # through and any close map point tightens it into a brake -- which is exactly the pattern
+        # that pinned vx=0 in the field run. Primary posture also assumes a fresh live map-frame pose;
+        # in unplugged-Aurora operation the anchor drifts as /odometer_state accumulates error, so
+        # projected .ply points slide off the real obstacles they were captured against, and a
+        # primary map-assist would brake on phantoms. Secondary makes the .ply a spatial HINT that
+        # can only sharpen an already-braking live decision. Tradeoff: the couch-fail-open case is
+        # no longer rescued by the map -- that needs a separate depth-hole detector (see
+        # eval/hole_stats.py for the measurement instrument), unrelated to Aurora.
+        if eff >= self.a.obstacle_brake_start:
+            self._ma_dbg("eff-clear-secondary")        # live is not braking -> map stays out
+            return eff
         try:
             od = self.node.latest_odom() if self.node is not None else None
         except Exception:  # noqa: BLE001
