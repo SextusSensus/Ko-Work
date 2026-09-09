@@ -492,9 +492,10 @@ class Follower:
         self._idsw_frames = 0        # Phase 2.4: consecutive frames the pending new track_id has persisted
         self._scan_blocked_since = None   # when the CURRENT continuous block began (head-scan dwell)
         self._scan_barren = None          # odom (x,y) where a scan found NO clear heading, else None
-        self._lm = {}                     # LOCALMAP: sparse cell key -> last-seen monotonic time
+        self._lm = {}                     # LOCALMAP: sparse cell key -> [first_t, last_t, hits]
         self._lm_target_range = None      # followed operator's range, so their pixels aren't mapped
         self._lm_swept = 0.0              # last TTL sweep (amortised, not every frame)
+        self._lm_last_th = None           # yaw at last update; big yaw delta -> wipe memory (2026-09-09)
         self._ma = None                   # MAP-ASSIST prebuilt obstacle points (map-frame x,y), or None
         _ma_path = getattr(self.a, "map_assist", "") or ""
         if _ma_path:
@@ -913,6 +914,16 @@ class Follower:
                                 sel = sel & ~bm             # drop this blob from memory input
                 except Exception:  # noqa: BLE001 -- a filter must never break the loop
                     pass
+            # TURN-INVALIDATION (2026-09-09 field-run fix). A big yaw slews world-fixed cells out
+            # of the corridor faster than odom can track them under drift, so a cell placed by the
+            # last frame becomes a phantom in front of the robot after a spin. Match _obstacle_memory:
+            # any yaw beyond --localmap-max-turn-deg since the last update wipes memory. Placed
+            # BEFORE the write so this frame's own hits survive.
+            if self._lm_last_th is not None:
+                dth = abs(math.atan2(math.sin(th - self._lm_last_th), math.cos(th - self._lm_last_th)))
+                if dth > math.radians(max(0.0, self.a.localmap_max_turn_deg)):
+                    self._lm.clear()
+            self._lm_last_th = th
             if not sel.any():
                 return
             fwd = sub_d[sel].astype(np.float64)
@@ -923,13 +934,22 @@ class Follower:
             wy = od[1] + fwd * s + left * c
             res = max(0.02, self.a.localmap_res_m)
             keys = self._lm_key(np.round(wx / res), np.round(wy / res))
+            # CONFIRMATION COUNTING (2026-09-09). Store [first_t, last_t, hits] per cell so
+            # _localmap_clearance can require --localmap-min-hits before a cell brakes. Single-frame
+            # flashes (arm swing, depth speckle) never accumulate the count and get swept out at TTL.
             for k in np.unique(keys):
-                self._lm[int(k)] = now
+                k = int(k)
+                e = self._lm.get(k)
+                if e is None:
+                    self._lm[k] = [now, now, 1]
+                else:
+                    e[1] = now
+                    e[2] += 1
             # TTL sweep, amortised: only every so often, and only when the dict has grown.
             if len(self._lm) > self.a.localmap_max_cells or (now - self._lm_swept) > 1.0:
                 self._lm_swept = now
                 ttl = max(0.5, self.a.localmap_ttl_s)
-                self._lm = {k: t for k, t in self._lm.items() if (now - t) <= ttl}
+                self._lm = {k: e for k, e in self._lm.items() if (now - e[1]) <= ttl}
         except Exception as e:  # noqa: BLE001 -- memory must never break the loop
             if (now - getattr(self, "_lm_err_t", 0.0)) > 10.0:
                 self._lm_err_t = now
@@ -954,11 +974,16 @@ class Follower:
             return None
         now = time.monotonic()
         ttl = max(0.5, self.a.localmap_ttl_s)
+        min_hits = max(1, int(self.a.localmap_min_hits))
         res = max(0.02, self.a.localmap_res_m)
         c, s = math.cos(th), math.sin(th)
         best = None
-        for k, t in self._lm.items():
-            if (now - t) > ttl:
+        for k, e in self._lm.items():
+            # e is [first_t, last_t, hits]. Skip unconfirmed cells (single-frame flashes) so the
+            # arm swing and depth speckle can't brake the follow.
+            if (now - e[1]) > ttl:
+                continue
+            if e[2] < min_hits:
                 continue
             gx, gy = self._lm_unkey(k)
             dx = gx * res - od[0]
@@ -5043,6 +5068,17 @@ def parse_args(argv):
     p.add_argument("--localmap-max-cells", type=int, default=4000,
                    help="sweep expired cells once the dict exceeds this, so memory stays bounded "
                         "even if the TTL sweep is starved")
+    p.add_argument("--localmap-min-hits", type=int, default=2,
+                   help="ROBUSTNESS: a cell must be observed in this many frames before it can brake. "
+                        "Filters single-frame flashes (arm swing, depth speckle) that used to slip "
+                        "into memory and pin phantom brakes at sub-self-range distance. 1 restores "
+                        "the pre-2026-09-09 behaviour.")
+    p.add_argument("--localmap-max-turn-deg", type=float, default=15.0,
+                   help="ROBUSTNESS: wipe the localmap when the robot yaws more than this since the "
+                        "last update. World-fixed cells slide out of the corridor faster than odom "
+                        "can track them under drift on a spin; the wipe prevents last-frame cells "
+                        "from becoming phantom obstacles ahead after a rotation. Matches the "
+                        "--obstacle-memory-max-turn-deg posture on the single-obstacle memory.")
     p.add_argument("--map-assist", default="",
                    help="ASSISTIVE prebuilt-map layer (Aurora 3D .ply, map frame). It NEVER brakes on "
                         "its own: it only REINFORCES a live-depth obstacle the local avoidance already "

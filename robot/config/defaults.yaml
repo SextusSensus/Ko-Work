@@ -63,7 +63,7 @@ depth_max_skew_ms: 250.0
 depth_min_valid_frac: 0.3
 depth_starved_margin: 1.0
 corridor_margin_m: 0.15
-corridor_mode: 'frac'
+corridor_mode: 'footprint'
 depth_topic: '/boostercamera/head/depth'
 distractor_size: 32
 drive: false
@@ -116,10 +116,12 @@ obstacle_brake_stop: 0.7
 ground_reject: "off"
 localmap: "off"
 localmap_res_m: 0.10
-localmap_ttl_s: 8.0
+localmap_ttl_s: 3.0
 localmap_range_m: 3.0
 localmap_stride: 12
 localmap_max_cells: 4000
+localmap_min_hits: 2
+localmap_max_turn_deg: 15.0
 map_assist: ""
 map_assist_confirm_m: 0.5
 map_assist_odom_wait_s: 30.0
@@ -139,7 +141,7 @@ self_mask: ""
 obstacle_self_range_m: 0.65
 obstacle_max_m: 5.0
 obstacle_memory_max_turn_deg: 25.0
-obstacle_memory_s: 2.0
+obstacle_memory_s: 0.5
 obstacle_min_blob_px: 12
 obstacle_min_valid: 70
 obstacle_pctile: 12.0
