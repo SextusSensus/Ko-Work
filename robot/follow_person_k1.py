@@ -572,6 +572,7 @@ class Follower:
         self._bs = None              # body-scan state while sweeping a full turn, else None
         self._clear_pose = None      # last odom pose where the way ahead was CLEAR (retrace anchor)
         self._gap_dir = 0            # GAP-STEER committed side (+1 left, -1 right, 0 none):
+        self._gap_dir_t = 0.0        # when the current committed side started (for --gap-steer-commit-s hold)
                                      # hysteresis, so a detour is committed to instead of
                                      # re-decided every frame (the first field run oscillated)
         self._last_clr_log = 0.0     # 1Hz throttle for the CLEARANCE observability line
@@ -2415,13 +2416,30 @@ class Follower:
         # obstacle IS. Applied to the CENTRE only: target_range - margin is a loose bound (at
         # standoff 0.7 it is ~0.3 m), and using it to clear a SIDE sector would call a chair at
         # 0.5 m "free" and steer into it. Side detection is deliberately left untouched.
+        # TEMPORAL COMMITMENT (2026-09-09 side-step fix). Once committed to a side, hold it
+        # for at least --gap-steer-commit-s regardless of whether the sector-clearance vote
+        # flips. Without this the detour drops out the moment the committed side momentarily
+        # measures blocked (a person's arm swings past, a chair edge speckles the sector),
+        # then re-triggers to the OTHER side on the next frame -- producing the side-step
+        # flapping the operator sees. Setting commit-s = 0 restores frame-by-frame decisions.
+        _now_gs = time.monotonic()
+        _in_hold = (self._gap_dir != 0
+                    and (_now_gs - self._gap_dir_t) < max(0.0, self.a.gap_steer_commit_s))
         if (clr_centre is not None and target_range is not None
                 and clr_centre > (target_range - self.a.obstacle_target_margin)):
-            self._gap_dir = 0                      # the "block" is the operator -> nothing to route around
-            return 0.0
-        if clr_centre is None or clr_centre >= trig:
-            self._gap_dir = 0                      # path clear -> release the commitment
-            return 0.0
+            if not _in_hold:
+                self._gap_dir = 0                  # the "block" is the operator -> nothing to route around
+                return 0.0
+        elif clr_centre is None or clr_centre >= trig:
+            if not _in_hold:
+                self._gap_dir = 0                  # path clear -> release the commitment
+                return 0.0
+        # If we're still IN the commit hold and the branches above would have released, keep
+        # steering in the committed direction rather than dropping to 0. Prevents flapping.
+        if _in_hold and (clr_centre is None or clr_centre >= trig
+                          or (clr_centre is not None and target_range is not None
+                              and clr_centre > (target_range - self.a.obstacle_target_margin))):
+            return self.a.gap_steer_rate * (1.0 if self._gap_dir > 0 else -1.0)
         s = self._sector_clearances()
         left_ok = s["L"] is not None and s["L"] >= bs
         right_ok = s["R"] is not None and s["R"] >= bs
@@ -2471,7 +2489,10 @@ class Follower:
         # Failing this test is SAFE: bias -> 0 restores full tracking gain and pulls them back.
         if abs(bearing) >= edge and ((bearing > 0.0) == want_left):
             return 0.0                             # would push the operator out of frame
-        self._gap_dir = 1 if want_left else -1
+        _new_dir = 1 if want_left else -1
+        if self._gap_dir != _new_dir:
+            self._gap_dir = _new_dir
+            self._gap_dir_t = time.monotonic()     # start the commit-hold timer on a fresh direction
         return self.a.gap_steer_rate * (1.0 if want_left else -1.0)
 
     def _sector_audit(self, target_bearing_rad, clr_centre):
@@ -5249,6 +5270,12 @@ def parse_args(argv):
     p.add_argument("--dark-obstacle-widen-deg", type=float, default=60.0,
                    help="widened gap-steer max bearing edge while DARK-OBSTACLE is active. Reverts to "
                         "--gap-steer-max-bearing-deg the instant the depth-hole streak clears.")
+    p.add_argument("--gap-steer-commit-s", type=float, default=2.0,
+                   help="SIDE-STEP SMOOTHER: once gap-steer commits to a detour direction, hold "
+                        "it for at least this many seconds regardless of frame-to-frame sector-"
+                        "clearance flips. Prevents the flapping side-steps that come from a "
+                        "person's arm swinging through the committed sector's read or from "
+                        "sector-clearance speckle. 0 = original frame-by-frame behaviour.")
     p.add_argument("--rerun-never-shed", choices=("off", "on"), default="on",
                    help="RECORDING RELIABILITY: suppresses both auto-disable paths for the Rerun "
                         "sink -- the SLOW-LOOP shed (RERUN-DISABLED-SLOW after N over-budget "
