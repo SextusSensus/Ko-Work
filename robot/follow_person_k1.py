@@ -1801,6 +1801,22 @@ class Follower:
                 # confirmation means an actually-seen-now obstacle has to exist before the map
                 # is trusted to sharpen it. When localmap-off, map-assist is inert here (its own
                 # secondary gate in _map_assist_confirm still fires, but this call is skipped).
+                # BRAKE ARBITRATION LOG (2026-09-09). Unified per-frame line so brake
+                # attribution is one grep instead of correlating LOCALMAP / MAP-ASSIST /
+                # NODATA / DEPTH-HOLE across sibling lines. Rate-limited to 1/s to keep
+                # the stderr readable while still surfacing every distinct brake outcome.
+                # Sources: live=_nearest_blob outcome (None/clr/0.0), lm=_localmap_clearance,
+                # ma applied later. Winner = the value that actually reaches the caller.
+                if (time.monotonic() - getattr(self, "_brake_attrib_t", 0.0)) >= 1.0:
+                    self._brake_attrib_t = time.monotonic()
+                    src = "clear" if _eff is None else (
+                        "blind" if _eff == 0.0 else (
+                            "lm" if _lm_fired else "live"))
+                    live_s = "None" if clr is None else ("%.2f" % clr)
+                    lm_s = "None" if _lm is None else ("%.2f" % _lm)
+                    eff_s = "None" if _eff is None else ("%.2f" % _eff)
+                    log("BRAKE-ATTRIB live=%s lm=%s cells=%d eff=%s src=%s"
+                        % (live_s, lm_s, len(self._lm), eff_s, src))
                 if _lm_fired:
                     return self._map_assist_confirm(half, _eff, nodata_clear=_nodata_clear)
                 return _eff
