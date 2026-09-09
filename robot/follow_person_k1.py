@@ -2214,7 +2214,14 @@ class Follower:
             # turning figure, same reasoning as the footprint corridor's half-width.
             _hw = 0.5 * max(0.05, self.a.robot_width_m)
             _hd = 0.5 * max(0.0, self.a.robot_length_m)
-            need_w = 2.0 * (math.hypot(_hw, _hd) + max(0.0, self.a.corridor_margin_m))
+            # GAP-FIT MARGIN is ON TOP of the corridor margin, and deliberately its own knob.
+            # corridor_margin_m also sets the BRAKE corridor's half-width, so raising that to make
+            # gap selection pickier would widen the brake corridor too and cause MORE phantom
+            # braking -- the opposite of the intent. This margin applies to gap acceptance only.
+            # Field-observed on the first live run: accepted gaps of 0.81-0.97 m against a 0.80 m
+            # requirement, i.e. the robot committing to openings barely wider than itself.
+            need_w = 2.0 * (math.hypot(_hw, _hd) + max(0.0, self.a.corridor_margin_m)
+                            + max(0.0, self.a.gap_fit_margin_m))
 
             tb = 0.0 if target_bearing is None else float(target_bearing)
             best = None
@@ -2579,6 +2586,24 @@ class Follower:
         _now_gs = time.monotonic()
         _in_hold = (self._gap_dir != 0
                     and (_now_gs - self._gap_dir_t) < max(0.0, self.a.gap_steer_commit_s))
+        # HOLD IS AUTHORITATIVE (2026-09-09 stanky-leg fix). Rerun on the first Follow-The-Gap
+        # run: 40 vyaw sign reversals in 789 ticks, 34 of them with NO matching operator-bearing
+        # reversal -- i.e. the yaw flips came from THIS layer, not the person. The profile path
+        # and the sector fallback alternated frame to frame (77 GAP-PROFILE vs 84 GAP-STEER
+        # fallback lines) and each re-decided the side on its own rule, so the committed
+        # direction flipped every ~4 s. A walking gait cannot absorb a yaw reversal mid-stride;
+        # one leg takes it, which is the "stanky leg". While the commit hold is live, the held
+        # direction WINS over both paths -- the only thing allowed to override it is the
+        # operator-out-of-frame edge guard, because losing the lock is worse than a wobble.
+        # Forward speed is still governed by the brake independently, so the worst case here is
+        # yawing while stopped, never driving somewhere unseen (the stage-5 invariant).
+        if _in_hold:
+            _hold_edge = self.a.gap_steer_max_bearing_deg
+            if getattr(self, "_hole_streak", 0) >= max(1, int(self.a.dark_obstacle_frames)):
+                _hold_edge = max(_hold_edge, self.a.dark_obstacle_widen_deg)
+            _hold_left = self._gap_dir > 0
+            if not (abs(bearing) >= math.radians(_hold_edge) and ((bearing > 0.0) == _hold_left)):
+                return self.a.gap_steer_rate * (1.0 if _hold_left else -1.0)
         if (clr_centre is not None and target_range is not None
                 and clr_centre > (target_range - self.a.obstacle_target_margin)):
             if not _in_hold:
@@ -3156,9 +3181,18 @@ class Follower:
         # sign, so gating the subscription on head_track alone made --head-probe a silent no-op
         # ("HEAD-PROBE SKIP /head_pose unavailable") for the common case of probing BEFORE
         # enabling tracking, which is the only sane order to do it in.
-        _head_topic = (self.a.head_pose_topic
-                       if (self.a.head_track != "off" or self.a.head_probe
-                           or self.a.head_scan != "off") else "")
+        # ALWAYS SUBSCRIBE (2026-09-09 field fix). This used to be gated on head_track/scan/probe,
+        # so with all three off the follow never received /head_pose at all: rerun showed
+        # /head/known == 0 for 1159/1159 samples while `ros2 topic hz /head_pose` reported a
+        # healthy 100 Hz publisher with ZERO subscribers. Meanwhile the operator watched the head
+        # physically drift to one side -- and the follow was blind to it, so the corridor and the
+        # bearing were both computed as if the camera faced body-forward. That is the exact
+        # silent-corruption case the NaN-not-zero logging at the /head/yaw_deg sink warns about.
+        # The message is a 100 Hz geometry_msgs/Pose; subscribing costs nothing measurable and
+        # makes the drift OBSERVABLE in every recording. Whether the corridor USES the yaw is
+        # still gated on head_track (the sign convention is unverified in the image frame), so
+        # this changes observability only, never a decision.
+        _head_topic = self.a.head_pose_topic
         self.node = CamNode(topics, depth_topic, odom_topic=_odom_topic, head_pose_topic=_head_topic)
         # FR-1 (CRITICAL): service CamNode on a DEDICATED background executor thread. The old
         # one-spin_once-per-10Hz-tick pattern measured the LOOP's callback-servicing rate, not the
@@ -3221,6 +3255,18 @@ class Follower:
         try:
             while not self._stop_requested:
                 t0 = time.monotonic()
+                # LOOP-STALL DETECTOR (2026-09-09). loop_ms brackets the compute inside a tick,
+                # but rerun showed 5984 ms and 4771 ms gaps between consecutive velocity
+                # commands while loop_ms never exceeded 1000 -- the stall lives in something the
+                # in-tick timer does not cover. Measure tick-to-tick on the WALL CLOCK and name
+                # the state when it blows, so the next recording says which call, not just that
+                # one happened. Pure observation; changes no decision.
+                _prev_t0 = getattr(self, "_last_tick_t0", None)
+                if _prev_t0 is not None and (t0 - _prev_t0) > 1.0:
+                    log("LOOP-STALL %.0fms between ticks state=%s walking=%s standing=%s "
+                        "(loop_ms did not see it -> outside the in-tick timer)"
+                        % ((t0 - _prev_t0) * 1000.0, self.state, self.walking, self.standing))
+                self._last_tick_t0 = t0
 
                 if (t0 - self.t_start) >= self.a.max_seconds:
                     log("WATCHDOG max-seconds (%.0fs) reached -> stop" % self.a.max_seconds)
@@ -5467,6 +5513,13 @@ def parse_args(argv):
                         "across the rest of its third; and 'clear at range' was never checked "
                         "against whether the robot actually FITS. Falls back to the sector logic "
                         "whenever no passable gap is found, so the old behaviour is the floor.")
+    p.add_argument("--gap-fit-margin-m", type=float, default=0.12,
+                   help="EXTRA clearance a --gap-profile opening must have beyond the robot's swept "
+                        "width + --corridor-margin-m before it is accepted. Its own knob on purpose: "
+                        "--corridor-margin-m also sets the BRAKE corridor half-width, so raising "
+                        "that to be pickier about gaps would widen the brake corridor and cause more "
+                        "phantom braking. Field-observed 2026-09-09: gaps of 0.81-0.97 m accepted "
+                        "against a 0.80 m requirement -- threading needles. 0 restores the old fit.")
     p.add_argument("--gap-max-detour-deg", type=float, default=35.0,
                    help="a --gap-profile gap is only considered when its centre bearing is within "
                         "this angle of the OPERATOR's bearing. Without it the layer picks any wide "
