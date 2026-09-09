@@ -52,7 +52,12 @@ def init_rerun(args):
         log("RERUN active mode=%s -> %s (image 1/%d)"
             % (args.rerun_mode, _RR.path, args.rerun_image_every_n))
         if args.drive:
-            log("RERUN + --drive: ensure the on-Orin loop-cost gate PASSED (RERUN_PLAN.md); "
-                "an over-budget streak auto-disables Rerun (RERUN-DISABLED-SLOW).")
+            if getattr(args, "rerun_never_shed", "on") == "on":
+                log("RERUN + --drive: ensure the on-Orin loop-cost gate PASSED (RERUN_PLAN.md). "
+                    "never-shed is ON -- an over-budget streak logs RERUN-OVERRUN but KEEPS "
+                    "recording (the .rrd covers the whole run).")
+            else:
+                log("RERUN + --drive: ensure the on-Orin loop-cost gate PASSED (RERUN_PLAN.md); "
+                    "an over-budget streak auto-disables Rerun (RERUN-DISABLED-SLOW).")
     else:
         log("RERUN init failed -> disabled (follow proceeds)")
