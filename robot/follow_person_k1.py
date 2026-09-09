@@ -496,6 +496,8 @@ class Follower:
         self._lm_target_range = None      # followed operator's range, so their pixels aren't mapped
         self._lm_swept = 0.0              # last TTL sweep (amortised, not every frame)
         self._lm_last_th = None           # yaw at last update; big yaw delta -> wipe memory (2026-09-09)
+        self._corr_valid_hist = []        # DEPTH-HOLE: rolling window of recent corridor valid-pixel counts
+        self._hole_log_t = 0.0            # rate-limit hole log to 1/s
         self._ma = None                   # MAP-ASSIST prebuilt obstacle points (map-frame x,y), or None
         _ma_path = getattr(self.a, "map_assist", "") or ""
         if _ma_path:
@@ -978,6 +980,7 @@ class Follower:
         res = max(0.02, self.a.localmap_res_m)
         c, s = math.cos(th), math.sin(th)
         best = None
+        self_r = max(0.15, self.a.obstacle_self_range_m)
         for k, e in self._lm.items():
             # e is [first_t, last_t, hits]. Skip unconfirmed cells (single-frame flashes) so the
             # arm swing and depth speckle can't brake the follow.
@@ -989,6 +992,14 @@ class Follower:
             dx = gx * res - od[0]
             dy = gy * res - od[1]
             fwd = dx * c + dy * s
+            # SYMMETRIC SELF-RANGE GATE (2026-09-09 field-run fix). Write already refuses cells
+            # closer than self_r, but cells are stored in WORLD frame -- as the robot walks forward
+            # (or odom drifts) a cell placed at 0.65m migrates INTO the body region at ~0.02-0.35m
+            # and then brakes the follow at nonsense distances. Symmetric on read: cells that have
+            # slid inside self_r since being written are stale, not real obstacles. Field-observed:
+            # "LOCALMAP 0.02m refines live 0.68m (465 cells)" -- entire clusters at sub-body range.
+            if fwd < self_r:
+                continue
             if fwd <= 0.0 or fwd >= self.a.localmap_range_m:
                 continue
             left = -dx * s + dy * c
@@ -1693,6 +1704,37 @@ class Follower:
                 sel = self._self_mask_ok(sel, d.shape, hshift=_hshift)
                 if sel is None:
                     return 0.0                           # unusable mask -> blind, forward forbidden
+                # DEPTH-HOLE DETECTOR (hole_stats, 2026-09-09). _nodata only catches WHOLE-FRAME
+                # blackouts (frame_valid < ~2% of pixels). A dark couch, glossy floor, or IR-black
+                # surface returns no depth for its own pixels while the REST of the scene stays
+                # bright -- corridor valid-pixel count crashes locally while _nodata still thinks
+                # the frame is healthy. Rolling median of recent corridor valid pixels IS the
+                # baseline for "what this corridor normally holds"; a sharp drop below a fraction
+                # of that median means the sensor just went dark in the direction the robot is
+                # walking, which is exactly the couch/couch-arm/glass signature. Fail-closed:
+                # return 0.0 (forward forbidden, yaw still allowed), same posture as _nodata's
+                # blind path. Only fires once a baseline exists (>= --depth-hole-baseline-frames),
+                # so the follow's first few frames are never held. min-baseline-px prevents the
+                # check from tripping when the baseline itself is thin (empty room, distant scene).
+                if self.a.depth_hole == "on":
+                    cur_px = int(sel.sum())
+                    hist = self._corr_valid_hist
+                    hist.append(cur_px)
+                    max_hist = max(4, int(self.a.depth_hole_history_frames))
+                    if len(hist) > max_hist:
+                        del hist[0:len(hist) - max_hist]
+                    if len(hist) >= max(3, int(self.a.depth_hole_baseline_frames)):
+                        prior = sorted(hist[:-1])
+                        med = prior[len(prior) // 2]
+                        if med >= int(self.a.depth_hole_min_baseline_px):
+                            ratio = cur_px / float(med) if med > 0 else 1.0
+                            if ratio < max(0.0, min(1.0, self.a.depth_hole_ratio)):
+                                if (time.monotonic() - self._hole_log_t) >= 1.0:
+                                    self._hole_log_t = time.monotonic()
+                                    log("DEPTH-HOLE corridor valid=%dpx median=%dpx ratio=%.2f (<%.2f) "
+                                        "-> local blind, forward forbidden (yaw free)"
+                                        % (cur_px, med, ratio, self.a.depth_hole_ratio))
+                                return 0.0
                 # hgt goes in so a blob can be tested for being the FLOOR (see _is_ground). Only
                 # this path has a height model; the image-fraction path below does not.
                 # The same height model is what lets the short-horizon memory place points, so it
@@ -4221,7 +4263,14 @@ class Follower:
         # relax 0.5). The operator stays inside the 105.8 deg FOV throughout, and full gain is
         # restored the moment the corridor clears and _gap returns to 0.
         _k = self.a.k_yaw * (self.a.gap_steer_yaw_relax if _gap != 0.0 else 1.0)
-        vyaw = self._slew(self._prev_vyaw, -_k * bearing + _gap, self.vyaw_slew)
+        # BEARING DEADBAND (2026-09-09 field-run fix). The follow yaw term is proportional to
+        # bearing, so tracker centroid jitter -- measured at ~13% of frames swinging >2 deg
+        # frame-to-frame -- feeds straight through as commanded yaw twitch even when the target
+        # has not moved. Below --follow-yaw-deadband-deg the yaw term is dropped (bias/scan can
+        # still yaw the robot for detour work); above it, full gain applies. Set 0.0 to disable.
+        _bdb = math.radians(max(0.0, self.a.follow_yaw_deadband_deg))
+        _b_yaw = 0.0 if abs(bearing) < _bdb else bearing
+        vyaw = self._slew(self._prev_vyaw, -_k * _b_yaw + _gap, self.vyaw_slew)
         vyaw = clamp(vyaw, self.vyaw_min, self.vyaw_max)
         if rng is not None:
             err = rng - self.a.standoff_m
@@ -5073,6 +5122,32 @@ def parse_args(argv):
                         "Filters single-frame flashes (arm swing, depth speckle) that used to slip "
                         "into memory and pin phantom brakes at sub-self-range distance. 1 restores "
                         "the pre-2026-09-09 behaviour.")
+    p.add_argument("--depth-hole", choices=("off", "on"), default="on",
+                   help="DEPTH-SENSOR ROBUSTNESS: detect LOCAL corridor blackouts (couch fail-open, "
+                        "glossy floor, IR-black surface) that _nodata's whole-frame check misses. "
+                        "Compares current corridor valid-pixel count against a rolling median of "
+                        "recent frames; a sharp drop -> forward forbidden (yaw free), same posture "
+                        "as _nodata's blind path. Only fires once a baseline exists. Additive on "
+                        "top of _nodata and self-range gating; localmap can only tighten, not "
+                        "release. off restores the pre-2026-09-09 behaviour (whole-frame blind only).")
+    p.add_argument("--depth-hole-history-frames", type=int, default=30,
+                   help="rolling window length for the corridor-valid baseline. 30 = ~3s at 10Hz.")
+    p.add_argument("--depth-hole-baseline-frames", type=int, default=10,
+                   help="minimum recent frames before the hole check can fire, so the first second "
+                        "of a follow is never held.")
+    p.add_argument("--depth-hole-min-baseline-px", type=int, default=200,
+                   help="minimum recent-median valid-pixel count that qualifies as a real baseline. "
+                        "Prevents the check from tripping when the baseline is naturally sparse "
+                        "(empty room, target far away).")
+    p.add_argument("--depth-hole-ratio", type=float, default=0.25,
+                   help="current corridor valid-pixels must fall BELOW ratio*median to be a hole. "
+                        "0.25 = a 4x drop. Lower = more sensitive; too low fires on natural depth "
+                        "flicker.")
+    p.add_argument("--follow-yaw-deadband-deg", type=float, default=1.5,
+                   help="ROBUSTNESS: bearing under this magnitude contributes 0 to the follow "
+                        "yaw term. Rejects tracker centroid jitter (measured at ~13%% of frames "
+                        "swinging >2 deg frame-to-frame in the 2026-09-09 field run) that used "
+                        "to feed straight through as yaw twitch. 0 disables the deadband.")
     p.add_argument("--localmap-max-turn-deg", type=float, default=15.0,
                    help="ROBUSTNESS: wipe the localmap when the robot yaws more than this since the "
                         "last update. World-fixed cells slide out of the corridor faster than odom "

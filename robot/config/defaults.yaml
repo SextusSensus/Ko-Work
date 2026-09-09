@@ -122,6 +122,12 @@ localmap_stride: 12
 localmap_max_cells: 4000
 localmap_min_hits: 2
 localmap_max_turn_deg: 15.0
+follow_yaw_deadband_deg: 1.5
+depth_hole: "on"
+depth_hole_history_frames: 30
+depth_hole_baseline_frames: 10
+depth_hole_min_baseline_px: 200
+depth_hole_ratio: 0.25
 map_assist: ""
 map_assist_confirm_m: 0.5
 map_assist_odom_wait_s: 30.0
