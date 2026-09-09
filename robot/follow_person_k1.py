@@ -1717,21 +1717,26 @@ class Follower:
                 _eff = live
                 _live_is_braking = (live is not None and live != 0.0
                                     and live < self.a.obstacle_brake_start)
-                if _lm is not None and _live_is_braking and _lm < live:
+                _lm_fired = (_lm is not None and _live_is_braking and _lm < live)
+                if _lm_fired:
                     if (time.monotonic() - getattr(self, "_lm_log_t", 0.0)) >= 1.0:
                         self._lm_log_t = time.monotonic()
                         log("LOCALMAP %.2fm refines live %.2fm (%d cells) -> braking on it"
                             % (_lm, live, len(self._lm)))
                     _eff = _lm
                     _nodata_clear = False   # localmap gave evidence; no longer trusting-nothing
-                # MAP-ASSIST: the prebuilt Aurora map can only REINFORCE a live obstacle it agrees
-                # with (same range in the corridor); a map obstacle the live view does not confirm is
-                # discarded, and it never releases the brake. When live was NODATA-clear (window
-                # empty, could be a couch), the map's nearer reading is trusted instead of discarded
-                # -- see _map_assist_confirm's nodata_clear branch. Pose is the robot's OWN odometry,
-                # so the Aurora's walking VIO never enters the loop. Off (no-op) unless --map-assist
-                # is set.
-                return self._map_assist_confirm(half, _eff, nodata_clear=_nodata_clear)
+                # MAP-ASSIST is now TERTIARY (2026-09-09 field-run operator direction: "move map
+                # assist behind local"). The prebuilt Aurora map may only refine a clearance that
+                # TWO independent live layers already agree on: the live depth blob AND the
+                # localmap memory. Without localmap agreement, map-assist stays out even if live
+                # is braking. Rationale: with Aurora unplugged the anchor drifts, so a lone map
+                # projection can wander into wrong image positions; requiring localmap
+                # confirmation means an actually-seen-now obstacle has to exist before the map
+                # is trusted to sharpen it. When localmap-off, map-assist is inert here (its own
+                # secondary gate in _map_assist_confirm still fires, but this call is skipped).
+                if _lm_fired:
+                    return self._map_assist_confirm(half, _eff, nodata_clear=_nodata_clear)
+                return _eff
             x0 = int(max(0, min(w - 2, w * (0.5 - cf / 2.0) + _hshift)))
             x1 = int(max(x0 + 1, min(w, w * (0.5 + cf / 2.0) + _hshift)))
             band = d[y0:y1, x0:x1]
@@ -1766,7 +1771,12 @@ class Follower:
             # Corridor half-width for frac: half the robot width plus the corridor margin -- the
             # same lateral gate the footprint path uses in its map-assist call above.
             _hw_frac = 0.5 * max(0.05, self.a.robot_width_m) + max(0.0, self.a.corridor_margin_m)
-            return self._map_assist_confirm(_hw_frac, live, nodata_clear=_nodata_clear)
+            _hw_frac  # kept for reference; unused now that frac skips map-assist
+            # MAP-ASSIST TERTIARY (2026-09-09): map-assist requires localmap agreement to fire,
+            # per the operator's "move map-assist behind local" direction. The frac path has no
+            # localmap fold-in, so map-assist can never gain the required corroboration here --
+            # skip the call entirely rather than pretending. Return the pure live clearance.
+            return live
         except Exception as e:  # noqa: BLE001 -- a reflex must never break the loop
             # FAIL CLOSED, and say so. This was `return None`, and None means NO CAP downstream in
             # _obstacle_vx_cap -- so any exception in the corridor math silently DISABLED the
