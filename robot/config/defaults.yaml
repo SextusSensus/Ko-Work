@@ -130,6 +130,7 @@ depth_hole_min_baseline_px: 200
 depth_hole_ratio: 0.25
 dark_obstacle_frames: 5
 dark_obstacle_widen_deg: 60.0
+rerun_never_shed: "on"
 map_assist: ""
 map_assist_confirm_m: 0.5
 map_assist_odom_wait_s: 30.0

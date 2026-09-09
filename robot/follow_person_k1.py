@@ -3227,10 +3227,25 @@ class Follower:
                             self._rr_overrun_streak = 0
                         else:
                             self._rr_overrun_streak += 1
+                            # NEVER-SHED (2026-09-09). --rerun-never-shed on (default) suppresses the
+                            # RERUN-DISABLED-SLOW auto-disable so a captured run never gets cut
+                            # short. Streak still tracked for observability; a warning fires once
+                            # per --rerun-overrun-frames milestone so the operator sees when the
+                            # loop is chronically over budget without losing the recording. The
+                            # follow loop itself is unchanged either way -- Rerun logging is inside
+                            # try/except in every k1_rerun call site, so a broken sink can't stall
+                            # the loop, only miss log entries.
                             if self._rr_overrun_streak >= self.a.rerun_overrun_frames:
-                                rerun_sink._RR.ok = False
-                                log("RERUN-DISABLED-SLOW %d frames over budget with --rerun -> Rerun OFF "
-                                    "(follow safe + byte-identical from here)" % self._rr_overrun_streak)
+                                if getattr(self.a, "rerun_never_shed", "on") == "on":
+                                    if (time.monotonic() - getattr(self, "_rr_shed_warn_t", 0.0)) >= 5.0:
+                                        self._rr_shed_warn_t = time.monotonic()
+                                        log("RERUN-OVERRUN %d consecutive frames over budget "
+                                            "(never-shed on -> recording kept alive)"
+                                            % self._rr_overrun_streak)
+                                else:
+                                    rerun_sink._RR.ok = False
+                                    log("RERUN-DISABLED-SLOW %d frames over budget with --rerun -> Rerun OFF "
+                                        "(follow safe + byte-identical from here)" % self._rr_overrun_streak)
                                 self._rr_overrun_streak = 0
                     # NET-NEW gesture overrun auto-disable (SCOPE §4.3): an INDEPENDENT counter
                     # that does NOT share the SLOW-LOOP reset above (which fires every 5 frames
@@ -5234,6 +5249,14 @@ def parse_args(argv):
     p.add_argument("--dark-obstacle-widen-deg", type=float, default=60.0,
                    help="widened gap-steer max bearing edge while DARK-OBSTACLE is active. Reverts to "
                         "--gap-steer-max-bearing-deg the instant the depth-hole streak clears.")
+    p.add_argument("--rerun-never-shed", choices=("off", "on"), default="on",
+                   help="RECORDING RELIABILITY: suppresses both auto-disable paths for the Rerun "
+                        "sink -- the SLOW-LOOP shed (RERUN-DISABLED-SLOW after N over-budget "
+                        "frames) AND the k1_rerun 20-fault auto-disable. Recording stays alive for "
+                        "the entire run. Follow loop is unaffected either way: every k1_rerun call "
+                        "site wraps in try/except so a broken sink still cannot stall the loop, "
+                        "only miss log entries. off restores the pre-2026-09-09 behaviour where a "
+                        "chronically overloaded loop closes the .rrd mid-run.")
     p.add_argument("--follow-yaw-deadband-deg", type=float, default=1.5,
                    help="ROBUSTNESS: bearing under this magnitude contributes 0 to the follow "
                         "yaw term. Rejects tracker centroid jitter (measured at ~13%% of frames "

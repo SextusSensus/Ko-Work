@@ -128,11 +128,14 @@ class RerunSink:
     """Inert-by-default Rerun recording sink. Construct with enabled=True to record."""
 
     def __init__(self, enabled=False, app_id="k1_follow", mode="save", path=None,
-                 addr=None, image_every_n=3, min_safe=0.6, standoff=1.2, max_follow=0.0):
+                 addr=None, image_every_n=3, min_safe=0.6, standoff=1.2, max_follow=0.0,
+                 never_disable=False):
         self.ok = False
         self.rr = None
         self.path = None
         self._faults = 0
+        self._last_fault_warn_t = 0.0
+        self._never_disable = bool(never_disable)
         self._img_n = max(1, int(image_every_n or 1))
         self._min_safe = float(min_safe or 0.0)
         self._standoff = float(standoff or 0.0)
@@ -164,8 +167,22 @@ class RerunSink:
             _warn("init failed: %s -> disabled (follow proceeds)" % e)
 
     # ---- internal fault latch: a broken Rerun disables itself, never spams/steals the loop ----
+    # NEVER-DISABLE MODE (2026-09-09): when the sink was built with never_disable=True the
+    # 20-fault auto-disable is skipped -- Rerun stays ok=True and per-call try/except still
+    # swallows every exception, so the follow loop is unaffected but the recording never
+    # closes mid-run. Fault-log spam is rate-limited to at most 1 warning every 5s so a
+    # persistent broken sink doesn't drown the stderr.
     def _fault(self, e):
         self._faults += 1
+        try:
+            now = _time.monotonic()
+        except Exception:  # noqa: BLE001
+            now = 0.0
+        if self._never_disable:
+            if (now - self._last_fault_warn_t) >= 5.0:
+                self._last_fault_warn_t = now
+                _warn("log fault #%d: %s (never-disable: sink kept alive)" % (self._faults, e))
+            return
         if self._faults <= 3:
             _warn("log fault #%d: %s" % (self._faults, e))
         if self._faults >= 20:
