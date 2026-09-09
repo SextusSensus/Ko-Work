@@ -5203,7 +5203,7 @@ def parse_args(argv):
                         "distances a real obstacle occupies, so no --obstacle-self-range-m value "
                         "separates them. Empty = off (range cut only). A path that will not load "
                         "is fatal, not ignored.")
-    p.add_argument("--obstacle-self-range-m", type=float, default=0.45,
+    p.add_argument("--obstacle-self-range-m", type=float, default=0.65,
                    help="ignore depth returns nearer than this (m) -- that close, the camera is "
                         "looking at the ROBOT, not the world. The head camera sits at 0.86 m with a "
                         "94.9 deg vertical FOV, so its lower rows see the robot's own chest and "
@@ -5211,6 +5211,12 @@ def parse_args(argv):
                         "box and it detects itself. Measured in the field as a clearance pinned at "
                         "0.15-0.20 m on every frame, vx capped to zero, the robot turning on the "
                         "spot and never walking. The old row band hid this by accident. "
+                        "RAISED 0.45 -> 0.65 on 2026-09-09 field-run. Arm blind shell measured at "
+                        "0.36-0.53 m, so 0.45 let 0.50-0.55 m arm swing through as blobs which fed "
+                        "the localmap; secondary posture then legitimately refined live brakes onto "
+                        "phantom arm cells at 0.32-0.55 m. 0.65 m covers the full arm-shell envelope. "
+                        "Cost: robot cannot see anything closer than 0.65 m -- fine because standoff "
+                        "is 0.7 m; nothing legitimately gets closer during a follow. "
                         "RAISED 0.22 -> 0.45 on 2026-09-04. 0.22 was set from one session where "
                         "self-returns never exceeded 0.20 m, and a blunt 0.35 was rejected then for "
                         "'blinding the robot to real obstacles at 0.25-0.30 m'. Recorded depth says "
