@@ -999,7 +999,18 @@ class Follower:
         dy = self._ma[:, 1] - od[1]
         fwd = dx * c + dy * s
         left = -dx * s + dy * c
-        m = (fwd > 0.0) & (fwd < self.a.localmap_range_m) & (np.abs(left) <= half)
+        # SELF-RANGE GATE (2026-09-09 forensics MUST-FIX 1): filter map points inside the robot's
+        # own footprint the SAME way the live obstacle paths do (see _corridor_clearance_uncached
+        # at :1525 and _nearest_blob at :1200 which both use obstacle_self_range_m). Without this,
+        # any .ply point that lands within 0.45 m of the robot's map-frame pose -- whether it is a
+        # real close obstacle, the robot's own body mapped in during the capture drive, or a
+        # mapping-time artifact -- wins the min() and forces map=0.15-0.24m FIRE, pinning
+        # CLEARANCE at 0 and vx-cap at 0. Field run 2026-09-09 pose (-2.1,-3.7) had exactly one
+        # such point at (-2.260,-3.891,+0.357m) that fired 59 times across ~180 deg of yaw and
+        # kept the robot spinning in place while the operator walked off-frame. All other obstacle
+        # paths in this file gate the same way; this is a code-symmetry defect, not a policy change.
+        m = ((fwd >= self.a.obstacle_self_range_m) & (fwd < self.a.localmap_range_m)
+             & (np.abs(left) <= half))
         if not m.any():
             self._ma_dbg("no-map-pts-in-corridor")
             return eff
@@ -1637,7 +1648,12 @@ class Follower:
                     live = self._nodata(band, blob, "footprint", raw=raw)
                     # _nodata returns 0.0 (blind) or a _clr_vote float (window empty, clear). The
                     # non-blind, non-raw case IS the nodata-clear vote we want the map to reinforce.
-                    _nodata_clear = (live is not None and live != 0.0 and not raw)
+                    # DISABLED 2026-09-09 field run: this trigger fires on ANY non-blind clear
+                    # frame (frame_valid ~68%, plenty of pixels), not only the sparse-corridor
+                    # couch case. Combined with any anchor misalignment it forces vx=0 in open
+                    # space. Rewire with a strict sparse-corridor gate (sel-valid / sel-total
+                    # ratio) before re-enabling. Keeping map-assist's confirm-only default here.
+                    _nodata_clear = False
                 else:
                     live = self._clr_vote(clr)
                 if raw:
@@ -1688,7 +1704,8 @@ class Follower:
             _nodata_clear = False
             if clr is None:
                 live = self._nodata(band, blob, "frac", raw=raw)
-                _nodata_clear = (live is not None and live != 0.0 and not raw)
+                # DISABLED 2026-09-09 field run (frac path) -- see the footprint site for why.
+                _nodata_clear = False
                 if raw:
                     return live
             else:
@@ -2495,7 +2512,13 @@ class Follower:
             log("DRIVE-ABORT cannot spawn bridge: %s" % e)
             return False
 
-        ok, reply = self.bridge.command_expect_ok("ping")
+        # PING TIMEOUT 15s (was 4s): loco_follow_bridge_ros.cpp waits up to 8s for
+        # /booster_rpc_service to appear (wait_for_service, L96), then the ping command's
+        # internal API_GET_MODE call takes up to 8s more (L407). Python's default 4s clipped
+        # the bridge before it could reply, DRIVE-ABORTing a working bridge. 15s covers the
+        # worst-case bring-up (ROS discovery on a fresh startup) with margin, and only
+        # affects the one-shot init ping -- runtime commands still use the 4s default.
+        ok, reply = self.bridge.command_expect_ok("ping", timeout=15.0)
         log("BRIDGE ping -> %s" % reply)
         if not ok:
             log("DRIVE-ABORT ping failed; not moving")
