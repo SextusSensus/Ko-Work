@@ -2108,6 +2108,145 @@ class Follower:
         # wedge, and the robot detours into it. Byte-identical when --map-assist off or no odom.
         return self._map_assist_confirm_sectors(out)
 
+    def _gap_profile(self, target_bearing=None):
+        """FOLLOW-THE-GAP: the widest PASSABLE opening in the depth frame, as
+        (bearing_rad, width_m, range_m), or None when nothing is passable.
+
+        WHY THIS REPLACES THE 3-SECTOR TEST. _sector_clearances splits the frame into fixed
+        image thirds and asks a binary "is this third clear?". Three failures follow from that
+        shape, all seen in the field:
+          1. A gap STRADDLING two sectors is invisible -- each half reads blocked by the
+             obstacle in its own third, so the robot reports boxed-in and freezes in front of
+             a doorway it would fit through.
+          2. A sector reports one percentile over its whole width, so a near chair at one edge
+             masks genuinely open space across the rest of the same third.
+          3. "Clear at range" is not "wide enough to fit". A 0.20 m slot between two chairs
+             reads clear at 2.5 m and the robot wedges itself into it. Nothing in the old path
+             ever compared an opening against the robot's own width.
+
+        WHAT THIS DOES INSTEAD. Bin the depth frame by image COLUMN into angular bins; take a
+        low percentile of valid depth down each bin's column strip as that bearing's clearance;
+        mark bins passable when that clearance exceeds the brake-start horizon; find CONTIGUOUS
+        runs of passable bins; convert each run's angular extent into a METRIC width at its own
+        range (w = 2*r*sin(dtheta/2)); discard runs narrower than the robot's swept width plus
+        margin; and return the survivor whose centre bearing is the LEAST detour from the
+        operator. That is the classic Follow-The-Gap construction, and every step above maps
+        onto one of the three failures.
+
+        COST. One strided pass over the already-read depth frame -- no second frame fetch, no
+        scipy, fully vectorised. --gap-profile-bins columns of work (default 48) on a frame the
+        caller has already paid for. Called ONLY when the centre corridor is blocked, so a
+        clear-path frame pays nothing.
+
+        SAFETY. Pure observation: returns a bearing, never a velocity. A bin that cannot be
+        measured stays NOT passable -- 'I cannot see' is never 'nothing is there', the same
+        invariant _sector_clearances holds. Returning None means boxed-in, and the caller must
+        fall back to letting the brake stop the robot rather than guessing a direction."""
+        if self.node is None:
+            return None
+        d = self.node.latest_depth()
+        if d is None:
+            return None
+        try:
+            h, w = d.shape[:2]
+            f = focal_px(w, self.a.hfov_deg)
+            if f <= 1.0:
+                return None
+            y0 = int(h * self.a.obstacle_band_top)
+            y1 = int(h * self.a.obstacle_band_bot)
+            if y1 - y0 < 4:
+                return None
+            # Same head-pan correction the corridor and sectors apply: the profile must be
+            # measured about BODY-forward, not head-forward, or a panned head silently
+            # rotates every bearing this returns.
+            _hshift = 0.0
+            if self.a.head_track == "on":
+                _hy = self.node.head_yaw()
+                if _hy is not None:
+                    _hshift = -self.a.head_yaw_sign * _hy * f
+            cx = w * 0.5 + _hshift
+
+            nb = max(8, min(256, int(self.a.gap_profile_bins)))
+            band = d[y0:y1, :]
+            valid = np.isfinite(band) & (band > 0.15) & (band < self.a.obstacle_max_m)
+            edges = np.linspace(0, w, nb + 1).astype(int)
+
+            bs = float(self.a.obstacle_brake_start)
+            clr = np.full(nb, np.nan, dtype=np.float64)
+            # Per-bin clearance from a low percentile so one speckle pixel cannot open a bin,
+            # and a bin without enough valid pixels stays NaN == not passable.
+            min_px = max(4, int(self.a.obstacle_min_valid // max(1, nb // 8)))
+            for i in range(nb):
+                s0, s1 = edges[i], edges[i + 1]
+                if s1 - s0 < 1:
+                    continue
+                col = band[:, s0:s1]
+                v = col[valid[:, s0:s1]]
+                if v.size < min_px:
+                    continue                       # unmeasurable -> stays NaN -> blocked
+                clr[i] = float(np.percentile(v, self.a.obstacle_pctile))
+
+            passable = np.isfinite(clr) & (clr >= bs)
+            if not passable.any():
+                return None
+
+            # Bin centre bearings. bearing is POSITIVE to the RIGHT (perception.bearing_from_x),
+            # which is the convention every caller here already uses.
+            centres = 0.5 * (edges[:-1] + edges[1:]).astype(np.float64)
+            bearings = np.arctan((centres - cx) / f)
+
+            # Contiguous runs of passable bins.
+            runs = []
+            i = 0
+            while i < nb:
+                if not passable[i]:
+                    i += 1
+                    continue
+                j = i
+                while j + 1 < nb and passable[j + 1]:
+                    j += 1
+                runs.append((i, j))
+                i = j + 1
+
+            # SWEPT WIDTH. Standing still the robot occupies its half-width; while rotating it
+            # sweeps its circumscribed radius, because the corners swing outboard. Gap steer
+            # applies YAW, so the robot is turning exactly while it threads the gap -- use the
+            # turning figure, same reasoning as the footprint corridor's half-width.
+            _hw = 0.5 * max(0.05, self.a.robot_width_m)
+            _hd = 0.5 * max(0.0, self.a.robot_length_m)
+            need_w = 2.0 * (math.hypot(_hw, _hd) + max(0.0, self.a.corridor_margin_m))
+
+            tb = 0.0 if target_bearing is None else float(target_bearing)
+            best = None
+            for (i0, i1) in runs:
+                # Angular extent measured at the run's OUTER edges, not bin centres, so a
+                # single-bin gap still gets its true angular width.
+                a0 = math.atan((edges[i0] - cx) / f)
+                a1 = math.atan((edges[i1 + 1] - cx) / f)
+                dth = abs(a1 - a0)
+                r = float(np.nanmin(clr[i0:i1 + 1]))
+                if not math.isfinite(r):
+                    continue
+                # Chord width of this angular opening at its own nearest range.
+                width_m = 2.0 * r * math.sin(0.5 * dth)
+                if width_m < need_w:
+                    continue                        # too narrow to fit -- never steer into it
+                cbear = 0.5 * (a0 + a1)
+                detour = abs(cbear - tb)
+                # Least detour off the follow line wins; width breaks ties so that between two
+                # equally-convenient gaps the robot takes the roomier one.
+                key = (detour, -width_m)
+                if best is None or key < best[0]:
+                    best = (key, cbear, width_m, r)
+            if best is None:
+                return None
+            return (best[1], best[2], best[3])
+        except Exception as e:  # noqa: BLE001 -- a steering hint must never break the loop
+            if (time.monotonic() - getattr(self, "_gapprof_err_t", 0.0)) > 10.0:
+                self._gapprof_err_t = time.monotonic()
+                log("GAP-PROFILE-ERR %s (falling back to sector logic)" % e)
+            return None
+
     # ---- GAP STEERING (stage 5). Routes AROUND an obstacle instead of only stopping for it.
     # INVARIANTS (deliberate, do not relax):
     #   * It may only add YAW. It never authorises forward vx -- the brake still governs speed
@@ -2440,6 +2579,38 @@ class Follower:
                           or (clr_centre is not None and target_range is not None
                               and clr_centre > (target_range - self.a.obstacle_target_margin))):
             return self.a.gap_steer_rate * (1.0 if self._gap_dir > 0 else -1.0)
+        # FOLLOW-THE-GAP PATH (2026-09-09). Preferred over the 3-sector binary test: it can see
+        # a gap that straddles sectors, it validates the opening against the robot's own swept
+        # width before committing, and it steers PROPORTIONALLY to how far off the gap is
+        # instead of applying a fixed full-rate bias for every geometry. Falls through to the
+        # sector logic below whenever it cannot find a passable gap, so the old behaviour is
+        # the floor, never the ceiling.
+        if self.a.gap_profile == "on":
+            _g = self._gap_profile(target_bearing=bearing)
+            if _g is not None:
+                _gb, _gw, _gr = _g
+                # Steer toward the gap centre proportionally: error is how far the gap sits off
+                # the current heading. Scaled by --gap-steer-rate and clamped to it, so this can
+                # never command a harder yaw than the fixed-rate path it replaces.
+                _err = _gb - 0.0                    # gap bearing is already relative to body-forward
+                _cmd = self.a.gap_steer_rate * max(-1.0, min(1.0, _err / max(1e-3, math.radians(30.0))))
+                # Same operator-in-frame guard the fixed path uses: never push the operator out.
+                _edge_deg2 = self.a.gap_steer_max_bearing_deg
+                if getattr(self, "_hole_streak", 0) >= max(1, int(self.a.dark_obstacle_frames)):
+                    _edge_deg2 = max(_edge_deg2, self.a.dark_obstacle_widen_deg)
+                _want_left2 = _cmd > 0.0
+                if abs(bearing) >= math.radians(_edge_deg2) and ((bearing > 0.0) == _want_left2):
+                    return 0.0
+                _new_dir2 = 1 if _want_left2 else -1
+                if self._gap_dir != _new_dir2:
+                    self._gap_dir = _new_dir2
+                    self._gap_dir_t = time.monotonic()
+                if (time.monotonic() - getattr(self, "_gapprof_log_t", 0.0)) >= 1.0:
+                    self._gapprof_log_t = time.monotonic()
+                    log("GAP-PROFILE gap bearing %+.0fdeg width %.2fm at %.2fm -> yaw %+.2f rad/s "
+                        "(operator %+.0fdeg)"
+                        % (math.degrees(_gb), _gw, _gr, _cmd, math.degrees(bearing)))
+                return _cmd
         s = self._sector_clearances()
         left_ok = s["L"] is not None and s["L"] >= bs
         right_ok = s["R"] is not None and s["R"] >= bs
@@ -5270,6 +5441,21 @@ def parse_args(argv):
     p.add_argument("--dark-obstacle-widen-deg", type=float, default=60.0,
                    help="widened gap-steer max bearing edge while DARK-OBSTACLE is active. Reverts to "
                         "--gap-steer-max-bearing-deg the instant the depth-hole streak clears.")
+    p.add_argument("--gap-profile", choices=("off", "on"), default="on",
+                   help="FOLLOW-THE-GAP steering. Replaces the 3-sector binary clear/blocked test "
+                        "with an angular free-space profile: bins the depth frame by column, finds "
+                        "contiguous passable runs, converts each run's angular extent to a METRIC "
+                        "width at its own range, discards any opening narrower than the robot's "
+                        "swept width + margin, and steers PROPORTIONALLY toward the least-detour "
+                        "survivor. Fixes three field failures the sector test could not: a gap "
+                        "straddling two sectors reads blocked; one near object masks open space "
+                        "across the rest of its third; and 'clear at range' was never checked "
+                        "against whether the robot actually FITS. Falls back to the sector logic "
+                        "whenever no passable gap is found, so the old behaviour is the floor.")
+    p.add_argument("--gap-profile-bins", type=int, default=48,
+                   help="angular bins across the frame for --gap-profile. 48 over a 105.8 deg FOV "
+                        "is ~2.2 deg per bin. More bins = finer gaps resolved, more per-frame cost "
+                        "on a loop already near budget.")
     p.add_argument("--gap-steer-commit-s", type=float, default=2.0,
                    help="SIDE-STEP SMOOTHER: once gap-steer commits to a detour direction, hold "
                         "it for at least this many seconds regardless of frame-to-frame sector-"

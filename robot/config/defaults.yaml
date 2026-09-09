@@ -132,6 +132,8 @@ dark_obstacle_frames: 10
 dark_obstacle_widen_deg: 60.0
 rerun_never_shed: "on"
 gap_steer_commit_s: 2.0
+gap_profile: "on"
+gap_profile_bins: 48
 map_assist: ""
 map_assist_confirm_m: 0.5
 map_assist_odom_wait_s: 30.0
