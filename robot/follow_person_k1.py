@@ -1701,16 +1701,27 @@ class Follower:
                 if raw:
                     return live
                 _lm = self._localmap_clearance(half)
-                # Memory may only ever REDUCE clearance. A BLIND live frame (live == 0.0) is NEVER
-                # raised by memory -- that was the fail-open bug (audit 2026-09-05): a remembered
-                # range overrode the blind 0.0 and released the brake while sensor-blind. Memory now
-                # only fills a genuinely-clear frame (live is None) or beats a farther live reading.
+                # LOCALMAP SECONDARY POSTURE (2026-09-09 field-run fix, same architecture as
+                # map-assist's secondary). Memory may only REFINE a live brake, never CREATE one.
+                # The prior rule ("memory beats live if _lm < live, including live=None or
+                # live=brake_start-vote") let memory FILL a clear frame -- but that is exactly
+                # what accumulates arm/torso/person-edge/floor-tilt cells at 0.5-0.8 m and pins
+                # vx=0 in open space (field-run 2026-09-09: "LOCALMAP 0.68m from memory beats
+                # live 1.15m (499 cells)" -> CLEARANCE 0.65 -> vx-cap 0 -> gap-steer sees
+                # "centre blocked" -> yaw fights the follow's target bearing -> stutter). Same
+                # tradeoff as map-assist: lose the "remember-behind-me" behavior (an obstacle
+                # that leaves live view is no longer held), gain no phantom brakes in open
+                # space. The trade is right for unplugged-Aurora ops where anchor drift means
+                # any stale spatial memory misleads more than it helps. FAIL-CLOSED path
+                # (live == 0.0) is unchanged -- memory still cannot release a blind brake.
                 _eff = live
-                if _lm is not None and live != 0.0 and (live is None or _lm < live):
+                _live_is_braking = (live is not None and live != 0.0
+                                    and live < self.a.obstacle_brake_start)
+                if _lm is not None and _live_is_braking and _lm < live:
                     if (time.monotonic() - getattr(self, "_lm_log_t", 0.0)) >= 1.0:
                         self._lm_log_t = time.monotonic()
-                        log("LOCALMAP %.2fm from memory beats live %s (%d cells) -> braking on it"
-                            % (_lm, ("%.2fm" % live) if live is not None else "clear", len(self._lm)))
+                        log("LOCALMAP %.2fm refines live %.2fm (%d cells) -> braking on it"
+                            % (_lm, live, len(self._lm)))
                     _eff = _lm
                     _nodata_clear = False   # localmap gave evidence; no longer trusting-nothing
                 # MAP-ASSIST: the prebuilt Aurora map can only REINFORCE a live obstacle it agrees
