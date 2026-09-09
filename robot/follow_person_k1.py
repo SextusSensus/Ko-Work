@@ -2233,6 +2233,21 @@ class Follower:
                     continue                        # too narrow to fit -- never steer into it
                 cbear = 0.5 * (a0 + a1)
                 detour = abs(cbear - tb)
+                # MAX DETOUR FROM THE OPERATOR (2026-09-09 field fix). Least-detour ranking only
+                # orders gaps that ALREADY passed the width filter -- so when the opening on the
+                # operator's line is too narrow to fit, the only survivors are gaps far off to
+                # the side and the layer happily commits to one. Field-observed: gap -44 deg
+                # chosen with the operator at -6 deg, and gap +33 deg chosen with the operator
+                # at -15 deg (opposite side entirely). That is correct Follow-The-Gap for a
+                # racer clearing a track and WRONG for a follow robot: a gap 44 deg off from a
+                # person who is 6 deg ahead is not a route TO them, it is a route away, and the
+                # operator walks out of frame while the robot detours.
+                # A gap only counts if it is plausibly on the way to the operator. When nothing
+                # is, we return None and let the caller fall through to the sector logic and
+                # ultimately the brake -- stopping is the honest answer, not steering somewhere
+                # irrelevant because it happened to be wide.
+                if detour > math.radians(max(0.0, self.a.gap_max_detour_deg)):
+                    continue
                 # Least detour off the follow line wins; width breaks ties so that between two
                 # equally-convenient gaps the robot takes the roomier one.
                 key = (detour, -width_m)
@@ -5452,6 +5467,14 @@ def parse_args(argv):
                         "across the rest of its third; and 'clear at range' was never checked "
                         "against whether the robot actually FITS. Falls back to the sector logic "
                         "whenever no passable gap is found, so the old behaviour is the floor.")
+    p.add_argument("--gap-max-detour-deg", type=float, default=35.0,
+                   help="a --gap-profile gap is only considered when its centre bearing is within "
+                        "this angle of the OPERATOR's bearing. Without it the layer picks any wide "
+                        "gap once the operator's own line is too narrow to fit, and steers away "
+                        "from the person it is following (field-observed: gap -44deg chosen with "
+                        "the operator at -6deg). When no gap is within the cone the profile "
+                        "returns nothing and the brake stops the robot, which is the honest "
+                        "answer rather than detouring somewhere irrelevant.")
     p.add_argument("--gap-profile-bins", type=int, default=48,
                    help="angular bins across the frame for --gap-profile. 48 over a 105.8 deg FOV "
                         "is ~2.2 deg per bin. More bins = finer gaps resolved, more per-frame cost "

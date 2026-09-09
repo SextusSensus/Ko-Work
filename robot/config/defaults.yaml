@@ -134,6 +134,7 @@ rerun_never_shed: "on"
 gap_steer_commit_s: 2.0
 gap_profile: "on"
 gap_profile_bins: 48
+gap_max_detour_deg: 35.0
 map_assist: ""
 map_assist_confirm_m: 0.5
 map_assist_odom_wait_s: 30.0
