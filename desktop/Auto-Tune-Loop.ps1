@@ -116,10 +116,20 @@ while (-not $stopReq) {
 
     Write-Host ("`n[{0}Z] processing {1}" -f (Get-Date).ToUniversalTime().ToString('HH:mm:ss'), $chosen) -ForegroundColor Green
 
-    # 2) pull the bundle to <LocalRuns>\<run_id>\
+    # 2) pull the bundle to <LocalRuns>\<run_id>\  via key-auth scp
+    # (avoids Pull-Run.ps1's K1PW requirement, which was retired when the robot
+    # went key-only.) We only need the small text artefacts for the analyser --
+    # NOT the .rrd, which is 100-200 MB and never inspected here.
     $localDir = Join-Path $LocalRuns $chosen
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PullScript `
-        -Ip $Ip -User $User -RunId $chosen -RemoteRuns $RemoteRuns -LocalRuns $LocalRuns *> (Join-Path $LocalRuns '.pull.log')
+    if (-not (Test-Path $localDir)) { New-Item -ItemType Directory -Force -Path $localDir | Out-Null }
+    $remoteDir = "{0}/{1}" -f $RemoteRuns, $chosen
+    foreach ($f in @('k1_follow.err','manifest.json','config/defaults.yaml')) {
+      $localPath = Join-Path $localDir $f
+      $parentDir = Split-Path -Parent $localPath
+      if (-not (Test-Path $parentDir)) { New-Item -ItemType Directory -Force -Path $parentDir | Out-Null }
+      $args = $SSH_OPTS + @(("{0}:{1}/{2}" -f $target, $remoteDir, $f), $localPath)
+      & scp.exe @args 2>$null | Out-Null
+    }
     if (-not (Test-Path (Join-Path $localDir 'k1_follow.err'))) {
       Write-Host ("  WARN: pull incomplete for {0} (no k1_follow.err) -- will retry next tick" -f $chosen) -ForegroundColor Yellow
       Start-Sleep -Seconds $PollSec

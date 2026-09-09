@@ -1751,8 +1751,38 @@ class Follower:
                                         self._dark_obstacle_log_t = time.monotonic()
                                         log("DARK-OBSTACLE persistent depth-hole (streak=%d, >=%d "
                                             "frames) -> classified as fail-open surface (couch/dark "
-                                            "fabric); widening gap-steer search"
+                                            "fabric); widening gap-steer search + writing to localmap"
                                             % (self._hole_streak, self.a.dark_obstacle_frames))
+                                    # WRITE THE DARK OBSTACLE INTO LOCALMAP (2026-09-09).
+                                    # DEPTH-HOLE alone returns 0.0 (blind, forward forbidden) but
+                                    # keeps no memory: turn away and the couch has to be rediscovered
+                                    # on every re-approach. Write a synthetic cell at the corridor
+                                    # centreline at the brake-start range so localmap remembers
+                                    # "something forward at ~1.15m" -- gap-steer can then commit to
+                                    # the same detour without re-firing DEPTH-HOLE first, and the
+                                    # cell is placed in WORLD coords so it persists as the robot
+                                    # moves laterally past it. Uses the existing min-hits gate:
+                                    # spurious single-frame hole flashes never write a persistent
+                                    # cell, only the same DARK-OBSTACLE streak that already made us
+                                    # brake. Fail-closed on missing pose: no write, same as _localmap_update.
+                                    try:
+                                        _o = self.node.latest_odom() if self.node is not None else None
+                                        _od = self._odom_xy()
+                                        _th = float(_o[2]) if _o else None
+                                        if _od is not None and _th is not None:
+                                            _rng = float(self.a.obstacle_brake_start)
+                                            _wx = _od[0] + _rng * math.cos(_th)
+                                            _wy = _od[1] + _rng * math.sin(_th)
+                                            _res = max(0.02, self.a.localmap_res_m)
+                                            _k = int(self._lm_key(round(_wx / _res), round(_wy / _res)))
+                                            _now2 = time.monotonic()
+                                            _e = self._lm.get(_k)
+                                            if _e is None:
+                                                self._lm[_k] = [_now2, _now2, 1]
+                                            else:
+                                                _e[1] = _now2; _e[2] += 1
+                                    except Exception:  # noqa: BLE001 -- never break the loop
+                                        pass
                                 return 0.0
                             else:
                                 # Corridor came back to healthy -- streak resets.
