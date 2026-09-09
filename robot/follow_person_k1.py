@@ -963,20 +963,36 @@ class Follower:
                     pts.append((float(c[0]), float(c[1])))
         return np.array(pts, dtype=np.float64) if pts else np.empty((0, 2))
 
-    def _map_assist_confirm(self, half, eff):
+    def _map_assist_confirm(self, half, eff, nodata_clear=False):
         """ASSIST: let the prebuilt map REINFORCE a live obstacle it agrees with, nothing more.
         The map can only return a SMALLER clearance, and only when the live view independently sees an
         obstacle at ~the same range (--map-assist-confirm-m). An unconfirmed map obstacle is discarded;
         a blind (0.0) or clear (None) frame is returned untouched -- the map never brakes alone and
         never releases. Pose is the robot's OWN odometry, so a wrong map/anchor just fails to confirm
-        and the live avoidance is unchanged."""
-        if self._ma is None or len(self._ma) == 0 or eff is None or eff == 0.0:
+        and the live avoidance is unchanged.
+
+        nodata_clear: when True the caller is telling us `eff` came from _nodata's window-empty
+        vote (not a real blob detection). The live view saw no near returns because there were no
+        returns AT ALL in the near range -- exactly the couch signature. In that case, a map
+        obstacle NEARER than eff is trusted rather than discarded: the confirm window's symmetric
+        gate is what has been throwing away the map's warning about a couch (measured across the
+        archive as map-nearer-discarded, 2026-09-08 audit P0 #2). Reduce-only still holds: map may
+        only ever LOWER the clearance, never raise it, never release the brake."""
+        if self._ma is None or len(self._ma) == 0:
+            self._ma_dbg("map-empty")                  # no map loaded -> nothing to do
+            return eff
+        if eff is None:
+            self._ma_dbg("eff-none-clear")             # corridor CLEAR (no live obstacle) -> nothing to reinforce
+            return eff
+        if eff == 0.0:
+            self._ma_dbg("eff-blind")                  # live sensor-blind -> fail-closed; map never releases
             return eff
         try:
             od = self.node.latest_odom() if self.node is not None else None
         except Exception:  # noqa: BLE001
             od = None
         if od is None:
+            self._ma_dbg("no-odom")            # OBSERVABILITY (decision unchanged)
             return eff
         c, s = math.cos(od[2]), math.sin(od[2])
         dx = self._ma[:, 0] - od[0]
@@ -985,11 +1001,128 @@ class Follower:
         left = -dx * s + dy * c
         m = (fwd > 0.0) & (fwd < self.a.localmap_range_m) & (np.abs(left) <= half)
         if not m.any():
+            self._ma_dbg("no-map-pts-in-corridor")
             return eff
         map_rng = float(fwd[m].min())
         if abs(map_rng - eff) <= self.a.map_assist_confirm_m:
+            if map_rng < eff:
+                self._ma_dbg("FIRE eff=%.2f map=%.2f (od=%.1f,%.1f,%.0fdeg)"
+                             % (eff, map_rng, od[0], od[1], math.degrees(od[2])))
+            else:
+                self._ma_dbg("agree-noeffect eff=%.2f map=%.2f" % (eff, map_rng))
             return min(eff, map_rng)
+        # DISCARDED -- but the two directions of disagreement are NOT equivalent, and lumping them
+        # into one "map-too-far" counter hides the only number that matters here.
+        #   map FARTHER than live: harmless. The live view already sees something nearer and is
+        #     already braking on it; the map adds nothing.
+        #   map NEARER than live:  the couch signature. The map says an obstacle is closer than the
+        #     live view believes, the confirm window is symmetric, so the warning is thrown away
+        #     for being too alarming -- i.e. map-assist discards the map exactly when the live
+        #     reading is most likely to be wrong (DECISIONS.md couch collision; the depth-hole
+        #     class returns NO pixels, so it reads as clear at ~brake_start).
+        if map_rng < eff:
+            if nodata_clear:
+                # NODATA REINFORCE (2026-09-09, audit P0 #2 couch fail-open). The live "clear" is
+                # a low-confidence vote from _nodata's window-empty path -- the corridor held no
+                # NEAR returns, which is exactly what a couch produces and also what open space
+                # produces. When the map has an obstacle inside that same corridor at the same
+                # pose, trust the map. Reduce-only still holds (map_rng < eff). Only fires when
+                # --map-assist is on; on a wrong map/anchor the live 'eff' is what stands anyway
+                # if the map has no point in the corridor, so the failure mode is unchanged.
+                self._ma_dbg("nodata-reinforced map=%.2f vs eff=%.2f (window-empty, trusting map)"
+                             % (map_rng, eff))
+                return min(eff, map_rng)
+            self._ma_dbg("map-nearer-discarded map=%.2f vs eff=%.2f gap=%.2f"
+                         % (map_rng, eff, eff - map_rng))
+        else:
+            self._ma_dbg("map-farther-discarded map=%.2f vs eff=%.2f" % (map_rng, eff))
         return eff
+
+    def _map_assist_confirm_sectors(self, sectors):
+        """Per-sector reduce-only map confirmation for L/C/R sector clearances (gap-steer + escape).
+
+        The corridor version above watches only a narrow forward wedge; sectors span the whole
+        image. Without this, gap-steer and the escape selector can pick a side that the map knows
+        is blocked -- exactly the "map assist needs to be wired into obstacle" ask (2026-09-09).
+
+        Reduce-only, same posture as the corridor path: a sector's live range may be LOWERED to
+        the nearest map obstacle in that sector's angular wedge, never raised. A None sector
+        (unknown -> BLOCKED by the sector contract) stays None -- map alone must never unblock,
+        and it must never introduce a brake harder than "unknown" either. Fails soft on missing
+        map / odom -- returns `sectors` unchanged. Byte-identical when --map-assist off."""
+        if self._ma is None or len(self._ma) == 0:
+            return sectors
+        try:
+            od = self.node.latest_odom() if self.node is not None else None
+        except Exception:  # noqa: BLE001
+            od = None
+        if od is None:
+            return sectors
+        # Sector angular wedges match _sector_clearances geometry exactly: left third is bearing
+        # in (-HFOV/2, -a_edge), centre is (-a_edge, +a_edge), right is (+a_edge, +HFOV/2), where
+        # a_edge is the angle at column w*sector_frac. Uses the same head-yaw sign convention as
+        # the corridor -- unknown /head_pose gives 0.0 head shift (body-forward = image-centre),
+        # which is the same fail-safe the corridor uses.
+        sf = max(0.15, min(0.45, self.a.sector_frac))
+        hfov = math.radians(self.a.hfov_deg)
+        # Column w*sf is (sf - 0.5) of the frame off centre; its bearing is atan((sf-0.5)*2*tan(HFOV/2)).
+        a_edge = math.atan((sf - 0.5) * 2.0 * math.tan(hfov * 0.5))   # negative (left of centre)
+        a_max  = hfov * 0.5
+        _hy_off = 0.0
+        if self.a.head_track == "on":
+            _hy = self.node.head_yaw()
+            if _hy is not None:
+                _hy_off = self.a.head_yaw_sign * _hy       # body-forward bearing in image-space
+        c, s = math.cos(od[2]), math.sin(od[2])
+        dx = self._ma[:, 0] - od[0]
+        dy = self._ma[:, 1] - od[1]
+        fwd  = dx * c + dy * s
+        left = -dx * s + dy * c
+        # Ahead-of-robot AND within brake reach. Bearing sign: +right in the image; body +left
+        # gives -bearing, so bearing_img = atan2(-left, fwd). Consistent with _sector_clearances,
+        # which slices the image by columns (col > centre -> right, matches +bearing_img).
+        m0 = (fwd > 0.0) & (fwd < self.a.localmap_range_m)
+        if not m0.any():
+            return sectors
+        # Vectorised nearest-per-sector.
+        bearing = np.arctan2(-left[m0], fwd[m0]) + _hy_off        # body-relative
+        rng     = fwd[m0]
+        # Left sector: bearing in [-a_max, a_edge). Right: (-a_edge, a_max] i.e. bearing > -a_edge.
+        # Centre: [a_edge, -a_edge]. a_edge is negative, so -a_edge is positive.
+        masks = {"L": bearing <  a_edge,
+                 "C": (bearing >= a_edge) & (bearing <= -a_edge),
+                 "R": bearing > -a_edge}
+        out = dict(sectors)
+        for k in ("L", "C", "R"):
+            if out[k] is None:                                    # unknown stays unknown (blocked)
+                continue
+            mm = masks[k]
+            if not mm.any():
+                continue
+            map_r = float(rng[mm].min())
+            if map_r < out[k]:                                    # reduce-only
+                out[k] = map_r
+        return out
+
+    def _ma_dbg(self, msg):
+        """OBSERVABILITY ONLY -- changes no decision. _map_assist_confirm was silent, so we could not
+        tell whether map-assist ever fired. Keep a running per-outcome tally and emit a throttled
+        (~1/2 s) line so a run's map-assist activity is visible in k1_follow.err. Outcome keys:
+        FIRE = the map actually TIGHTENED the live clearance (map-assist did something); no-odom = no
+        pose on --odom-topic (inert); no-map-pts-in-corridor = pose placed no map point in the forward
+        footprint corridor; map-nearer-discarded / map-farther-discarded = a map point was there but
+        outside --map-assist-confirm-m of the
+        live range (discarded); agree-noeffect = map agreed but was not closer than live."""
+        tally = getattr(self, "_ma_tally", None)
+        if tally is None:
+            tally = {}
+            self._ma_tally = tally
+        key = msg.split(" ", 1)[0]
+        tally[key] = tally.get(key, 0) + 1
+        now = time.monotonic()
+        if now - getattr(self, "_ma_dbg_t", 0.0) >= 2.0:
+            self._ma_dbg_t = now
+            log("MAP-ASSIST %s | tally=%s" % (msg, tally))
 
     def _map_change_observe(self, band, hgt, lat_signed, sel):
         """Feed one frame to the map-change manager. OBSERVATION ONLY -- returns nothing, and no
@@ -1148,6 +1281,15 @@ class Follower:
         # a real object entirely by diluting it in a percentile. An obstacle is a connected region
         # of NEAR depth -- anything beyond --obstacle-brake-start cannot brake anyway.
         sel = sel & (band < self.a.obstacle_brake_start)
+        # SHORT-CIRCUIT AN EMPTY MASK. Measured over 51 real archived depth frames, this near-mask
+        # is entirely empty in 86% of them (label count p50 = 0, kept blobs p50 = 0) -- the common
+        # case is simply "nothing within braking range". ndimage.label + bincount then cost
+        # 3.07 ms p50 / 4.42 ms p90 to compute a guaranteed-zero result, on a loop already running
+        # ~120 ms against a 100 ms budget. `.any()` short-circuits on the first True, so a frame
+        # that DOES have an obstacle pays almost nothing extra. Byte-identical: label() of an empty
+        # mask returns n = 0, which the next two lines already turn into this exact return.
+        if not sel.any():
+            return None, 0
         lab, n = ndimage.label(sel)
         if n <= 0:
             return None, 0
@@ -1447,7 +1589,14 @@ class Follower:
                 band = d
                 u = (np.arange(w, dtype=np.float32) - (w * 0.5 + _hshift)) / max(f, 1.0)
                 vv = (np.arange(h, dtype=np.float32) - (h * 0.5)) / max(f, 1.0)
-                lat = np.abs(band * u[None, :])
+                # COMPUTED ONCE. `band * u[None,:]` is a full-frame 544x448 multiply and a ~1 MB
+                # temporary; it used to be evaluated THREE times per frame (here and at both
+                # consumers below) for one identical result. Measured on 51 real archived depth
+                # frames, removing the two redundant passes is a pure win with a byte-identical
+                # result -- the signed form is what the consumers want anyway, and the brake only
+                # ever needed its magnitude.
+                lat_signed = band * u[None, :]
+                lat = np.abs(lat_signed)
                 hgt = self.a.camera_height_m - band * vv[:, None]
                 # SELF-EXCLUSION. Dropping the row band cured the hand-height blindness but exposed
                 # something that band had been hiding by accident: the lower rows look down at the
@@ -1470,17 +1619,25 @@ class Follower:
                 # this path has a height model; the image-fraction path below does not.
                 # The same height model is what lets the short-horizon memory place points, so it
                 # is fed here and nowhere else.
-                self._localmap_update(band, hgt, band * u[None, :], self._lm_target_range)
+                self._localmap_update(band, hgt, lat_signed, self._lm_target_range)
                 # OBSERVER, not a decision: records where the live view stops matching the prebuilt
                 # map. Returns nothing and is read by nothing below. No-op unless --map-change on.
-                self._map_change_observe(band, hgt, band * u[None, :], sel)
+                self._map_change_observe(band, hgt, lat_signed, sel)
                 clr, blob = self._nearest_blob(band, sel, hgt)
                 if raw and clr is not None:
                     return clr
                 # Resolve the LIVE clearance FULLY first: 0.0 (blind, forward forbidden), None
                 # (clear -> no cap), or a voted float. Memory is applied AFTER, as a pure tightening.
+                # nodata_clear tracks WHICH KIND of "clear" the vote is: a real-blob vote is
+                # trusted; a _nodata window-empty vote is a low-confidence "we saw nothing near"
+                # (open room OR couch -- indistinguishable from depth alone) and is what
+                # map-assist's NODATA reinforce path will trust the map about.
+                _nodata_clear = False
                 if clr is None:
                     live = self._nodata(band, blob, "footprint", raw=raw)
+                    # _nodata returns 0.0 (blind) or a _clr_vote float (window empty, clear). The
+                    # non-blind, non-raw case IS the nodata-clear vote we want the map to reinforce.
+                    _nodata_clear = (live is not None and live != 0.0 and not raw)
                 else:
                     live = self._clr_vote(clr)
                 if raw:
@@ -1497,11 +1654,15 @@ class Follower:
                         log("LOCALMAP %.2fm from memory beats live %s (%d cells) -> braking on it"
                             % (_lm, ("%.2fm" % live) if live is not None else "clear", len(self._lm)))
                     _eff = _lm
+                    _nodata_clear = False   # localmap gave evidence; no longer trusting-nothing
                 # MAP-ASSIST: the prebuilt Aurora map can only REINFORCE a live obstacle it agrees
                 # with (same range in the corridor); a map obstacle the live view does not confirm is
-                # discarded, and it never releases the brake. Pose is the robot's OWN odometry, so the
-                # Aurora's walking VIO never enters the loop. Off (no-op) unless --map-assist is set.
-                return self._map_assist_confirm(half, _eff)
+                # discarded, and it never releases the brake. When live was NODATA-clear (window
+                # empty, could be a couch), the map's nearer reading is trusted instead of discarded
+                # -- see _map_assist_confirm's nodata_clear branch. Pose is the robot's OWN odometry,
+                # so the Aurora's walking VIO never enters the loop. Off (no-op) unless --map-assist
+                # is set.
+                return self._map_assist_confirm(half, _eff, nodata_clear=_nodata_clear)
             x0 = int(max(0, min(w - 2, w * (0.5 - cf / 2.0) + _hshift)))
             x1 = int(max(x0 + 1, min(w, w * (0.5 + cf / 2.0) + _hshift)))
             band = d[y0:y1, x0:x1]
@@ -1517,8 +1678,25 @@ class Follower:
             clr, blob = self._nearest_blob(band, sel)
             if raw and clr is not None:
                 return clr
+            # PARITY WITH FOOTPRINT (2026-09-09): resolve LIVE first, then let map-assist confirm.
+            # Before this the frac branch returned _nodata / _clr_vote directly and never called
+            # map-assist -- switching --corridor-mode from footprint to frac silently disarmed the
+            # entire map-assist layer. Frac has no per-pixel width/height model, so no localmap
+            # fold-in and no per-pixel self-mask geometry; just the reduce-only map confirmation.
+            # nodata_clear carries the same low-confidence signal (couch case) as the footprint
+            # path uses. Byte-identical when --map-assist off (self._ma is None short-circuit).
+            _nodata_clear = False
             if clr is None:
-                return self._nodata(band, blob, "frac", raw=raw)
+                live = self._nodata(band, blob, "frac", raw=raw)
+                _nodata_clear = (live is not None and live != 0.0 and not raw)
+                if raw:
+                    return live
+            else:
+                live = self._clr_vote(clr)
+            # Corridor half-width for frac: half the robot width plus the corridor margin -- the
+            # same lateral gate the footprint path uses in its map-assist call above.
+            _hw_frac = 0.5 * max(0.05, self.a.robot_width_m) + max(0.0, self.a.corridor_margin_m)
+            return self._map_assist_confirm(_hw_frac, live, nodata_clear=_nodata_clear)
         except Exception as e:  # noqa: BLE001 -- a reflex must never break the loop
             # FAIL CLOSED, and say so. This was `return None`, and None means NO CAP downstream in
             # _obstacle_vx_cap -- so any exception in the corridor math silently DISABLED the
@@ -1531,7 +1709,6 @@ class Follower:
                 self._clr_err_t = time.monotonic()
                 log("OBSTACLE-ERR %s -> treating frame as BLIND (forward forbidden)" % e)
             return 0.0
-        return self._clr_vote(clr)   # aged-median vote over detections AND clear frames
 
     # ---- HEAD TRACKING (stage 3). Point the head at the operator so the BODY is free to turn --
     # a detour then costs no lock margin, which is the constraint every gap-steer loss hit today
@@ -1707,7 +1884,11 @@ class Follower:
                 out[key] = float(np.percentile(v, self.a.obstacle_pctile))
         except Exception:  # noqa: BLE001 -- an audit computation must never break the loop
             return {"L": None, "C": None, "R": None}
-        return out
+        # MAP-ASSIST for sectors (2026-09-09): reduce-only, per-sector. Without this, gap-steer or
+        # the escape selector can commit to a side that the prebuilt map knows is blocked -- the
+        # sector value comes back a clear 2.5 m from live but a mapped chair sits at 0.8 m in that
+        # wedge, and the robot detours into it. Byte-identical when --map-assist off or no odom.
+        return self._map_assist_confirm_sectors(out)
 
     # ---- GAP STEERING (stage 5). Routes AROUND an obstacle instead of only stopping for it.
     # INVARIANTS (deliberate, do not relax):
@@ -2328,6 +2509,43 @@ class Follower:
         if self._stop_requested:
             return False
 
+        # MAP-ASSIST DRIVE GATE (fail-closed; only when --map-assist is set -> the whole block is
+        # skipped otherwise, so a non-map-assist run is byte-identical). map-assist reads its pose from
+        # --odom-topic, which for the Aurora prebuilt map MUST be the drift-free MAP-frame bridge pose
+        # (e.g. /aurora_odom), NEVER the robot's own /odometer_state (a different frame -> the map points
+        # land at the wrong bearing and map-assist silently never confirms). So: (1) refuse to drive if
+        # map-assist is on but --odom-topic is missing or the robot-frame topic; (2) refuse to drive
+        # until a FRESH pose is actually confirmed live on that topic (the Aurora bridge must be running
+        # AND relocalized). Turns the old silent-inert failure into a loud, safe refusal.
+        if getattr(self.a, "map_assist", ""):
+            _ot = (getattr(self.a, "odom_topic", "") or "").strip()
+            if _ot.lower() in ("", "none", "/odometer_state", "odometer_state"):
+                log("DRIVE-ABORT map-assist needs a MAP-frame pose on --odom-topic (e.g. /aurora_odom "
+                    "from aurora_odom_bridge.py); got '%s' -> refusing to drive on a mismatched frame"
+                    % (_ot or "<none>"))
+                return False
+            _wait = float(getattr(self.a, "map_assist_odom_wait_s", 30.0))
+            _t0 = time.monotonic()
+            _last = 0.0
+            _live = False
+            while (time.monotonic() - _t0) < _wait:
+                if self._stop_requested:
+                    return False
+                if self.node is not None and self.node.latest_odom(max_age=1.0) is not None:
+                    _live = True
+                    break
+                _nw = time.monotonic()
+                if _nw - _last >= 3.0:
+                    _last = _nw
+                    log("waiting for a LIVE map pose on %s (%.0f/%.0fs) -- start aurora_odom_bridge.py "
+                        "and drive it to a lock" % (_ot, _nw - _t0, _wait))
+                time.sleep(0.2)
+            if not _live:
+                log("DRIVE-ABORT map-assist on but no live pose on %s within %.0fs; refusing to drive "
+                    "(the Aurora bridge is not publishing a relocalized pose)" % (_ot, _wait))
+                return False
+            log("AURORA-ODOM LIVE on %s -> map-assist armed; proceeding to drive" % _ot)
+
         # ITEM 7(d): DRIVE PRECONDITION. Before kWalking, require BOTH RGB and depth publishing at
         # >= --drive-min-fps, sustained for --drive-ready-secs. BOUNDED by --startup-frame-wait so it
         # can NEVER hang. On timeout we REFUSE to drive (DRIVE-ABORT) -- the safe, least-surprising
@@ -2544,6 +2762,19 @@ class Follower:
         intr_logged = False       # P6.1: emit camera intrinsics once, on the first framed tick
         last_depth_state = None   # depth-health heartbeat (log on transition + 10s pulse)
         last_depth_hb = 0.0
+        # RERUN WARM-UP GRACE EPOCH. The grace is about the LOOP's first frames -- the first
+        # YOLO/ONNX inferences, which are legitimately slow while the robot is not yet walking --
+        # NOT about process start. self.t_start is set in __init__, i.e. BEFORE the ReID engine
+        # load, the gesture model load+warm-up, the YOLO load, the bridge ping and the DRIVE-WAIT
+        # depth-floor wait. Measured across 57 archived runs, t_start -> first control tick is
+        # p50 29.4 s (p10 23.5, p90 39.2), so a 15 s grace keyed to t_start was ALREADY SPENT
+        # before frame 1 in 56 of 57 runs. The streak therefore began accumulating on the true
+        # warm-up tail (tick 0 p50 668 ms; ticks 1-23 p50 152-187 ms) and completed at tick 24 --
+        # which is why /diag/loop_ms holds exactly 24 marks in 13 of 15 measured recordings and why
+        # RERUN-DISABLED-SLOW fired in 88 of 95 runs, discarding 69.8% of all recorded driving.
+        # Replayed over the archive, moving to this epoch takes recorded yield 6.2% -> 83.7%.
+        # The comment at the shed already stated this intent; only the epoch was wrong.
+        self._loop_t0 = time.monotonic()
 
         try:
             while not self._stop_requested:
@@ -2757,7 +2988,7 @@ class Follower:
                         # the whole run even after the loop recovered to healthy. Don't accumulate the
                         # streak until warmup has elapsed; the shed still fires for a genuinely-overloaded
                         # DRIVING loop after that.
-                        if (t0 - self.t_start) < self.a.rerun_warmup_s:
+                        if (t0 - self._loop_t0) < self.a.rerun_warmup_s:
                             self._rr_overrun_streak = 0
                         else:
                             self._rr_overrun_streak += 1
@@ -4734,6 +4965,10 @@ def parse_args(argv):
                         "is the robot's OWN odometry (--odom-topic), not the Aurora. Empty = off.")
     p.add_argument("--map-assist-confirm-m", type=float, default=0.5,
                    help="a map obstacle counts only when the live clearance is within this of it")
+    p.add_argument("--map-assist-odom-wait-s", type=float, default=30.0,
+                   help="with --map-assist, REFUSE to drive until a fresh pose is confirmed on "
+                        "--odom-topic within this many seconds (the Aurora bridge must be relocalized). "
+                        "Fail-closed: on timeout the drive aborts rather than running map-assist inert.")
     p.add_argument("--map-change", choices=("off", "on"), default="off",
                    help="OBSERVATION-ONLY map-change manager: record where the live view stops "
                         "matching the --map-assist prior, and document it in a cross-run ledger. "
