@@ -228,7 +228,9 @@ class CommandChannel:
                 if ln.split()[0] == word:        # priority on the command word, not the ARM token
                     return ln
             return None
-        return _first("STOP") or _first("HOLD") or lines[0]
+        # STOP > HOLD > PARK (every de-escalation outranks motion), else the NEWEST line: the app now
+        # APPENDS (2026-09-10), so a queue holds several lines and the last is the operator's latest intent.
+        return _first("STOP") or _first("HOLD") or _first("PARK") or lines[-1]
 
 
 # ---------------------------------------------------------------------------
