@@ -1968,6 +1968,21 @@ class Follower:
             self._head_ok = False
             return
         if self._sleep_interruptible(settle_s):
+            # RE-CENTRE ON INTERRUPT (2026-09-10 fix). This return sat BETWEEN the +probe_rad
+            # command and the re-centre below, so an operator STOP during the 2.5 s settle left
+            # the head parked at +11.5 deg for the whole session -- and with head_track off the
+            # follow applies no bearing correction, so every bearing silently carried that
+            # offset and the corridor watched ~0.4 m off the swept path at 2 m. The comment
+            # below claimed this could "never" happen; for this path it was false.
+            # It went unnoticed because the probe was an accidental no-op: K1Finder ships
+            # --head-probe CHECKED (K1Finder.ps1:852), but /head_pose was never subscribed, so
+            # head_yaw() returned None and the probe bailed at HEAD-PROBE SKIP above before
+            # commanding anything. Subscribing /head_pose (2026-09-09) armed this path.
+            try:
+                self.bridge.send_head(0.0, 0.0)
+            except Exception as e:  # noqa: BLE001 -- best effort; a failed recentre is logged, not raised
+                log("HEAD-PROBE ERR interrupt recentre failed: %s (head may be off-centre)" % e)
+            self._head_ok = False
             return
         y1 = self.node.head_yaw(max_age=1.0)
 
