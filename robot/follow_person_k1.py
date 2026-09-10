@@ -2228,6 +2228,17 @@ class Follower:
         # wedge, and the robot detours into it. Byte-identical when --map-assist off or no odom.
         return self._map_assist_confirm_sectors(out)
 
+    def _gap_reject(self, why):
+        """Rate-limited 'Follow-The-Gap found nothing, and here is which test killed it' line.
+
+        Its own 1 Hz budget, separate from the GAP-PROFILE success line, so a run that alternates
+        between steering and rejecting still shows both. Logging only -- callers ignore the return.
+        """
+        _t = time.monotonic()
+        if (_t - getattr(self, "_gapreject_log_t", 0.0)) >= 1.0:
+            self._gapreject_log_t = _t
+            log("GAP-REJECT %s" % why)
+
     def _gap_profile(self, target_bearing=None):
         """FOLLOW-THE-GAP: the widest PASSABLE opening in the depth frame, as
         (bearing_rad, width_m, range_m), or None when nothing is passable.
@@ -2308,6 +2319,15 @@ class Follower:
 
             passable = np.isfinite(clr) & (clr >= bs)
             if not passable.any():
+                # Distinguish "cannot see" from "everything is close": the first is a depth
+                # problem, the second is a genuinely boxed-in robot, and they need opposite fixes.
+                _meas = int(np.isfinite(clr).sum())
+                _best = float(np.nanmax(clr)) if _meas else float("nan")
+                self._gap_reject("no passable bin: %d/%d bins measurable, best clearance %.2fm "
+                                 "vs brake-start %.2fm (%s)"
+                                 % (_meas, nb, _best, bs,
+                                    "depth too sparse -- raise obstacle-max-m or check the camera"
+                                    if _meas < max(1, nb // 4) else "boxed in"))
                 return None
 
             # Bin centre bearings. bearing is POSITIVE to the RIGHT (perception.bearing_from_x),
@@ -2345,6 +2365,11 @@ class Follower:
 
             tb = 0.0 if target_bearing is None else float(target_bearing)
             best = None
+            # Reject bookkeeping (diagnostics only -- nothing below reads these to decide).
+            _n_narrow = 0
+            _widest = 0.0            # widest opening the width filter threw away
+            _n_detour = 0
+            _least_detour = None     # closest-to-the-operator gap the detour cap threw away
             for (i0, i1) in runs:
                 # Angular extent measured at the run's OUTER edges, not bin centres, so a
                 # single-bin gap still gets its true angular width.
@@ -2357,6 +2382,8 @@ class Follower:
                 # Chord width of this angular opening at its own nearest range.
                 width_m = 2.0 * r * math.sin(0.5 * dth)
                 if width_m < need_w:
+                    _n_narrow += 1
+                    _widest = max(_widest, width_m)
                     continue                        # too narrow to fit -- never steer into it
                 cbear = 0.5 * (a0 + a1)
                 detour = abs(cbear - tb)
@@ -2374,6 +2401,9 @@ class Follower:
                 # ultimately the brake -- stopping is the honest answer, not steering somewhere
                 # irrelevant because it happened to be wide.
                 if detour > math.radians(max(0.0, self.a.gap_max_detour_deg)):
+                    _n_detour += 1
+                    if _least_detour is None or detour < _least_detour:
+                        _least_detour = detour
                     continue
                 # Least detour off the follow line wins; width breaks ties so that between two
                 # equally-convenient gaps the robot takes the roomier one.
@@ -2381,6 +2411,17 @@ class Follower:
                 if best is None or key < best[0]:
                     best = (key, cbear, width_m, r)
             if best is None:
+                # WHICH filter killed it is the whole diagnostic. Too-narrow says the geometry or
+                # need_w (footprint + corridor_margin_m + gap_fit_margin_m) is the binding
+                # constraint; off-the-line says gap_max_detour_deg is. They call for different
+                # knobs, so never report a bare "no gap".
+                self._gap_reject("%d opening(s), none usable: %d too narrow (widest %.2fm, "
+                                 "need %.2fm), %d off the follow line (least detour %s, cap "
+                                 "%.0fdeg, operator %+.0fdeg)"
+                                 % (len(runs), _n_narrow, _widest, need_w, _n_detour,
+                                    ("%.0fdeg" % math.degrees(_least_detour))
+                                    if _least_detour is not None else "n/a",
+                                    self.a.gap_max_detour_deg, math.degrees(tb)))
                 return None
             return (best[1], best[2], best[3])
         except Exception as e:  # noqa: BLE001 -- a steering hint must never break the loop
