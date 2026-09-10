@@ -1157,8 +1157,9 @@ function Start-Live {
     if($script:TrackOn){ Add-LogLive 'Stopping Tracker (single camera consumer)...' $amber; Stop-Tracker }
     if($script:FollowOn){ Add-LogLive 'Stopping Control-tab Follow (single camera consumer)...' $amber; Stop-Follow }
     $script:RobotIP=$ip
+    Open-OperatorSession 'live'   # the Live view owns the link too: hold the Auto-Tune loop off it (shared contract)
     Add-LogLive ("Deploying camera streamer to {0} ..." -f $ip) $accent
-    if(-not (Deploy-RobotFiles $ip)){ Add-LogLive 'Deploy failed (helper scripts missing).' $red; return }
+    if(-not (Deploy-RobotFiles $ip)){ Add-LogLive 'Deploy failed (helper scripts missing).' $red; Close-OperatorSession 'live'; return }
     # clear any orphaned streamer from a previous session (a killed ssh can leave the remote python running)
     try{ $kp=Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip),'pkill -f stream_cam.py')) -NoNewWindow -PassThru; $null=$kp.WaitForExit(6000) }catch{}
     $liveSync.Stop=$false; $liveSync.Done=$false; $liveSync.Jpeg=$null; $liveSync.Seq=0; $liveSync.Frames=0; $liveSync.Err=''
@@ -1170,7 +1171,7 @@ function Start-Live {
     $psi=New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName='ssh.exe'; $psi.Arguments=$argStr
     $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$false; $psi.CreateNoWindow=$true
     $proc=New-Object System.Diagnostics.Process; $proc.StartInfo=$psi
-    if(-not $proc.Start()){ Add-LogLive 'Failed to start ssh.' $red; return }
+    if(-not $proc.Start()){ Add-LogLive 'Failed to start ssh.' $red; Close-OperatorSession 'live'; return }
     $script:LiveProc=$proc
     $rs=[runspacefactory]::CreateRunspace(); $rs.ApartmentState='MTA'; $rs.Open()
     $rs.SessionStateProxy.SetVariable('proc',$proc); $rs.SessionStateProxy.SetVariable('liveSync',$liveSync)
@@ -1190,6 +1191,7 @@ function Stop-Live {
     $script:LiveOn=$false; $startLiveBtn.Enabled=$true; $stopLiveBtn.Enabled=$false
     $script:lastLock=-1; $lockBadge.Text='  MARKER: --  '; $lockBadge.BackColor=[System.Drawing.Color]::Gray
     $liveStatus.Text='Stopped.'; Add-LogLive 'Live view stopped.' $amber
+    Close-OperatorSession 'live'
 }
 function Enable-Camera {
     $ip=$ipLive.Text.Trim(); if(-not $ip){return}
@@ -1665,13 +1667,22 @@ function Stop-Voice {
 # within 5 s, so a bulk transfer never shares the link with a launch pre-flight or a follow. Created NOT
 # owned (its existence is the signal) before the pre-flight deploy; disposed when the session ends or the
 # launch aborts. Local\ is the fallback if the Global namespace refuses.
+# Several sessions own the robot link: a follow ('follow': Tracker or Control-tab, never both), the Live
+# view ('live') and the manual loco controller ('ctrl'). Each opens/closes under its own owner name; the
+# mutex exists while ANY owner holds it, and both calls are idempotent per owner.
 $script:OperatorMutex = $null
-function Open-OperatorSession {
+$script:OperatorOwners = @{}
+function Open-OperatorSession([string]$owner='follow'){
+    if(-not $script:OperatorOwners){ $script:OperatorOwners = @{} }
+    $script:OperatorOwners[$owner] = $true
     if($script:OperatorMutex){ return }
     try{ $script:OperatorMutex = New-Object System.Threading.Mutex($false, 'Global\K1-Operator-Session') }
     catch{ try{ $script:OperatorMutex = New-Object System.Threading.Mutex($false, 'Local\K1-Operator-Session') }catch{ $script:OperatorMutex = $null } }
 }
-function Close-OperatorSession {
+function Close-OperatorSession([string]$owner='follow'){
+    if(-not $script:OperatorOwners){ $script:OperatorOwners = @{} }
+    $script:OperatorOwners.Remove($owner)
+    if($script:OperatorOwners.Count -gt 0){ return }   # another session still owns the link
     try{ if($script:OperatorMutex){ $script:OperatorMutex.Dispose() } }catch{}
     $script:OperatorMutex = $null
 }
@@ -1951,6 +1962,7 @@ function Connect-Ctrl {
     $ip=$ipCtrl.Text.Trim(); $iface=$ifaceBox.Text.Trim(); if(-not $iface){$iface='127.0.0.1'}
     if(-not $ip){ Add-LogCtrl 'Enter the robot IP first.' $amber; return }
     $script:RobotIP=$ip
+    Open-OperatorSession 'ctrl'   # the manual controller owns the link too: hold the Auto-Tune loop off it (shared contract)
     Add-LogCtrl ("Deploying loco launcher to {0} ..." -f $ip) $accent
     Deploy-RobotFiles $ip | Out-Null
     $ctrlSync.Stop=$false; $ctrlSync.Log.Clear()
@@ -1961,7 +1973,7 @@ function Connect-Ctrl {
     $psi=New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName='ssh.exe'; $psi.Arguments=$argStr
     $psi.UseShellExecute=$false; $psi.RedirectStandardInput=$true; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$false; $psi.CreateNoWindow=$true
     $proc=New-Object System.Diagnostics.Process; $proc.StartInfo=$psi
-    if(-not $proc.Start()){ Add-LogCtrl 'Failed to start ssh.' $red; return }
+    if(-not $proc.Start()){ Add-LogCtrl 'Failed to start ssh.' $red; Close-OperatorSession 'ctrl'; return }
     try{ $proc.StandardInput.AutoFlush=$true }catch{}
     try{ $proc.StandardInput.NewLine="`n" }catch{}   # LF only: the robot's getline compares against "gft" etc., a trailing CR breaks the match
     $script:CtrlProc=$proc
@@ -1989,6 +2001,7 @@ function Disconnect-Ctrl {
     $followToggle.Enabled=$true; $followDriveChk.Enabled=$true   # re-enable follow (DRIVE still needs a fresh ARM)
     if($trackToggle -and -not $script:TrackOn){ $trackToggle.Enabled=$true; $trackDriveChk.Enabled=$true; $trackArmChk.Enabled=$true }   # re-enable Tracker too
     $connStatus.Text='Disconnected.'; Add-LogCtrl 'Controller disconnected.' $amber
+    Close-OperatorSession 'ctrl'
 }
 function Send-Loco([string]$code){
     if(-not $script:CtrlOn -or -not $script:CtrlProc -or $script:CtrlProc.HasExited){ Add-LogCtrl 'Not connected.' $amber; return }
