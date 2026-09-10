@@ -2229,6 +2229,32 @@ class Follower:
         # wedge, and the robot detours into it. Byte-identical when --map-assist off or no odom.
         return self._map_assist_confirm_sectors(out)
 
+    def _gap_horizon(self):
+        """Range (m) at which gap STEERING treats the path as blocked -- decoupled from the brake.
+
+        The brake keeps --obstacle-brake-start for grading vx. This is the same question asked for
+        a different purpose ("should I be looking for a way around?"), and tying the two together
+        capped the engage point at brake_start and coupled steering to the floor geometry that
+        forces brake_start low. Returns --gap-horizon-m when positive, else falls back to
+        --obstacle-brake-start (the legacy coupled behaviour, exactly).
+
+        Logged ONCE per session with the derived engage point, so the effective value sits in
+        k1_follow.err next to the launch line and can never be a post-run mystery -- same
+        reasoning as run_follow.sh echoing the session cap.
+        """
+        h = float(getattr(self.a, "gap_horizon_m", 0.0) or 0.0)
+        if h <= 0.0:
+            h = float(self.a.obstacle_brake_start)
+        if not getattr(self, "_gap_horizon_logged", False):
+            self._gap_horizon_logged = True
+            _bp = float(self.a.obstacle_brake_stop)
+            _trig = _bp + (h - _bp) * max(0.0, min(1.0, self.a.gap_steer_trigger_frac))
+            log("GAP-HORIZON %.3fm (frac %.2f) -> gap steer engages at %.3fm with %.3fm of runway "
+                "to full stop; brake zone %.2f->%.2f UNTOUCHED"
+                % (h, self.a.gap_steer_trigger_frac, _trig, _trig - _bp,
+                   self.a.obstacle_brake_start, _bp))
+        return h
+
     def _gap_reject(self, why):
         """Rate-limited 'Follow-The-Gap found nothing, and here is which test killed it' line.
 
@@ -2303,7 +2329,7 @@ class Follower:
             valid = np.isfinite(band) & (band > 0.15) & (band < self.a.obstacle_max_m)
             edges = np.linspace(0, w, nb + 1).astype(int)
 
-            bs = float(self.a.obstacle_brake_start)
+            bs = float(self._gap_horizon())   # steering horizon, not the brake's
             clr = np.full(nb, np.nan, dtype=np.float64)
             # Per-bin clearance from a low percentile so one speckle pixel cannot open a bin,
             # and a bin without enough valid pixels stays NaN == not passable.
@@ -2654,7 +2680,9 @@ class Follower:
             eviden = "  cx-evidence %+.0fpx/rad -> +yaw looks %s" % (
                 slope, "RIGHT" if slope < 0 else "LEFT")
 
-        bs = self.a.obstacle_brake_start
+        # Steering horizon, not the brake's: _scan_hint is consumed by _gap_steer_bias, so the
+        # two must agree on what "clear" means or the scan can hand it a blocked heading.
+        bs = self._gap_horizon()
         if best_clr is None or best_clr < bs:
             self._scan_hint = 0
             # Came up empty: remember WHERE, so we do not immediately repeat it from the same spot.
@@ -2725,7 +2753,9 @@ class Follower:
             detour."""
         if self.a.gap_steer == "off":
             return 0.0
-        bs = self.a.obstacle_brake_start
+        # STEERING horizon, not the brake's. See _gap_horizon: obstacle_brake_start is capped low
+        # by the floor geometry, and using it here capped the engage point with it.
+        bs = self._gap_horizon()
         bp = self.a.obstacle_brake_stop
         # Engage part-way down the grading zone, not at its very top.
         trig = bp + (bs - bp) * max(0.0, min(1.0, self.a.gap_steer_trigger_frac))
@@ -2928,11 +2958,11 @@ class Follower:
             return "--" if x is None else ("%.2f" % x)
         # Which sector a gap-follower would pick: needs clearance beyond the brake-start distance,
         # and among those prefers the one closest to the operator's bearing (least detour).
-        bs = self.a.obstacle_brake_start
+        bs = self._gap_horizon()   # mirror the DECISION path, or this log misreports it
         want = {"L": -0.68, "C": 0.0, "R": +0.68}       # sector centre bearings (rad), ~+/-39 deg
         cands = [(abs(want[k] - target_bearing_rad), k) for k, v in s.items() if v is not None and v >= bs]
         pick = min(cands)[1] if cands else None
-        log("SECTOR L=%s C=%s R=%s | brake-start=%.1f target_bearing=%+.0fdeg -> would-steer=%s%s"
+        log("SECTOR L=%s C=%s R=%s | gap-horizon=%.2f target_bearing=%+.0fdeg -> would-steer=%s%s"
             % (fmt(s["L"]), fmt(s["C"]), fmt(s["R"]), bs, math.degrees(target_bearing_rad),
                pick if pick else "NONE(stop)",
                "" if pick != "C" else " (straight on)"))
@@ -5776,6 +5806,20 @@ def parse_args(argv):
                         "in one run. A momentary loss is re-IDs job, not a gesture. Does NOT "
                         "apply before the first lock, when the operator is deliberately "
                         "waiting to be locked onto. 0 disables.")
+    p.add_argument("--gap-horizon-m", type=float, default=1.375,
+                   help="GAP: range at which gap STEERING treats the path as blocked, "
+                        "decoupled from --obstacle-brake-start (which keeps grading vx and is "
+                        "NOT changed). The engage point is this interpolated down by "
+                        "--gap-steer-trigger-frac, so 1.375 with frac 0.80 engages at 1.24 m "
+                        "with 0.54 m of runway -- 50%% more than the 0.36 m the old "
+                        "brake-coupled rule allowed (operator request 2026-09-10). The frac "
+                        "is clamped to 1.0, so the old rule could not exceed brake_start "
+                        "1.15 m at all, and raising brake_start is refused because at "
+                        "band-bot 0.75 the floor returns from 1.98 m and would be braked on. "
+                        "This also raises the profile passability bar, which MUST move with "
+                        "the trigger: otherwise the centre reads passable at the engage range "
+                        "and the forward-gap deadband stands the detour down. <=0 restores "
+                        "the legacy coupled behaviour exactly.")
     p.add_argument("--gap-steer-deadband-deg", type=float, default=8.0,
                    help="GAP: treat a gap within this many degrees of body-forward as "
                         "\"straight on\" rather than a detour -- stand down, clear the "

@@ -140,6 +140,17 @@ gap_profile_bins: 48
 gap_max_detour_deg: 35.0
 gap_steer_yield_deg: 34.0
 gap_steer_deadband_deg: 8.0
+# 2026-09-10 operator: "engage earlier on the gap steer by 50%". Gap steering's own blocked-path
+# horizon, DECOUPLED from obstacle_brake_start (1.15) which keeps grading vx and is unchanged.
+# With gap_steer_trigger_frac 0.80 this engages at 0.70 + (1.375-0.70)*0.80 = 1.24 m, giving
+# 0.54 m of runway to full stop vs the old 0.36 m -- exactly +50%. The old rule could not reach it:
+# the frac is clamped to 1.0 so its ceiling was brake_start 1.15 m (+25%), and raising brake_start
+# is refused because at obstacle_band_bot 0.75 the floor first returns at 1.98 m and would be
+# braked against continuously. Raising this also raises _gap_profile's passability bar, which MUST
+# move with the trigger -- at the engage range the centre has to read BLOCKED, or the profile calls
+# forward passable and gap_steer_deadband_deg stands the real detour down.
+# Set <= 0 to restore the legacy brake-coupled behaviour exactly.
+gap_horizon_m: 1.375
 yaw_cross_dwell_ticks: 2
 gesture_dwell_s: 2.0
 gap_fit_margin_m: 0.12
