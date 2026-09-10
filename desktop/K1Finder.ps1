@@ -535,6 +535,7 @@ $script:HbProc=$null   # Deadman-HB relay ssh process (P2 #12); alive only while
 $script:trackMs=$null; $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1
 $script:TrackStart=[datetime]::MinValue
 $script:TrackRerunOn=$false      # P6.2b: did the current/last Tracker session record a .rrd? -> post-run offload
+$script:K1SessionCapSec=300      # FIELD NIGHT 2026-09-10 (plan C25, operator-approved): every app-launched follow ends at 300 s. run_follow.sh reads it as K1_MAX_SEC (default 2000). Revert to 2000 after the field block.
 $script:TrackMaxSec=2060         # UI-side hard session watchdog BACKSTOP; node --max-seconds 2000 (run_follow.sh appends it) stops first (graceful settle), this only fires if the node hangs. MUST STAY ABOVE the node's --max-seconds or the UI kills the session before the node can settle gracefully.
 $script:TrackToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 $ctrlSync = [hashtable]::Synchronized(@{ Log=(New-Object System.Collections.Queue); Stop=$false })
@@ -1801,7 +1802,7 @@ function Start-Tracker([bool]$drive){
     if($ctrlRun -and $drive){ Add-LogTrack 'CONTROLLER RUN: drive request overridden to --preview (node will not command velocity). Drive with the gamepad.' $amber }
     $standoff=Get-TrackStandoff; $vxmax=Get-TrackVxMax; $extra=Get-TrackExtraArgs
     if($ctrlRun){ $extra = "$extra --profile capture" }   # RGB+depth+scalars+intrinsics+odom bundle
-    $remote="bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb --stream --standoff-m $standoff --vx-max $vxmax $extra"
+    $remote="K1_MAX_SEC=$($script:K1SessionCapSec) bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb --stream --standoff-m $standoff --vx-max $vxmax $extra"
     Add-LogTrack ("launch: " + $remote) $accent   # echo so the operator can verify --lock-trigger / --gesture-* flags
     # NO -tt (PTY would corrupt the binary JPEG stream). ServerAliveCountMax=1 -> a dropped
     # link triggers remote SIGHUP fast (~5s) for the WALKING case.
@@ -2077,7 +2078,7 @@ function Start-Follow([bool]$drive){
     if(-not (Deploy-FollowFiles $ip)){ Add-LogCtrl ("Deploy failed: " + $(if($script:DeployErr){$script:DeployErr}else{"a helper under '$ROBOT_DIR' could not be deployed"})) $red; return $false }
     $followSync.Stop=$false; $followSync.Log.Clear()
     $mode = if($drive){'drive'}else{'preview'}
-    $remote="bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb"
+    $remote="K1_MAX_SEC=$($script:K1SessionCapSec) bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb"
     $argStr='-tt '+(Get-SshOptString)+" $($script:SshUser)@$ip `"$remote`""
     $psi=New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName='ssh.exe'; $psi.Arguments=$argStr
     $psi.UseShellExecute=$false; $psi.RedirectStandardInput=$true; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$false; $psi.CreateNoWindow=$true
