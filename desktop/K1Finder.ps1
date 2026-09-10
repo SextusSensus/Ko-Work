@@ -1498,6 +1498,10 @@ function Update-ReidBadge([string]$line){
 # amber = warn (CPU-EP / RELOC HOLD), else the normal $accent.
 function Get-TrackLineColor([string]$line){
     if(-not $line){ return $accent }
+    # Advisory digests are data, not faults: a hint key or class name containing 'hist' or 'failed'
+    # must not paint red. A dead auto-improve loop is a warning.
+    if($line -match 'TUNE-STALE'){ return $amber }
+    if($line -match '^(\[(tune-hints|autotune)\]|==== )'){ return $accent }
     # good-news / recovery lines are NOT faults (so 'DEPTH-STARVED cleared', 'REID-DEGRADED recovered',
     # 'forward vx re-enabled' don't read red via the STARVED/DEGRADED substrings below).
     if($line -match '(?i)cleared|re-enabled|recover|DRIVE-READY'){ return $green }
@@ -1710,7 +1714,11 @@ function Start-Tracker([bool]$drive){
         # P0 OSNet-health: ALSO pass the ReID/reloc/depth/frame-stall families (REID-ENGINE, REID-DEGRADED,
         # RELOC-*, DEPTH*/DEPTH-STARVED, NO-FRAME). These prefixes are emitted by follow_person_k1.py's log()
         # at column 0 (see the node<->app log-prefix contract); the UI badge + amber/red coloring parse them.
-        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|LOOP-MS|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB|RERUN)')){
+        # Also the launcher's advisory digests, printed by run_follow.sh before the node starts: the tune
+        # hints and autotune label summary ([tune-hints] / [autotune] and their ==== banners) and the
+        # [run_follow] TUNE-STALE alarm for a dead auto-improve loop. Filtered out, they never reached
+        # the operator (review C12).
+        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|LOOP-MS|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB|RERUN|\[tune-hints\]|\[autotune\]|==== (end )?(TUNE HINTS|AUTOTUNE)|\[run_follow\] (TUNE-STALE|tune hints))')){
             $Event.MessageData.Enqueue($d)
         }
     }

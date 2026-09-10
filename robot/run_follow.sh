@@ -60,6 +60,16 @@ if [ -f /home/booster/tune_hints/latest.yaml ]; then
 else
   echo "[run_follow] TUNE-STALE: /home/booster/tune_hints/latest.yaml is MISSING -- the auto-improve loop has never delivered hints to this robot." >&2
 fi
+# AUTOTUNE LABELS (2026-09-10, operator: "have them automatically sent to the robot"). The
+# workstation labels each run on its GPU (objects, walls, floor), validates the 3-D geometry, and --
+# only on PASS -- pushes a small bundle to /home/booster/autotune/<run>/ with `latest` pointing at it.
+# Its digest is printed here so the operator sees what the last run taught before this one starts.
+# ADVISORY ONLY: nothing here is sourced or applied to the node's config.
+if [ -f /home/booster/autotune/latest/SUMMARY.txt ]; then
+  echo "==== AUTOTUNE (latest validated labels; advisory, not applied) ====" >&2
+  head -n 30 /home/booster/autotune/latest/SUMMARY.txt | sed 's/^/[autotune] /' >&2
+  echo "==== end AUTOTUNE ====" >&2
+fi
 # SESSION-LENGTH OVERRIDE (2026-09-10, operator: "it should be able to record for 2000 seconds").
 # K1Finder passes --max-seconds 1200 on the CLI and CLI beats the config profile by design, so
 # config/capture.yaml alone could not lengthen an app-launched run. argparse takes the LAST

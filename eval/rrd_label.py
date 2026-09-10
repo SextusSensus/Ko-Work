@@ -105,54 +105,91 @@ def recorded_pinhole(path):
 
 
 def validate_geometry(h_eff):
-    """PASS/FAIL on the back-projected semantic geometry.
+    """PASS / FAIL / INCONCLUSIVE on the back-projected semantic geometry -- FAIL-CLOSED.
 
-    floor: a plane Yup = a*X + b*Z + c fitted to floor points must be near-horizontal (tilt <= 5
-           deg) and sit at the calibrated camera height (|height + h_eff| <= 0.10 m).
-    walls: wall points must not land below the floor (<= 5% more than 0.10 m under it).
+    Only PASS is ever sent to the robot, and PASS requires every check to have actually RUN and
+    passed. A check that could not run is SKIP, and a SKIP makes the result INCONCLUSIVE, never PASS.
+
+    floor : a plane Yup = a*X + b*Z + c fitted to the SegFormer floor points must be near-horizontal
+            (tilt <= 5 deg) and sit at the height the floor calibration fitted (|h + h_eff| <= 0.10 m).
+    scale : h_eff itself must be physically plausible: 0.70-1.10 m, the band
+            eval/ground_fit_from_runs.py enforces for this camera. The floor-height check above is
+            SELF-CONSISTENT -- h_eff comes from this recording's own depth -- so on its own it passes
+            any focal length or depth scale, including the synthesized 70-deg pinhole this gate
+            exists to catch (H*fy ~ 204 m.px over fy 388.5 = 0.53 m). Only an absolute band catches it.
+    walls : wall points must not land below the floor (<= 5% more than 0.10 m under it).
+
+    Status: FAIL if any check that ran failed; else INCONCLUSIVE if any check could not run; else
+    PASS.
     """
     import math
     import numpy as np
     out = {"checks": {}}
-    ok_all = True
+    failed = skipped = False
+
     fl = np.concatenate(_VAL["floor"]) if _VAL["floor"] else None
+    floor_h = None
     if fl is None or len(fl) < 200:
         out["checks"]["floor"] = {"status": "SKIP", "why": "too few floor points (%d)"
                                   % (0 if fl is None else len(fl))}
+        skipped = True
     else:
         A = np.c_[fl[:, 0], fl[:, 1], np.ones(len(fl))]
         coef, *_ = np.linalg.lstsq(A, fl[:, 2], rcond=None)
         tilt = math.degrees(math.atan(math.hypot(coef[0], coef[1])))
-        height = float(np.median(fl[:, 2]))
-        resid = float(np.std(fl[:, 2] - A @ coef))
-        c = {"points": int(len(fl)), "tilt_deg": round(tilt, 2), "height_m": round(height, 3),
-             "plane_residual_m": round(resid, 3)}
-        good = tilt <= 5.0
+        floor_h = float(np.median(fl[:, 2]))
+        c = {"points": int(len(fl)), "tilt_deg": round(tilt, 2), "height_m": round(floor_h, 3),
+             "plane_residual_m": round(float(np.std(fl[:, 2] - A @ coef)), 3)}
         if h_eff is not None:
             c["expected_height_m"] = round(-h_eff, 3)
-            good = good and abs(height + h_eff) <= 0.10
-        c["status"] = "PASS" if good else "FAIL"
-        ok_all = ok_all and good
+        if tilt > 5.0:
+            c["status"], c["why"] = "FAIL", "floor plane tilted %.1f deg (> 5)" % tilt
+            failed = True
+        elif h_eff is None:
+            c["status"], c["why"] = "SKIP", "no floor calibration -- height unchecked"
+            skipped = True
+        elif abs(floor_h + h_eff) > 0.10:
+            c["status"], c["why"] = "FAIL", "floor at %.2f m, calibration says %.2f m" % (floor_h, -h_eff)
+            failed = True
+        else:
+            c["status"] = "PASS"
         out["checks"]["floor"] = c
+
+    if h_eff is None:
+        out["checks"]["scale"] = {"status": "SKIP", "why": "no floor calibration"}
+        skipped = True
+    else:
+        sc = {"camera_height_m": round(float(h_eff), 3), "nominal_m": NOMINAL_CAM_HEIGHT_M,
+              "band_m": [0.70, 1.10]}
+        if 0.70 <= h_eff <= 1.10:
+            sc["status"] = "PASS"
+        else:
+            sc["status"] = "FAIL"
+            sc["why"] = ("implied camera height %.2f m is outside the physical 0.70-1.10 m band -- "
+                         "intrinsics or depth scale are wrong" % h_eff)
+            failed = True
+        out["checks"]["scale"] = sc
+
     wl = np.concatenate(_VAL["wall"]) if _VAL["wall"] else None
     if wl is None or len(wl) < 200:
         out["checks"]["walls"] = {"status": "SKIP", "why": "too few wall points (%d)"
                                   % (0 if wl is None else len(wl))}
+        skipped = True
     else:
-        fh = out["checks"].get("floor", {}).get("height_m")
-        ref = fh if isinstance(fh, float) else (-h_eff if h_eff else None)
+        ref = floor_h if floor_h is not None else (-h_eff if h_eff is not None else None)
         c = {"points": int(len(wl)),
              "height_span_m": round(float(np.percentile(wl[:, 2], 90) - np.percentile(wl[:, 2], 10)), 3)}
-        if ref is not None:
+        if ref is None:
+            c["status"], c["why"] = "SKIP", "no floor reference height"
+            skipped = True
+        else:
             below = float(np.mean(wl[:, 2] < ref - 0.10))
             c["frac_below_floor"] = round(below, 4)
-            good = below <= 0.05
-        else:
-            good = True
-        c["status"] = "PASS" if good else "FAIL"
-        ok_all = ok_all and good
+            c["status"] = "PASS" if below <= 0.05 else "FAIL"
+            failed = failed or below > 0.05
         out["checks"]["walls"] = c
-    out["status"] = "PASS" if ok_all else "FAIL"
+
+    out["status"] = "FAIL" if failed else ("INCONCLUSIVE" if skipped else "PASS")
     return out
 
 
@@ -304,6 +341,8 @@ def main():
                     help="do NOT fit the horizon from this recording's floor (use --cy as-is)")
     ap.add_argument("--seg-model", default="nvidia/segformer-b0-finetuned-ade-512-512",
                     help="ADE20K SegFormer checkpoint (larger = better walls, costs GPU time)")
+    ap.add_argument("--summary-json", default=None,
+                    help="write the DEDUPED obstacle set + per-class counts as JSON -- the small, robot-facing\n                         summary (the labelled .rrd itself stays on the workstation)")
     ap.add_argument("--validation-json", default=None,
                     help="write the geometry validation gate (floor tilt/height, walls vs floor)")
     ap.add_argument("--model", default="yolo11n.pt")
@@ -403,6 +442,7 @@ def main():
     img_fis = sorted(images)
     jf = open(a.jsonl, "w") if a.jsonl else None
     n_obj = 0
+    det_by_class = collections.Counter()
     corridor = math.radians(a.corridor_deg)
     tracks = collections.defaultdict(lambda: {"cls": collections.Counter(), "pos": [],
                                               "rng": [], "frames": [], "corr": 0})
@@ -449,6 +489,7 @@ def main():
                     t["cls"][nm] += 1; t["pos"].append([X, Z, Yup]); t["rng"].append(Z)
                     t["frames"].append(int(fi)); t["corr"] += int(abs(bearing) <= corridor)
             n_obj += 1
+            det_by_class[nm] += 1
             if jf:
                 jf.write(json.dumps(rec) + "\n")
 
@@ -475,6 +516,7 @@ def main():
         jf.close()
 
     # ---- dedup summary (tracking) ----
+    uniq_out = None
     if a.track and tracks:
         uniq = []
         for tid, t in tracks.items():
@@ -505,6 +547,7 @@ def main():
             print("MERGE: %d tracked -> %d after %.2fm same-class 3D merge"
                   % (len(uniq), len(merged), a.merge_radius))
             uniq = merged
+        uniq_out = uniq
         # log all unique obstacles at once (their median position), labeled cls#id
         name2id = {n: i for i, n in names.items()}
         rr.set_time("frame_idx", sequence=int(labeled_frames[-1]))
@@ -532,6 +575,22 @@ def main():
         pass
     print("\nWROTE labeled .rrd -> %s  (%d detections%s%s)"
           % (a.out, n_obj, ", tracked" if a.track else "", ", segmented" if a.seg else ""))
+
+    # ---- robot-facing summary: the deduped obstacle set, not 1000s of raw boxes ----
+    if a.summary_json:
+        summ = {"detections": n_obj, "by_class_detections": dict(det_by_class),
+                "tracked": bool(a.track), "merge_radius_m": a.merge_radius}
+        if uniq_out is not None:
+            summ["unique"] = len(uniq_out)
+            summ["by_class"] = dict(collections.Counter(u[1] for u in uniq_out))
+            summ["obstacles"] = [{"cls": u[1], "track_id": int(u[0]),
+                                  "xyz_m": [round(float(x), 3) for x in u[2]],
+                                  "seen_frames": int(u[3]), "median_range_m": round(float(u[4]), 3),
+                                  "corridor_frac": round(float(u[5]), 3)}
+                                 for u in sorted(uniq_out, key=lambda x: x[4])]
+        with open(a.summary_json, "w", encoding="utf-8") as fh:
+            json.dump(summ, fh, indent=1)
+        print("wrote %s" % a.summary_json)
 
     # ---- geometry validation gate: "labeled properly" as numbers, not an assertion ----
     val = validate_geometry(h_eff)
