@@ -635,7 +635,7 @@ $lblIp2=New-Object System.Windows.Forms.Label; $lblIp2.Text='Robot IP:'; $lblIp2
 $ip2Box=New-Object System.Windows.Forms.TextBox; $ip2Box.Size='150,26'; $ip2Box.Location='78,25'; $ip2Box.Font=$mono; $ip2Box.Text=$K1_DEFAULT_IP; $grpRobot.Controls.Add($ip2Box)
 $pullBtn=New-Object System.Windows.Forms.Button; $pullBtn.Text='Pull from Discover'; $pullBtn.Size='140,26'; $pullBtn.Location='240,25'; $pullBtn.FlatStyle='Flat'; $grpRobot.Controls.Add($pullBtn)
 $testBtn=New-Object System.Windows.Forms.Button; $testBtn.Text='Test SSH'; $testBtn.Size='100,26'; $testBtn.Location='392,25'; $testBtn.FlatStyle='Flat'; $grpRobot.Controls.Add($testBtn)
-$userLbl=New-Object System.Windows.Forms.Label; $userLbl.Text=("login: {0} / pw: {1}" -f $K1_SSH_USER,$K1_SSH_PASS); $userLbl.AutoSize=$true; $userLbl.ForeColor=[System.Drawing.Color]::DimGray; $userLbl.Location='512,30'; $grpRobot.Controls.Add($userLbl)
+$userLbl=New-Object System.Windows.Forms.Label; $userLbl.Text=("login: {0} (SSH key auth)" -f $K1_SSH_USER); $userLbl.AutoSize=$true; $userLbl.ForeColor=[System.Drawing.Color]::DimGray; $userLbl.Location='512,30'; $grpRobot.Controls.Add($userLbl)
 $grpSsh=New-Object System.Windows.Forms.GroupBox; $grpSsh.Text='SSH'; $grpSsh.Dock='Fill'
 $sshDesc=New-Object System.Windows.Forms.Label; $sshDesc.Text='Open a shell on the robot, or install an SSH key so uploads need no password.'; $sshDesc.AutoSize=$true; $sshDesc.ForeColor=[System.Drawing.Color]::DimGray; $sshDesc.Location='12,22'; $grpSsh.Controls.Add($sshDesc)
 $sshTermBtn=New-Object System.Windows.Forms.Button; $sshTermBtn.Text='Open SSH Terminal'; $sshTermBtn.Size='160,30'; $sshTermBtn.Location='12,46'; $sshTermBtn.BackColor=$accent; $sshTermBtn.ForeColor='White'; $sshTermBtn.FlatStyle='Flat'; $sshTermBtn.Font=$fontBold; $grpSsh.Controls.Add($sshTermBtn)
@@ -2380,7 +2380,7 @@ $timer.Add_Tick({
 function Get-ConnectRecipe([string]$ip){ @"
 ================  K1 CONNECTION RECIPE  ================
 Target robot IP : $ip
-1) SSH:  ssh $K1_SSH_USER@$ip   (password: $K1_SSH_PASS)
+1) SSH:  ssh $K1_SSH_USER@$ip   (SSH key auth)
 2) SDK over Fast-DDS connects by robot IP; on-robot loco iface = 127.0.0.1.
    Loco CLI: ~/Workspace/booster_robotics_sdk/build/b1_loco_example_client 127.0.0.1
 3) Live camera topic: /boostercamera/head/rgb (sensor_msgs/Image).
@@ -2396,10 +2396,10 @@ function Do-Verify([string]$ip){
     if($r.SSH){ Set-Content -Path $LAST_TARGET_FILE -Value $ip -Encoding ASCII; Set-RobotIP $ip; Add-Log (Get-ConnectRecipe $ip) ([System.Drawing.Color]::PaleGreen); $statusLbl.Text="Reachable: $ip (SSH open). IP applied to all tabs." }
     else{ $statusLbl.Text="No SSH on $ip."; [System.Windows.Forms.MessageBox]::Show("SSH not open on $ip. Is the K1 on this network and powered on?",'Not reachable','OK','Warning')|Out-Null }
 }
-function Open-SshTerminal { $ip=$ip2Box.Text.Trim(); if(-not $ip){return}; Add-Log2 ("Opening SSH terminal to {0}@{1} (pw {2})" -f $K1_SSH_USER,$ip,$K1_SSH_PASS) $accent; Start-Process cmd.exe -ArgumentList '/k',"ssh -o StrictHostKeyChecking=accept-new $K1_SSH_USER@$ip" }
+function Open-SshTerminal { $ip=$ip2Box.Text.Trim(); if(-not $ip){return}; Add-Log2 ("Opening SSH terminal to {0}@{1}" -f $K1_SSH_USER,$ip) $accent; Start-Process cmd.exe -ArgumentList '/k',"ssh -o StrictHostKeyChecking=accept-new $K1_SSH_USER@$ip" }
 function Setup-SshKey {
     $ip=$ip2Box.Text.Trim(); if(-not $ip){return}
-    Add-Log2 ("Installing SSH key on {0} (type pw {1} once)..." -f $ip,$K1_SSH_PASS) $accent
+    Add-Log2 ("Installing SSH key on {0} (type the robot password once in the console)..." -f $ip) $accent
     $c='if not exist "%USERPROFILE%\.ssh\id_ed25519" ssh-keygen -t ed25519 -f "%USERPROFILE%\.ssh\id_ed25519" -N "" -q'
     $c+=' & type "%USERPROFILE%\.ssh\id_ed25519.pub" | ssh -o StrictHostKeyChecking=accept-new '+"$K1_SSH_USER@$ip"+' "umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys && echo === KEY INSTALLED ==="'
     $c+=' & echo. & echo Done - you can close this window.'
@@ -2421,7 +2421,7 @@ function Do-Upload {
     } else {
         $fileArgs=($files | ForEach-Object { '"'+$_+'"' }) -join ' '
         $cmd="scp -o StrictHostKeyChecking=accept-new -r $fileArgs "+'"'+$spec+'"'+' & echo. & echo [Done]'
-        Add-Log2 ("Launching scp in a console (type pw {0})..." -f $K1_SSH_PASS) $accent; Start-Process cmd.exe -ArgumentList '/k',$cmd
+        Add-Log2 "Launching scp in a console (type the robot password if asked)..." $accent; Start-Process cmd.exe -ArgumentList '/k',$cmd
     }
 }
 
