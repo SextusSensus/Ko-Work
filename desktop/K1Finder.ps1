@@ -1891,7 +1891,7 @@ function Invoke-Offload([string]$ip, [string]$profileLabel){
         if(-not (Test-Path $script)){ Add-LogTrack 'Offload skip: Offload-Run.ps1 not found beside the app.' $amber; return }
         Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
             '-NoProfile','-ExecutionPolicy','Bypass','-File',$script,
-            '-Ip',$ip,'-User',$script:SshUser,'-Pass',$script:SshPass,'-Profile',$profileLabel) | Out-Null
+            '-Ip',$ip,'-User',$script:SshUser,'-Profile',$profileLabel) | Out-Null   # no -Pass: key-only SSH; an empty value made Start-Process throw, a set K1PW showed on the command line
         Add-LogTrack ("Offload started (background): bundle on robot -> pull to runs\ (label $profileLabel).") $accent
     }catch{ try{ Add-LogTrack ("Offload skip: $_") $amber }catch{} }
 }
