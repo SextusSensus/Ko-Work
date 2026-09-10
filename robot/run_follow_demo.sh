@@ -17,6 +17,16 @@ source /opt/booster/BoosterRos2/install/setup.bash 2>/dev/null
 # OPTIONAL odometry recorder (--odom-topic). Best-effort; a guarded import means absence just disables it.
 source /opt/booster/BoosterRos2Interface/install/setup.bash 2>/dev/null
 cd /home/booster
+# ONE NODE AT A TIME -- the same robot-side backstop as run_follow.sh (exit 5 = REFUSED).
+_k1_old=$(pgrep -f 'follow_person_k1\.py'); _k1_rc=$?
+if [ "$_k1_rc" -ne 1 ]; then   # 1 = no match; 0 = a node is running; anything else = pgrep failed (fail-closed)
+  if [ "$_k1_rc" -eq 0 ]; then
+    echo "[run_follow_demo] REFUSED: a follow node is already running (pid $(echo $_k1_old)) -- not starting a second one." >&2
+  else
+    echo "[run_follow_demo] REFUSED: pgrep failed (exit $_k1_rc) -- cannot confirm that no follow node is running." >&2
+  fi
+  exit 5
+fi
 # P6.2: reconcile-sweep BEFORE the node starts -- offload a crashed prior session's leftover bundle
 # (no-op after a clean session). Best-effort; never blocks a launch.
 [ -f /home/booster/offload_run.sh ] && bash /home/booster/offload_run.sh --reconcile >/dev/null 2>&1 || true
@@ -49,7 +59,7 @@ k1_build_bridge   # exits 3 on failure; sets BRIDGE_BIN
 # NOTE: no --stream here, so the node's decision log (common.log) is on STDOUT -- capture STDOUT into
 # k1_follow.err (+ stderr merged) so an offloaded bundle is scoreable (see run_follow_capture.sh).
 if [ "$MODE" = "drive" ]; then
-  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BRIDGE_BIN" --topic "$TOPIC" --profile demo "$@" > >(tee /home/booster/k1_follow.err) 2>&1
+  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BRIDGE_BIN" --topic "$TOPIC" --profile demo "$@" > >(tee -p /home/booster/k1_follow.err) 2>&1
 else
-  exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" --profile demo "$@" > >(tee /home/booster/k1_follow.err) 2>&1
+  exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" --profile demo "$@" > >(tee -p /home/booster/k1_follow.err) 2>&1
 fi

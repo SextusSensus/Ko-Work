@@ -117,10 +117,15 @@ _MAGIC = b"K1F1"
 
 def log(msg):
     """One flushed status line. In --stream mode it goes to STDERR so stdout
-    carries only the binary annotated-frame protocol the Tracker page reads."""
+    carries only the binary annotated-frame protocol the Tracker page reads.
+    NEVER raises: a dead stderr (the app dropped the ssh link and the launcher's tee died) must not
+    abort whatever called log() -- above all the SIGTERM path's _graceful_stop (2026-09-10)."""
     f = sys.stderr if _STREAM else sys.stdout
-    f.write(msg + "\n")
-    f.flush()
+    try:
+        f.write(msg + "\n")
+        f.flush()
+    except (OSError, ValueError):   # BrokenPipeError / write to a closed file
+        pass
 
 
 def emit_frame(status, bgr, quality=70):

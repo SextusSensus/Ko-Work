@@ -20,6 +20,16 @@ source /opt/booster/BoosterRos2/install/setup.bash 2>/dev/null
 # P6.1a: interface workspace for booster_interface/msg/Odometer (odometry recorder). Best-effort.
 source /opt/booster/BoosterRos2Interface/install/setup.bash 2>/dev/null
 cd /home/booster
+# ONE NODE AT A TIME -- the same robot-side backstop as run_follow.sh (exit 5 = REFUSED).
+_k1_old=$(pgrep -f 'follow_person_k1\.py'); _k1_rc=$?
+if [ "$_k1_rc" -ne 1 ]; then   # 1 = no match; 0 = a node is running; anything else = pgrep failed (fail-closed)
+  if [ "$_k1_rc" -eq 0 ]; then
+    echo "[run_follow_capture] REFUSED: a follow node is already running (pid $(echo $_k1_old)) -- not starting a second one." >&2
+  else
+    echo "[run_follow_capture] REFUSED: pgrep failed (exit $_k1_rc) -- cannot confirm that no follow node is running." >&2
+  fi
+  exit 5
+fi
 # P6.2: reconcile-sweep BEFORE the node starts -- offload a crashed prior session's leftover bundle
 # (no-op after a clean session). Best-effort; never blocks a launch.
 [ -f /home/booster/offload_run.sh ] && bash /home/booster/offload_run.sh --reconcile >/dev/null 2>&1 || true
@@ -49,7 +59,7 @@ k1_build_bridge   # exits 3 on failure; sets BRIDGE_BIN
 # 'incomplete'. (run_follow.sh keeps stderr-only because the app launches it WITH --stream, where
 # stdout is the binary frame protocol.)
 if [ "$MODE" = "drive" ]; then
-  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BRIDGE_BIN" --topic "$TOPIC" --profile capture "$@" > >(tee /home/booster/k1_follow.err) 2>&1
+  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BRIDGE_BIN" --topic "$TOPIC" --profile capture "$@" > >(tee -p /home/booster/k1_follow.err) 2>&1
 else
-  exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" --profile capture "$@" > >(tee /home/booster/k1_follow.err) 2>&1
+  exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" --profile capture "$@" > >(tee -p /home/booster/k1_follow.err) 2>&1
 fi

@@ -18,8 +18,13 @@ cd /home/booster
 # running -- both would open the camera and one could still be driving. K1Finder stops the old node and
 # confirms it gone before launching; this is the robot-side backstop. The escaped \. keeps the pattern
 # from matching a shell whose own command line names it. Exit 5 = REFUSED (K1Finder reports it).
-if _k1_old=$(pgrep -f 'follow_person_k1\.py'); then
-  echo "[run_follow] REFUSED: a follow node is already running (pid $(echo $_k1_old)) -- not starting a second one." >&2
+_k1_old=$(pgrep -f 'follow_person_k1\.py'); _k1_rc=$?
+if [ "$_k1_rc" -ne 1 ]; then   # 1 = no match; 0 = a node is running; anything else = pgrep failed (fail-closed)
+  if [ "$_k1_rc" -eq 0 ]; then
+    echo "[run_follow] REFUSED: a follow node is already running (pid $(echo $_k1_old)) -- not starting a second one." >&2
+  else
+    echo "[run_follow] REFUSED: pgrep failed (exit $_k1_rc) -- cannot confirm that no follow node is running." >&2
+  fi
   exit 5
 fi
 # P6.2: reconcile-sweep BEFORE the node starts -- offload any leftover bundle from a crashed/killed
@@ -85,9 +90,10 @@ if [ -L /home/booster/autotune/latest ]; then
   _newer=0
   for _r in /home/booster/runs/*/; do
     [ -d "$_r" ] || continue
+    compgen -G "${_r}*.rrd" >/dev/null || continue   # only a RECORDED run can ever be labelled
     [[ "$(basename "$_r")" > "$_lab" ]] && _newer=$((_newer + 1))
   done
-  [ "$_newer" -gt 0 ] && echo "[autotune] labels are from ${_lab}; ${_newer} newer run(s) not yet validated" >&2
+  [ "$_newer" -gt 0 ] && echo "[autotune] labels are from ${_lab}; ${_newer} newer recorded run(s) have no labels on the robot yet (not labelled yet, or failed validation)" >&2
 fi
 # SESSION-LENGTH OVERRIDE (2026-09-10, operator: "it should be able to record for 2000 seconds").
 # K1Finder passes --max-seconds 1200 on the CLI and CLI beats the config profile by design, so
@@ -121,7 +127,11 @@ if [ "$MODE" = "drive" ]; then
   [ -x "${BRIDGE_BIN:-}" ] || { echo "bridge build produced no runnable binary (BRIDGE_BIN='${BRIDGE_BIN:-}') -- bridge_build.sh may be truncated or corrupt." > /home/booster/k1_compile.err; echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
   # stderr (the node's log lines in --stream mode) must flow to the ssh pipe so K1Finder can show
   # them; tee keeps an on-robot copy too. (Previously 2>file swallowed every diagnostic.)
-  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BRIDGE_BIN" --topic "$TOPIC" "$@" --max-seconds "$K1_MAX_SEC" 2> >(tee /home/booster/k1_follow.err >&2)
+  # tee -p (2026-09-10 readiness): when the app drops the ssh link (Stop, Follow OFF, UI backstop) a
+  # plain tee dies on the broken pipe, the node's next log() line raises, and the SIGTERM path never
+  # reaches _graceful_stop -- every app-stopped walk ended in the bridge's abrupt EOF stop instead of
+  # the in-gait settle. With -p tee ignores the dead pipe and keeps writing k1_follow.err.
+  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BRIDGE_BIN" --topic "$TOPIC" "$@" --max-seconds "$K1_MAX_SEC" 2> >(tee -p /home/booster/k1_follow.err >&2)
 else
-  exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" "$@" --max-seconds "$K1_MAX_SEC" 2> >(tee /home/booster/k1_follow.err >&2)
+  exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" "$@" --max-seconds "$K1_MAX_SEC" 2> >(tee -p /home/booster/k1_follow.err >&2)
 fi
