@@ -37,16 +37,6 @@ class Bridge:
             universal_newlines=True,
             env=env,
         )
-        # NON-BLOCKING STDIN (2026-09-09). See _send(): a full pipe must drop ONE velocity
-        # frame (the C++ floor zeroes on staleness -- safe) rather than park the whole control
-        # loop for seconds while the bridge is busy inside its own watchdog safing. Applied to
-        # the underlying fd; the TextIOWrapper's flush() surfaces the full-pipe case as
-        # BlockingIOError, which _send catches. Best-effort: if the platform refuses, the old
-        # blocking behaviour remains and nothing else changes.
-        try:
-            os.set_blocking(self.proc.stdin.fileno(), False)
-        except Exception:  # noqa: BLE001
-            pass
         threading.Thread(target=self._drain_stdout, daemon=True).start()
 
     # The C++ safety floor reports every intervention on this pipe -- WATCHDOG staleness zeroes,
@@ -107,24 +97,6 @@ class Bridge:
             try:
                 self.proc.stdin.write(cmd + "\n")
                 self.proc.stdin.flush()
-            except BlockingIOError:
-                # NON-BLOCKING PIPE (2026-09-09 field fix). The bridge's stdin is set non-blocking
-                # in start(); when the C++ side stops draining it -- which is exactly the window
-                # where its own watchdog is busy safing via a multi-second booster RPC -- the
-                # kernel pipe fills and a blocking write would park the ENTIRE control loop
-                # until it drains. Rerun showed two such stalls (5984 ms and 4771 ms), each
-                # coinciding with a BRIDGE-SAFETY WATCHDOG fire. Dropping this one velocity
-                # frame is the SAFE direction: the C++ staleness floor zeroes on a missing
-                # frame, which is precisely what the watchdog was already doing.
-                self._drops = getattr(self, "_drops", 0) + 1
-                if self._drops in (1, 10, 100) or self._drops % 1000 == 0:
-                    try:
-                        from common import log
-                        log("BRIDGE-WRITE-DROP pipe full, frame dropped (total %d) -- C++ floor "
-                            "holds zero until drained" % self._drops)
-                    except Exception:  # noqa: BLE001
-                        pass
-                return None
             except (BrokenPipeError, ValueError, OSError):
                 return None
             return cmd

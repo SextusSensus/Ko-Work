@@ -648,6 +648,25 @@ class Follower:
             log("HB-OK operator heartbeat restored")
             self._hb_lost_logged = False
         self._ev_cmd = (vx, vy, vyaw)   # P5.3: post-deadman commanded velocity, for the event log
+        # COMMANDED-VELOCITY TELEMETRY LIVES HERE, NOT ON THE TRACK PATH (2026-09-10).
+        # These scalars used to be emitted only in _track's accepted-match tail, which is ONE of
+        # many velocity paths: NO-PERSON grace, ID-DEBOUNCE hold, LOST/SEARCH, coast, stand and
+        # the scans all reach _drive_vel and sent velocity to the bridge while emitting NOTHING.
+        # A recording therefore showed multi-second "gaps" in /cmd/vx wherever the follow left the
+        # accepted-match path -- and a rerun scrubber interpolates across them, which reads as a
+        # frozen control loop. That artifact cost a full adversarial investigation on 2026-09-09
+        # (7 hypotheses) before the log proved the loop had been ticking the whole time: the two
+        # apparent 5984 ms / 4771 ms freezes were just grace -> LOST -> SEARCH -> relock, with
+        # camera-fps lines logged INSIDE both "gaps" and no stop+kPrepare tier ever tripping.
+        # Emitting from the single chokepoint every velocity passes through makes the series mean
+        # "what was commanded", so a flat spot is now real. /diag/v_seq increments per send so a
+        # true stall is visible as a stalled counter rather than inferred from absence.
+        if rerun_sink._RR.ok:
+            self._v_seq = getattr(self, "_v_seq", 0) + 1
+            rerun_sink._RR.scalar("/cmd/vx", vx)
+            rerun_sink._RR.scalar("/cmd/vy", vy)
+            rerun_sink._RR.scalar("/cmd/vyaw", vyaw)
+            rerun_sink._RR.scalar("/diag/v_seq", float(self._v_seq))
         if self.drive and self.walking and self.bridge is not None:
             self.bridge.send_velocity(vx, vy, vyaw)
             # FIX C: baseline = what we ACTUALLY sent (post-deadman, post-clamp). On any
@@ -4757,8 +4776,10 @@ class Follower:
             rerun_sink._RR.scalar("/follow/range", rng)
             rerun_sink._RR.scalar("/follow/range_source", 2.0 if rsrc == "depth" else (1.0 if rsrc == "bboxH" else 0.0))
             rerun_sink._RR.scalar("/follow/bearing", bearing_deg)
-            rerun_sink._RR.scalar("/cmd/vx", vx)
-            rerun_sink._RR.scalar("/cmd/vyaw", vyaw)
+            # /cmd/vx and /cmd/vyaw are emitted in _drive_vel (the chokepoint every velocity
+            # path passes through), NOT here -- emitting on the accepted-match path only is what
+            # produced the phantom multi-second gaps. forbid_forward stays: it is a follow-path
+            # decision, meaningful only where a target range exists.
             rerun_sink._RR.scalar("/cmd/forbid_forward", 1.0 if forbid_forward else 0.0)
             rerun_sink._RR.scalar("/reid/sim", sim)
             rerun_sink._RR.scalar("/track/conf", best["conf"])
