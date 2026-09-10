@@ -19,7 +19,22 @@ require_heartbeat: true       # operator deadman mandatory (active-consent tethe
 obstacle_brake: true          # depth forward-clearance reflex on (only ever reduces vx)
 max_follow_range: 3.0         # geofence: stand if depth-range to target > 3.0 m
 coast_frames: 6               # coast ~0.6 s (yaw-only) through brief occlusions
-max_seconds: 120.0            # session watchdog; raise per-capture via CLI for longer map traverses
+# 120 -> 1800 (2026-09-10 operator: "rerun cuts way too short"). The 120 s watchdog terminated
+# every capture at 2 minutes and the .rrd closes with the session -- the 761 MB recording measured
+# at ~6.3 MB/s is exactly 120 s, which is precisely what the operator was seeing. This profile
+# EXISTS to collect data, so a 2-minute cap defeats its purpose. 1800 s outlasts a battery, so the
+# run now ends when the operator or the pack decides, not the clock.
+#
+# SAFETY, deliberately scoped: max_seconds is a real runaway bound, so this is raised ONLY here.
+# defaults.yaml (120), field.yaml (120) and demo.yaml (90) are UNTOUCHED -- a normal follow still
+# self-terminates at 2 minutes. Capture is the supervised, operator-present case, and K1Finder's
+# 'Controller run' forces --preview where the node cannot command velocity at all, so a long
+# session carries no drive risk. Every other bound is unchanged: require_heartbeat above, the
+# obstacle brake, max_follow_range 3.0, the C++ staleness floor, and the hardware e-stop.
+#
+# DISK: ~6.3 MB/s at rerun_image_every_n 2 => ~11 GB for a full 30 min; offload_run.sh keeps the
+# last 10 bundles, so worst case ~110 GB against 247 GB free (measured 2026-09-10).
+max_seconds: 1800.0
 obstacle_target_margin: 0.4   # don't brake on the operator being followed
 
 # --- recording bundle (the point of this profile) ---
