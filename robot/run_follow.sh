@@ -38,6 +38,19 @@ if [ -f /home/booster/tune_hints/latest.yaml ]; then
   sed 's/^/[tune-hints] /' /home/booster/tune_hints/latest.yaml >&2
   echo "==== end TUNE HINTS ====" >&2
 fi
+# SESSION-LENGTH OVERRIDE (2026-09-10, operator: "it should be able to record for 2000 seconds").
+# K1Finder passes --max-seconds 1200 on the CLI and CLI beats the config profile by design, so
+# config/capture.yaml alone could not lengthen an app-launched run. argparse takes the LAST
+# occurrence of a flag, so appending it AFTER "$@" wins over whatever the app sent.
+# Explicit, not silent: the effective value is echoed to stderr on every launch so it sits in
+# k1_follow.err right next to the launch line and can never be a mystery post-run.
+# Override per-launch with K1_MAX_SEC=<seconds> if a specific run needs something different.
+# 2000 s outlasts a battery, so in practice the run ends when the operator or the pack decides.
+# NOT unlimited on purpose: 0 trips the node's fail-closed gate for a DRIVING session unless
+# --allow-unbounded-drive is also passed, and keeping a finite cap leaves the runaway backstop in
+# place. The operator deadman, obstacle brake and C++ staleness floor are all unaffected either way.
+K1_MAX_SEC="${K1_MAX_SEC:-2000}"
+echo "[run_follow] session cap: --max-seconds ${K1_MAX_SEC} (appended after app args; overrides any earlier --max-seconds)" >&2
 MODE="${1:-preview}"
 TOPIC="${2:-/boostercamera/head/raw/rgb}"
 shift 2 2>/dev/null || true   # remaining args ("$@") pass through to the node
@@ -57,7 +70,7 @@ if [ "$MODE" = "drive" ]; then
   [ -x "${BRIDGE_BIN:-}" ] || { echo "bridge build produced no runnable binary (BRIDGE_BIN='${BRIDGE_BIN:-}') -- bridge_build.sh may be truncated or corrupt." > /home/booster/k1_compile.err; echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow] COMPILE FAILED"; exit 3; }
   # stderr (the node's log lines in --stream mode) must flow to the ssh pipe so K1Finder can show
   # them; tee keeps an on-robot copy too. (Previously 2>file swallowed every diagnostic.)
-  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BRIDGE_BIN" --topic "$TOPIC" "$@" 2> >(tee /home/booster/k1_follow.err >&2)
+  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BRIDGE_BIN" --topic "$TOPIC" "$@" --max-seconds "$K1_MAX_SEC" 2> >(tee /home/booster/k1_follow.err >&2)
 else
-  exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" "$@" 2> >(tee /home/booster/k1_follow.err >&2)
+  exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" "$@" --max-seconds "$K1_MAX_SEC" 2> >(tee /home/booster/k1_follow.err >&2)
 fi

@@ -170,7 +170,15 @@ obstacle_self_range_m: 0.75
 obstacle_max_m: 5.0
 obstacle_memory_max_turn_deg: 25.0
 obstacle_memory_s: 0.5
-obstacle_min_blob_px: 12
+# 12 -> 115 (2026-09-10, from BRAKE-BLOB forensics). 12 px is 1.3 cm at 0.75 m -- speckle.
+# The live log showed the brake stopping on 22-39 px blobs at the very bottom of the frame
+# (v=406..443 of 448) at h=0.06..0.19 m, i.e. FLOOR pixels: 1.7-2.3 cm across. ground_reject
+# cannot remove them because ground_min_px=500 skips anything "too small to classify safely",
+# so they passed straight through as obstacles and pinned vx to 0.
+# 115 px demands a 6 cm object at obstacle_brake_start (1.15 m, focal 205.8); anything nearer
+# only projects larger. Real thin obstacles still clear it easily -- a 3 cm chair leg 40 cm
+# tall is ~380 px, a 2 cm floor cable ~248 px -- so this rejects speckle, not furniture.
+obstacle_min_blob_px: 115
 obstacle_min_valid: 70
 obstacle_pctile: 12.0
 obstacle_target_margin: 0.4
