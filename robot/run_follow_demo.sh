@@ -4,6 +4,13 @@
 # satisfies the fail-closed drive gate) and (b) PRE-COMPILES the bridge unconditionally so the first
 # drive never blocks on g++. args: <mode preview|drive> [topic]; remaining "$@" still pass through
 # and OVERRIDE the profile (precedence: defaults <- profile <- CLI).
+#
+# P1.9 (2026-09-08): the pre-compile now goes through the shared bridge_build.sh. Until this fix it
+# was a private copy of the g++ line that built the SDK-transport bridge to the same output path
+# run_follow.sh builds the ROS-transport bridge to. On the 2026-05 firmware loco RPC is answered
+# ONLY by the ROS2 service /booster_rpc_service (the raw B1LocoClient channel returns 100), so every
+# demo DRIVE ping-aborted -- and because the app re-pushes the .cpp on every launch, even a demo
+# PREVIEW silently clobbered the working binary for the next session.
 source /opt/ros/humble/setup.bash 2>/dev/null
 source /opt/booster/BoosterRos2/install/setup.bash 2>/dev/null
 # P6.1a: also source the Booster interface workspace so booster_interface/msg/Odometer imports for the
@@ -25,34 +32,24 @@ fi
 MODE="${1:-preview}"
 TOPIC="${2:-/boostercamera/head/raw/rgb}"
 shift 2 2>/dev/null || true   # remaining args ("$@") pass through and override the profile
-# Booster SDK root, PROBED not hard-coded: the SDK drop moved (Workspace/booster_robotics_sdk ->
-# Workspace/sdk_release) and `sudo ./install.sh` also installs include/ + lib/ under /usr/local, so a
-# hard-coded root silently broke the bridge build (ld: cannot find libbooster_robotics_sdk.a).
-# Takes the first root that has BOTH the loco header and the static lib; $BOOSTER_SDK wins if set.
-# (Duplicated in run_follow{,_demo,_capture}.sh on purpose -- each launcher is deployed on its own and
-# must stand alone; a shared helper that failed to deploy would break every launch.)
-SDK_INC=""; SDK_LIB=""
-for _r in "$BOOSTER_SDK" /home/booster/Workspace/booster_robotics_sdk /home/booster/Workspace/sdk_release /usr/local; do
-  [ -n "$_r" ] && [ -f "$_r/include/booster/robot/b1/b1_loco_client.hpp" ] || continue
-  for _l in "$_r/lib/$(uname -m)/libbooster_robotics_sdk.a" "$_r/lib/libbooster_robotics_sdk.a"; do
-    [ -f "$_l" ] && { SDK_INC="$_r/include"; SDK_LIB="$_l"; break 2; }
-  done
-done
-BIN=/home/booster/loco_follow_bridge
-SRC=/home/booster/loco_follow_bridge.cpp
 # PRE-COMPILE the bridge UNCONDITIONALLY (the key difference from run_follow.sh) -- even in preview,
 # so the demo dry-run proves the bridge is ready before anyone hits ARM (no compile-on-first-drive).
-# Same verified g++ recipe + exit-3 + k1_compile.err + BRIDGE marker contract the app already tails.
-if [ ! -x "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
-  echo "[run_follow_demo] pre-compiling loco_follow_bridge ..."
-  [ -n "$SDK_LIB" ] || { echo "no Booster SDK found (need <root>/include/booster/robot/b1/b1_loco_client.hpp + <root>/lib/<arch>/libbooster_robotics_sdk.a; probed BOOSTER_SDK, ~/Workspace/booster_robotics_sdk, ~/Workspace/sdk_release, /usr/local)" > /home/booster/k1_compile.err; echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow_demo] COMPILE FAILED"; exit 3; }
-  g++ -std=c++17 "$SRC" -I "$SDK_INC" "$SDK_LIB" -lfastrtps -lfastcdr -lpthread -o "$BIN" 2>/home/booster/k1_compile.err || { echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow_demo] COMPILE FAILED"; exit 3; }
-  echo "[run_follow_demo] compiled OK."
-fi
+# The recipe itself is the SHARED one in bridge_build.sh (P1.9): this script used to carry its own
+# g++ line writing the SAME path run_follow.sh writes, so a demo run -- preview included -- compiled
+# the SDK transport over the ROS binary. HARD-REQUIRED helper: refuse to start if it is missing
+# rather than falling back to a private copy of the recipe (fail-closed).
+BRIDGE_BUILD=/home/booster/bridge_build.sh
+[ -f "$BRIDGE_BUILD" ] || { echo "bridge_build.sh missing from /home/booster -- redeploy from the app (it is a hard-required helper)." > /home/booster/k1_compile.err; echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow_demo] COMPILE FAILED"; exit 3; }
+K1_LAUNCHER=run_follow_demo
+. "$BRIDGE_BUILD"
+k1_build_bridge   # exits 3 on failure; sets BRIDGE_BIN
+# Belt-and-braces: a truncated/corrupt helper would source without defining the function, and the
+# shell would sail past into an exec with an EMPTY --bridge. Refuse instead.
+[ -x "${BRIDGE_BIN:-}" ] || { echo "bridge build produced no runnable binary (BRIDGE_BIN='${BRIDGE_BIN:-}') -- bridge_build.sh may be truncated or corrupt." > /home/booster/k1_compile.err; echo "BRIDGE compile FAILED - see /home/booster/k1_compile.err" >&2; echo "[run_follow_demo] COMPILE FAILED"; exit 3; }
 # NOTE: no --stream here, so the node's decision log (common.log) is on STDOUT -- capture STDOUT into
 # k1_follow.err (+ stderr merged) so an offloaded bundle is scoreable (see run_follow_capture.sh).
 if [ "$MODE" = "drive" ]; then
-  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BIN" --topic "$TOPIC" --profile demo "$@" > >(tee /home/booster/k1_follow.err) 2>&1
+  exec python3 -u /home/booster/follow_person_k1.py --drive --bridge "$BRIDGE_BIN" --topic "$TOPIC" --profile demo "$@" > >(tee /home/booster/k1_follow.err) 2>&1
 else
   exec python3 -u /home/booster/follow_person_k1.py --preview --topic "$TOPIC" --profile demo "$@" > >(tee /home/booster/k1_follow.err) 2>&1
 fi
