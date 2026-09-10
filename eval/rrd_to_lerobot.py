@@ -53,11 +53,90 @@ def _col(rb, name):
     return rb.column(i) if i >= 0 else None
 
 
+def _read_rrd_dataframe(path, depth_only=False):
+    """read_rrd for rerun 0.23.x, which has no rerun.experimental.RrdReader.
+
+    Returns the SAME (scalars, images, depth) structure as read_rrd. The GPU analysis venv pins
+    rerun-sdk 0.23.1 to match the writer on the robot, and this is how that venv reads recordings.
+    Pixels are sliced straight out of Arrow rather than round-tripped through Python lists.
+    """
+    import os as _os
+    import sys as _sys
+    import numpy as np
+    import rerun as rr
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from depth_replay import _first_col, _image_cells, iter_depth_batches
+
+    rec = rr.dataframe.load_recording(path)
+    cols = [(str(c.entity_path),
+             str(getattr(c, "component", None) or getattr(c, "component_name", "")))
+            for c in rec.schema().component_columns()]
+    ents = {e for e, _c in cols}
+
+    scalars = {}
+    for ent in sorted({e for e, c in cols if c.endswith("Scalar")}):
+        try:
+            tbl = rec.view(index="frame_idx", contents={ent: ["Scalar"]}).select().read_all()
+        except Exception:  # noqa: BLE001 -- one odd entity must not sink the whole read
+            continue
+        ci, vc = _first_col(tbl, "frame_idx"), _first_col(tbl, "Scalar")
+        if not ci or not vc:
+            continue
+        d = scalars.setdefault(ent, {})
+        for fi, v in zip(tbl.column(ci).to_pylist(), tbl.column(vc).to_pylist()):
+            if fi is None or v is None:
+                continue
+            if isinstance(v, (list, tuple)):
+                if not v:
+                    continue
+                v = v[0]
+            d[int(fi)] = float(v)
+
+    images = {}
+    if not depth_only and RGB_ENTITY in ents:
+        tbl = rec.view(index="frame_idx",
+                       contents={RGB_ENTITY: ["ImageBuffer", "ImageFormat"]}).select().read_all()
+        ci = _first_col(tbl, "frame_idx")
+        cb = _first_col(tbl, "ImageBuffer")
+        cf = _first_col(tbl, "ImageFormat")
+        if ci and cb:
+            fmts = tbl.column(cf).to_pylist() if cf else []
+            last = None
+            for i, (fi, cell) in enumerate(zip(tbl.column(ci).to_pylist(),
+                                               _image_cells(tbl.column(cb)))):
+                f = fmts[i] if i < len(fmts) else None
+                if f:
+                    last = f[0] if isinstance(f, list) and f else f
+                if fi is None or cell is None or not last:
+                    continue
+                w, h = int(last["width"]), int(last["height"])
+                if w * h == 0:
+                    continue
+                c = max(1, cell.size // (w * h))
+                img = cell[: w * h * c].reshape(h, w, c)
+                if c == 1:
+                    img = np.repeat(img, 3, axis=2)
+                images[int(fi)] = np.ascontiguousarray(img[:, :, :3])
+
+    depth = {}
+    if DEPTH_ENTITY in ents:
+        for batch in iter_depth_batches(rec, 1 << 30):
+            for fi, img in batch:
+                depth[fi] = img
+    return scalars, images, depth
+
+
 def read_rrd(path, depth_only=False):
     """Return (scalars, images, depth) where scalars[entity] = {frame_idx: value},
     images = {frame_idx: HxWx3 uint8}, depth = {frame_idx: HxW float32}.
     depth_only=True skips the RGB decode entirely (the ingest depth-sanity path never uses RGB;
     decoding hundreds of full frames it throws away is a needless OOM risk on a long capture)."""
+    try:
+        from rerun.experimental import RrdReader  # noqa: F401 -- newer chunk-stream API
+    except ImportError:
+        # rerun 0.23.x (the version that matches the robot's writer) has no RrdReader; read the
+        # same recording through the dataframe API instead. Same return structure.
+        return _read_rrd_dataframe(path, depth_only)
     import numpy as np
     store = _load_store(path)
     scalars = {}

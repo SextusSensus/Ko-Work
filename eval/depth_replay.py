@@ -42,6 +42,11 @@ import sys
 import time
 
 import numpy as np
+import warnings
+
+# A bin with no valid pixel is EXPECTED -- it becomes NaN, i.e. "cannot see", by design -- so
+# numpy's "All-NaN slice" warning is noise here, and noise in a log is how real signal gets missed.
+warnings.filterwarnings("ignore", message="All-NaN slice encountered")
 
 # ---------------------------------------------------------------------------- config
 
@@ -134,6 +139,28 @@ class NumpyBackend:
         out[counts < min_px] = np.nan       # "cannot see" must never read as "nothing there"
         return out
 
+    @staticmethod
+    def batch_corridor(bands, cfg, f, cx):
+        """(B, rows, cols) -> (B,) corridor clearance, NaN where unmeasurable.
+
+        The REFERENCE: literally the per-frame corridor_clearance, looped. Every accelerated
+        backend is judged against this, so it must never be "optimised" into something else.
+        """
+        out = np.full(len(bands), np.nan)
+        for i in range(len(bands)):
+            c = corridor_clearance(bands[i], cfg, f, cx)
+            if c is not None:
+                out[i] = c
+        return out
+
+    @staticmethod
+    def batch_bins(bands, nbins, pctile, min_px, max_m):
+        """(B, rows, cols) -> (B, nbins). The REFERENCE: the per-frame reduction, looped."""
+        if len(bands) == 0:
+            return np.zeros((0, nbins))
+        return np.stack([NumpyBackend.bin_percentile(b, nbins, pctile, min_px, max_m)
+                         for b in bands])
+
 
 class TorchBackend:
     """Same math on whatever device torch offers. Falls back to CPU silently -- an accelerator is
@@ -152,6 +179,76 @@ class TorchBackend:
         self.desc = "%s (%s)" % (
             self.device,
             torch.cuda.get_device_name(0) if self.device == "cuda" else "cpu tensors")
+
+    # torch.quantile/nanquantile refuse very large inputs; keep every reduction well under it.
+    _MAX_ELEMS = 8_000_000
+
+    def _spans(self, n, per_item):
+        step = max(1, int(self._MAX_ELEMS // max(1, per_item)))
+        for s0 in range(0, n, step):
+            yield s0, min(n, s0 + step)
+
+    def batch_corridor(self, bands, cfg, f, cx):
+        """Batched twin of corridor_clearance: one NaN-masked nanquantile per batch.
+
+        Same valid window, same footprint test (a pixel at range r is inside when
+        |u - cx| <= f*half_m/r), same low percentile, same min-valid rule -> NaN.
+        """
+        t = self.torch
+        B, R, C = bands.shape
+        half_m = 0.5 * max(0.05, cfg["robot_width_m"]) + max(0.0, cfg["corridor_margin_m"])
+        u = (t.arange(C, device=self.device, dtype=t.float32) - float(cx)).abs().view(1, 1, C)
+        nan = float("nan")
+        out = np.full(B, np.nan)
+        for s0, s1 in self._spans(B, R * C):
+            x = t.as_tensor(bands[s0:s1], device=self.device)
+            valid = t.isfinite(x) & (x > 0.15) & (x < cfg["obstacle_max_m"])
+            # Invalid pixels get a dummy range of 1 so the division is finite; `valid` below
+            # excludes them anyway, exactly as the reference's NaN comparisons do.
+            halfpx = (f * half_m) / t.where(valid, x, t.ones_like(x))
+            inside = valid & (u <= halfpx)
+            v = t.where(inside, x, t.full_like(x, nan)).reshape(s1 - s0, -1)
+            cnt = (~t.isnan(v)).sum(dim=1)
+            q = t.nanquantile(v, cfg["obstacle_pctile"] / 100.0, dim=1)
+            q = t.where(cnt >= int(cfg["obstacle_min_valid"]), q, t.full_like(q, nan))
+            out[s0:s1] = q.detach().to("cpu").numpy()
+        return out
+
+    def batch_bins(self, bands, nbins, pctile, min_px, max_m):
+        """Batched twin of the per-bin reduction.
+
+        The node's np.linspace edges give bins that differ by up to one pixel, so a plain reshape
+        is impossible. A (nbins, wmax) column-index map -- short bins padded with an index that
+        points at an appended all-NaN column -- gathers the whole batch into one dense cube whose
+        per-bin VALID SET is identical to the reference's, then a single nanquantile reduces it.
+        """
+        t = self.torch
+        B, R, C = bands.shape
+        if B == 0:
+            return np.zeros((0, nbins))
+        edges = np.linspace(0, C, nbins + 1).astype(int)
+        wmax = int(np.max(np.diff(edges)))
+        idx = np.full((nbins, wmax), C, dtype=np.int64)          # C == the all-NaN column
+        for i in range(nbins):
+            e0, e1 = edges[i], edges[i + 1]
+            if e1 > e0:
+                idx[i, : e1 - e0] = np.arange(e0, e1)
+        gi = t.as_tensor(idx.reshape(-1), device=self.device)
+        nan = float("nan")
+        out = np.full((B, nbins), np.nan)
+        for s0, s1 in self._spans(B, R * nbins * wmax):
+            x = t.as_tensor(bands[s0:s1], device=self.device)
+            valid = t.isfinite(x) & (x > 0.15) & (x < max_m)
+            x = t.where(valid, x, t.full_like(x, nan))
+            pad = t.full((s1 - s0, R, 1), nan, device=self.device, dtype=x.dtype)
+            cube = t.cat([x, pad], dim=2).index_select(2, gi)     # (b, R, nbins*wmax)
+            cube = cube.reshape(s1 - s0, R, nbins, wmax).permute(0, 2, 1, 3)
+            cube = cube.reshape(s1 - s0, nbins, R * wmax)
+            cnt = (~t.isnan(cube)).sum(dim=2)
+            q = t.nanquantile(cube, pctile / 100.0, dim=2)
+            q = t.where(cnt >= int(min_px), q, t.full_like(q, nan))
+            out[s0:s1] = q.detach().to("cpu").numpy()
+        return out
 
     def bin_percentile(self, band, nbins, pctile, min_px, max_m):
         t = self.torch
@@ -425,9 +522,52 @@ def _wh_from_format(fmt, nbytes=None):
     return w, h, dt
 
 
-def iter_depth(rec, limit=None):
-    """Yield (frame_idx, depth_metres 2-D float32), decoding the raw ImageBuffer with the recorded
-    ImageFormat + DepthMeter so nothing is assumed about dtype or scale."""
+def _image_cells(col):
+    """Yield one zero-copy uint8 view per row of a rerun ImageBuffer column; None for an empty or
+    null row. No Python objects are materialised per pixel.
+
+    MEASURED: to_pylist() turned every depth frame into a Python list of ~1M ints (5.8 s
+    one-time on a 1 GB recording) and bytes(list) then cost 2.8 ms per frame to undo it. Arrow
+    already holds the bytes contiguously; this walks the list offsets and slices that buffer.
+
+    The column is list<list<uint8>>: a batch of component instances per row, each a byte blob.
+    Any chunk not shaped that way falls back to the slow general path, so an SDK layout change
+    costs speed, never correctness -- and the in-range check in iter_depth_batches still flags a
+    decode that has silently gone wrong.
+    """
+    for chunk in col.chunks:
+        try:
+            outer = chunk.offsets.to_numpy(zero_copy_only=False)
+            inner = chunk.values
+            ioff = inner.offsets.to_numpy(zero_copy_only=False)
+            data = inner.values.to_numpy(zero_copy_only=False)
+            if data.dtype != np.uint8:
+                raise TypeError("unexpected inner dtype %s" % data.dtype)
+            ok = chunk.is_valid().to_numpy(zero_copy_only=False)
+        except Exception:  # noqa: BLE001 -- layout surprise: fall back, stay correct
+            for cell in chunk.to_pylist():
+                if not cell:
+                    yield None
+                    continue
+                c0 = cell[0] if isinstance(cell, list) else cell
+                yield None if c0 is None else np.frombuffer(bytes(c0), dtype=np.uint8)
+            continue
+        for r in range(len(chunk)):
+            j0, j1 = int(outer[r]), int(outer[r + 1])
+            if not ok[r] or j1 <= j0:
+                yield None
+                continue
+            yield data[int(ioff[j0]):int(ioff[j0 + 1])]
+
+
+def iter_depth_batches(rec, batch, limit=None, timing=None):
+    """Yield lists of (frame_idx, depth_metres HxW float32), at most `batch` per list.
+
+    Decodes with the recorded ImageFormat + DepthMeter (nothing assumed about dtype or scale),
+    and reports the in-range pixel fraction once so a wrong decode can never again be silent.
+    """
+    T = timing if timing is not None else {}
+    t0 = time.perf_counter()
     tbl = rec.view(index="frame_idx",
                    contents={"/camera/depth": ["ImageBuffer", "ImageFormat", "DepthMeter"]}
                    ).select().read_all()
@@ -439,18 +579,16 @@ def iter_depth(rec, limit=None):
         raise SystemExit("no /camera/depth ImageBuffer in this recording "
                          "(was it recorded with --rerun and image logging on?)")
     idxs = tbl.column(ci).to_pylist()
-    bufs = tbl.column(cb).to_pylist()
+    # ImageFormat / DepthMeter are a few bytes per row, so plain conversion costs nothing.
     fmts = tbl.column(cf).to_pylist() if cf else [None] * len(idxs)
     mets = tbl.column(cm).to_pylist() if cm else [None] * len(idxs)
+    cells = _image_cells(tbl.column(cb))
+    T["columns"] = T.get("columns", 0.0) + (time.perf_counter() - t0)
 
-    n, last_fmt, last_scale, announced = 0, None, None, False
-    for k, b, fmt, met in zip(idxs, bufs, fmts, mets):
-        if b is None:
-            continue
-        if isinstance(b, list):
-            if not b:
-                continue
-            b = b[0]
+    out, n, shape = [], 0, None
+    last_fmt, last_scale, announced = None, None, False
+    for k, cell, fmt, met in zip(idxs, cells, fmts, mets):
+        td = time.perf_counter()
         if fmt:
             last_fmt = fmt[0] if isinstance(fmt, list) and fmt else fmt
         if met:
@@ -459,14 +597,18 @@ def iter_depth(rec, limit=None):
                 last_scale = float(m0)
             except (TypeError, ValueError):
                 pass
-        blob = bytes(b)
-        w, h, dt = _wh_from_format(last_fmt, len(blob))
-        raw = np.frombuffer(blob, dtype=dt)
-        if raw.size < w * h:
+        if cell is None or k is None:
             continue
-        img = raw[:w * h].reshape(h, w).astype(np.float32)
-        if last_scale and last_scale > 0:
-            img = img / last_scale
+        w, h, dt = _wh_from_format(last_fmt, int(cell.nbytes))
+        need = w * h * np.dtype(dt).itemsize
+        if cell.nbytes < need:
+            continue
+        img = cell[:need].view(dt).reshape(h, w)          # a view: no copy for float32 depth
+        if img.dtype != np.float32:
+            img = img.astype(np.float32)
+        if last_scale and last_scale > 0 and last_scale != 1.0:
+            img = img / np.float32(last_scale)
+        T["decode"] = T.get("decode", 0.0) + (time.perf_counter() - td)
         if not announced:
             announced = True
             finite = img[np.isfinite(img)]
@@ -476,10 +618,26 @@ def iter_depth(rec, limit=None):
             if frac < 5.0:
                 print("[depth] WARNING: almost nothing is in range -- the decode is probably "
                       "wrong, and every downstream number will be noise.")
-        yield int(k), img
+        if shape is not None and img.shape != shape and out:
+            yield out                                    # a batch must be one shape
+            out = []
+        shape = img.shape
+        out.append((int(k), img))
         n += 1
+        if len(out) >= batch:
+            yield out
+            out = []
         if limit and n >= limit:
-            return
+            break
+    if out:
+        yield out
+
+
+def iter_depth(rec, limit=None):
+    """Frame-at-a-time view of iter_depth_batches, for callers that want single frames."""
+    for b in iter_depth_batches(rec, 1, limit):
+        for item in b:
+            yield item
 
 
 # ---------------------------------------------------------------------------- main
@@ -491,19 +649,35 @@ def main():
     ap.add_argument("--backend", default="numpy", choices=("numpy", "torch"))
     ap.add_argument("--device", default=None, help="torch device override (cuda / cpu)")
     ap.add_argument("--limit", type=int, default=0, help="stop after N depth frames (0 = all)")
+    ap.add_argument("--batch", type=int, default=64,
+                    help="frames per batch; the torch backend reduces a whole batch per launch")
     ap.add_argument("--json", default=None, help="write the scorecard here (for the auto-tune loop)")
     ap.add_argument("--compare-legacy", action="store_true",
                     help="also replay the PRE-FIX command, demonstrating the sign bug on data")
+    ap.add_argument("--check-parity", action="store_true",
+                    help="ALSO run the numpy reference on every batch and compare. An "
+                         "accelerated backend is only trustworthy if every gap DECISION agrees "
+                         "with the reference; any disagreement exits 2.")
     a = ap.parse_args()
 
     cfg = dict(DEFAULTS)
     be = make_backend(a.backend, a.device)
+    ref = NumpyBackend() if (a.check_parity and be.name != "numpy") else None
 
-    t0 = time.time()
+    T = {}
+
+    def lap(key, t0):
+        T[key] = T.get(key, 0.0) + (time.perf_counter() - t0)
+
+    t0 = time.perf_counter()
     rec = load_recording(a.rrd)
+    lap("open", t0)
+    t0 = time.perf_counter()
     scal = load_scalars(rec, ["/reflex/clearance_m", "/follow/bearing", "/cmd/vyaw",
                               "/reflex/vx_cap", "/fsm/state_id", "/head/yaw_deg"])
-    print("[load] scalars for %d frames in %.1fs" % (len(scal), time.time() - t0))
+    lap("scalars", t0)
+    print("[load] opened in %.1fs; scalars for %d frames in %.1fs"
+          % (T["open"], len(scal), T["scalars"]))
 
     bar = cfg["gap_horizon_m"] if cfg["gap_horizon_m"] > 0 else cfg["obstacle_brake_start"]
     trig = cfg["obstacle_brake_stop"] + (bar - cfg["obstacle_brake_stop"]) * cfg["gap_steer_trigger_frac"]
@@ -512,73 +686,138 @@ def main():
           % (bar, trig, need_width(cfg), cfg["gap_steer_deadband_deg"],
              cfg["gap_max_detour_deg"], cfg["gap_critical_detour_deg"], cfg["gap_critical_m"]))
 
+    nb = int(cfg["gap_profile_bins"])
+    min_px = max(4, int(cfg["obstacle_min_valid"] // max(1, nb // 8)))
+
     rows, legacy_rows, reasons = [], [], {}
     skips, cliff_deltas = {}, []
-    t1, nf, nskip = time.time(), 0, 0
-    for k, dimg in iter_depth(rec, a.limit or None):
-        nf += 1
-        h, w = dimg.shape
+    par = {"clr_max": 0.0, "clr_nan_mismatch": 0, "scored_set_diff": 0,
+           "bin_max": 0.0, "bin_nan_mismatch": 0, "decisions": 0, "decision_diff": 0}
+    nf = nskip = 0
+
+    t_loop = time.perf_counter()
+    for batch in iter_depth_batches(rec, max(1, a.batch), a.limit or None, T):
+        ks = [k for k, _img in batch]
+        h, w = batch[0][1].shape
+        nf += len(batch)
         f = focal_px(w, cfg["hfov_deg"])
+        cx = w * 0.5
         y0, y1 = int(h * cfg["obstacle_band_top"]), int(h * cfg["obstacle_band_bot"])
         if y1 - y0 < 4:
             continue
-        nb = int(cfg["gap_profile_bins"])
-        min_px = max(4, int(cfg["obstacle_min_valid"] // max(1, nb // 8)))
-        clr = be.bin_percentile(dimg[y0:y1, :], nb, cfg["obstacle_pctile"], min_px,
-                                cfg["obstacle_max_m"])
+        bands = np.ascontiguousarray(np.stack([img[y0:y1, :] for _k, img in batch]),
+                                     dtype=np.float32)
 
-        s = scal.get(k, {})
-        bearing = s.get("/follow/bearing", 0.0)
-        logged = s.get("/reflex/clearance_m")
-        # Prefer the recomputed geometry, fall back to the logged scalar, and record an
-        # explicit reason for every skip: "no clearance available" and "the path was clear"
-        # are opposite findings, and collapsing them makes a broken replay look like a clean
-        # run -- the same defect removed from the node's gap logging this morning.
-        clearance = corridor_clearance(dimg[y0:y1, :], cfg, f, w * 0.5)
-        if clearance is None:
-            clearance = logged
-        if clearance is None:
-            skips["no_clearance"] = skips.get("no_clearance", 0) + 1
-            nskip += 1
+        t0 = time.perf_counter()
+        geo = be.batch_corridor(bands, cfg, f, cx)
+        lap("corridor", t0)
+        rgeo = None
+        if ref is not None:
+            rgeo = ref.batch_corridor(bands, cfg, f, cx)
+            both = np.isfinite(geo) & np.isfinite(rgeo)
+            if both.any():
+                par["clr_max"] = max(par["clr_max"],
+                                     float(np.max(np.abs(geo[both] - rgeo[both]))))
+            par["clr_nan_mismatch"] += int(np.sum(np.isfinite(geo) != np.isfinite(rgeo)))
+
+        todo = []
+        for i, k in enumerate(ks):
+            s_ = scal.get(k, {})
+            bearing = s_.get("/follow/bearing", 0.0)
+            logged = s_.get("/reflex/clearance_m")
+            # Prefer the recomputed geometry, fall back to the logged scalar, and itemise every
+            # skip: "no clearance available" and "the path was clear" are opposite findings, and
+            # collapsing them makes a broken replay look like a clean run.
+            clearance = float(geo[i]) if np.isfinite(geo[i]) else logged
+            if clearance is None:
+                skips["no_clearance"] = skips.get("no_clearance", 0) + 1
+                nskip += 1
+                continue
+            if logged is not None:
+                cliff_deltas.append(abs(clearance - logged))
+            if rgeo is not None:
+                rc = float(rgeo[i]) if np.isfinite(rgeo[i]) else logged
+                if rc is not None and ((rc < trig) != (clearance < trig)):
+                    par["scored_set_diff"] += 1
+            if clearance >= trig:
+                skips["path_clear"] = skips.get("path_clear", 0) + 1
+                nskip += 1
+                continue
+            todo.append((i, k, clearance, bearing))
+        if not todo:
             continue
-        if logged is not None:
-            cliff_deltas.append(abs(clearance - logged))
-        if clearance >= trig:
-            skips["path_clear"] = skips.get("path_clear", 0) + 1
-            nskip += 1
-            continue
-        critical = cfg["gap_critical_m"] > 0 and clearance <= cfg["gap_critical_m"]
-        cap = max(cfg["gap_max_detour_deg"], cfg["gap_critical_detour_deg"]) if critical \
-            else cfg["gap_max_detour_deg"]
 
-        gap, reason = gap_profile(clr, w * 0.5, f, w, cfg, bearing, cap)
-        reasons[reason] = reasons.get(reason, 0) + 1
+        sel = bands[[item[0] for item in todo]]
+        t0 = time.perf_counter()
+        bins = be.batch_bins(sel, nb, cfg["obstacle_pctile"], min_px, cfg["obstacle_max_m"])
+        lap("bins", t0)
+        rbins = None
+        if ref is not None:
+            rbins = ref.batch_bins(sel, nb, cfg["obstacle_pctile"], min_px, cfg["obstacle_max_m"])
+            both = np.isfinite(bins) & np.isfinite(rbins)
+            if both.any():
+                par["bin_max"] = max(par["bin_max"],
+                                     float(np.max(np.abs(bins[both] - rbins[both]))))
+            par["bin_nan_mismatch"] += int(np.sum(np.isfinite(bins) != np.isfinite(rbins)))
 
-        cmd, why = policy_current(gap, bearing, clearance, cfg)
-        rows.append({"frame": k, "clearance": clearance, "bearing_deg": math.degrees(bearing),
-                     "gap_deg": math.degrees(gap[0]) if gap else None,
-                     "cmd": cmd, "why": why, "critical": critical,
-                     "rate": cfg["gap_steer_rate"]})
-        if a.compare_legacy:
-            lc, lw = policy_legacy(gap, bearing, clearance, cfg)
-            legacy_rows.append({"gap_deg": math.degrees(gap[0]) if gap else None,
-                                "cmd": lc, "why": lw, "rate": cfg["gap_steer_rate"]})
+        for j, (i, k, clearance, bearing) in enumerate(todo):
+            critical = cfg["gap_critical_m"] > 0 and clearance <= cfg["gap_critical_m"]
+            cap = (max(cfg["gap_max_detour_deg"], cfg["gap_critical_detour_deg"]) if critical
+                   else cfg["gap_max_detour_deg"])
+            gap, reason = gap_profile(bins[j], cx, f, w, cfg, bearing, cap)
+            reasons[reason] = reasons.get(reason, 0) + 1
+            cmd, why = policy_current(gap, bearing, clearance, cfg)
+            if rbins is not None:
+                rgap, rreason = gap_profile(rbins[j], cx, f, w, cfg, bearing, cap)
+                rcmd, rwhy = policy_current(rgap, bearing, clearance, cfg)
+                par["decisions"] += 1
+                if rreason != reason or rwhy != why or abs(rcmd - cmd) > 1e-6:
+                    par["decision_diff"] += 1
+            rows.append({"frame": k, "clearance": clearance, "bearing_deg": math.degrees(bearing),
+                         "gap_deg": math.degrees(gap[0]) if gap else None,
+                         "cmd": cmd, "why": why, "critical": critical,
+                         "rate": cfg["gap_steer_rate"]})
+            if a.compare_legacy:
+                lc, lw = policy_legacy(gap, bearing, clearance, cfg)
+                legacy_rows.append({"gap_deg": math.degrees(gap[0]) if gap else None,
+                                    "cmd": lc, "why": lw, "rate": cfg["gap_steer_rate"]})
+    lap("loop", t_loop)
 
-    dt = max(1e-6, time.time() - t1)
-    print("[replay] %d depth frames, %d skipped, %d scored in %.1fs (%.1f frames/s, %s)"
-          % (nf, nskip, len(rows), dt, nf / dt, be.name))
-    for _r, _c in sorted(skips.items(), key=lambda kv: -kv[1]):
-        print("    skip: %-16s %d" % (_r, _c))
+    comp = T.get("corridor", 0.0) + T.get("bins", 0.0)
+    print("[replay] %d depth frames, %d skipped, %d scored  (backend %s, batch %d)"
+          % (nf, nskip, len(rows), be.name, a.batch))
+    print("    time: open %.1fs | scalars %.1fs | columns %.1fs | loop %.2fs "
+          "[decode %.2fs, corridor %.2fs, bins %.2fs]"
+          % (T.get("open", 0.0), T.get("scalars", 0.0), T.get("columns", 0.0), T.get("loop", 0.0),
+             T.get("decode", 0.0), T.get("corridor", 0.0), T.get("bins", 0.0)))
+    if nf:
+        print("    geometry compute %.2f ms/frame | whole loop %.2f ms/frame"
+              % (1000.0 * comp / nf, 1000.0 * T.get("loop", 0.0) / nf))
+    for r_, c_ in sorted(skips.items(), key=lambda kv: -kv[1]):
+        print("    skip: %-16s %d" % (r_, c_))
     if cliff_deltas:
-        _cd = np.array(cliff_deltas)
+        cd = np.array(cliff_deltas)
         print("    recomputed vs LOGGED clearance: n=%d mean|d|=%.3fm p90=%.3fm max=%.3fm"
-              % (len(_cd), _cd.mean(), np.percentile(_cd, 90), _cd.max()))
+              % (len(cd), cd.mean(), np.percentile(cd, 90), cd.max()))
         print("      (large disagreement = the logged corridor and the depth geometry "
               "diverge -- the clearance-cliff suspect)")
 
+    parity_ok = True
+    if ref is not None:
+        parity_ok = (par["decision_diff"] == 0 and par["scored_set_diff"] == 0
+                     and par["clr_nan_mismatch"] == 0 and par["bin_nan_mismatch"] == 0)
+        print("\n=== PARITY vs numpy reference: %s ===" % ("PASS" if parity_ok else "FAIL"))
+        print("  corridor   max|d| %.2e m   NaN mismatches %d"
+              % (par["clr_max"], par["clr_nan_mismatch"]))
+        print("  bins       max|d| %.2e m   NaN mismatches %d"
+              % (par["bin_max"], par["bin_nan_mismatch"]))
+        print("  frames scored differently   %d" % par["scored_set_diff"])
+        print("  gap decisions compared %d, disagreements %d"
+              % (par["decisions"], par["decision_diff"]))
+
     print("\n=== profile outcome ===")
-    for r, c in sorted(reasons.items(), key=lambda kv: -kv[1]):
-        print("  %-18s %d" % (r, c))
+    for r_, c_ in sorted(reasons.items(), key=lambda kv: -kv[1]):
+        print("  %-18s %d" % (r_, c_))
 
     steer = [r for r in rows if r["why"] == "steer"]
     print("\n=== commands ===")
@@ -613,14 +852,21 @@ def main():
     if a.json:
         with open(a.json, "w", encoding="utf-8") as fh:
             json.dump({"rrd": os.path.basename(a.rrd), "backend": be.name,
+                       "device": getattr(be, "device", "cpu"),
                        "frames": nf, "scored": len(rows), "steers": len(steer),
-                       "reasons": reasons,
+                       "reasons": reasons, "skips": skips,
                        "invariants": [{"name": n, "good": g, "total": t, "rule": r}
                                       for n, g, t, r in inv],
+                       "timing_s": {k: round(v, 4) for k, v in T.items()},
+                       "parity": par if ref is not None else None,
                        "config": cfg}, fh, indent=2)
         print("\nwrote %s" % a.json)
 
-    return 0 if ok_all else 1
+    if not ok_all:
+        return 1
+    if not parity_ok:
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
