@@ -2266,7 +2266,7 @@ class Follower:
             self._gapreject_log_t = _t
             log("GAP-REJECT %s" % why)
 
-    def _gap_profile(self, target_bearing=None):
+    def _gap_profile(self, target_bearing=None, max_detour_deg=None):
         """FOLLOW-THE-GAP: the widest PASSABLE opening in the depth frame, as
         (bearing_rad, width_m, range_m), or None when nothing is passable.
 
@@ -2427,7 +2427,9 @@ class Follower:
                 # is, we return None and let the caller fall through to the sector logic and
                 # ultimately the brake -- stopping is the honest answer, not steering somewhere
                 # irrelevant because it happened to be wide.
-                if detour > math.radians(max(0.0, self.a.gap_max_detour_deg)):
+                _cap_deg = (self.a.gap_max_detour_deg if max_detour_deg is None
+                            else max_detour_deg)
+                if detour > math.radians(max(0.0, _cap_deg)):
                     _n_detour += 1
                     if _least_detour is None or detour < _least_detour:
                         _least_detour = detour
@@ -2448,7 +2450,9 @@ class Follower:
                                  % (len(runs), _n_narrow, _widest, need_w, _n_detour,
                                     ("%.0fdeg" % math.degrees(_least_detour))
                                     if _least_detour is not None else "n/a",
-                                    self.a.gap_max_detour_deg, math.degrees(tb)))
+                                    (self.a.gap_max_detour_deg
+                                     if max_detour_deg is None else max_detour_deg),
+                                    math.degrees(tb)))
                 return None
             return (best[1], best[2], best[3])
         except Exception as e:  # noqa: BLE001 -- a steering hint must never break the loop
@@ -2821,8 +2825,27 @@ class Follower:
         # instead of applying a fixed full-rate bias for every geometry. Falls through to the
         # sector logic below whenever it cannot find a passable gap, so the old behaviour is
         # the floor, never the ceiling.
+        # CRITICAL BLOCK (2026-09-10 field fix). Measured: ~25 consecutive samples at
+        # CLEARANCE 0.75-0.80 m / vx-cap 0.02-0.06 -- creeping into an obstacle while every
+        # suppression guard independently threw the detour away (11 of 15 rejects were "off the
+        # follow line" at 36-81 deg against a 35 deg cap, then 9 GAP-YIELDs zeroed the fallback).
+        # Below gap_critical_m the robot is already in the stop band's shoulder with forward motion
+        # near zero, so the trade flips: a big detour risks the lock, but SEARCH re-acquires a lost
+        # lock (3/3 in that run) and nothing recovers a robot wedged against furniture.
+        # This only ever WIDENS what gap steer may consider. vx stays the brake's business, so it
+        # cannot authorise forward motion -- at worst the robot yaws on the spot.
+        _crit_m = float(getattr(self.a, "gap_critical_m", 0.0) or 0.0)
+        _critical = (_crit_m > 0.0 and clr_centre is not None and clr_centre <= _crit_m)
+        _detour_cap = self.a.gap_max_detour_deg
+        if _critical:
+            _detour_cap = max(_detour_cap, float(self.a.gap_critical_detour_deg))
+            if (time.monotonic() - getattr(self, "_gapcrit_log_t", 0.0)) >= 2.0:
+                self._gapcrit_log_t = time.monotonic()
+                log("GAP-CRITICAL clearance %.2fm <= %.2fm -> detour cap %.0f->%.0fdeg and yield "
+                    "suspended (stopping against the obstacle is now the worse outcome)"
+                    % (clr_centre, _crit_m, self.a.gap_max_detour_deg, _detour_cap))
         if self.a.gap_profile == "on":
-            _g = self._gap_profile(target_bearing=bearing)
+            _g = self._gap_profile(target_bearing=bearing, max_detour_deg=_detour_cap)
             if _g is not None:
                 _gb, _gw, _gr = _g
                 # A GAP DEAD AHEAD IS NOT A DETOUR (2026-09-10 field fix). Measured: 5 of 14
@@ -2906,7 +2929,9 @@ class Follower:
         # Past saturation the operator is the only thing that matters: yield the yaw budget to the
         # tracker. This only ever REMOVES bias (returns 0.0), so it cannot steer the robot
         # anywhere new, and the brake still governs vx independently.
-        if abs(bearing) >= math.radians(max(1.0, self.a.gap_steer_yield_deg)):
+        # ...unless the corridor is CRITICAL: yielding hands all yaw to the tracker, which aims
+        # the robot AT the obstacle it is stuck against. Steering is the only avoidance left.
+        if (not _critical) and abs(bearing) >= math.radians(max(1.0, self.a.gap_steer_yield_deg)):
             if (time.monotonic() - getattr(self, "_gap_yield_log_t", 0.0)) >= 2.0:
                 self._gap_yield_log_t = time.monotonic()
                 log("GAP-YIELD operator at %+.0fdeg past the %.0fdeg yaw-saturation point -> "
@@ -5806,6 +5831,23 @@ def parse_args(argv):
                         "in one run. A momentary loss is re-IDs job, not a gesture. Does NOT "
                         "apply before the first lock, when the operator is deliberately "
                         "waiting to be locked onto. 0 disables.")
+    p.add_argument("--gap-critical-m", type=float, default=0.85,
+                   help="GAP: corridor clearance at or below which the robot counts as "
+                        "CRITICALLY blocked (default 0.85 = obstacle-brake-stop 0.70 + 0.15, "
+                        "i.e. inside the stop band's shoulder with forward motion already "
+                        "near zero). While critical the detour cap widens to "
+                        "--gap-critical-detour-deg and GAP-YIELD stands aside, because the "
+                        "alternative has become stopping dead against the obstacle. Measured "
+                        "2026-09-10: ~25 consecutive samples at 0.75-0.80 m / vx-cap 0.02 "
+                        "with every guard independently discarding the only available gap. "
+                        "Only ever WIDENS what gap steer may consider; vx stays the brake's "
+                        "business so it cannot authorise forward motion. <=0 disables.")
+    p.add_argument("--gap-critical-detour-deg", type=float, default=90.0,
+                   help="GAP: detour cap while CRITICALLY blocked (see --gap-critical-m). A "
+                        "large detour risks the lock, but SEARCH re-acquires a lost lock "
+                        "(3/3 in the 2026-09-10 run) and nothing recovers a robot wedged "
+                        "against furniture. The operator-out-of-frame guard "
+                        "(--gap-steer-max-bearing-deg) is separate and still bounds this.")
     p.add_argument("--gap-horizon-m", type=float, default=1.375,
                    help="GAP: range at which gap STEERING treats the path as blocked, "
                         "decoupled from --obstacle-brake-start (which keeps grading vx and is "
@@ -5839,7 +5881,7 @@ def parse_args(argv):
                         "cycle. Field-observed 2026-09-10: 'GAP-STEER bias +0.24 (bearing +37deg)' "
                         "steering LEFT while the operator was 37 deg RIGHT. Only ever removes "
                         "bias, never adds; the brake still governs vx.")
-    p.add_argument("--gap-max-detour-deg", type=float, default=35.0,
+    p.add_argument("--gap-max-detour-deg", type=float, default=60.0,
                    help="a --gap-profile gap is only considered when its centre bearing is within "
                         "this angle of the OPERATOR's bearing. Without it the layer picks any wide "
                         "gap once the operator's own line is too narrow to fit, and steers away "

@@ -137,7 +137,14 @@ yolo_trt: "on"
 yolo_trt_cache: '/home/booster/trt_cache'
 gap_profile: "on"
 gap_profile_bins: 48
-gap_max_detour_deg: 35.0
+# 35 -> 60 (2026-09-10 field fix). Run 2 rejected 11 of 15 openings as "off the follow line" at
+# 36/37/42/43/45/46/50/53/75/78/81 deg while the robot crept into an obstacle at vx 0.02 -- in run 1
+# that count was ZERO, so raising the gap horizon flipped the binding constraint from width to
+# detour by disqualifying the near side-openings. 60 accepts the 36-53 deg detours actually offered
+# and still refuses the absurd 75-81 deg ones. This does NOT weaken lock protection: pushing the
+# operator out of frame is prevented by gap_steer_max_bearing_deg (40), a SEPARATE guard keyed off
+# the OPERATOR's bearing rather than the gap's.
+gap_max_detour_deg: 60.0
 gap_steer_yield_deg: 34.0
 gap_steer_deadband_deg: 8.0
 # 2026-09-10 operator: "engage earlier on the gap steer by 50%". Gap steering's own blocked-path
@@ -151,6 +158,15 @@ gap_steer_deadband_deg: 8.0
 # forward passable and gap_steer_deadband_deg stands the real detour down.
 # Set <= 0 to restore the legacy brake-coupled behaviour exactly.
 gap_horizon_m: 1.375
+# CRITICAL BLOCK (2026-09-10). At or below this clearance the robot is inside the stop band's
+# shoulder (brake_stop 0.70) with forward motion already near zero, so suppression flips from
+# prudent to harmful: the detour cap widens to gap_critical_detour_deg and GAP-YIELD stands aside.
+# Measured: ~25 consecutive samples at CLEARANCE 0.75-0.80 m / vx-cap 0.02-0.06 with the robot
+# nosing into an obstacle while three separate guards each discarded the only gap on offer.
+# Only ever WIDENS what gap steer may consider, and vx stays the brake's business, so this cannot
+# authorise forward motion -- at worst the robot yaws on the spot. <=0 disables.
+gap_critical_m: 0.85
+gap_critical_detour_deg: 90.0
 yaw_cross_dwell_ticks: 2
 gesture_dwell_s: 2.0
 gap_fit_margin_m: 0.12
