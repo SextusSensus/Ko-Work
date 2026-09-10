@@ -1677,14 +1677,15 @@ function Close-OperatorSession {
 }
 
 # Stop any follow node on the robot and CONFIRM none is left: GONE, STILL-RUNNING, or UNKNOWN (ssh failed
-# or timed out). SIGTERM -> the node's handler stops + ChangeMode(kPrepare); it gets 8 s to exit. The
-# escaped \. keeps the pattern from matching this command's own shell line (pkill/pgrep -f match whole
-# command lines). TimeoutMs covers ssh ConnectTimeout (8 s) + that 8 s loop + margin, so a slow but
-# valid answer is never reported as "did not answer".
-function Stop-RobotFollowNode([string]$ip,[int]$TimeoutMs=20000){
+# or timed out). SIGTERM -> the node's handler stops + ChangeMode(kPrepare); it gets 15 s to exit (the
+# bridge shutdown alone is ~4 s, then the graceful settle and the CUDA/TRT teardown). The escaped \.
+# keeps the pattern from matching this command's own shell line (pkill/pgrep -f match whole command
+# lines). TimeoutMs covers ssh ConnectTimeout (8 s) + that 15 s loop + margin, so a slow but valid
+# answer is never reported as "did not answer".
+function Stop-RobotFollowNode([string]$ip,[int]$TimeoutMs=26000){
     $tmp = Join-Path $env:TEMP ('k1_kill_{0}.txt' -f ([IO.Path]::GetRandomFileName() -replace '\.',''))
     try{
-        $cmd = 'pkill -TERM -f ''follow_person_k1\.py''; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do pgrep -f ''follow_person_k1\.py'' >/dev/null; rc=$?; [ $rc -eq 1 ] && { echo NODE-GONE; exit 0; }; [ $rc -ne 0 ] && { echo NODE-ERR $rc; exit 0; }; sleep 0.5; done; echo NODE-STILL-RUNNING'
+        $cmd = 'pkill -TERM -f ''follow_person_k1\.py''; for i in $(seq 30); do pgrep -f ''follow_person_k1\.py'' >/dev/null; rc=$?; [ $rc -eq 1 ] && { echo NODE-GONE; exit 0; }; [ $rc -ne 0 ] && { echo NODE-ERR $rc; exit 0; }; sleep 0.5; done; echo NODE-STILL-RUNNING'
         $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), $cmd)) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
         try{ $null = $p.Handle }catch{}
         if(-not $p.WaitForExit($TimeoutMs)){ try{ $p.Kill() }catch{}; $null = $p.WaitForExit(2000); return 'UNKNOWN' }
@@ -1728,7 +1729,7 @@ function Start-Tracker([bool]$drive){
     # no confirmation, no launch.
     $old = Stop-RobotFollowNode $ip
     if($old -eq 'UNKNOWN'){ $old = Stop-RobotFollowNode $ip }   # one retry: a slow answer is not a refusal
-    if($old -eq 'STILL-RUNNING'){ Add-LogTrack ('An earlier follow node is still running on the robot 8 s after SIGTERM -- NOT starting a second one. If it does not exit, force it:  ssh {0}@{1} "pkill -KILL -f ''follow_person_k1\.py''"  (the bridge stops on stdin EOF), then toggle Follow again. If the robot is moving, use the gamepad / e-stop.' -f $script:SshUser,$ip) $red; return $false }
+    if($old -eq 'STILL-RUNNING'){ Add-LogTrack ('An earlier follow node is still running on the robot 15 s after SIGTERM -- NOT starting a second one. If it does not exit, force it:  ssh {0}@{1} "pkill -KILL -f ''follow_person_k1\.py''"  (the bridge stops on stdin EOF), then toggle Follow again. If the robot is moving, use the gamepad / e-stop.' -f $script:SshUser,$ip) $red; return $false }
     if($old -ne 'GONE'){ Add-LogTrack ("Could not confirm that no follow node is running on {0} (the robot did not answer) -- NOT launching. Toggle Follow again." -f $ip) $red; return $false }
     # SINGLE CAMERA CONSUMER: stop the Live View stream (it also decodes the head
     # camera) so the K1 only ever streams the camera once.
@@ -1921,7 +1922,7 @@ function Stop-Tracker([bool]$procAlreadyDead=$false){
         if($trackPic.Image){ $img=$trackPic.Image; $trackPic.Image=$null; $img.Dispose() }
         if($script:trackMs){ $script:trackMs.Dispose(); $script:trackMs=$null }
         if($gone -eq 'GONE'){ Add-LogTrack 'Follow stopped: no follow node left on the robot (checked).' $amber }
-        elseif($gone -eq 'STILL-RUNNING'){ Add-LogTrack ('Follow stop NOT confirmed: the node was still running 8 s after SIGTERM. If the robot is moving, use the gamepad / e-stop. To force it:  ssh {0}@{1} "pkill -KILL -f ''follow_person_k1\.py''"  (the bridge stops on stdin EOF). The next launch refuses to start a second node.' -f $script:SshUser,$ip) $red }
+        elseif($gone -eq 'STILL-RUNNING'){ Add-LogTrack ('Follow stop NOT confirmed: the node was still running 15 s after SIGTERM. If the robot is moving, use the gamepad / e-stop. To force it:  ssh {0}@{1} "pkill -KILL -f ''follow_person_k1\.py''"  (the bridge stops on stdin EOF). The next launch refuses to start a second node.' -f $script:SshUser,$ip) $red }
         elseif(-not $ip){ Add-LogTrack 'Follow stopped locally, but there is no robot IP, so the robot-side stop was not sent or checked. If the robot is moving, use the gamepad / e-stop.' $red }
         else { Add-LogTrack 'Follow stop NOT confirmed: the robot did not answer the stop check. If the robot is moving, use the gamepad / e-stop.' $red }
         $statusLbl.Text='Tracker stopped.'
@@ -2054,7 +2055,7 @@ function Start-Follow([bool]$drive){
     Open-OperatorSession
     $old = Stop-RobotFollowNode $ip
     if($old -eq 'UNKNOWN'){ $old = Stop-RobotFollowNode $ip }   # one retry: a slow answer is not a refusal
-    if($old -eq 'STILL-RUNNING'){ Add-LogCtrl ('An earlier follow node is still running on the robot 8 s after SIGTERM -- NOT starting a second one. If it does not exit, force it:  ssh {0}@{1} "pkill -KILL -f ''follow_person_k1\.py''"  then toggle Follow again. If the robot is moving, use the gamepad / e-stop.' -f $script:SshUser,$ip) $red; return $false }
+    if($old -eq 'STILL-RUNNING'){ Add-LogCtrl ('An earlier follow node is still running on the robot 15 s after SIGTERM -- NOT starting a second one. If it does not exit, force it:  ssh {0}@{1} "pkill -KILL -f ''follow_person_k1\.py''"  then toggle Follow again. If the robot is moving, use the gamepad / e-stop.' -f $script:SshUser,$ip) $red; return $false }
     if($old -ne 'GONE'){ Add-LogCtrl ("Could not confirm that no follow node is running on {0} (the robot did not answer) -- NOT launching. Toggle Follow again." -f $ip) $red; return $false }
     # SINGLE CAMERA CONSUMER: stop the Live View stream (it also decodes the head
     # camera) so the camera is only ever streamed once.
@@ -2147,7 +2148,11 @@ $mediaTimer.Add_Tick({
     }
     if($script:FollowOn){
         if($script:FollowProc -and $script:FollowProc.HasExited){
-            Add-LogCtrl 'Follow process exited; cleaning up.' $amber
+            $ecF=$null; try{ $ecF=[int]$script:FollowProc.ExitCode }catch{}
+            if($ecF -eq 5){ Add-LogCtrl 'Follow process exited 5 = REFUSED: a follow node was already running on the robot (or pgrep failed), so run_follow.sh did not start a second one. The cleanup below sends it SIGTERM; toggle Follow again in a few seconds.' $red }
+            elseif($ecF -eq 3){ Add-LogCtrl 'Follow process exited 3 = COMPILE FAILED (run_follow.sh) -- see /home/booster/k1_compile.err on the robot.' $red }
+            elseif($ecF -eq 4){ Add-LogCtrl 'Follow process exited 4 = DRIVE-ABORT (the node refused to walk; most often a stalled camera).' $amber }
+            else { Add-LogCtrl ("Follow process exited ({0}); cleaning up." -f $(if($ecF -eq $null){'code unavailable'}else{$ecF})) $amber }
             Stop-Follow $true   # proc already dead: skip the SIGINT write + long wait (no UI stall)
         }
         elseif($script:FollowDrive -and (([datetime]::Now - $script:FollowStart).TotalSeconds -gt $script:FollowMaxSec)){
