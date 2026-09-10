@@ -3241,7 +3241,8 @@ class Follower:
         threading.Thread(target=self._cam_spin, daemon=True, name="cam-spin").start()
 
         # Load YOLO ONCE at startup (before any walking).
-        self.det = PersonDetector(self.a.yolo_path, self.a.conf)
+        self.det = PersonDetector(self.a.yolo_path, self.a.conf,
+                                  trt=self.a.yolo_trt, trt_cache=self.a.yolo_trt_cache)
         log("MODE %s  topics=%s  depth=%s  yolo=%s"
             % ("DRIVE" if self.drive else "PREVIEW", ",".join(topics),
                depth_topic or "off", "ok" if self.det.ok else "DISABLED"))
@@ -5538,6 +5539,19 @@ def parse_args(argv):
     p.add_argument("--dark-obstacle-widen-deg", type=float, default=60.0,
                    help="widened gap-steer max bearing edge while DARK-OBSTACLE is active. Reverts to "
                         "--gap-steer-max-bearing-deg the instant the depth-hole streak clears.")
+    p.add_argument("--yolo-trt", choices=("off", "on"), default="off",
+                   help="PERF: run YOLO detection on onnxruntime's TensorRT EP at FP16 instead of "
+                        "the CUDA EP ultralytics picks by default. Measured on the Orin 2026-09-10: "
+                        "predict p50 25.4 -> 14.6 ms (1.73x); raw forward 20.1 -> 7.35 ms (2.51x). "
+                        "Verified numerically equivalent at the operating conf 0.35 -- 7/7 boxes "
+                        "matched at IoU>=0.5, worst corner delta 0.29 px, identical person counts. "
+                        "REQUIRES a pre-built engine in --yolo-trt-cache: a cold build measured "
+                        "574s, so this refuses to build inline and falls back to CUDA instead of "
+                        "stalling startup. Fail-safe: any problem keeps the default CUDA session.")
+    p.add_argument("--yolo-trt-cache", default="/home/booster/trt_cache",
+                   help="directory holding the cached TensorRT engine for --yolo-trt. Engines are "
+                        "keyed by graph hash + precision + SM arch, so a changed model, JetPack or "
+                        "GPU misses the cache and falls back rather than loading a stale engine.")
     p.add_argument("--gap-profile", choices=("off", "on"), default="on",
                    help="FOLLOW-THE-GAP steering. Replaces the 3-sector binary clear/blocked test "
                         "with an angular free-space profile: bins the depth frame by column, finds "

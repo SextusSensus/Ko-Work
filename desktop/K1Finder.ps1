@@ -34,7 +34,14 @@ $script:RerunViewerExe = $null                                      # laptop vie
 $script:RerunWebViewerVer = '0.23.1'                                # MUST match the robot's pinned rerun-sdk (the .rrd format is version-locked)
 $script:RerunWebViewer    = ('https://app.rerun.io/version/{0}/' -f $script:RerunWebViewerVer)  # no-install 'Open .rrd' fallback: loads the .rrd LOCALLY in-browser (nothing uploaded), so SmartScreen/Defender have nothing to block
 $K1_SSH_USER      = 'booster'
-$K1_SSH_PASS      = '123456'
+# SECURITY: the robot SSH password is NEVER stored in this repo. It used to be a literal here, which
+# published it to git history and to the GitHub remote -- removing it from the tree does NOT unpublish
+# it, so the password MUST still be rotated on the robot (docs/SECURITY_CREDENTIALS.md).
+# It now comes from the K1PW environment variable, and ONLY from there.
+# When K1PW is not set the app still launches (preview mode / UI is usable); SSH-dependent actions
+# will fail with an authentication error at call time rather than a startup refusal. Set K1PW before
+# an SSH action:  $env:K1PW = '<password>'  (this session)  or  setx K1PW "<password>"  (persist).
+$K1_SSH_PASS      = $env:K1PW
 $K1_LOCO_IFACE    = '127.0.0.1'
 $SCRIPT_DIR       = if ($PSScriptRoot) { $PSScriptRoot }
                     elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -64,21 +71,24 @@ $script:RobotIP  = $K1_DEFAULT_IP
 $script:SshUser  = $K1_SSH_USER
 $script:SshPass  = $K1_SSH_PASS
 
-# ---- SSH password via askpass (non-interactive) -----------------------------
-$ASKPASS = Join-Path $WORK 'askpass.cmd'
-function Update-Askpass {
-    Set-Content -Path $ASKPASS -Value "@echo off`r`necho $($script:SshPass)" -Encoding ASCII
-}
-Update-Askpass
-$env:SSH_ASKPASS = $ASKPASS
-$env:SSH_ASKPASS_REQUIRE = 'force'
+# ---- SSH auth: KEY AUTH ONLY (2026-09-09) ------------------------------------
+# Password machinery removed at operator request -- "no need for password should just be able to
+# click start". SSH uses whatever the user's OpenSSH resolves: ~/.ssh/id_ed25519, id_rsa, agent
+# keys, ~/.ssh/config Host aliases -- the normal Windows-OpenSSH stack. BatchMode=yes below fails
+# fast on missing auth instead of hanging on a prompt inside a scp/ssh call the UI is waiting on.
+#
+# The $K1_SSH_PASS / $script:SshPass variables are kept (may be empty) because a few child scripts
+# still take a -Pass parameter; passing an empty string means those children also skip password
+# machinery and use whatever SSH resolves. No askpass helper is written and no SSH_ASKPASS is set,
+# so ssh never gets asked for a password even if K1PW happens to be in the environment.
 $env:DISPLAY = 'localhost:0.0'
+$SSH_OPTS = @('-o','StrictHostKeyChecking=accept-new','-o','ConnectTimeout=8',
+              '-o','ServerAliveInterval=5','-o','BatchMode=yes')
 
-$SSH_OPTS = @('-o','StrictHostKeyChecking=accept-new','-o','PreferredAuthentications=password',
-              '-o','PubkeyAuthentication=no','-o','ConnectTimeout=8','-o','ServerAliveInterval=5')
-
+# String form of $SSH_OPTS for the call sites that build a command line instead of an argv array.
+# Kept in sync with $SSH_OPTS above.
 function Get-SshOptString {
-    '-o StrictHostKeyChecking=accept-new -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=8 -o ServerAliveInterval=5'
+    '-o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o ServerAliveInterval=5 -o BatchMode=yes'
 }
 
 # Start a process and RELIABLY return its exit code. GOTCHA: Start-Process -PassThru leaves
@@ -113,7 +123,8 @@ function Deploy-RobotFiles {
 }
 
 # Deploy person-follow helpers (python + bridge source + launcher). run_follow.sh
-# compiles loco_follow_bridge from source on the robot on first DRIVE (verified recipe).
+# compiles the loco bridge from source on the robot on first DRIVE, through the shared
+# bridge_build.sh (verified recipe; ROS transport preferred -- see that file's P1.9 note).
 # follow_person_k1.py = lock-and-handoff: marker is a one-time lock onto the person, then YOLO-follows that person.
 function Deploy-FollowFiles {
     param([string]$ip)
@@ -122,7 +133,10 @@ function Deploy-FollowFiles {
     # failed push must abort the launch (fail-closed) with an HONEST reason. Invoke-Proc gives a
     # reliable exit code (Start-Process -PassThru does not -- see helper). A non-zero here means
     # the robot refused/timed-out the copy, NOT that a local file is missing -- name which case.
-    foreach ($f in @('follow_person_k1.py','common.py','bridge.py','tracking.py','identity.py','rerun_sink.py','perception.py','triggers.py','calibration.py','map_change.py','loco_follow_bridge.cpp','loco_follow_bridge_ros.cpp','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
+    # bridge_build.sh is hard-required too (P1.9): it is the ONE copy of the bridge build recipe and
+    # every launcher sources it and refuses to start without it (exit 3), so a failed push must abort
+    # the launch HERE rather than surface later on the robot as "COMPILE FAILED".
+    foreach ($f in @('follow_person_k1.py','common.py','bridge.py','tracking.py','identity.py','rerun_sink.py','perception.py','triggers.py','calibration.py','map_change.py','loco_follow_bridge.cpp','loco_follow_bridge_ros.cpp','bridge_build.sh','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
         $src = Join-Path $ROBOT_DIR $f
         if (-not (Test-Path $src)) { $script:DeployErr = ("local helper file not found: {0}" -f $src); return $false }
         $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f)))
@@ -868,7 +882,7 @@ $trackScan=New-Object System.Windows.Forms.ComboBox; $trackScan.DropDownStyle='D
 # Also excludes the floor by GEOMETRY, so the band cap that caused the blindness is not needed.
 # Dimensions come from the robot's own URDF: 0.457 m lateral, 0.192 m deep, hands at 0.67 m.
 $lblHit=New-Object System.Windows.Forms.Label; $lblHit.Text='Hit box'; $lblHit.AutoSize=$true; $lblHit.Location='716,156'; $grpTrackCtl.Controls.Add($lblHit)
-$trackHitBox=New-Object System.Windows.Forms.ComboBox; $trackHitBox.DropDownStyle='DropDownList'; $trackHitBox.Size='90,24'; $trackHitBox.Location='778,152'; [void]$trackHitBox.Items.AddRange(@('frac','footprint')); $trackHitBox.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackHitBox)
+$trackHitBox=New-Object System.Windows.Forms.ComboBox; $trackHitBox.DropDownStyle='DropDownList'; $trackHitBox.Size='90,24'; $trackHitBox.Location='778,152'; [void]$trackHitBox.Items.AddRange(@('frac','footprint')); $trackHitBox.SelectedIndex=1; $grpTrackCtl.Controls.Add($trackHitBox)   # DEFAULT footprint: required for Local map + Map assist to engage (map-assist is footprint-gated)
 
 # ESCAPE (--body-scan / --reverse-when-stuck). What to do when the brake has stopped the robot and
 # NEITHER gap steer nor the head scan can find a way past. That is not stubbornness: from 0.35 m off
@@ -904,12 +918,12 @@ $trackFloor=New-Object System.Windows.Forms.CheckBox; $trackFloor.Text='Floor re
 # view has lost, never release the brake for something it can see. Needs --odom-topic (added below).
 # The three 2026-09-05 audit defects (blind-frame release, cell-key sign, operator-wake writes) are
 # fixed and gated. Default OFF; footprint hit box only (its height model is what places cells).
-$trackLocalMap=New-Object System.Windows.Forms.CheckBox; $trackLocalMap.Text='Local map'; $trackLocalMap.AutoSize=$true; $trackLocalMap.Location='830,72'; $trackLocalMap.ForeColor=$accent; $trackLocalMap.Font=$fontBold; $grpTrackCtl.Controls.Add($trackLocalMap)
+$trackLocalMap=New-Object System.Windows.Forms.CheckBox; $trackLocalMap.Text='Local map'; $trackLocalMap.AutoSize=$true; $trackLocalMap.Location='830,72'; $trackLocalMap.ForeColor=$accent; $trackLocalMap.Font=$fontBold; $trackLocalMap.Checked=$true; $grpTrackCtl.Controls.Add($trackLocalMap)
 # MAP ASSIST (--map-assist): the pre-built Aurora 3D map REINFORCES a live obstacle the local
 # avoidance already sees at the same range; a map obstacle the live view does not confirm is
 # discarded, and it never releases the brake. Pose comes from the robot's OWN odometry, not the
 # Aurora. Assistive, not primary. Footprint hit box only; default OFF, byte-identical when off.
-$trackMapAssist=New-Object System.Windows.Forms.CheckBox; $trackMapAssist.Text='Map assist'; $trackMapAssist.AutoSize=$true; $trackMapAssist.Location='924,72'; $trackMapAssist.ForeColor=$accent; $trackMapAssist.Font=$fontBold; $grpTrackCtl.Controls.Add($trackMapAssist)
+$trackMapAssist=New-Object System.Windows.Forms.CheckBox; $trackMapAssist.Text='Map assist'; $trackMapAssist.AutoSize=$true; $trackMapAssist.Location='924,72'; $trackMapAssist.ForeColor=$accent; $trackMapAssist.Font=$fontBold; $trackMapAssist.Checked=$true; $grpTrackCtl.Controls.Add($trackMapAssist)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
 $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
@@ -937,6 +951,31 @@ $reidBadge=New-Object System.Windows.Forms.Label; $reidBadge.Text='REID: --'; $r
 # Rerun (rerun.io) recording toggle -> --rerun (Phase 3). Default OFF and byte-identical to today
 # when off. Records a scrubbable .rrd on the robot; pull+open it with the 'Open .rrd' button below.
 $trackRerun=New-Object System.Windows.Forms.CheckBox; $trackRerun.Text='Rerun'; $trackRerun.AutoSize=$true; $trackRerun.Location='645,156'; $trackRerun.ForeColor=$accent; $trackRerun.Font=$fontBold; $grpTrackCtl.Controls.Add($trackRerun)
+# CONTROLLER RUN (2026-09-10 operator request): collect a full data bundle while driving the robot
+# MANUALLY on the Booster gamepad, with no autonomous following at all.
+#
+# HOW IT WORKS. Forces the node into --preview and adds --profile capture. Preview never opens the
+# bridge, so the node CANNOT command velocity and the gamepad's own firmware path is untouched -- the
+# operator drives, the node only watches. --profile capture turns on the recording bundle (rerun RGB +
+# depth + scalars + P6.1 intrinsics + /odometer_state) that demo/field deliberately leave off for
+# loop cost. We keep run_follow.sh (not run_follow_capture.sh) so --stream survives and the app still
+# shows live video while you drive; run_follow_capture.sh omits --stream and the preview would go dark.
+#
+# WHY THIS BEATS A BLIND RECORDING. Detection, tracking and re-ID all still run in preview, so the
+# .rrd carries per-frame person boxes, track ids and depth alongside the images -- labelled data for
+# free, instead of raw video to annotate later.
+#
+# SAFETY: this OVERRIDES the drive button (see the $mode line at launch). Ticked, the follow cannot be
+# commanded to drive under any circumstance, which is what makes it safe to walk the robot by hand.
+$trackCtrlRun=New-Object System.Windows.Forms.CheckBox; $trackCtrlRun.Text='Controller run (no follow)'; $trackCtrlRun.AutoSize=$true; $trackCtrlRun.Location='645,176'; $trackCtrlRun.ForeColor=$amber; $trackCtrlRun.Font=$fontBold; $grpTrackCtl.Controls.Add($trackCtrlRun)
+$trackCtrlRun.Add_CheckedChanged({
+    if($trackCtrlRun.Checked){
+        $trackRerun.Checked = $true    # the recording bundle IS the point of this mode
+        Add-LogTrack 'CONTROLLER RUN armed: forces --preview + --profile capture. The follow will NOT drive -- use the Booster gamepad. Recording RGB+depth+odom.' $amber
+    } else {
+        Add-LogTrack 'Controller run disarmed -- normal follow behaviour restored.' $accent
+    }
+})
 $chkGesture.Add_CheckedChanged({ if($chkGesture.Checked -and $chkAB.Checked){ $chkAB.Checked=$false } })
 $chkAB.Add_CheckedChanged({ if($chkAB.Checked -and $chkGesture.Checked){ $chkGesture.Checked=$false } })
 $chkVoice.Add_CheckedChanged({ if($chkVoice.Checked){ Start-Voice } else { Stop-Voice } })
@@ -1306,12 +1345,22 @@ function Get-TrackExtraArgs {
         $a += '--odom-topic /odometer_state'
     }
     # Map assist: the pre-built Aurora 3D map reinforces a live obstacle the local avoidance already
-    # sees (confirm-only, never brakes alone, never releases). Pose from the robot's own odometry.
-    # Footprint-gated like Local map. Points at the offload tool's latest 3D layer on the robot.
+    # sees (confirm-only, never brakes alone, never releases). Footprint-gated like Local map.
+    # POSE comes from the Aurora odom-floor bridge on /aurora_odom (a drift-free MAP-frame pose), NOT
+    # the robot's own /odometer_state -- the map points live in the .vslam/.ply map frame, so the pose
+    # must be in that frame or every confirmation is placed at the wrong bearing. The .ply here is the
+    # SAME drive capture the bridge relocalizes in (drive_20260908_101056 -- 2026-09-08 re-map, 10251
+    # points in the map-assist height band vs 1868 in the old 172257 map), so the frames match. KEEP THIS
+    # .ply AND start_bridge.sh's .vslam ON THE SAME drive_* timestamp or the confirm-gate compares a
+    # live obstacle against a mis-placed map and silently never confirms.
+    # REQUIRES the bridge running on the robot (aurora_odom_bridge.py, bootstrapped); if it is not,
+    # /aurora_odom is silent and map-assist (and localmap, which shares --odom-topic) fail closed to
+    # live-depth -- safe, just inert. This --odom-topic is emitted after the Local-map one so argparse
+    # keeps /aurora_odom; do NOT also enable Rerun (it re-emits /odometer_state and would win).
     if($trackMapAssist -and $trackMapAssist.Checked -and
        $trackHitBox -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
-        $a += '--map-assist /home/booster/localmap/latest_localmap_3d.ply'
-        $a += '--odom-topic /odometer_state'
+        $a += '--map-assist /home/booster/localmap/drive_20260908_104304.ply'
+        $a += '--odom-topic /aurora_odom'
     }
     # Hit box: select depth by the robot's real extent (width, depth, height) instead of an image
     # fraction. Sends the URDF-derived dimensions explicitly so the geometry is visible in the log.
@@ -1374,6 +1423,16 @@ function Get-TrackExtraArgs {
     # model is fast (ONNX/TRT) AND GESTURE-MS p99 in follow is measured safe. Use voice/button WAIT instead.
     if($lt -ne 'aruco'){ $a += ('--lock-trigger {0} --gesture-model {1} --gesture-debug' -f $lt,$script:GestureModel) }
     $a += '--commands'   # watched-file command channel (/tmp/k1_cmd) for the Cmd buttons + voice
+    # FINAL --odom-topic precedence (fixes an old-vs-new-parameter conflict): map-assist needs the
+    # bridge's MAP-frame pose on /aurora_odom, but Local map / Escape / Rerun all emit
+    # --odom-topic /odometer_state and argparse keeps the LAST one -- with Rerun on, its line (above)
+    # would silently pin map-assist to the ROBOT-frame topic, so it confirms against a mis-placed map
+    # and does nothing. Re-emit /aurora_odom here, after every other block, so map-assist is never
+    # overridden. Footprint-gated to match the map-assist block; absent (others win) when map-assist off.
+    if($trackMapAssist -and $trackMapAssist.Checked -and
+       $trackHitBox -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
+        $a += '--odom-topic /aurora_odom'
+    }
     return ($a -join ' ')
 }
 
@@ -1623,8 +1682,14 @@ function Start-Tracker([bool]$drive){
     try{ $kp=Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip),'pkill -f follow_person_k1.py')) -NoNewWindow -PassThru; $null=$kp.WaitForExit(6000) }catch{}
     $trackSync.Stop=$false; $trackSync.Done=$false; $trackSync.Jpeg=$null; $trackSync.Seq=0; $trackSync.Frames=0; $trackSync.Err=''
     $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1; $trackSync.Lock=0
-    $mode = if($drive){'drive'}else{'preview'}
+    # CONTROLLER RUN OVERRIDE: a ticked 'Controller run' forces preview even if the operator hit the
+    # drive button. Preview never opens the bridge, so the node cannot command velocity -- that is the
+    # safety property that makes it OK to drive the robot by hand while it records.
+    $ctrlRun = ($trackCtrlRun -ne $null -and $trackCtrlRun.Checked)
+    $mode = if($drive -and -not $ctrlRun){'drive'}else{'preview'}
+    if($ctrlRun -and $drive){ Add-LogTrack 'CONTROLLER RUN: drive request overridden to --preview (node will not command velocity). Drive with the gamepad.' $amber }
     $standoff=Get-TrackStandoff; $vxmax=Get-TrackVxMax; $extra=Get-TrackExtraArgs
+    if($ctrlRun){ $extra = "$extra --profile capture" }   # RGB+depth+scalars+intrinsics+odom bundle
     $remote="bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb --stream --standoff-m $standoff --vx-max $vxmax $extra"
     Add-LogTrack ("launch: " + $remote) $accent   # echo so the operator can verify --lock-trigger / --gesture-* flags
     # NO -tt (PTY would corrupt the binary JPEG stream). ServerAliveCountMax=1 -> a dropped

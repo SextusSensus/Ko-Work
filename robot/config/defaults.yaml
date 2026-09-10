@@ -75,7 +75,7 @@ fault_stand_k: 5
 gallery_size: 8
 gate: 0.85
 gesture_debug: false
-gesture_every_n: 5
+gesture_every_n: 0
 gesture_hold: 6
 gesture_hold_floor: 3
 gesture_hold_s: 0.9
@@ -132,6 +132,8 @@ dark_obstacle_frames: 10
 dark_obstacle_widen_deg: 60.0
 rerun_never_shed: "on"
 gap_steer_commit_s: 2.0
+yolo_trt: "off"
+yolo_trt_cache: '/home/booster/trt_cache'
 gap_profile: "on"
 gap_profile_bins: 48
 gap_max_detour_deg: 35.0
