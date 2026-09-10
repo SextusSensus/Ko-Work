@@ -2251,6 +2251,9 @@ class Follower:
             self._gap_horizon_logged = True
             _bp = float(self.a.obstacle_brake_stop)
             _trig = _bp + (h - _bp) * max(0.0, min(1.0, self.a.gap_steer_trigger_frac))
+            # The EFFECTIVE engage point: _gap_steer_bias caps it just under brake-start, because
+            # the corridor cannot report more (see the clear-vote note there).
+            _trig = min(_trig, float(self.a.obstacle_brake_start) - 1e-3)
             log("GAP-HORIZON %.3fm (frac %.2f) -> gap steer engages at %.3fm with %.3fm of runway "
                 "to full stop; brake zone %.2f->%.2f UNTOUCHED"
                 % (h, self.a.gap_steer_trigger_frac, _trig, _trig - _bp,
@@ -2302,6 +2305,9 @@ class Follower:
         measured stays NOT passable -- 'I cannot see' is never 'nothing is there', the same
         invariant _sector_clearances holds. Returning None means boxed-in, and the caller must
         fall back to letting the brake stop the robot rather than guessing a direction."""
+        # Bearing (rad) of the widest opening the filters threw away, for the caller's CRITICAL
+        # turn when this returns None. Reset every call so a stale frame's answer is never used.
+        self._gap_widest_rej = None
         if self.node is None:
             return None
         d = self.node.latest_depth()
@@ -2399,6 +2405,10 @@ class Follower:
             _widest = 0.0            # widest opening the width filter threw away
             _n_detour = 0
             _least_detour = None     # closest-to-the-operator gap the detour cap threw away
+            # ...except this one, which the caller DOES read (as _gap_widest_rej, only when this
+            # returns None): the widest run EITHER filter threw away, as (width_m, centre bearing).
+            # A run open at the FOV edge competes on its measured width, which is a lower bound.
+            _wr = None
             for (i0, i1) in runs:
                 # Angular extent measured at the run's OUTER edges, not bin centres, so a
                 # single-bin gap still gets its true angular width.
@@ -2413,6 +2423,8 @@ class Follower:
                 if width_m < need_w:
                     _n_narrow += 1
                     _widest = max(_widest, width_m)
+                    if _wr is None or width_m > _wr[0]:
+                        _wr = (width_m, 0.5 * (a0 + a1))
                     continue                        # too narrow to fit -- never steer into it
                 cbear = 0.5 * (a0 + a1)
                 detour = abs(cbear - tb)
@@ -2426,15 +2438,17 @@ class Follower:
                 # person who is 6 deg ahead is not a route TO them, it is a route away, and the
                 # operator walks out of frame while the robot detours.
                 # A gap only counts if it is plausibly on the way to the operator. When nothing
-                # is, we return None and let the caller fall through to the sector logic and
-                # ultimately the brake -- stopping is the honest answer, not steering somewhere
-                # irrelevant because it happened to be wide.
+                # is, we return None and the caller stands down (no sector fallback with the
+                # profile on -- see _gap_steer_bias) and the brake stops us -- stopping is the
+                # honest answer, not steering somewhere irrelevant because it happened to be wide.
                 _cap_deg = (self.a.gap_max_detour_deg if max_detour_deg is None
                             else max_detour_deg)
                 if detour > math.radians(max(0.0, _cap_deg)):
                     _n_detour += 1
                     if _least_detour is None or detour < _least_detour:
                         _least_detour = detour
+                    if _wr is None or width_m > _wr[0]:
+                        _wr = (width_m, cbear)
                     continue
                 # Least detour off the follow line wins; width breaks ties so that between two
                 # equally-convenient gaps the robot takes the roomier one.
@@ -2446,6 +2460,7 @@ class Follower:
                 # need_w (footprint + corridor_margin_m + gap_fit_margin_m) is the binding
                 # constraint; off-the-line says gap_max_detour_deg is. They call for different
                 # knobs, so never report a bare "no gap".
+                self._gap_widest_rej = None if _wr is None else _wr[1]
                 self._gap_reject("%d opening(s), none usable: %d too narrow (widest %.2fm, "
                                  "need %.2fm), %d off the follow line (least detour %s, cap "
                                  "%.0fdeg, operator %+.0fdeg)"
@@ -2460,7 +2475,7 @@ class Follower:
         except Exception as e:  # noqa: BLE001 -- a steering hint must never break the loop
             if (time.monotonic() - getattr(self, "_gapprof_err_t", 0.0)) > 10.0:
                 self._gapprof_err_t = time.monotonic()
-                log("GAP-PROFILE-ERR %s (falling back to sector logic)" % e)
+                log("GAP-PROFILE-ERR %s (treated as no usable gap this frame)" % e)
             return None
 
     # ---- GAP STEERING (stage 5). Routes AROUND an obstacle instead of only stopping for it.
@@ -2765,6 +2780,16 @@ class Follower:
         bp = self.a.obstacle_brake_stop
         # Engage part-way down the grading zone, not at its very top.
         trig = bp + (bs - bp) * max(0.0, min(1.0, self.a.gap_steer_trigger_frac))
+        # THE CLEAR VOTE IS CLEAR (gap-01, 2026-09-10). The corridor never reports more than
+        # obstacle_brake_start: _nearest_blob drops returns beyond it (the no-scipy fallback
+        # aside) and a clear frame votes exactly it. Since 6b0fde7 trig is 0.70 + 0.675*0.80 =
+        # 1.24 m -- ABOVE that ceiling -- so `clr_centre >= trig` could never release: 0 of n=412
+        # and 0 of n=1117 logged clearances reached 1.24 (max 1.15), the clear vote is ~20% of
+        # tracked ticks, and replayed depth gave nonzero gap yaw on 25-34% of clear-corridor
+        # frames. Capping just under brake-start releases on the clear vote, so gap steer engages
+        # only on a REAL detection -- any real detection, still earlier than the legacy 1.06 m.
+        # A no-op whenever trig is already below the ceiling (e.g. the legacy coupled horizon).
+        trig = min(trig, float(self.a.obstacle_brake_start) - 1e-3)
         # THE OPERATOR IS NOT AN OBSTACLE (field fix 2026-09-03, operator report).
         # _obstacle_vx_cap() already refuses to brake when the nearest corridor return IS the
         # followed target -- the person is in the forward corridor BY DEFINITION. Gap steer was
@@ -2824,9 +2849,9 @@ class Follower:
         # FOLLOW-THE-GAP PATH (2026-09-09). Preferred over the 3-sector binary test: it can see
         # a gap that straddles sectors, it validates the opening against the robot's own swept
         # width before committing, and it steers PROPORTIONALLY to how far off the gap is
-        # instead of applying a fixed full-rate bias for every geometry. Falls through to the
-        # sector logic below whenever it cannot find a passable gap, so the old behaviour is
-        # the floor, never the ceiling.
+        # instead of applying a fixed full-rate bias for every geometry. With the profile on it
+        # no longer falls through to the sector logic when it finds no usable gap (gap-02, see
+        # below); the sectors steer only with --gap-profile off.
         # CRITICAL BLOCK (2026-09-10 field fix). Measured: ~25 consecutive samples at
         # CLEARANCE 0.75-0.80 m / vx-cap 0.02-0.06 -- creeping into an obstacle while every
         # suppression guard independently threw the detour away (11 of 15 rejects were "off the
@@ -2914,6 +2939,52 @@ class Follower:
                         "(operator %+.0fdeg)"
                         % (math.degrees(_gb), _gw, _gr, _cmd, math.degrees(bearing)))
                 return _cmd
+            # NO USABLE GAP -> NO SECTOR SLAM (gap-02, 2026-09-10). Falling through to the sectors
+            # re-asked the question the profile exists to replace: a fixed +/-gap_steer_rate bias
+            # toward any third whose percentile reads clear, with NO width test -- i.e. toward the
+            # very openings the width filter had just rejected. Run 045306Z: 21 sector slams, 12
+            # of them pointed AWAY from the widest rejected opening. With the profile on, "no
+            # usable gap" now means no yaw, and the brake governs vx. Two exceptions:
+            # (1) a fresh head-scan hint, on its EXACT old gate (both sectors blocked), so
+            #     --head-scan on is not silently disarmed. The sectors only gate it; they no
+            #     longer pick a side.
+            if (self.a.head_scan == "on" and self._scan_hint != 0
+                    and (time.monotonic() - self._scan_hint_t) <= max(1.0, self.a.head_scan_hint_ttl_s)):
+                s = self._sector_clearances()
+                if not ((s["L"] is not None and s["L"] >= bs) or (s["R"] is not None and s["R"] >= bs)):
+                    self._gap_dir = self._scan_hint
+                    self._gap_mag = self.a.gap_steer_rate   # scan hint is a full-rate commitment
+                    return self.a.gap_steer_rate * (1.0 if self._scan_hint > 0 else -1.0)
+            # (2) CRITICAL (clearance <= gap_critical_m), where stopping dead against the obstacle
+            #     is the worse outcome: rotate toward the widest opening the profile rejected (too
+            #     narrow or off the follow line), proportionally and at no more than HALF
+            #     gap_steer_rate. Same law as the profile path (vyaw = -k_yaw*bearing; bearing
+            #     POSITIVE = RIGHT, vyaw POSITIVE = LEFT), same deadband, same operator-edge guard.
+            #     No opening at all -> nothing to rotate toward -> 0.0, never a guess.
+            _wb = getattr(self, "_gap_widest_rej", None)
+            if (_critical and _wb is not None
+                    and abs(_wb) > math.radians(max(0.0, self.a.gap_steer_deadband_deg))):
+                _cap = 0.5 * self.a.gap_steer_rate
+                _cmd = max(-_cap, min(_cap, -self.a.k_yaw * _wb))
+                _edge_deg3 = self.a.gap_steer_max_bearing_deg
+                if getattr(self, "_hole_streak", 0) >= max(1, int(self.a.dark_obstacle_frames)):
+                    _edge_deg3 = max(_edge_deg3, self.a.dark_obstacle_widen_deg)
+                _want_left3 = _cmd > 0.0
+                if abs(bearing) >= math.radians(_edge_deg3) and ((bearing > 0.0) == _want_left3):
+                    return 0.0
+                _new_dir3 = 1 if _want_left3 else -1
+                if self._gap_dir != _new_dir3:
+                    self._gap_dir = _new_dir3
+                    self._gap_dir_t = time.monotonic()
+                self._gap_mag = abs(_cmd)      # so the hold replays THIS, not the rail
+                if (time.monotonic() - getattr(self, "_gapcturn_log_t", 0.0)) >= 1.0:
+                    self._gapcturn_log_t = time.monotonic()
+                    log("GAP-CRITICAL-TURN no usable gap; widest rejected opening %+.0fdeg -> yaw "
+                        "%+.2f rad/s (cap %.2f = half gap-steer-rate; vx stays the brake's)"
+                        % (math.degrees(_wb), _cmd, _cap))
+                return _cmd
+            self._gap_dir = 0                      # no usable gap -> the brake handles it
+            return 0.0
         s = self._sector_clearances()
         left_ok = s["L"] is not None and s["L"] >= bs
         right_ok = s["R"] is not None and s["R"] >= bs
@@ -5828,8 +5899,11 @@ def parse_args(argv):
                         "survivor. Fixes three field failures the sector test could not: a gap "
                         "straddling two sectors reads blocked; one near object masks open space "
                         "across the rest of its third; and 'clear at range' was never checked "
-                        "against whether the robot actually FITS. Falls back to the sector logic "
-                        "whenever no passable gap is found, so the old behaviour is the floor.")
+                        "against whether the robot actually FITS. When no usable gap is found it "
+                        "does NOT fall back to the sector logic (full-rate, no width test): yaw "
+                        "stays 0 and the brake governs vx, except when critically blocked "
+                        "(--gap-critical-m) -- then it turns toward the widest rejected opening "
+                        "at no more than half --gap-steer-rate.")
     p.add_argument("--gap-fit-margin-m", type=float, default=0.12,
                    help="EXTRA clearance a --gap-profile opening must have beyond the robot's swept "
                         "width + --corridor-margin-m before it is accepted. Its own knob on purpose: "
@@ -5877,7 +5951,10 @@ def parse_args(argv):
                         "NOT changed). The engage point is this interpolated down by "
                         "--gap-steer-trigger-frac, so 1.375 with frac 0.80 engages at 1.24 m "
                         "with 0.54 m of runway -- 50%% more than the 0.36 m the old "
-                        "brake-coupled rule allowed (operator request 2026-09-10). The frac "
+                        "brake-coupled rule allowed (operator request 2026-09-10). In effect it "
+                        "engages on ANY real corridor detection: the engage point is capped just "
+                        "under --obstacle-brake-start, because the corridor never reports more "
+                        "(a clear frame votes exactly that value). The frac "
                         "is clamped to 1.0, so the old rule could not exceed brake_start "
                         "1.15 m at all, and raising brake_start is refused because at "
                         "band-bot 0.75 the floor returns from 1.98 m and would be braked on. "

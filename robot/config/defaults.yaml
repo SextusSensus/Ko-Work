@@ -163,6 +163,9 @@ gap_steer_deadband_deg: 8.0
 # move with the trigger -- at the engage range the centre has to read BLOCKED, or the profile calls
 # forward passable and gap_steer_deadband_deg stands the real detour down.
 # Set <= 0 to restore the legacy brake-coupled behaviour exactly.
+# gap-01 (2026-09-10): the node caps that 1.24 m engage point just under obstacle_brake_start, because
+# the corridor never reports more (a clear frame votes exactly 1.15) -- 1.24 was unreachable, so a
+# clear corridor never released gap steer. It now engages on any real corridor detection.
 gap_horizon_m: 1.375
 # CRITICAL BLOCK (2026-09-10). At or below this clearance the robot is inside the stop band's
 # shoulder (brake_stop 0.70) with forward motion already near zero, so suppression flips from
