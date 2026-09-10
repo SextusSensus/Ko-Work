@@ -2871,8 +2871,29 @@ class Follower:
                 # Steer toward the gap centre proportionally: error is how far the gap sits off
                 # the current heading. Scaled by --gap-steer-rate and clamped to it, so this can
                 # never command a harder yaw than the fixed-rate path it replaces.
-                _err = _gb - 0.0                    # gap bearing is already relative to body-forward
-                _cmd = self.a.gap_steer_rate * max(-1.0, min(1.0, _err / max(1e-3, math.radians(30.0))))
+                # SIGN (2026-09-10 field fix -- this was INVERTED and is the reason gap steer
+                # never routed around anything). Conventions, all from the code:
+                #   bearing_from_x = atan2(cx - w/2, f)   -> POSITIVE means to the RIGHT
+                #   _gap_profile's cbear uses the same construction -> POSITIVE gap = to the RIGHT
+                #   this method's docstring: POSITIVE vyaw turns LEFT
+                # so facing a heading at bearing t requires vyaw = -k*t, which is exactly the
+                # tracker's own law (vyaw = -k_yaw*bearing; operator right -> negative -> turn
+                # right). The old form was +rate*(_gb/30deg), i.e. a gap on the LEFT commanded a
+                # RIGHT turn. Measured over run 2: 9 of 9 non-deadband decisions steered AWAY from
+                # the chosen gap (gap -23deg -> yaw -0.19, -20 -> -0.16, -38 -> -0.24, ...), and
+                # the aggregate GAP-STEER count was L=9/R=34 while the gaps themselves were 8 LEFT
+                # / 1 RIGHT. The sector fallback was always correct (+rate when want_left), which
+                # is why THAT path occasionally worked and this one never did.
+                #
+                # GAIN: reuse k_yaw rather than the old magic 30deg normaliser, so gap steer and
+                # the tracker are the SAME control law applied to different headings -- they then
+                # compose instead of each having its own gain, and saturation is automatic and
+                # identical. Numerically near-identical to the old slope (the 30deg normaliser was
+                # close to the 36.0deg saturation angle vyaw_max/k_yaw), so this changes the sign
+                # error, not the aggressiveness: at _gb 19deg both give ~0.15, and both rail at
+                # gap_steer_rate.
+                _cmd = -self.a.k_yaw * _gb
+                _cmd = max(-self.a.gap_steer_rate, min(self.a.gap_steer_rate, _cmd))
                 # Same operator-in-frame guard the fixed path uses: never push the operator out.
                 _edge_deg2 = self.a.gap_steer_max_bearing_deg
                 if getattr(self, "_hole_streak", 0) >= max(1, int(self.a.dark_obstacle_frames)):
