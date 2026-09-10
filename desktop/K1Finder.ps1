@@ -278,11 +278,13 @@ function Ensure-GestureModel([string]$ip){
 # Ensure-GestureModel + Get-TrackExtraArgs so both the staging check and the launch flag see the choice.
 function Resolve-GestureModel([string]$ip){
     $engine = '/home/booster/yolo11n-pose.engine'
-    if(Test-RobotFile $ip $engine){
+    $est = Get-RobotFileState $ip $engine
+    if($est -eq 'PRESENT'){
         $script:GestureModel = $engine
         Add-LogTrack 'Gesture model: TRT engine (yolo11n-pose.engine, FP16 ~2x faster pose).' $green
     } else {
         $script:GestureModel = '/home/booster/yolo11n-pose.onnx'
+        if($est -eq 'UNKNOWN'){ Add-LogTrack 'Could not check the robot for the TRT pose engine -- using yolo11n-pose.onnx (about 2x slower pose).' $amber }
     }
 }
 
@@ -533,7 +535,7 @@ $script:HbProc=$null   # Deadman-HB relay ssh process (P2 #12); alive only while
 $script:trackMs=$null; $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1
 $script:TrackStart=[datetime]::MinValue
 $script:TrackRerunOn=$false      # P6.2b: did the current/last Tracker session record a .rrd? -> post-run offload
-$script:TrackMaxSec=1260         # UI-side hard session watchdog BACKSTOP; node --max-seconds 1200 stops first (graceful settle), this only fires if the node hangs. MUST STAY ABOVE the node's --max-seconds or the UI kills the session before the node can settle gracefully.
+$script:TrackMaxSec=2060         # UI-side hard session watchdog BACKSTOP; node --max-seconds 2000 (run_follow.sh appends it) stops first (graceful settle), this only fires if the node hangs. MUST STAY ABOVE the node's --max-seconds or the UI kills the session before the node can settle gracefully.
 $script:TrackToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 $ctrlSync = [hashtable]::Synchronized(@{ Log=(New-Object System.Collections.Queue); Stop=$false })
 $script:LiveProc=$null; $script:LivePS=$null; $script:LiveRS=$null; $script:LiveOn=$false
@@ -940,7 +942,9 @@ $trackLocalMap=New-Object System.Windows.Forms.CheckBox; $trackLocalMap.Text='Lo
 # avoidance already sees at the same range; a map obstacle the live view does not confirm is
 # discarded, and it never releases the brake. Pose comes from the robot's OWN odometry, not the
 # Aurora. Assistive, not primary. Footprint hit box only; default OFF, byte-identical when off.
-$trackMapAssist=New-Object System.Windows.Forms.CheckBox; $trackMapAssist.Text='Map assist'; $trackMapAssist.AutoSize=$true; $trackMapAssist.Location='924,72'; $trackMapAssist.ForeColor=$accent; $trackMapAssist.Font=$fontBold; $trackMapAssist.Checked=$true; $grpTrackCtl.Controls.Add($trackMapAssist)
+# (36bf74a had made it ON by default. With the Aurora retired nothing publishes /aurora_odom, so every
+# DRIVE from a freshly started app waited 30 s for that pose and DRIVE-ABORTed -- 2026-09-10 readiness.)
+$trackMapAssist=New-Object System.Windows.Forms.CheckBox; $trackMapAssist.Text='Map assist'; $trackMapAssist.AutoSize=$true; $trackMapAssist.Location='924,72'; $trackMapAssist.ForeColor=$accent; $trackMapAssist.Font=$fontBold; $trackMapAssist.Checked=$false; $grpTrackCtl.Controls.Add($trackMapAssist)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
 $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
@@ -1423,7 +1427,7 @@ function Get-TrackExtraArgs {
     # 300 -> 1200 s (4x) on request. The UI backstops at TrackMaxSec/FollowMaxSec must stay ABOVE
     # this or they fire first and kill the session instead of letting the node stop gracefully --
     # they were 315 against 300, so raising this alone would have changed nothing.
-    $a += '--max-seconds 1200'
+    $a += '--max-seconds 2000'   # = the cap run_follow.sh appends (it wins anyway); the UI backstop TrackMaxSec 2060 stays above it
     if($trackRerun -and $trackRerun.Checked){ $a += ('--rerun --rerun-mode save --rerun-dir {0} --odom-topic /odometer_state --rerun-image-every-n 5 --rerun-overrun-frames 24' -f $script:RerunDir) }
     # Deadman HB: node gates velocity on a fresh /tmp/k1_hb mtime AND env-arms the bridge's own
     # heartbeat watchdog. The app-side relay (Start-HbRelay) is started by Start-Tracker.
@@ -1580,9 +1584,11 @@ function Send-FollowCmd([string]$tok){
             $line="$tok ARM"
         }
     }
-    # ONE command in flight, in order: a send that has not finished is cancelled before the next starts,
-    # so a slow earlier command (e.g. RESUME ARM) can never land AFTER a later one (e.g. HOLD).
-    if($script:CmdProc -and -not $script:CmdProc.HasExited){
+    # A slow earlier MOTION command (RESUME/FOLLOW [ARM]) is cancelled before the next send, so it can
+    # never land AFTER a later one (e.g. HOLD) and walk the robot. An unfinished STOP/HOLD/PARK/STATUS is
+    # NEVER cancelled: it may still be connecting, and killing it would drop a safe-down. The append plus
+    # the node's STOP > HOLD priority settles the order of those.
+    if($script:CmdProc -and -not $script:CmdProc.HasExited -and $script:CmdLine -match '^(RESUME|FOLLOW)\b'){
         try{ $script:CmdProc.Kill() }catch{}
         Add-LogTrack ("CMD '$($script:CmdLine)' was still sending -- cancelled before '$line'; it may or may not have reached the robot.") $amber
     }
@@ -1673,11 +1679,12 @@ function Close-OperatorSession {
 # Stop any follow node on the robot and CONFIRM none is left: GONE, STILL-RUNNING, or UNKNOWN (ssh failed
 # or timed out). SIGTERM -> the node's handler stops + ChangeMode(kPrepare); it gets 8 s to exit. The
 # escaped \. keeps the pattern from matching this command's own shell line (pkill/pgrep -f match whole
-# command lines).
-function Stop-RobotFollowNode([string]$ip,[int]$TimeoutMs=14000){
+# command lines). TimeoutMs covers ssh ConnectTimeout (8 s) + that 8 s loop + margin, so a slow but
+# valid answer is never reported as "did not answer".
+function Stop-RobotFollowNode([string]$ip,[int]$TimeoutMs=20000){
     $tmp = Join-Path $env:TEMP ('k1_kill_{0}.txt' -f ([IO.Path]::GetRandomFileName() -replace '\.',''))
     try{
-        $cmd = 'pkill -TERM -f ''follow_person_k1\.py''; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do pgrep -f ''follow_person_k1\.py'' >/dev/null || { echo NODE-GONE; exit 0; }; sleep 0.5; done; echo NODE-STILL-RUNNING'
+        $cmd = 'pkill -TERM -f ''follow_person_k1\.py''; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do pgrep -f ''follow_person_k1\.py'' >/dev/null; rc=$?; [ $rc -eq 1 ] && { echo NODE-GONE; exit 0; }; [ $rc -ne 0 ] && { echo NODE-ERR $rc; exit 0; }; sleep 0.5; done; echo NODE-STILL-RUNNING'
         $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), $cmd)) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
         try{ $null = $p.Handle }catch{}
         if(-not $p.WaitForExit($TimeoutMs)){ try{ $p.Kill() }catch{}; $null = $p.WaitForExit(2000); return 'UNKNOWN' }
@@ -1713,6 +1720,16 @@ function Start-Tracker([bool]$drive){
     # Pre-flight starts here: hold the Auto-Tune loop off the link from the first deploy byte onward.
     # Every abort below returns $false, and the toggle handler then closes the session.
     Open-OperatorSession
+    if(-not $script:OperatorMutex){ Add-LogTrack 'Operator session not signalled (mutex create failed) -- the Auto-Tune loop may pull during this launch.' $amber }
+    # A slow motion command from an earlier session must not land in this one.
+    if($script:CmdProc -and -not $script:CmdProc.HasExited){ try{ $script:CmdProc.Kill() }catch{} }; $script:CmdProc=$null
+    # ONE NODE AT A TIME: stop any previous follow node and CONFIRM it is gone BEFORE the deploy
+    # overwrites its files (run_follow.sh also refuses to exec a second node -- exit 5). Fail-closed:
+    # no confirmation, no launch.
+    $old = Stop-RobotFollowNode $ip
+    if($old -eq 'UNKNOWN'){ $old = Stop-RobotFollowNode $ip }   # one retry: a slow answer is not a refusal
+    if($old -eq 'STILL-RUNNING'){ Add-LogTrack ('An earlier follow node is still running on the robot 8 s after SIGTERM -- NOT starting a second one. If it does not exit, force it:  ssh {0}@{1} "pkill -KILL -f ''follow_person_k1\.py''"  (the bridge stops on stdin EOF), then toggle Follow again. If the robot is moving, use the gamepad / e-stop.' -f $script:SshUser,$ip) $red; return $false }
+    if($old -ne 'GONE'){ Add-LogTrack ("Could not confirm that no follow node is running on {0} (the robot did not answer) -- NOT launching. Toggle Follow again." -f $ip) $red; return $false }
     # SINGLE CAMERA CONSUMER: stop the Live View stream (it also decodes the head
     # camera) so the K1 only ever streams the camera once.
     if($script:LiveOn){ Add-LogTrack 'Stopping Live View (single camera consumer)...' $amber; Stop-Live }
@@ -1724,7 +1741,7 @@ function Start-Tracker([bool]$drive){
         Resolve-GestureModel $ip   # P4.2b: prefer the TRT engine when built (else .onnx)
         $gst = Ensure-GestureModel $ip
         if($gst -eq 'UNKNOWN'){
-            $r=[System.Windows.Forms.MessageBox]::Show("Couldn't reach the robot at $ip to check the gesture pose model (the check timed out -- usually a busy link). Nothing was copied. If the model is missing, gesture FALLS BACK to the ArUco marker (safe). Start anyway?",'Gesture model not checked',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
+            $r=[System.Windows.Forms.MessageBox]::Show("The robot at $ip did not answer the gesture-model check (usually a busy link). If the model is missing, gesture FALLS BACK to the ArUco marker (safe). Start anyway?",'Gesture model not checked',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
             if($r -ne 'OK'){ return $false }
         } elseif($gst -ne 'PRESENT'){
             $r=[System.Windows.Forms.MessageBox]::Show("The gesture pose model isn't on the robot and couldn't be auto-staged. Gesture will FALL BACK to the ArUco marker (safe). Start anyway?",'Gesture model missing',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
@@ -1739,7 +1756,7 @@ function Start-Tracker([bool]$drive){
     if($reidApp -eq 'osnet'){
         $rst = Ensure-ReidModel $ip
         if($rst -eq 'UNKNOWN'){
-            $r=[System.Windows.Forms.MessageBox]::Show("Couldn't reach the robot at $ip to check the OSNet ReID engine (the check timed out -- usually a busy link). Nothing was copied. The node checks the engine itself at start: the REID badge shows OSNet(TRT)/OSNet(CUDA) when it loaded, HIST (red) when it did not -- and then ARMED markerless re-lock is auto-refused. Start anyway?",'ReID engine not checked',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
+            $r=[System.Windows.Forms.MessageBox]::Show("The robot at $ip did not answer the OSNet ReID engine check (usually a busy link). The node checks the engine itself at start: the REID badge shows OSNet(TRT)/OSNet(CUDA) when it loaded, HIST (red) when it did not -- and then ARMED markerless re-lock is auto-refused. Start anyway?",'ReID engine not checked',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
             if($r -ne 'OK'){ return $false }
             Add-LogTrack 'ReID engine not checked (robot did not answer) -> watch the REID badge: OSNet = loaded, HIST = missing.' $amber
         } elseif($rst -ne 'PRESENT'){
@@ -1761,11 +1778,7 @@ function Start-Tracker([bool]$drive){
             Add-LogTrack 'rerun-sdk missing -> --rerun omitted for this start; re-tick Rerun to retry staging.' $amber
         }
     }
-    # ONE NODE AT A TIME: stop any previous follow node and CONFIRM it is gone before launching another
-    # (run_follow.sh also refuses to exec a second node -- exit 5). Fail-closed: no confirmation, no launch.
-    $old = Stop-RobotFollowNode $ip
-    if($old -eq 'STILL-RUNNING'){ Add-LogTrack 'An earlier follow node is still running on the robot 8 s after SIGTERM -- NOT starting a second one. Wait a few seconds and toggle Follow again; if the robot is moving, use the gamepad / e-stop.' $red; return $false }
-    if($old -ne 'GONE'){ Add-LogTrack ("Could not confirm that no follow node is running on {0} (the robot did not answer) -- NOT launching. Toggle Follow again." -f $ip) $red; return $false }
+    # (the earlier follow node was stopped and confirmed gone at the top of the pre-flight)
     $trackSync.Stop=$false; $trackSync.Done=$false; $trackSync.Jpeg=$null; $trackSync.Seq=0; $trackSync.Frames=0; $trackSync.Err=''
     $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1; $trackSync.Lock=0
     # CONTROLLER RUN OVERRIDE: a ticked 'Controller run' forces preview even if the operator hit the
@@ -1800,7 +1813,7 @@ function Start-Tracker([bool]$drive){
         # hints and autotune label summary ([tune-hints] / [autotune] and their ==== banners) and the
         # [run_follow] TUNE-STALE alarm for a dead auto-improve loop. Filtered out, they never reached
         # the operator (review C12).
-        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|LOOP-MS|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB|RERUN|\[tune-hints\]|\[autotune\]|==== (end )?(TUNE HINTS|AUTOTUNE)|\[run_follow\] (TUNE-STALE|tune hints))')){
+        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|LOOP-MS|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB|RERUN|\[tune-hints\]|\[autotune\]|==== (end )?(TUNE HINTS|AUTOTUNE)|\[run_follow\] (TUNE-STALE|tune hints|REFUSED))')){
             $Event.MessageData.Enqueue($d)
         }
     }
@@ -1878,6 +1891,8 @@ function Stop-Tracker([bool]$procAlreadyDead=$false){
     $offloadProfile = if($script:TrackDrive){'tracker-drive'}else{'tracker-preview'}
     $offloadIp=''; try{ $offloadIp=$ipTrack.Text.Trim() }catch{}
     $trackSync.Stop=$true
+    # No command still in flight may land in a stopped (or the next) session.
+    if($script:CmdProc -and -not $script:CmdProc.HasExited){ try{ $script:CmdProc.Kill() }catch{} }; $script:CmdProc=$null
     # Tear down the stderr capture FIRST so the ErrorDataReceived handler stops firing across restarts.
     try{ if($script:TrackProc){ $script:TrackProc.CancelErrorRead() } }catch{}
     try{ if($script:TrackErrSub){ Unregister-Event -SubscriptionId $script:TrackErrSub.Id -ErrorAction SilentlyContinue; $script:TrackErrSub=$null } }catch{}
@@ -1905,8 +1920,9 @@ function Stop-Tracker([bool]$procAlreadyDead=$false){
         $script:trackLastLock=-1; Set-TrackBadge -1
         if($trackPic.Image){ $img=$trackPic.Image; $trackPic.Image=$null; $img.Dispose() }
         if($script:trackMs){ $script:trackMs.Dispose(); $script:trackMs=$null }
-        if($gone -eq 'GONE'){ Add-LogTrack 'Follow stopped: node confirmed gone on the robot (SIGTERM -> stop + PREP).' $amber }
-        elseif($gone -eq 'STILL-RUNNING'){ Add-LogTrack 'Follow stop NOT confirmed: the node was still running 8 s after SIGTERM. If the robot is moving, use the gamepad / e-stop. The next launch refuses to start a second node.' $red }
+        if($gone -eq 'GONE'){ Add-LogTrack 'Follow stopped: no follow node left on the robot (checked).' $amber }
+        elseif($gone -eq 'STILL-RUNNING'){ Add-LogTrack ('Follow stop NOT confirmed: the node was still running 8 s after SIGTERM. If the robot is moving, use the gamepad / e-stop. To force it:  ssh {0}@{1} "pkill -KILL -f ''follow_person_k1\.py''"  (the bridge stops on stdin EOF). The next launch refuses to start a second node.' -f $script:SshUser,$ip) $red }
+        elseif(-not $ip){ Add-LogTrack 'Follow stopped locally, but there is no robot IP, so the robot-side stop was not sent or checked. If the robot is moving, use the gamepad / e-stop.' $red }
         else { Add-LogTrack 'Follow stop NOT confirmed: the robot did not answer the stop check. If the robot is moving, use the gamepad / e-stop.' $red }
         $statusLbl.Text='Tracker stopped.'
     }catch{}
@@ -2148,7 +2164,7 @@ $mediaTimer.Add_Tick({
                 # (DRIVE-ABORT, deliberate); exit 5 = run_follow.sh REFUSED a second node; anything else = crash.
                 $tailFile = '/home/booster/k1_follow.err'
                 if($ec -eq 3){ $tailFile='/home/booster/k1_compile.err'; Add-LogTrack 'Follow process exited 3 = COMPILE FAILED (run_follow.sh). See k1_compile.err tail below.' $red }
-                elseif($ec -eq 5){ Add-LogTrack 'Follow process exited 5 = REFUSED: a follow node was already running on the robot, so run_follow.sh did not start a second one. The tail below is from THAT node. Toggle Follow again in a few seconds.' $red }
+                elseif($ec -eq 5){ Add-LogTrack 'Follow process exited 5 = REFUSED: a follow node was already running on the robot (or pgrep failed), so run_follow.sh did not start a second one. The tail below is from THAT node; the cleanup below sends it SIGTERM. Toggle Follow again in a few seconds.' $red }
                 elseif($ec -eq 4){
                     Add-LogTrack 'Follow process exited 4 = DRIVE-ABORT (node refused to walk -- see the amber DRIVE-ABORT line above and the tail below).' $amber
                     # Most DRIVE-ABORTs are stalled cameras (sensors not sustained-fresh). Point the
@@ -2734,8 +2750,7 @@ $trackToggle.Add_CheckedChanged({
     if($script:TrackToggleGuard){ return }
     if($trackToggle.Checked){
         $drive=[bool]$trackDriveChk.Checked
-        $ok=$false
-        try{ $ok=Start-Tracker $drive }catch{ Add-LogTrack ("Follow launch failed: $_") $red }
+        $ok=Start-Tracker $drive   # no try here: it would turn the app's skip-and-continue errors into an abort after the ssh is live
         if(-not $ok){ Close-OperatorSession }   # launch aborted -> release the Auto-Tune loop (shared contract)
         if($ok){
             if($drive){ $trackToggle.Text='Follow: DRIVING - click to STOP'; $trackToggle.BackColor=$red }
