@@ -132,7 +132,7 @@ dark_obstacle_frames: 10
 dark_obstacle_widen_deg: 60.0
 rerun_never_shed: "on"
 gap_steer_commit_s: 2.0
-yolo_trt: "off"
+yolo_trt: "on"
 yolo_trt_cache: '/home/booster/trt_cache'
 gap_profile: "on"
 gap_profile_bins: 48
