@@ -49,7 +49,14 @@ param(
   [string]$LocalRuns  = (Join-Path $PSScriptRoot '..\runs'),
   [string]$Analyser   = (Join-Path $PSScriptRoot '..\eval\rerun_tune.py'),
   [string]$PullScript = (Join-Path $PSScriptRoot 'Pull-Run.ps1'),
-  [string]$Python     = 'python'
+  [string]$Python     = 'python',
+  # The analysis venv pins rerun-sdk 0.23.1 to MATCH THE WRITER on the robot: the laptop's
+  # anaconda rerun 0.33.1 has no dataframe reader at all and cannot open these recordings.
+  [string]$ReplayPython = (Join-Path $PSScriptRoot '..\.venv-analysis\Scripts\python.exe'),
+  [string]$Replay     = (Join-Path $PSScriptRoot '..\eval\depth_replay.py'),
+  # Pull the .rrd and replay locally at or below this size; above it, replay on the robot and
+  # fetch only the JSON. A 2000 s capture is ~1.7 GB -- not a per-run transfer.
+  [int]$MaxRrdPullMB  = 400
 )
 $ErrorActionPreference = 'Stop'
 
@@ -162,6 +169,78 @@ while (-not $stopReq) {
       # Do NOT mark processed; a partial analyser hiccup should not lock the run out.
       Start-Sleep -Seconds $PollSec
       continue
+    }
+
+    # 3b) DEPTH REPLAY -- check the steering invariants on the recorded depth.
+    # This is the regression net for the class of bug thresholds cannot express: the gap-steer
+    # sign inversion (fixed in fc88b19) made the robot steer AWAY from its chosen gap on every
+    # run since August, and no threshold or log line would ever have revealed it. The harness
+    # asserts "a command must turn toward the gap it just chose" and fails loudly if not.
+    # Entirely fail-soft: the advisory hints below are the loop's primary job and must not be
+    # blocked by a replay problem.
+    try {
+      if ((Test-Path $Replay) -and (Test-Path $ReplayPython)) {
+        # The manifest records the .rrd name AND its exact byte count, so placement is decided
+        # from data rather than by guessing whether the transfer is worth it.
+        $rrdName = $null; $rrdBytes = 0
+        $mf = Join-Path $localDir 'manifest.json'
+        if (Test-Path $mf) {
+          $m = Get-Content $mf -Raw | ConvertFrom-Json
+          foreach ($f in $m.files) {
+            if ($f.name -like '*.rrd') { $rrdName = $f.name; $rrdBytes = [int64]$f.bytes; break }
+          }
+        }
+        if (-not $rrdName) {
+          Write-Host "  replay: no .rrd in this run's manifest -- skipping (run had --rerun off?)" -ForegroundColor DarkGray
+        } else {
+          $mb  = [math]::Round($rrdBytes / 1MB, 1)
+          $rj  = Join-Path $localDir 'depth_replay.json'
+          $rlog = Join-Path $localDir '.replay.log'
+          if ($rrdBytes -le ($MaxRrdPullMB * 1MB)) {
+            # Small enough: bring it local, where the cores (and later the GPU) are.
+            $localRrd = Join-Path $localDir $rrdName
+            if (-not (Test-Path $localRrd)) {
+              $a = $SSH_OPTS + @(("{0}@{1}:{2}/{3}/{4}" -f $User, $Ip, $RemoteRuns, $chosen, $rrdName), $localRrd)
+              & scp.exe @a 2>$null | Out-Null
+            }
+            if (Test-Path $localRrd) {
+              Write-Host ("  replay: {0} ({1} MB) locally" -f $rrdName, $mb) -ForegroundColor DarkGray
+              & $ReplayPython @($Replay, '--rrd', $localRrd, '--json', $rj) *> $rlog
+            } else {
+              Write-Host ("  replay: could not pull {0} -- skipping" -f $rrdName) -ForegroundColor Yellow
+            }
+          } else {
+            # Too big to move every run: replay where the data already is, fetch the scorecard.
+            Write-Host ("  replay: {0} ({1} MB) ON ROBOT (over {2} MB cap)" -f $rrdName, $mb, $MaxRrdPullMB) -ForegroundColor DarkGray
+            $upA = $SSH_OPTS + @($Replay, ("{0}@{1}:/tmp/depth_replay.py" -f $User, $Ip))
+            & scp.exe @upA 2>$null | Out-Null
+            $remoteCmd = ("python3 -u /tmp/depth_replay.py --rrd {0}/{1}/{2} --json /tmp/depth_replay.json" -f $RemoteRuns, $chosen, $rrdName)
+            & ssh.exe @($SSH_OPTS + @(("{0}@{1}" -f $User, $Ip), $remoteCmd)) *> $rlog
+            $dnA = $SSH_OPTS + @(("{0}@{1}:/tmp/depth_replay.json" -f $User, $Ip), $rj)
+            & scp.exe @dnA 2>$null | Out-Null
+          }
+
+          # Surface the verdict. A failed invariant is a DEFECT IN THE SHIPPED CODE, not a tuning
+          # hint, so it is printed in red and never folded into the advisory YAML.
+          if (Test-Path $rj) {
+            $r = Get-Content $rj -Raw | ConvertFrom-Json
+            $bad = @($r.invariants | Where-Object { $_.total -gt 0 -and $_.good -lt $_.total })
+            Write-Host ("  replay: {0} frames, {1} scored, {2} steers" -f $r.frames, $r.scored, $r.steers) -ForegroundColor DarkGray
+            if ($bad.Count -gt 0) {
+              Write-Host "  *** INVARIANT VIOLATION -- the steering law is WRONG, not mistuned ***" -ForegroundColor Red
+              foreach ($b in $bad) {
+                Write-Host ("      {0}: {1}/{2}   rule: {3}" -f $b.name, $b.good, $b.total, $b.rule) -ForegroundColor Red
+              }
+            } else {
+              Write-Host "  replay: all steering invariants PASS" -ForegroundColor Green
+            }
+          } else {
+            Write-Host ("  replay: produced no scorecard -- see {0}" -f $rlog) -ForegroundColor Yellow
+          }
+        }
+      }
+    } catch {
+      Write-Host ("  replay: skipped ({0})" -f $_.Exception.Message) -ForegroundColor Yellow
     }
 
     # 4) push patch back as ADVISORY hints on the robot
