@@ -85,13 +85,14 @@ if (-not $AutotuneDir ) { $AutotuneDir  = Join-Path $here '..\autotune' }
 try { $loopMutex = New-Object System.Threading.Mutex($false, 'Global\K1-AutoTune-Loop') }
 catch { $loopMutex = New-Object System.Threading.Mutex($false, 'Local\K1-AutoTune-Loop') }
 try { $ownLoop = $loopMutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $ownLoop = $true }
-if (-not $ownLoop) { Write-Host 'another Auto-Tune-Loop is already running -- exiting' -ForegroundColor Yellow; exit 0 }
+if (-not $ownLoop) { Write-Host 'another Auto-Tune-Loop is already running -- exiting' -ForegroundColor Yellow; exit 3 }
 
 # Key-only SSH -- K1Finder handles pass auth separately; the loop must never
 # prompt.
 $SSH_OPTS = @('-o','StrictHostKeyChecking=accept-new','-o','ConnectTimeout=8',
               '-o','ServerAliveInterval=10','-o','BatchMode=yes')
 $target = ('{0}@{1}' -f $User, $Ip)
+$ScpExe = 'scp.exe'      # the watched .rrd pull runs it as a child process (Receive-RrdPolled)
 
 # Windows PowerShell 5.1 wraps every stderr line of a native command in an ErrorRecord, and with
 # $ErrorActionPreference = 'Stop' (above) the FIRST one is a TERMINATING error. The service log
@@ -119,28 +120,64 @@ function Scp-Down([string]$remote, [string]$local, [int]$LimitKbps = 0) {
   return $LASTEXITCODE
 }
 function Test-RobotIdle {
-  # 'idle' only when the robot answers AND no follow node is live. Unreachable -> not idle, so a dead
-  # link defers work instead of burning an 8 s timeout per item. The escaped \. keeps pgrep from
+  # 'idle' ONLY on a positive answer: the robot replies AND pgrep reports no follow node (exit 1). A
+  # pgrep error (exit 2/3) or an unreachable robot reads as busy -- fail-closed (round 2). Judged on
+  # the LAST output line, so a login banner cannot fake an answer. The escaped \. keeps pgrep from
   # matching this command's own shell line.
-  $st = Ssh-Text "pgrep -f 'follow_person_k1\.py' >/dev/null && echo busy || echo idle"
-  return (($st | Out-String) -match 'idle')
+  $st = @(Ssh-Text 'if pgrep -f ''follow_person_k1\.py'' >/dev/null; then echo busy; elif [ $? -eq 1 ]; then echo idle; else echo err; fi' |
+          Where-Object { $_ -and $_.Trim() })
+  return ($st.Count -gt 0 -and $st[-1].Trim() -eq 'idle')
 }
 function Get-Count([string]$file) {
   return [int]((Get-Content $file -ErrorAction SilentlyContinue | Select-Object -First 1) -as [int])
 }
-function Note-PullFailure([string]$rid) {
-  # Leaves the run's autotune folder behind so Retry-PendingSends re-pulls and labels it later (the
-  # stage is only ever given a verified recording), and counts the try so a pull that can never
-  # succeed stops after 3. Delete .pull_attempts in that folder to allow more.
+function Ensure-AutotuneFolder([string]$rid) {
+  # The run's autotune folder is what Retry-PendingSends revisits: leaving it behind hands the run's
+  # labelling to the retry (the stage is only ever given a verified recording).
   $ad = Join-Path $AutotuneDir $rid
   New-Item -ItemType Directory -Force -Path $ad | Out-Null
-  $pf = Join-Path $ad '.pull_attempts'
-  "$((Get-Count $pf) + 1)" | Out-File -Encoding ascii $pf
+  return $ad
+}
+function Note-PullFailure([string]$rid) {
+  # A pull that FAILED (a deferral is not one): counted, so a pull that can never succeed stops after
+  # 3. Delete .pull_attempts in the run's autotune folder to allow more.
+  $pf = Join-Path (Ensure-AutotuneFolder $rid) '.pull_attempts'
+  $n = (Get-Count $pf) + 1
+  "$n" | Out-File -Encoding ascii $pf
+  if ($n -ge 3) { Write-Host ("  rrd: {0} failed {1} pulls -- no more automatic tries (delete {2} to allow more)" -f $rid, $n, $pf) -ForegroundColor Yellow }
 }
 function Invoke-Logged([string]$exe, [string[]]$argv, [string]$log) {
   $ErrorActionPreference = 'Continue'
-  & $exe @argv *> $log
+  if ($log) { & $exe @argv *> $log } else { & $exe @argv *> $null }
   return $LASTEXITCODE
+}
+function Receive-RrdPolled([string]$remote, [string]$local) {
+  # The .rrd pull, WATCHED (round-2 review, reproduced): an idle check before a multi-minute transfer
+  # is not enough -- the operator can start a follow mid-pull, and a follow's launcher publishes the
+  # previous run seconds before its node starts. So scp runs as a child process and the robot is
+  # re-probed every 5 s; the moment a follow is live, or the robot stops answering, the transfer is
+  # killed. A bulk pull then shares the Wi-Fi with the deadman heartbeat for at most ~5 s.
+  # Returns scp's exit code, or 10 when aborted because the robot went busy.
+  $ErrorActionPreference = 'Continue'
+  $argv = $SSH_OPTS + @('-l', "$RrdPullKbps", ("{0}:{1}" -f $target, $remote), $local)
+  $argline = ($argv | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
+  $slog = $local + '.scp.log'
+  $p = Start-Process -FilePath $ScpExe -ArgumentList $argline -NoNewWindow -PassThru `
+                     -RedirectStandardOutput $slog -RedirectStandardError ($slog + '.err')
+  $null = $p.Handle                  # PS 5.1: cache the handle, or ExitCode reads back empty
+  try {
+    while (-not $p.WaitForExit(5000)) {
+      if (-not (Test-RobotIdle)) {
+        $null = Invoke-Logged 'taskkill.exe' @('/T', '/F', '/PID', "$($p.Id)") $null
+        $null = $p.WaitForExit(10000)
+        return 10
+      }
+    }
+    return $p.ExitCode
+  } finally {
+    if (-not $p.HasExited) { $null = Invoke-Logged 'taskkill.exe' @('/T', '/F', '/PID', "$($p.Id)") $null }
+    Remove-Item -LiteralPath $slog, ($slog + '.err') -Force -ErrorAction SilentlyContinue
+  }
 }
 function Get-LocalRrd([string]$dir, [string]$rid) {
   # The manifest records the .rrd name AND its exact byte count, so the pull decision is made
@@ -161,40 +198,45 @@ function Get-LocalRrd([string]$dir, [string]$rid) {
     return $null
   }
   # Room for it? Never fill the disk -- and never auto-delete an older recording to make room: the
-  # robot rotates its own bundles, so the copy here may be the only one left (review U4).
+  # robot rotates its own bundles, so the copy here may be the only one left (review U4). Deferred,
+  # not counted as a failure: freeing space cures it.
   try {
     $drv = Get-PSDrive -Name ((Split-Path -Qualifier $local).TrimEnd(':')) -ErrorAction Stop
     if ($drv.Free -lt ($bytes + 10GB)) {
       Write-Host ("  rrd: only {0:N1} GB free -- need {1:N1} GB + 10 GB headroom; not pulling" -f ($drv.Free / 1GB), ($bytes / 1GB)) -ForegroundColor Yellow
-      Note-PullFailure $rid
+      $null = Ensure-AutotuneFolder $rid
       return $null
     }
   } catch { }
-  Write-Host ("  rrd: pulling {0} ({1:N0} MB, capped at {2} kbit/s)" -f $name, ($bytes / 1MB), $RrdPullKbps) -ForegroundColor DarkGray
-  $rc = Scp-Down ("{0}/{1}/{2}" -f $RemoteRuns, $rid, $name) $local $RrdPullKbps
+  Write-Host ("  rrd: pulling {0} ({1:N0} MB, capped at {2} kbit/s, aborted if a follow starts)" -f $name, ($bytes / 1MB), $RrdPullKbps) -ForegroundColor DarkGray
+  $rc = Receive-RrdPolled ("{0}/{1}/{2}" -f $RemoteRuns, $rid, $name) $local
   $got = if (Test-Path $local) { (Get-Item $local).Length } else { -1 }
-  if ($rc -ne 0 -or $got -ne $bytes) {
-    # scp leaves a PARTIAL file when the link drops (review C1). Remove it so nothing downstream can
-    # mistake it for the recording; the next try re-pulls from scratch.
-    Remove-Item -LiteralPath $local -Force -ErrorAction SilentlyContinue
-    Write-Host ("  rrd: pull failed or incomplete (scp exit {0}, {1:N0} of {2:N0} bytes) -- partial removed" -f $rc, [math]::Max($got, 0), $bytes) -ForegroundColor Yellow
-    Note-PullFailure $rid
+  if ($rc -eq 0 -and $got -eq $bytes) { return $local }
+  # scp leaves a PARTIAL file when the link drops or the pull is aborted (review C1). Remove it so
+  # nothing downstream can mistake it for the recording; the next try re-pulls from scratch.
+  Remove-Item -LiteralPath $local -Force -ErrorAction SilentlyContinue
+  if ($rc -eq 10) {
+    Write-Host ("  rrd: a follow started (or the robot stopped answering) -- pull aborted at {0:N0} of {1:N0} bytes, retried when idle" -f [math]::Max($got, 0), $bytes) -ForegroundColor Yellow
+    $null = Ensure-AutotuneFolder $rid
     return $null
   }
-  return $local
+  Write-Host ("  rrd: pull failed or incomplete (scp exit {0}, {1:N0} of {2:N0} bytes) -- partial removed" -f $rc, [math]::Max($got, 0), $bytes) -ForegroundColor Yellow
+  Note-PullFailure $rid
+  return $null
 }
 $script:lastRelabel = [datetime]::MinValue
 function Retry-PendingSends {
-  # Once per tick, FIRST. Revisits runs the loop already delivered hints for (they are in the ledger)
-  # whose autotune folder is not finished:
-  #   * a PASS bundle that never reached the robot (robot off, link dropped) -> send only (<= 3/tick);
+  # Once per tick, FIRST. Revisits unfinished autotune folders:
+  #   * a PASS bundle that never reached the robot (robot off, link dropped) -> send only (<= 3/tick).
+  #     Any run-id folder qualifies: a folder labelled by hand WITHOUT -NoSend means "send it";
   #   * no validation yet (pull failed, no GPU, labeller error or timeout) -> re-pull and re-label,
-  #     one run per 10 min, each cause capped at 3 tries by .pull_attempts / .label_attempts (C9).
+  #     ONLY for runs in the ledger, one run per 10 min, each cause capped at 3 tries by
+  #     .pull_attempts / .label_attempts (C9).
   # Never touched: a bundle held with .no_send (C7/C13), a folder not named like a run id. Nothing at
   # all while the robot is busy or unreachable -- ONE probe per tick, not one timeout per bundle (U1).
   if (-not (Test-Path $StageScript) -or -not (Test-Path $AutotuneDir)) { return }
   $cands = @(Get-ChildItem $AutotuneDir -Directory |
-             Where-Object { $_.Name -match '^[0-9]{8}T[0-9]{6}Z_' -and $processed.ContainsKey($_.Name) } |
+             Where-Object { $_.Name -match '^[0-9]{8}T[0-9]{6}Z_' } |
              Where-Object { -not (Test-Path (Join-Path $_.FullName '.sent_to_robot')) -and
                             -not (Test-Path (Join-Path $_.FullName '.no_send')) } |
              Sort-Object Name -Descending)
@@ -205,10 +247,16 @@ function Retry-PendingSends {
     $vf = Join-Path $d.FullName 'label_validation.json'
     $rrd = $null
     if (Test-Path $vf) {
-      if ((Get-Content $vf -Raw | ConvertFrom-Json).status -ne 'PASS') { continue }
+      # Parsed per candidate: one unreadable validation must not throw out of the whole function and
+      # starve every folder behind it. Unreadable = not PASS.
+      $st = try { (Get-Content $vf -Raw | ConvertFrom-Json).status } catch { $null }
+      if ($st -ne 'PASS') { continue }
       if ($sends -ge 3) { continue }
       $sends++
     } else {
+      # Re-labelling is only for runs the loop itself delivered hints for: anything else is a folder
+      # made by hand, or a run the main path has not reached yet.
+      if (-not $processed.ContainsKey($d.Name)) { continue }
       if ($relabelled -or ((Get-Date) - $script:lastRelabel).TotalMinutes -lt 10) { continue }
       if ((Get-Count (Join-Path $d.FullName '.label_attempts')) -ge 3) { continue }
       if ((Get-Count (Join-Path $d.FullName '.pull_attempts')) -ge 3) { continue }
@@ -366,17 +414,24 @@ while (-not $stopReq) {
     # 4) push the patch back as ADVISORY hints -- BEFORE the labelling, which can take many minutes
     # (review C14): the hints are the loop's primary job, and a late push is what makes run_follow.sh
     # report TUNE-STALE.
-    $ok1 = 1; $ok2 = 1
-    if (Test-Path $pat) {
-      $ok1 = Scp-Up $pat ("{0}/{1}.yaml" -f $RemoteHints, $chosen)
-      $ok2 = Scp-Up $pat ("{0}/latest.yaml" -f $RemoteHints)
-    } else {
+    $src = $pat
+    if (-not (Test-Path $pat)) {
       # Analyser had nothing to recommend -- write an empty file so the launcher's
       # "there are hints" check reflects "yes we processed, nothing to change".
-      $empty = Join-Path $localDir '.empty_hints.yaml'
-      "# No tuning recommendations from $chosen`n" | Out-File -Encoding utf8 $empty
-      $ok1 = Scp-Up $empty ("{0}/{1}.yaml" -f $RemoteHints, $chosen)
-      $ok2 = Scp-Up $empty ("{0}/latest.yaml" -f $RemoteHints)
+      $src = Join-Path $localDir '.empty_hints.yaml'
+      "# No tuning recommendations from $chosen`n" | Out-File -Encoding utf8 $src
+    }
+    # mkdir on demand: the one at startup is lost whenever the robot was off then (round 2).
+    $null = Ssh-Text ("mkdir -p '{0}'" -f $RemoteHints)
+    $ok1 = Scp-Up $src ("{0}/{1}.yaml" -f $RemoteHints, $chosen)
+    # latest.yaml must never move BACKWARDS (round 2): a backlog is processed newest-first, so an older
+    # run's hints go to <run>.yaml only and latest.yaml keeps the newest processed run's.
+    $newer = @($processed.Keys | Where-Object { [string]::CompareOrdinal([string]$_, $chosen) -gt 0 })
+    if ($newer.Count -eq 0) {
+      $ok2 = Scp-Up $src ("{0}/latest.yaml" -f $RemoteHints)
+    } else {
+      $ok2 = 0
+      Write-Host ("  hints: {0} is older than {1} processed run(s) -- latest.yaml stays on the newest" -f $chosen, $newer.Count) -ForegroundColor DarkGray
     }
     if ($ok1 -eq 0 -and $ok2 -eq 0) {
       Write-Host ("  OK: report -> {0}   patch -> {1}   hints on robot -> {2}/{3}.yaml (advisory)" -f `
@@ -405,4 +460,7 @@ while (-not $stopReq) {
   if ($Once) { break }
   Start-Sleep -Seconds $PollSec
 }
+# Release the single-instance mutex: an interactive -Once leaves its console thread alive, and an
+# unreleased mutex would lock the service's loop out until that window closed (round 2).
+try { $loopMutex.ReleaseMutex() } catch { }
 Write-Host "`nAuto-Tune-Loop exiting." -ForegroundColor Cyan

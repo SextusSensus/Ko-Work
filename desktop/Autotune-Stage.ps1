@@ -71,6 +71,9 @@ function Invoke-Logged([string]$exe, [string[]]$argv, [string]$log) {
 $LocalRunDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($LocalRunDir)
 $adir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath((Join-Path $AutotuneDir $RunId))
 New-Item -ItemType Directory -Force -Path $adir | Out-Null
+# -NoSend is recorded FIRST (round 2): every exit below -- no GPU, a busy lock, a timeout, a FAIL --
+# would otherwise leave no hold, and the loop's retry would label and send a run the operator held.
+if ($NoSend) { (Get-Date -Format o) | Out-File -Encoding utf8 (Join-Path $adir '.no_send') }
 
 # One folder holds everything about this run: mirror the loop's analysis products in.
 foreach ($f in @('tune_report.json', 'tune_patch.yaml', 'depth_replay.json', 'manifest.json')) {
@@ -201,12 +204,7 @@ if ($v.status -ne 'PASS') {
 }
 Write-Host ("  stage: validation PASS -> {0}" -f $adir) -ForegroundColor Green
 $hold = Join-Path $adir '.no_send'
-if ($NoSend) {
-  # DURABLE (review C7/C13): without a marker, the loop's retry would send a by-hand -NoSend run on
-  # its next tick. Delete .no_send to release the bundle.
-  (Get-Date -Format o) | Out-File -Encoding utf8 $hold
-  exit 0
-}
+if ($NoSend) { exit 0 }      # held: .no_send was written at the top. Delete it to release the bundle.
 if (Test-Path $hold) {
   Write-Host ("  stage: {0} is held (.no_send) -- not sending" -f $RunId) -ForegroundColor DarkGray
   exit 0
