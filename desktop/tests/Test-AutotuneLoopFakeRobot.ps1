@@ -30,6 +30,7 @@ function Map([string]$remote) { Join-Path $R (($remote -replace '^x@fake:', '') 
 function ssh.exe {
   $cmd = [string]$args[-1]
   $global:LASTEXITCODE = 0
+  if ($cmd -match "^cd '([^']+)' 2>/dev/null && for d in 20") { Get-ChildItem (Map $Matches[1]) -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'manifest.json') } | Sort-Object Name | ForEach-Object { $_.Name }; return }
   if ($cmd -match "^ls -1 '([^']+)'") { Get-ChildItem (Map $Matches[1]) -Directory -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { $_.Name }; return }
   if ($cmd -match "^test -f '([^']+)'") { if (Test-Path (Map $Matches[1])) { 'yes' }; return }
   if ($cmd -match '^if pgrep') { 'idle'; return }

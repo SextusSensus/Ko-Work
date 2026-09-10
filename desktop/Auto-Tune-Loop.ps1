@@ -93,6 +93,7 @@ $SSH_OPTS = @('-o','StrictHostKeyChecking=accept-new','-o','ConnectTimeout=8',
               '-o','ServerAliveInterval=10','-o','BatchMode=yes')
 $target = ('{0}@{1}' -f $User, $Ip)
 $ScpExe = 'scp.exe'      # the watched .rrd pull runs it as a child process (Receive-RrdPolled)
+$SshExe = 'ssh.exe'      # ...and the pull's one streamed robot monitor
 
 # Windows PowerShell 5.1 wraps every stderr line of a native command in an ErrorRecord, and with
 # $ErrorActionPreference = 'Stop' (above) the FIRST one is a TERMINATING error. The service log
@@ -167,23 +168,48 @@ function Invoke-Logged([string]$exe, [string[]]$argv, [string]$log) {
   if ($log) { & $exe @argv *> $log } else { & $exe @argv *> $null }
   return $LASTEXITCODE
 }
+function Test-MonitorIdle([string]$mlog, $mon, [hashtable]$st) {
+  # True only when the pull's robot monitor is alive, answered within the last 6 s, its latest answer is
+  # 'idle', and K1Finder holds no operator session. $st carries .seen/.at between calls.
+  if ($mon.HasExited) { return $false }
+  $lines = @(Get-Content -LiteralPath $mlog -ErrorAction SilentlyContinue | Where-Object { $_ -and $_.Trim() })
+  if ($lines.Count -gt $st.seen) { $st.seen = $lines.Count; $st.at = Get-Date }
+  if ($lines.Count -eq 0 -or ((Get-Date) - $st.at).TotalSeconds -gt 6) { return $false }
+  return (($lines[-1].Trim() -eq 'idle') -and -not (Test-OperatorSession))
+}
 function Receive-RrdPolled([string]$remote, [string]$local) {
-  # The .rrd pull, WATCHED (round-2 review, reproduced): an idle check before a multi-minute transfer
-  # is not enough -- the operator can start a follow mid-pull, and a follow's launcher publishes the
-  # previous run seconds before its node starts. So scp runs as a child process and the robot is
-  # re-probed every 5 s; the moment a follow is live, or the robot stops answering, the transfer is
-  # killed. A bulk pull then shares the Wi-Fi with the deadman heartbeat for at most ~5 s.
-  # Returns scp's exit code, or 10 when aborted because the robot went busy.
+  # The .rrd pull, WATCHED (round-2 review, reproduced): an idle check before a multi-minute transfer is
+  # not enough -- the operator can start a follow mid-pull, and a follow's launcher publishes the previous
+  # run seconds before its node starts. scp runs as a child process and is killed the moment a follow is
+  # live, K1Finder holds the operator session, or the robot stops answering.
+  # ONE monitoring connection per pull (2026-09-10 21:45): the first version logged in afresh every 5 s,
+  # and on the robot each login is a systemd session plus a polkit check -- 108 logins in 10 min put
+  # polkitd at 37% CPU. Now a single ssh streams the robot's state every 2 s for the whole pull (a line per
+  # 2 s arrives unbuffered in the redirected file -- verified against the real robot), and the operator
+  # session is checked locally each second. A stream that dies or goes quiet for 6 s reads as busy.
+  # Returns scp's exit code, or 10 when the pull was aborted, or never started because the robot was busy.
   $ErrorActionPreference = 'Continue'
-  $argv = $SSH_OPTS + @('-l', "$RrdPullKbps", ("{0}:{1}" -f $target, $remote), $local)
-  $argline = ($argv | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
   $slog = $local + '.scp.log'
-  $p = Start-Process -FilePath $ScpExe -ArgumentList $argline -NoNewWindow -PassThru `
-                     -RedirectStandardOutput $slog -RedirectStandardError ($slog + '.err')
-  $null = $p.Handle                  # PS 5.1: cache the handle, or ExitCode reads back empty
+  $mlog = $local + '.mon.log'
+  $mcmd = 'while :; do if pgrep -f ''follow_person_k1\.py'' >/dev/null; then echo busy; elif [ $? -eq 1 ]; then echo idle; else echo err; fi; sleep 2; done'
+  $mon = Start-Process -FilePath $SshExe -ArgumentList (($SSH_OPTS -join ' ') + ' ' + $target + ' "' + $mcmd + '"') -NoNewWindow -PassThru `
+                       -RedirectStandardOutput $mlog -RedirectStandardError ($mlog + '.err')
+  $null = $mon.Handle
+  $st = @{ seen = 0; at = Get-Date }
+  $p = $null
   try {
-    while (-not $p.WaitForExit(5000)) {
-      if (-not (Test-RobotIdle)) {
+    $deadline = (Get-Date).AddSeconds(10)            # the transfer starts only on a fresh 'idle'
+    while (-not (Test-MonitorIdle $mlog $mon $st)) {
+      if ($mon.HasExited -or (Get-Date) -gt $deadline) { return 10 }
+      Start-Sleep -Milliseconds 500
+    }
+    $argv = $SSH_OPTS + @('-l', "$RrdPullKbps", ("{0}:{1}" -f $target, $remote), $local)
+    $argline = ($argv | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
+    $p = Start-Process -FilePath $ScpExe -ArgumentList $argline -NoNewWindow -PassThru `
+                       -RedirectStandardOutput $slog -RedirectStandardError ($slog + '.err')
+    $null = $p.Handle                  # PS 5.1: cache the handle, or ExitCode reads back empty
+    while (-not $p.WaitForExit(1000)) {
+      if (-not (Test-MonitorIdle $mlog $mon $st)) {
         $null = Invoke-Logged 'taskkill.exe' @('/T', '/F', '/PID', "$($p.Id)") $null
         $null = $p.WaitForExit(10000)
         return 10
@@ -191,8 +217,10 @@ function Receive-RrdPolled([string]$remote, [string]$local) {
     }
     return $p.ExitCode
   } finally {
-    if (-not $p.HasExited) { $null = Invoke-Logged 'taskkill.exe' @('/T', '/F', '/PID', "$($p.Id)") $null }
-    Remove-Item -LiteralPath $slog, ($slog + '.err') -Force -ErrorAction SilentlyContinue
+    if ($p -and -not $p.HasExited) { $null = Invoke-Logged 'taskkill.exe' @('/T', '/F', '/PID', "$($p.Id)") $null }
+    if (-not $mon.HasExited) { $null = Invoke-Logged 'taskkill.exe' @('/T', '/F', '/PID', "$($mon.Id)") $null }
+    $null = $mon.WaitForExit(3000)
+    Remove-Item -LiteralPath $slog, ($slog + '.err'), $mlog, ($mlog + '.err') -Force -ErrorAction SilentlyContinue
   }
 }
 function Get-LocalRrd([string]$dir, [string]$rid) {
@@ -339,16 +367,13 @@ while (-not $stopReq) {
       try { Retry-PendingSends } catch { Write-Host ("  retry-send: {0}" -f $_.Exception.Message) -ForegroundColor Yellow }
     }
 
-    # 1) discover: newest run_id whose manifest.json exists (offload finished)
-    $listCmd = ("ls -1 '{0}' 2>/dev/null | sort" -f $RemoteRuns)
-    $runs = @((Ssh-Text $listCmd) | Where-Object { $_ -match '^[0-9]{8}T[0-9]{6}Z_' })
+    # 1) discover: the newest unprocessed run whose manifest.json exists (offload finished) -- in ONE ssh
+    # (it was one per unprocessed run): every login costs the robot a systemd session and a polkit check.
+    $listCmd = ('cd ''{0}'' 2>/dev/null && for d in 20*; do test -f $d/manifest.json && echo $d; done' -f $RemoteRuns)
+    $runs = @((Ssh-Text $listCmd) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ -match '^[0-9]{8}T[0-9]{6}Z_' } | Sort-Object)
     $chosen = $null
     for ($i = $runs.Count - 1; $i -ge 0; $i--) {
-      $rid = $runs[$i].Trim()
-      if ($processed.ContainsKey($rid)) { continue }
-      # Skip incomplete offloads: no manifest.json means offload hadn't finished
-      $check = Ssh-Text ("test -f '{0}/{1}/manifest.json' && echo yes" -f $RemoteRuns, $rid)
-      if ($check -match 'yes') { $chosen = $rid; break }
+      if (-not $processed.ContainsKey($runs[$i])) { $chosen = $runs[$i]; break }
     }
     if (-not $chosen) {
       if ($Once) { Write-Host "no new completed run to process." -ForegroundColor DarkYellow; break }
