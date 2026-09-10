@@ -14,6 +14,14 @@ source /opt/booster/BoosterRos2/install/setup.bash 2>/dev/null
 # follow is unaffected (the import is guarded in perception.CamNode).
 source /opt/booster/BoosterRos2Interface/install/setup.bash 2>/dev/null
 cd /home/booster
+# ONE NODE AT A TIME (2026-09-10 launch audit): refuse to start a second follow node while one is still
+# running -- both would open the camera and one could still be driving. K1Finder stops the old node and
+# confirms it gone before launching; this is the robot-side backstop. The escaped \. keeps the pattern
+# from matching a shell whose own command line names it. Exit 5 = REFUSED (K1Finder reports it).
+if _k1_old=$(pgrep -f 'follow_person_k1\.py'); then
+  echo "[run_follow] REFUSED: a follow node is already running (pid $(echo $_k1_old)) -- not starting a second one." >&2
+  exit 5
+fi
 # P6.2: reconcile-sweep BEFORE the node starts -- offload any leftover bundle from a crashed/killed
 # prior session that never offloaded (a no-op after a clean session). Best-effort; never blocks a launch.
 [ -f /home/booster/offload_run.sh ] && bash /home/booster/offload_run.sh --reconcile >/dev/null 2>&1 || true
@@ -69,6 +77,17 @@ if [ -f /home/booster/autotune/latest/SUMMARY.txt ]; then
   echo "==== AUTOTUNE (latest validated labels; advisory, not applied) ====" >&2
   head -n 30 /home/booster/autotune/latest/SUMMARY.txt | sed 's/^/[autotune] /' >&2
   echo "==== end AUTOTUNE ====" >&2
+fi
+# ...and say when those labels are behind the runs: run ids sort by their UTC timestamp prefix, so any
+# run folder named after the labelled one is newer and not yet validated.
+if [ -L /home/booster/autotune/latest ]; then
+  _lab=$(basename "$(readlink /home/booster/autotune/latest)")
+  _newer=0
+  for _r in /home/booster/runs/*/; do
+    [ -d "$_r" ] || continue
+    [[ "$(basename "$_r")" > "$_lab" ]] && _newer=$((_newer + 1))
+  done
+  [ "$_newer" -gt 0 ] && echo "[autotune] labels are from ${_lab}; ${_newer} newer run(s) not yet validated" >&2
 fi
 # SESSION-LENGTH OVERRIDE (2026-09-10, operator: "it should be able to record for 2000 seconds").
 # K1Finder passes --max-seconds 1200 on the CLI and CLI beats the config profile by design, so

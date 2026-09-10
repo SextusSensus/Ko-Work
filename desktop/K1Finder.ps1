@@ -188,57 +188,86 @@ function Deploy-FollowFiles {
 }
 
 # ---- Gesture pose-model staging (auto, idempotent) --------------------------
-# True iff the robot has $path. Uses a single-quoted remote test (no embedded double quotes -> safe
-# through Start-Process arg quoting). Output captured to a temp file.
-# ROBUST (2026-07-08): only a DEFINITIVE completed 'MISSING' returns $false. The old version ignored
-# the WaitForExit result and read the temp file unconditionally, so a slow/stalled ssh (robot under
-# load -- observed at load ~8.5 with SSH connect stalls) left stdout EMPTY within the timeout and
-# read as MISSING -- spuriously tripping "ReID engine unavailable" / gesture re-staging even though
-# the file was present (and REID-ENGINE ok had already logged that session). Ambiguous/timed-out
-# attempts are RETRIED, never trusted as absence.
-function Test-RobotFile([string]$ip,[string]$path){
-    $tmp = Join-Path $env:TEMP 'k1_rf_chk.txt'
+# PRESENT / MISSING / UNKNOWN for $path on the robot. Only a COMPLETED answer (ssh exit 0 carrying the
+# marker) is PRESENT or MISSING. A timeout, an ssh failure (exit 255: unreachable, auth, busy link) or
+# empty output is UNKNOWN -- "could not ask" is never reported as "absent". (2026-09-10: an unanswered
+# probe during an Auto-Tune .rrd pull became "OSNet ReID engine isn't on the robot" while it was.)
+# UNKNOWN is retried twice with a short backoff. Single-quoted remote test: no embedded double quotes,
+# so it is safe through Start-Process arg quoting. A unique temp file per try, so a probe that is still
+# being killed can never hold the next one's file. With $size >= 0, PRESENT also needs that byte count.
+function Get-RobotFileState([string]$ip,[string]$path,[long]$size=-1){
+    if($size -ge 0){ $test = 'test -f ''{0}'' && [ $(stat -c%s ''{0}'') -eq {1} ] && echo PRESENT || echo MISSING' -f $path,$size }
+    else { $test = 'test -f ''{0}'' && echo PRESENT || echo MISSING' -f $path }
     for($i=0; $i -lt 3; $i++){
+        if($i -gt 0){ Start-Sleep -Milliseconds (1000 * $i) }
+        $tmp = Join-Path $env:TEMP ('k1_rf_{0}.txt' -f ([IO.Path]::GetRandomFileName() -replace '\.',''))
         try{
-            Remove-Item $tmp -ErrorAction SilentlyContinue
-            $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("test -f '{0}' && echo PRESENT || echo MISSING" -f $path))) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
+            $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), $test)) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
             try{ $null = $p.Handle }catch{}
-            if(-not $p.WaitForExit(12000)){ try{$p.Kill()}catch{}; continue }   # slow/hung -> retry, don't conclude MISSING
-            $out = (Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
-            if($out -match 'PRESENT'){ return $true }
-            if($out -match 'MISSING'){ return $false }
-            # empty/garbled (ssh errored to stderr, which we don't capture) -> retry
+            if(-not $p.WaitForExit(12000)){ try{ $p.Kill() }catch{}; $null = $p.WaitForExit(2000); continue }
+            $out = [string](Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
+            if($p.ExitCode -eq 0 -and $out -match 'PRESENT'){ return 'PRESENT' }
+            if($p.ExitCode -eq 0 -and $out -match 'MISSING'){ return 'MISSING' }
         }catch{}
+        finally{ Remove-Item $tmp -ErrorAction SilentlyContinue }
     }
-    return $false   # 3 ambiguous attempts: report absent (node still fail-closes correctly at runtime)
+    return 'UNKNOWN'
+}
+function Test-RobotFile([string]$ip,[string]$path){ return ((Get-RobotFileState $ip $path) -eq 'PRESENT') }
+
+# Copy $local to $remote on the robot WITHOUT ever exposing a partial file: scp to "$remote.tmp", check
+# its byte count, then mv it over $remote (atomic on one filesystem). A timed-out scp is killed and only
+# the .tmp is lost -- the in-place scp this replaces could truncate a working model. Returns the state of
+# $remote afterwards: PRESENT (right size), MISSING, or UNKNOWN (could not confirm).
+function Copy-ToRobotAtomic([string]$ip,[string]$local,[string]$remote,[int]$TimeoutMs=120000){
+    $len = (Get-Item $local).Length
+    $tmpR = "$remote.tmp"
+    $rdir = (Split-Path $remote -Parent) -replace '\\','/'
+    $rc = Invoke-Proc ssh.exe ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("mkdir -p '{0}'" -f $rdir))) 10000
+    if($rc -ne 0){ return 'UNKNOWN' }
+    $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($local, ("{0}@{1}:{2}" -f $script:SshUser,$ip,$tmpR))) $TimeoutMs
+    if($rc -ne 0){
+        Add-LogTrack ('scp of {0} failed (exit {1}) -- the robot copy was not touched.' -f (Split-Path $local -Leaf), $rc) $amber
+        return (Get-RobotFileState $ip $remote)
+    }
+    if((Get-RobotFileState $ip $tmpR $len) -ne 'PRESENT'){ return (Get-RobotFileState $ip $remote) }
+    $rc = Invoke-Proc ssh.exe ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("mv -f '{0}' '{1}'" -f $tmpR,$remote))) 10000
+    if($rc -ne 0){ return 'UNKNOWN' }
+    return (Get-RobotFileState $ip $remote $len)
 }
 
 # Make the YOLO11n-pose model exist on the robot before a gesture / A-B follow. Priority:
-#   1) already present;  2) a local copy (matching basename) next to the app -> scp it (OFFLINE-safe);
+#   1) already present;  2) a local copy (matching basename) next to the app -> atomic copy (OFFLINE-safe);
 #   3) export it on the robot via the deployed stage_pose.py (downloads the .pt ONCE -> needs internet).
-# Returns $true if present afterward. If $false, the node still launches and SAFELY falls back to the
-# ArUco marker. Never throws.
+# Returns PRESENT, MISSING, or UNKNOWN (the robot did not answer: nothing is staged or exported, so a
+# busy link can never start a copy over a working model). On anything but PRESENT the node still
+# launches and SAFELY falls back to the ArUco marker if the model really is absent. Never throws.
 function Ensure-GestureModel([string]$ip){
     $remote = $script:GestureModel
-    if(Test-RobotFile $ip $remote){ Add-LogTrack ('Gesture model present: {0}' -f $remote) $green; return $true }
+    $st = Get-RobotFileState $ip $remote
+    if($st -eq 'PRESENT'){ Add-LogTrack ('Gesture model present: {0}' -f $remote) $green; return 'PRESENT' }
+    if($st -eq 'UNKNOWN'){ Add-LogTrack ('Could not reach the robot at {0} to check the gesture model -- not staging.' -f $ip) $amber; return 'UNKNOWN' }
     $local = Join-Path $MODELS_DIR (Split-Path $remote -Leaf)
     if(Test-Path $local){
         Add-LogTrack ('Staging gesture model ({0}) to robot...' -f (Split-Path $local -Leaf)) $accent
-        try{ $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($local, ("{0}@{1}:{2}" -f $script:SshUser,$ip,$remote))) -NoNewWindow -PassThru; $null = $p.WaitForExit(120000) }catch{ Add-LogTrack ('scp failed: {0}' -f $_) $red }
-        if(Test-RobotFile $ip $remote){ Add-LogTrack 'Gesture model staged (scp).' $green; return $true }
+        $st = Copy-ToRobotAtomic $ip $local $remote
+        if($st -eq 'PRESENT'){ Add-LogTrack 'Gesture model staged (scp, size verified).' $green; return 'PRESENT' }
+        if($st -eq 'UNKNOWN'){ return 'UNKNOWN' }
     }
     Add-LogTrack 'No local model -> exporting on the robot (ultralytics, needs internet once)...' $amber
-    $tmp = Join-Path $env:TEMP 'k1_stage.txt'
+    $tmp = Join-Path $env:TEMP ('k1_stage_{0}.txt' -f ([IO.Path]::GetRandomFileName() -replace '\.',''))
     try{
-        Remove-Item $tmp -ErrorAction SilentlyContinue
         $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), 'python3 /home/booster/stage_pose.py')) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
-        $null = $p.WaitForExit(240000)
+        try{ $null = $p.Handle }catch{}
+        if(-not $p.WaitForExit(240000)){ try{ $p.Kill() }catch{}; $null = $p.WaitForExit(2000); Add-LogTrack 'Robot export timed out (killed).' $amber }
         $r = (Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
         if($r){ Add-LogTrack ('stage_pose: {0}' -f ($r.Trim())) $accent }
     }catch{ Add-LogTrack ('Robot export failed: {0}' -f $_) $red }
-    if(Test-RobotFile $ip $remote){ Add-LogTrack 'Gesture model exported on robot.' $green; return $true }
+    finally{ Remove-Item $tmp -ErrorAction SilentlyContinue }
+    $st = Get-RobotFileState $ip $remote
+    if($st -eq 'PRESENT'){ Add-LogTrack 'Gesture model exported on robot.' $green; return 'PRESENT' }
     Add-LogTrack 'Gesture model unavailable -> follow uses the ArUco marker (safe). Stage yolo11n-pose.onnx on the robot to enable gesture.' $amber
-    return $false
+    return $st
 }
 
 # P4.2b: prefer the TRT engine for the gesture pose model WHEN it is on the robot. Its presence is
@@ -258,37 +287,25 @@ function Resolve-GestureModel([string]$ip){
 }
 
 # Make the OSNet ReID ONNX exist on the robot before an --appearance osnet follow. Priority:
-#   1) already present;  2) a local copy (matching basename) next to the app -> scp it (OFFLINE-safe).
-# NO robot-side export branch (OSNet has no ultralytics one-liner -> pre-stage the .onnx). Returns $true
-# if present afterward. On $false the node still launches and SAFELY falls back to a colour histogram
-# (the REID badge shows HIST red and the node's arm-gate auto-refuses armed re-lock). Never throws.
+#   1) already present;  2) a local copy (matching basename) next to the app -> atomic copy (OFFLINE-safe).
+# NO robot-side export branch (OSNet has no ultralytics one-liner -> pre-stage the .onnx). Returns
+# PRESENT, MISSING, or UNKNOWN (the robot did not answer: nothing is staged). On anything but PRESENT the
+# node still launches and SAFELY falls back to a colour histogram if the engine really is absent (the
+# REID badge shows HIST red and the node's arm-gate auto-refuses armed re-lock). Never throws.
 function Ensure-ReidModel([string]$ip){
     $remote = $script:ReidEngine
-    if(Test-RobotFile $ip $remote){ Add-LogTrack ('ReID engine present: {0}' -f $remote) $green; return $true }
+    $st = Get-RobotFileState $ip $remote
+    if($st -eq 'PRESENT'){ Add-LogTrack ('ReID engine present: {0}' -f $remote) $green; return 'PRESENT' }
+    if($st -eq 'UNKNOWN'){ Add-LogTrack ('Could not reach the robot at {0} to check the ReID engine -- not staging (a busy link is not a missing file).' -f $ip) $amber; return 'UNKNOWN' }
     $local = Join-Path $MODELS_DIR (Split-Path $remote -Leaf)
     if(Test-Path $local){
         Add-LogTrack ('Staging ReID engine ({0}) to robot...' -f (Split-Path $local -Leaf)) $accent
-        try{
-            $rdir = (Split-Path $remote -Parent) -replace '\\','/'
-            $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("mkdir -p '{0}'" -f $rdir))) -NoNewWindow -PassThru; $null = $p.WaitForExit(10000)
-            $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($local, ("{0}@{1}:{2}" -f $script:SshUser,$ip,$remote))) -NoNewWindow -PassThru
-            # APP-4: a timed-out scp keeps writing in the background and a bare `test -f` passes on
-            # the truncated in-progress file -> KILL on timeout, then verify the REMOTE SIZE below.
-            if(-not $p.WaitForExit(120000)){ try{ $p.Kill() }catch{}; $null=$p.WaitForExit(2000); Add-LogTrack 'scp timed out -> staging treated as FAILED' $red }
-        }catch{ Add-LogTrack ('scp failed: {0}' -f $_) $red }
-        # Size-verified presence (not just existence): catches truncated/aborted transfers. Remote
-        # command uses NO double quotes (safe through Start-Process arg quoting, like Test-RobotFile).
-        $llen = (Get-Item $local).Length
-        $tmp = Join-Path $env:TEMP 'k1_reid_sz.txt'
-        try{
-            Remove-Item $tmp -ErrorAction SilentlyContinue
-            $q = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ('test -f ''{0}'' && [ $(stat -c%s ''{0}'') -eq {1} ] && echo SIZEOK || echo BAD' -f $remote,$llen))) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
-            $null = $q.WaitForExit(10000)
-            if((Get-Content $tmp -Raw -ErrorAction SilentlyContinue) -match 'SIZEOK'){ Add-LogTrack 'ReID engine staged (scp, size verified).' $green; return $true }
-        }catch{}
+        $st = Copy-ToRobotAtomic $ip $local $remote
+        if($st -eq 'PRESENT'){ Add-LogTrack 'ReID engine staged (scp, size verified).' $green; return 'PRESENT' }
+        if($st -eq 'UNKNOWN'){ return 'UNKNOWN' }
     }
     Add-LogTrack ('ReID engine unavailable ({0}) -> deep re-ID falls back to histogram; armed re-lock auto-refused. Pre-stage {1} on the robot (or next to the app) to enable OSNet.' -f $remote, (Split-Path $remote -Leaf)) $amber
-    return $false
+    return 'MISSING'
 }
 
 # ---- Rerun (rerun.io) staging + viewer (Phase 3) ---------------------------
@@ -1563,11 +1580,25 @@ function Send-FollowCmd([string]$tok){
             $line="$tok ARM"
         }
     }
+    # ONE command in flight, in order: a send that has not finished is cancelled before the next starts,
+    # so a slow earlier command (e.g. RESUME ARM) can never land AFTER a later one (e.g. HOLD).
+    if($script:CmdProc -and -not $script:CmdProc.HasExited){
+        try{ $script:CmdProc.Kill() }catch{}
+        Add-LogTrack ("CMD '$($script:CmdLine)' was still sending -- cancelled before '$line'; it may or may not have reached the robot.") $amber
+    }
     try{
-        $cmd="echo $line > /tmp/k1_cmd"
+        # APPEND, never overwrite: the node reads every queued line and applies STOP > HOLD priority, so a
+        # later command can never erase an earlier one it has not read yet.
+        $cmd="echo $line >> /tmp/k1_cmd"
         $sp=Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip),$cmd)) -NoNewWindow -PassThru
-        $null=$sp.WaitForExit(4000)
-        Add-LogTrack ("CMD sent: $line") $accent
+        try{ $null=$sp.Handle }catch{}
+        $script:CmdProc=$sp; $script:CmdLine=$line
+        if($sp.WaitForExit(4000)){
+            if($sp.ExitCode -eq 0){ Add-LogTrack ("CMD sent: $line") $accent }
+            else { Add-LogTrack ("CMD NOT delivered: $line (ssh exit $($sp.ExitCode)). For a STOP use the gamepad / e-stop.") $red }
+        } else {
+            Add-LogTrack ("CMD not confirmed after 4 s: $line (still sending; the next command cancels it). For a STOP use the gamepad / e-stop.") $amber
+        }
     }catch{ Add-LogTrack ("CMD send failed: $_") $red }
 }
 
@@ -1623,6 +1654,41 @@ function Stop-Voice {
     Add-LogTrack 'Voice OFF.' $amber
 }
 
+# OPERATOR SESSION signal -- shared contract with desktop/Auto-Tune-Loop.ps1. While the named mutex
+# Global\K1-Operator-Session EXISTS, the loop starts no .rrd pull or bundle send and kills a running pull
+# within 5 s, so a bulk transfer never shares the link with a launch pre-flight or a follow. Created NOT
+# owned (its existence is the signal) before the pre-flight deploy; disposed when the session ends or the
+# launch aborts. Local\ is the fallback if the Global namespace refuses.
+$script:OperatorMutex = $null
+function Open-OperatorSession {
+    if($script:OperatorMutex){ return }
+    try{ $script:OperatorMutex = New-Object System.Threading.Mutex($false, 'Global\K1-Operator-Session') }
+    catch{ try{ $script:OperatorMutex = New-Object System.Threading.Mutex($false, 'Local\K1-Operator-Session') }catch{ $script:OperatorMutex = $null } }
+}
+function Close-OperatorSession {
+    try{ if($script:OperatorMutex){ $script:OperatorMutex.Dispose() } }catch{}
+    $script:OperatorMutex = $null
+}
+
+# Stop any follow node on the robot and CONFIRM none is left: GONE, STILL-RUNNING, or UNKNOWN (ssh failed
+# or timed out). SIGTERM -> the node's handler stops + ChangeMode(kPrepare); it gets 8 s to exit. The
+# escaped \. keeps the pattern from matching this command's own shell line (pkill/pgrep -f match whole
+# command lines).
+function Stop-RobotFollowNode([string]$ip,[int]$TimeoutMs=14000){
+    $tmp = Join-Path $env:TEMP ('k1_kill_{0}.txt' -f ([IO.Path]::GetRandomFileName() -replace '\.',''))
+    try{
+        $cmd = 'pkill -TERM -f ''follow_person_k1\.py''; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do pgrep -f ''follow_person_k1\.py'' >/dev/null || { echo NODE-GONE; exit 0; }; sleep 0.5; done; echo NODE-STILL-RUNNING'
+        $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), $cmd)) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
+        try{ $null = $p.Handle }catch{}
+        if(-not $p.WaitForExit($TimeoutMs)){ try{ $p.Kill() }catch{}; $null = $p.WaitForExit(2000); return 'UNKNOWN' }
+        $out = [string](Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
+        if($p.ExitCode -eq 0 -and $out -match 'NODE-GONE'){ return 'GONE' }
+        if($p.ExitCode -eq 0 -and $out -match 'NODE-STILL-RUNNING'){ return 'STILL-RUNNING' }
+        return 'UNKNOWN'
+    }catch{ return 'UNKNOWN' }
+    finally{ Remove-Item $tmp -ErrorAction SilentlyContinue }
+}
+
 function Start-Tracker([bool]$drive){
     if($script:TrackOn){ return $false }
     # SINGLE LOCO DRIVER RULE: never run alongside the Control-tab follow or the manual controller.
@@ -1644,6 +1710,9 @@ function Start-Tracker([bool]$drive){
     }
     $ip=$ipTrack.Text.Trim(); if(-not $ip){ Add-LogTrack 'Enter the robot IP first.' $amber; return $false }
     $script:RobotIP=$ip
+    # Pre-flight starts here: hold the Auto-Tune loop off the link from the first deploy byte onward.
+    # Every abort below returns $false, and the toggle handler then closes the session.
+    Open-OperatorSession
     # SINGLE CAMERA CONSUMER: stop the Live View stream (it also decodes the head
     # camera) so the K1 only ever streams the camera once.
     if($script:LiveOn){ Add-LogTrack 'Stopping Live View (single camera consumer)...' $amber; Stop-Live }
@@ -1653,7 +1722,11 @@ function Start-Tracker([bool]$drive){
     # the node still runs and falls back to the ArUco marker, so offer to continue rather than block.
     if(($chkGesture -and $chkGesture.Checked) -or ($chkAB -and $chkAB.Checked)){
         Resolve-GestureModel $ip   # P4.2b: prefer the TRT engine when built (else .onnx)
-        if(-not (Ensure-GestureModel $ip)){
+        $gst = Ensure-GestureModel $ip
+        if($gst -eq 'UNKNOWN'){
+            $r=[System.Windows.Forms.MessageBox]::Show("Couldn't reach the robot at $ip to check the gesture pose model (the check timed out -- usually a busy link). Nothing was copied. If the model is missing, gesture FALLS BACK to the ArUco marker (safe). Start anyway?",'Gesture model not checked',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
+            if($r -ne 'OK'){ return $false }
+        } elseif($gst -ne 'PRESENT'){
             $r=[System.Windows.Forms.MessageBox]::Show("The gesture pose model isn't on the robot and couldn't be auto-staged. Gesture will FALL BACK to the ArUco marker (safe). Start anyway?",'Gesture model missing',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
             if($r -ne 'OK'){ return $false }
         }
@@ -1664,7 +1737,12 @@ function Start-Tracker([bool]$drive){
     # colour histogram, the badge shows HIST (red), and the arm-gate auto-REFUSES armed re-lock. So: WARN + confirm.
     $reidApp = if($trackApp -and $trackApp.SelectedItem){ [string]$trackApp.SelectedItem } else { 'global' }
     if($reidApp -eq 'osnet'){
-        if(-not (Ensure-ReidModel $ip)){
+        $rst = Ensure-ReidModel $ip
+        if($rst -eq 'UNKNOWN'){
+            $r=[System.Windows.Forms.MessageBox]::Show("Couldn't reach the robot at $ip to check the OSNet ReID engine (the check timed out -- usually a busy link). Nothing was copied. The node checks the engine itself at start: the REID badge shows OSNet(TRT)/OSNet(CUDA) when it loaded, HIST (red) when it did not -- and then ARMED markerless re-lock is auto-refused. Start anyway?",'ReID engine not checked',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
+            if($r -ne 'OK'){ return $false }
+            Add-LogTrack 'ReID engine not checked (robot did not answer) -> watch the REID badge: OSNet = loaded, HIST = missing.' $amber
+        } elseif($rst -ne 'PRESENT'){
             $r=[System.Windows.Forms.MessageBox]::Show("The OSNet ReID engine ($script:ReidEngine) isn't on the robot and couldn't be auto-staged. Deep re-ID will run on a COLOUR-HISTOGRAM fallback (shown red on the REID badge) and ARMED markerless re-lock will be auto-refused. Start anyway?",'ReID engine missing',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
             if($r -ne 'OK'){ return $false }
             Add-LogTrack 'OSNet engine missing -> node falls back to histogram; armed re-lock auto-refused. Badge shows HIST.' $amber
@@ -1683,7 +1761,11 @@ function Start-Tracker([bool]$drive){
             Add-LogTrack 'rerun-sdk missing -> --rerun omitted for this start; re-tick Rerun to retry staging.' $amber
         }
     }
-    try{ $kp=Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip),'pkill -f follow_person_k1.py')) -NoNewWindow -PassThru; $null=$kp.WaitForExit(6000) }catch{}
+    # ONE NODE AT A TIME: stop any previous follow node and CONFIRM it is gone before launching another
+    # (run_follow.sh also refuses to exec a second node -- exit 5). Fail-closed: no confirmation, no launch.
+    $old = Stop-RobotFollowNode $ip
+    if($old -eq 'STILL-RUNNING'){ Add-LogTrack 'An earlier follow node is still running on the robot 8 s after SIGTERM -- NOT starting a second one. Wait a few seconds and toggle Follow again; if the robot is moving, use the gamepad / e-stop.' $red; return $false }
+    if($old -ne 'GONE'){ Add-LogTrack ("Could not confirm that no follow node is running on {0} (the robot did not answer) -- NOT launching. Toggle Follow again." -f $ip) $red; return $false }
     $trackSync.Stop=$false; $trackSync.Done=$false; $trackSync.Jpeg=$null; $trackSync.Seq=0; $trackSync.Frames=0; $trackSync.Err=''
     $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1; $trackSync.Lock=0
     # CONTROLLER RUN OVERRIDE: a ticked 'Controller run' forces preview even if the operator hit the
@@ -1808,9 +1890,8 @@ function Stop-Tracker([bool]$procAlreadyDead=$false){
     # stop + ChangeMode(kPrepare); killing the node also EOFs the bridge stdin, which safes loco too.
     $ip=''
     try{ $ip=$ipTrack.Text.Trim() }catch{}
-    if($ip){
-        try{ $sp=Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip),'pkill -TERM -f follow_person_k1.py')) -NoNewWindow -PassThru; $null=$sp.WaitForExit(2500) }catch{}
-    }
+    $gone='UNKNOWN'
+    if($ip){ $gone = Stop-RobotFollowNode $ip }
     try{ if($script:TrackPS){ $script:TrackPS.Dispose() } }catch{}
     try{ if($script:TrackRS){ $script:TrackRS.Close() } }catch{}
     $script:TrackProc=$null; $script:TrackPS=$null; $script:TrackRS=$null
@@ -1824,7 +1905,9 @@ function Stop-Tracker([bool]$procAlreadyDead=$false){
         $script:trackLastLock=-1; Set-TrackBadge -1
         if($trackPic.Image){ $img=$trackPic.Image; $trackPic.Image=$null; $img.Dispose() }
         if($script:trackMs){ $script:trackMs.Dispose(); $script:trackMs=$null }
-        Add-LogTrack 'Follow stopped (killed ssh + pkill; robot does stop + PREP via SIGHUP/SIGTERM/EOF).' $amber
+        if($gone -eq 'GONE'){ Add-LogTrack 'Follow stopped: node confirmed gone on the robot (SIGTERM -> stop + PREP).' $amber }
+        elseif($gone -eq 'STILL-RUNNING'){ Add-LogTrack 'Follow stop NOT confirmed: the node was still running 8 s after SIGTERM. If the robot is moving, use the gamepad / e-stop. The next launch refuses to start a second node.' $red }
+        else { Add-LogTrack 'Follow stop NOT confirmed: the robot did not answer the stop check. If the robot is moving, use the gamepad / e-stop.' $red }
         $statusLbl.Text='Tracker stopped.'
     }catch{}
     # P6.2b: AFTER the robot is safed + UI restored, fire the post-run offload for a capture session
@@ -1832,6 +1915,7 @@ function Stop-Tracker([bool]$procAlreadyDead=$false){
     # top, before the teardown reset TrackDrive.
     if($offloadDo){ Invoke-Offload $offloadIp $offloadProfile }
     $script:TrackRerunOn = $false
+    Close-OperatorSession   # session over -> the Auto-Tune loop may use the link again (shared contract)
 }
 
 # ============================================================================
@@ -2061,9 +2145,10 @@ $mediaTimer.Add_Tick({
             else{
                 # exit 3 = bridge COMPILE FAILED (diagnostics in k1_compile.err -- k1_follow.err
                 # holds the PREVIOUS session at compile time); exit 4 = node REFUSED to drive
-                # (DRIVE-ABORT, deliberate); anything else = crash.
+                # (DRIVE-ABORT, deliberate); exit 5 = run_follow.sh REFUSED a second node; anything else = crash.
                 $tailFile = '/home/booster/k1_follow.err'
                 if($ec -eq 3){ $tailFile='/home/booster/k1_compile.err'; Add-LogTrack 'Follow process exited 3 = COMPILE FAILED (run_follow.sh). See k1_compile.err tail below.' $red }
+                elseif($ec -eq 5){ Add-LogTrack 'Follow process exited 5 = REFUSED: a follow node was already running on the robot, so run_follow.sh did not start a second one. The tail below is from THAT node. Toggle Follow again in a few seconds.' $red }
                 elseif($ec -eq 4){
                     Add-LogTrack 'Follow process exited 4 = DRIVE-ABORT (node refused to walk -- see the amber DRIVE-ABORT line above and the tail below).' $amber
                     # Most DRIVE-ABORTs are stalled cameras (sensors not sustained-fresh). Point the
@@ -2649,7 +2734,9 @@ $trackToggle.Add_CheckedChanged({
     if($script:TrackToggleGuard){ return }
     if($trackToggle.Checked){
         $drive=[bool]$trackDriveChk.Checked
-        $ok=Start-Tracker $drive
+        $ok=$false
+        try{ $ok=Start-Tracker $drive }catch{ Add-LogTrack ("Follow launch failed: $_") $red }
+        if(-not $ok){ Close-OperatorSession }   # launch aborted -> release the Auto-Tune loop (shared contract)
         if($ok){
             if($drive){ $trackToggle.Text='Follow: DRIVING - click to STOP'; $trackToggle.BackColor=$red }
             else { $trackToggle.Text='Follow: PREVIEW - click to STOP'; $trackToggle.BackColor=$accent }
