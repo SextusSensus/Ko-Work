@@ -66,7 +66,10 @@ $target = '{0}@{1}' -f $User, $Ip
 # Robot processes that mean "the operator owns the robot": the follow node, K1Finder's Live stream and its
 # manual Loco session (round 3 -- the pull used to see only the follow node). Dots are escaped and the last
 # name is bracketed, so the pattern never matches the shell line of the probe that carries it.
-$OperatorProcs = 'follow_person_k1\.py|stream_cam\.py|run_loco\.sh|b1_loco_example_clien[t]'
+# Real names (lane B, b2dc80d): Live view execs 'python3 /home/booster/stream_cam.py ...', the manual controller
+# execs './b1_loco_example_client ...'. The launcher .sh names are NOT matched: after the exec only an outer
+# ssh bash -c line still carries them.
+$OperatorProcs = 'follow_person_k1\.py|stream_cam\.py|b1_loco_example_clien[t]'
 
 function Invoke-Logged([string]$exe, [string[]]$argv, [string]$log) {
   # Windows PowerShell 5.1 wraps every stderr line of a native command in an ErrorRecord, and under

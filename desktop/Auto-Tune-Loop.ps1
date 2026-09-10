@@ -100,7 +100,10 @@ $SshExe = 'ssh.exe'      # ...and the pull's one streamed robot monitor
 # Robot processes that mean "the operator owns the robot": the follow node, K1Finder's Live stream and its
 # manual Loco session (round 3 -- the pull used to see only the follow node). Dots are escaped and the last
 # name is bracketed, so the pattern never matches the shell line of the probe that carries it.
-$OperatorProcs = 'follow_person_k1\.py|stream_cam\.py|run_loco\.sh|b1_loco_example_clien[t]'
+# Real names (lane B, b2dc80d): Live view execs 'python3 /home/booster/stream_cam.py ...', the manual controller
+# execs './b1_loco_example_client ...'. The launcher .sh names are NOT matched: after the exec only an outer
+# ssh bash -c line still carries them.
+$OperatorProcs = 'follow_person_k1\.py|stream_cam\.py|b1_loco_example_clien[t]'
 # The stage's current gate (Autotune-Stage.ps1 $GateVersion, eval/rrd_label.py gate_version). The retry
 # re-labels any report older than this; keep the two in step.
 $StageGateVersion = 3
@@ -412,6 +415,15 @@ $null = Register-EngineEvent PowerShell.Exiting -SupportEvent -Action { $script:
 
 while (-not $stopReq) {
   try {
+    # K1Finder holds the operator session (a launch, a follow, Live view or the manual controller): no robot
+    # work at all this tick, discovery included -- discovery was the largest periodic ssh-login source during
+    # a follow, ~2.9/min (lane C review).
+    if (Test-OperatorSession) {
+      if ($Once) { Write-Host 'K1Finder operator session active -- no robot work this tick.' -ForegroundColor DarkYellow; break }
+      Start-Sleep -Seconds $PollSec
+      continue
+    }
+
     # 0) unfinished autotune folders -- once per tick and FIRST, so a newest run that keeps failing
     # further down can never starve them (review U2).
     if (-not $Once) {

@@ -95,6 +95,12 @@ try { & $loop @bad *>&1 | Out-Null } catch { }
 $state = & powershell.exe -NoProfile -Command "try { `$m = [System.Threading.Mutex]::OpenExisting('Global\K1-AutoTune-Loop'); if (`$m.WaitOne(0)) { `$m.ReleaseMutex(); 'free' } else { 'held' } } catch [System.Threading.WaitHandleCannotBeOpenedException] { 'gone' } catch [System.Threading.AbandonedMutexException] { 'abandoned' }"
 Check 'L5 loop mutex released after a throw' ($state -in @('free', 'gone')) ("mutex={0}" -f $state)
 
+# L6 K1Finder holds the operator session -> the tick does no robot work at all, discovery included
+try { $op = New-Object System.Threading.Mutex($false, 'Global\K1-Operator-Session') } catch { $op = New-Object System.Threading.Mutex($false, 'Local\K1-Operator-Session') }
+$o6 = & $loop @common *>&1 | Out-String
+$op.Dispose()
+Check 'L6 operator session -> no robot work this tick' (($o6 -match 'operator session active') -and ($o6 -notmatch 'processing')) ''
+
 "---- L1 output ----"; $o1
 "---- L3 output ----"; $o3
 Write-Host ("`n{0} failure(s); scratch in {1}" -f $fails, $T)
