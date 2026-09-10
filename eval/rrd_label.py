@@ -167,8 +167,8 @@ def validate_geometry(h_eff, pairing=None):
     """
     import math
     import numpy as np
-    # gate_version: bump whenever the gate's meaning changes, so a report says which gate made it. NOTE:
-    # nothing re-labels on it yet -- desktop/Autotune-Stage.ps1 keeps any existing label_validation.json.
+    # gate_version: bump whenever the gate's meaning changes, so a report says which gate made it.
+    # desktop/Autotune-Stage.ps1 re-labels any run whose label_validation.json carries an older version.
     out = {"gate_version": 3, "checks": {}}
     failed = skipped = False
 
