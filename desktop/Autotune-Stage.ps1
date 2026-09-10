@@ -39,10 +39,13 @@ param(
   [string]$User           = 'booster',
   [string]$Ip             = '192.168.9.75',
   [string]$RemoteAutotune = '/home/booster/autotune',
-  [int]$LabelTimeoutMin  = 90,
+  [ValidateRange(1, 1440)][int]$LabelTimeoutMin = 90,
   [switch]$NoSend
 )
 $ErrorActionPreference = 'Stop'
+# Unexpected errors are RETRYABLE (exit 2), never the verdict code 1: under powershell.exe -File an
+# unhandled throw exits 1, which the loop and a by-hand caller would read as a final geometry FAIL.
+trap { Write-Host ("  stage: unexpected error -- {0} (retried later)" -f $_.Exception.Message) -ForegroundColor Yellow; exit 2 }
 # Defaults resolved HERE, not in param(): in Windows PowerShell 5.1, $PSScriptRoot is EMPTY while an
 # ADVANCED script's param() defaults are evaluated -- [CmdletBinding()] or any [Parameter()], as the
 # Mandatory RunId above makes this one -- when it is started with `powershell.exe -File`. Isolated
@@ -69,6 +72,9 @@ function Invoke-Logged([string]$exe, [string[]]$argv, [string]$log) {
 # Provider-aware: [IO.Path]::GetFullPath resolves against the PROCESS working directory, not $PWD, so
 # a relative -LocalRunDir typed at a prompt after a cd resolved somewhere else (review C5).
 $LocalRunDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($LocalRunDir)
+$Python      = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Python)
+$Label       = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Label)
+$WeightsDir  = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WeightsDir)
 $adir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath((Join-Path $AutotuneDir $RunId))
 New-Item -ItemType Directory -Force -Path $adir | Out-Null
 # -NoSend is recorded FIRST (round 2): every exit below -- no GPU, a busy lock, a timeout, a FAIL --
@@ -82,6 +88,18 @@ foreach ($f in @('tune_report.json', 'tune_patch.yaml', 'depth_replay.json', 'ma
 }
 
 $val = Join-Path $adir 'label_validation.json'
+# A report from an older gate is not trusted: eval/rrd_label.py writes gate_version, bumped whenever the
+# gate's meaning changes (3 = wall-time depth pairing + coverage gate, c7f3cb1). An older or unreadable
+# report is moved aside, earns fresh attempts, and the run is labelled again.
+$GateVersion = 3
+if (Test-Path $val) {
+  $gv = try { [int]((Get-Content $val -Raw | ConvertFrom-Json).gate_version) } catch { -1 }
+  if ($gv -lt $GateVersion) {
+    Move-Item -LiteralPath $val -Destination (Join-Path $adir ('label_validation.gate{0}.json' -f [math]::Max($gv, 0))) -Force
+    Remove-Item -LiteralPath (Join-Path $adir '.label_attempts') -Force -ErrorAction SilentlyContinue
+    Write-Host ("  stage: {0} was validated by gate v{1}, current is v{2} -- re-labelling" -f $RunId, [math]::Max($gv, 0), $GateVersion) -ForegroundColor DarkGray
+  }
+}
 if (-not (Test-Path $val)) {
   if (-not $RrdPath) {
     $cand = Get-ChildItem $LocalRunDir -Filter '*.rrd' -ErrorAction SilentlyContinue |
@@ -97,15 +115,20 @@ if (-not (Test-Path $val)) {
   # drops, and labels from part of a run would be sent as the whole run's -- then locked in, because
   # a validation that exists is never redone. Accept it only at the byte count its manifest recorded.
   $mf = Join-Path $LocalRunDir 'manifest.json'
+  $leaf = Split-Path $RrdPath -Leaf
+  $want = $null
   if (Test-Path $mf) {
-    $leaf = Split-Path $RrdPath -Leaf
-    $want = $null
     foreach ($f in (Get-Content $mf -Raw | ConvertFrom-Json).files) { if ($f.name -eq $leaf) { $want = [int64]$f.bytes } }
-    $have = (Get-Item $RrdPath).Length
-    if ($null -ne $want -and $have -ne $want) {
-      Write-Host ("  stage: {0} is {1:N0} bytes but the manifest says {2:N0} -- truncated, not labelling" -f $leaf, $have, $want) -ForegroundColor Yellow
-      exit 2
-    }
+  }
+  if ($null -eq $want) {
+    # Fail-closed (round 2): with no manifest entry the size cannot be verified -- never label it.
+    Write-Host ("  stage: {0} is not listed in {1} -- its size cannot be verified, not labelling" -f $leaf, $mf) -ForegroundColor Yellow
+    exit 2
+  }
+  $have = (Get-Item $RrdPath).Length
+  if ($have -ne $want) {
+    Write-Host ("  stage: {0} is {1:N0} bytes but the manifest says {2:N0} -- truncated, not labelling" -f $leaf, $have, $want) -ForegroundColor Yellow
+    exit 2
   }
   foreach ($need in @($Python, $Label)) {
     if (-not (Test-Path $need)) { Write-Host ("  stage: missing {0}" -f $need) -ForegroundColor Yellow; exit 2 }
@@ -117,14 +140,24 @@ if (-not (Test-Path $val)) {
     exit 2
   }
   # One labeller per run: a by-hand stage run and the loop's retry must never label the same run at
-  # once (both write labeled.rrd and the validation). The lock names its owner; a dead owner -- or this
-  # very process, since the loop calls the stage in-process one run at a time -- is a stale lock.
+  # once (both write labeled.rrd and the validation). The lock names the LABELLER -- pid, start time,
+  # cap -- not its PowerShell host (round 2): a host killed mid-labelling leaves the labeller running,
+  # and that orphan must still read as busy. The start time catches PID reuse. An orphan past its cap
+  # + 5 min is one nobody will stop, so it is killed here.
   $lock = Join-Path $adir '.labelling'
-  $owner = (Get-Content $lock -ErrorAction SilentlyContinue | Select-Object -First 1) -as [int]
-  if ($owner -and $owner -ne $PID -and
-      (Get-Process -Id $owner -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^(powershell|pwsh)$' })) {
-    Write-Host ("  stage: {0} is being labelled by pid {1} -- skipped (retried later)" -f $RunId, $owner) -ForegroundColor DarkGray
-    exit 2
+  $lk = @(([string](Get-Content $lock -ErrorAction SilentlyContinue | Select-Object -First 1)) -split '\s+' | Where-Object { $_ })
+  if ($lk.Count -eq 3) {
+    $lp = Get-Process -Id ([int]$lk[0]) -ErrorAction SilentlyContinue
+    $lt = if ($lp) { try { $lp.StartTime.ToUniversalTime().Ticks } catch { -1 } } else { -1 }
+    if ($lt -eq [int64]$lk[1]) {
+      $ageMin = ((Get-Date).ToUniversalTime() - $lp.StartTime.ToUniversalTime()).TotalMinutes
+      if ($ageMin -le ([int]$lk[2] + 5)) {
+        Write-Host ("  stage: {0} is being labelled by pid {1} ({2:N0} min in) -- skipped (retried later)" -f $RunId, $lk[0], $ageMin) -ForegroundColor DarkGray
+        exit 2
+      }
+      $null = Invoke-Logged 'taskkill.exe' @('/T', '/F', '/PID', $lk[0]) $null
+      Write-Host ("  stage: orphaned labeller pid {0} ran {1:N0} min, past its {2} min cap -- killed" -f $lk[0], $ageMin, $lk[2]) -ForegroundColor Yellow
+    }
   }
   # Counted only when the labeller is really launched -- a missing GPU or a truncated pull (both cured
   # by waiting) never uses one up -- and capped, so a recording that always breaks the labeller is not
@@ -148,14 +181,17 @@ if (-not (Test-Path $val)) {
   # Bounded (review C14): a wall-clock cap, and taskkill /T so no python child is left behind. The
   # working directory is $WeightsDir so model weights download there, never into the repo.
   $argline = ($largv | ForEach-Object { '"' + $_ + '"' }) -join ' '
-  "$PID" | Out-File -Encoding ascii $lock
+  $p = $null
   try {
     $p = Start-Process -FilePath $Python -ArgumentList $argline -WorkingDirectory $WeightsDir -NoNewWindow -PassThru `
                        -RedirectStandardOutput $llog -RedirectStandardError ($llog + '.err')
     $null = $p.Handle                  # PS 5.1: cache the handle, or ExitCode reads back empty
+    ('{0} {1} {2}' -f $p.Id, $p.StartTime.ToUniversalTime().Ticks, $LabelTimeoutMin) | Out-File -Encoding ascii $lock
     $done = $p.WaitForExit([int]$LabelTimeoutMin * 60000)
     if (-not $done) { $null = Invoke-Logged 'taskkill.exe' @('/T', '/F', '/PID', "$($p.Id)") $null }
   } finally {
+    # A throw after the launch must not leave the labeller running unowned (round 2).
+    if ($p -and -not $p.HasExited) { $null = Invoke-Logged 'taskkill.exe' @('/T', '/F', '/PID', "$($p.Id)") $null }
     Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
   }
   if (-not $done) {
@@ -179,6 +215,12 @@ foreach ($c in $v.checks.PSObject.Properties) {
 if ($v.floor_calibration) {
   $lines += ('floor calibration: {0}' -f ($v.floor_calibration | ConvertTo-Json -Compress))
 }
+# Steering invariants BEFORE the per-class list: the robot prints only the first 30 lines (round 2).
+$rj = Join-Path $adir 'depth_replay.json'
+if (Test-Path $rj) {
+  $r = Get-Content $rj -Raw | ConvertFrom-Json
+  foreach ($i in $r.invariants) { $lines += ('steering invariant "{0}": {1}/{2}' -f $i.name, $i.good, $i.total) }
+}
 $os = Join-Path $adir 'obstacle_summary.json'
 if (Test-Path $os) {
   $o = Get-Content $os -Raw | ConvertFrom-Json
@@ -190,11 +232,6 @@ if (Test-Path $os) {
   } else {
     $lines += ('detections: {0}' -f $o.detections)
   }
-}
-$rj = Join-Path $adir 'depth_replay.json'
-if (Test-Path $rj) {
-  $r = Get-Content $rj -Raw | ConvertFrom-Json
-  foreach ($i in $r.invariants) { $lines += ('steering invariant "{0}": {1}/{2}' -f $i.name, $i.good, $i.total) }
 }
 $lines | Out-File -Encoding utf8 (Join-Path $adir 'SUMMARY.txt')
 
@@ -220,30 +257,39 @@ if ($rc -ne 0) {
   Write-Host ("  stage: robot unreachable (ssh exit {0}) -- bundle kept, send retried later" -f $rc) -ForegroundColor Yellow
   exit 2
 }
-# SUMMARY.txt goes LAST and the first failure stops the send: 'latest' only ever selects a folder that
-# holds SUMMARY.txt, so a half-sent bundle can never be selected.
+# SUMMARY.txt goes LAST, as SUMMARY.txt.part, and the first failure stops the send. It becomes
+# SUMMARY.txt only by an atomic rename inside the same remote command that repoints 'latest', and
+# 'latest' only ever selects a folder holding SUMMARY.txt -- so neither a half-sent bundle nor a
+# half-written summary can be selected (round 2).
+$sa = Join-Path $adir '.send_attempts'
 $ok = $true
 foreach ($f in @('label_validation.json', 'obstacle_summary.json', 'tune_patch.yaml', 'depth_replay.json', 'SUMMARY.txt')) {
   $src = Join-Path $adir $f
   if (Test-Path $src) {
-    $rc = Invoke-Logged 'scp.exe' ($SSH_OPTS + @($src, ('{0}:{1}/{2}' -f $target, $rdir, $f))) $null
+    $dst = if ($f -eq 'SUMMARY.txt') { 'SUMMARY.txt.part' } else { $f }
+    $rc = Invoke-Logged 'scp.exe' ($SSH_OPTS + @($src, ('{0}:{1}/{2}' -f $target, $rdir, $dst))) $null
     if ($rc -ne 0) { $ok = $false; break }
   }
 }
-if (-not $ok) {
-  Write-Host "  stage: send incomplete -- retried later" -ForegroundColor Yellow
-  exit 2
-}
 # 'latest' -> the NEWEST complete bundle on the robot, not "this run" (review C11): retries arrive out
-# of order, so "this run" can move latest BACKWARDS. The remote command has no double quotes on
+# of order, so "this run" can move latest BACKWARDS. Then VERIFIED to be a symlink to that bundle: GNU
+# ln into a real directory named latest exits 0 without repointing anything. No double quotes on
 # purpose: Windows PowerShell 5.1 mangles embedded double quotes passed to native programs.
-$lncmd = "cd '" + $RemoteAutotune + "' && " + 'n=$(ls -1d 20*/SUMMARY.txt 2>/dev/null | sort | tail -n 1) && test ${#n} -gt 0 && ln -sfn ${n%/SUMMARY.txt} latest'
-$rc = Invoke-Logged 'ssh.exe' ($SSH_OPTS + @($target, $lncmd)) $null
-if ($rc -ne 0) {
-  # No marker (review C15): the retry redoes the idempotent mkdir/scp/ln on a later tick.
-  Write-Host ("  stage: bundle sent but 'latest' not repointed (ssh exit {0}) -- retried later" -f $rc) -ForegroundColor Yellow
+if ($ok) {
+  $lncmd = "cd '" + $RemoteAutotune + "' && mv -f '" + $RunId + "/SUMMARY.txt.part' '" + $RunId + "/SUMMARY.txt' && " +
+           'n=$(ls -1d 20*/SUMMARY.txt 2>/dev/null | sort | tail -n 1) && test ${#n} -gt 0 && ln -sfn ${n%/SUMMARY.txt} latest && test -L latest && test $(readlink latest) = ${n%/SUMMARY.txt}'
+  $rc = Invoke-Logged 'ssh.exe' ($SSH_OPTS + @($target, $lncmd)) $null
+  $ok = ($rc -eq 0)
+}
+if (-not $ok) {
+  # No marker (review C15). The robot answered the mkdir, so this failure is on the robot's side:
+  # counted, and the loop backs off 10, 20 ... 60 min between tries (.send_attempts).
+  "$([int]((Get-Content $sa -ErrorAction SilentlyContinue | Select-Object -First 1) -as [int]) + 1)" | Out-File -Encoding ascii $sa
+  Write-Host ("  stage: send to {0} failed after the robot answered -- retried with back-off" -f $rdir) -ForegroundColor Yellow
   exit 2
 }
+Remove-Item -LiteralPath $sa -Force -ErrorAction SilentlyContinue
 (Get-Date -Format o) | Out-File -Encoding utf8 $mark
 Write-Host ("  stage: sent to robot {0}  (latest -> newest complete bundle)" -f $rdir) -ForegroundColor Green
+
 exit 0
