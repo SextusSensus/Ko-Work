@@ -643,6 +643,54 @@ class Follower:
             return prev - rate
         return target
 
+    def _yaw_cross_dwell(self, vyaw):
+        """Hold yaw at exactly 0.0 for a few ticks when its SIGN wants to flip. Returns vyaw
+        unchanged when the knob is 0 (default) -- diff-empty.
+
+        THE FAULT THIS FIXES (operator: "one leg seems to be doing the stanky leg"). Each velocity
+        command is held for a whole tick, and the measured tick is 170-200 ms -- roughly one step
+        cycle. The bridge forwards MoveCommand raw, so the step that straddles a yaw sign change is
+        told to turn OPPOSITE its planned foot placement. A walking gait cannot absorb that; one
+        leg takes it, and that is the hitch.
+
+        It is not the operator moving. The 2026-09-09 rerun measured 40 vyaw sign reversals in 789
+        ticks with 34 of them showing NO matching reversal in /follow/bearing -- i.e. the flips came
+        from the steering layers re-deciding, not from the person changing sides.
+
+        WHY A DWELL AND NOT MORE SLEW LIMITING. vyaw_slew already ramps magnitude; the gait's
+        problem is the ZERO CROSSING itself, not the rate. Passing exactly 0.0 for a couple of ticks
+        lets the stance foot land under a straight-ahead command before the turn reverses, and it
+        parks _prev_vyaw at 0 (see the baseline assignment below) so the release ramps up under the
+        normal slew rather than jumping.
+
+        SAFETY -- this only ever REDUCES |vyaw|, and yaw is the one axis it touches:
+          * every forward-vx gate is upstream and untouched; the brake still governs speed,
+          * vyaw == 0.0 passes through instantly, so _hold / _stand / a heartbeat zero are never
+            delayed by a dwell,
+          * a near-rail command BYPASSES the dwell entirely. A railed yaw means the operator is far
+            off-axis and the turn is what keeps the lock -- withholding it to protect the gait would
+            trade a wobble for a lost person, which is the worse failure.
+        """
+        n = int(getattr(self.a, "yaw_cross_dwell_ticks", 0) or 0)
+        if n <= 0:
+            return vyaw
+        prev = getattr(self, "_prev_vyaw", 0.0)
+        # Urgent turn (near the vyaw rail) -> never withhold; clear any pending dwell.
+        if abs(vyaw) >= 0.9 * max(1e-6, self.vyaw_max):
+            self._yaw_dwell_left = 0
+            return vyaw
+        if getattr(self, "_yaw_dwell_left", 0) > 0:
+            self._yaw_dwell_left -= 1
+            return 0.0
+        if prev * vyaw < 0.0:                     # sign wants to cross
+            self._yaw_dwell_left = n - 1
+            if (time.monotonic() - getattr(self, "_yaw_dwell_log_t", 0.0)) >= 2.0:
+                self._yaw_dwell_log_t = time.monotonic()
+                log("YAW-DWELL sign flip %+.2f -> %+.2f held at 0.0 for %d tick(s) "
+                    "(gait cannot absorb a mid-stride yaw reversal)" % (prev, vyaw, n))
+            return 0.0
+        return vyaw
+
     def _drive_vel(self, vx, vy, vyaw):
         # OPERATOR-HEARTBEAT precondition (untethered): NO velocity may leave this process
         # without a fresh operator heartbeat. Defense-in-depth WITH the bridge's own hb
@@ -655,6 +703,7 @@ class Follower:
         elif self.require_hb and self._hb_lost_logged:
             log("HB-OK operator heartbeat restored")
             self._hb_lost_logged = False
+        vyaw = self._yaw_cross_dwell(vyaw)
         self._ev_cmd = (vx, vy, vyaw)   # P5.3: post-deadman commanded velocity, for the event log
         # COMMANDED-VELOCITY TELEMETRY LIVES HERE, NOT ON THE TRACK PATH (2026-09-10).
         # These scalars used to be emitted only in _track's accepted-match tail, which is ONE of
@@ -4094,6 +4143,14 @@ class Follower:
         self.state = S_TRACK
         self.lost_count = 0
         self.marker_streak = 0
+        # Arm the gesture acquisition dwell. Before the FIRST lock the operator is standing
+        # there waiting to be locked onto, so pose must run immediately; after it, a drop to a
+        # stationary state is usually a momentary blip that re-ID recovers, and paying 111 ms
+        # p50 of pose for it starves the loop. See GestureTrigger.detect.
+        try:
+            self._lock_trigger._ever_locked = True
+        except Exception:  # noqa: BLE001 -- ArUco/composite triggers lack the attr; harmless
+            pass
         log("LOCKED person seeded box=(%d,%d,%d,%d) c=(%d,%d) conf=%.2f -- %s handoff complete"
             % (int(chosen["box"][0]), int(chosen["box"][1]),
                int(chosen["box"][2]), int(chosen["box"][3]),
@@ -5633,6 +5690,23 @@ def parse_args(argv):
                         "that to be pickier about gaps would widen the brake corridor and cause more "
                         "phantom braking. Field-observed 2026-09-09: gaps of 0.81-0.97 m accepted "
                         "against a 0.80 m requirement -- threading needles. 0 restores the old fit.")
+    p.add_argument("--yaw-cross-dwell-ticks", type=int, default=2,
+                   help="GAIT: when the yaw command wants to change SIGN, send exactly 0.0 for "
+                        "this many ticks first. A tick is ~170-200 ms == about one step cycle, "
+                        "and the bridge forwards MoveCommand raw, so the step straddling a "
+                        "reversal is told to turn opposite its planned foot placement -- the "
+                        "\"stanky leg\". Measured 2026-09-09: 40 vyaw sign reversals in 789 "
+                        "ticks, 34 with NO matching operator-bearing reversal. Only ever "
+                        "REDUCES |vyaw|; a near-rail (urgent) turn bypasses it so a "
+                        "lock-saving rotation is never withheld. 0 disables (diff-empty).")
+    p.add_argument("--gesture-dwell-s", type=float, default=2.0,
+                   help="PERF: once a lock has existed, wait this long in a stationary state "
+                        "before running the gesture pose model again. Pose costs 111 ms p50 / "
+                        "568 ms p99 against a 100 ms budget, and it used to fire the instant "
+                        "the follow blipped to SEARCH -- 187 SEARCH entries vs 2 real losses "
+                        "in one run. A momentary loss is re-IDs job, not a gesture. Does NOT "
+                        "apply before the first lock, when the operator is deliberately "
+                        "waiting to be locked onto. 0 disables.")
     p.add_argument("--gap-steer-yield-deg", type=float, default=34.0,
                    help="past this operator bearing, gap-steer yields its yaw bias to the tracker. "
                         "Set just INSIDE the yaw saturation point (vyaw_max/k_yaw = 0.30/0.477 = "

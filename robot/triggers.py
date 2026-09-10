@@ -120,6 +120,9 @@ class GestureTrigger(LockTrigger):
         self._miss = {}            # track_id -> consecutive missed pose frames (field fix: one
                                    # blurry/low-conf frame used to HARD-RESET the whole hold)
         self._tick = 0
+        self._stationary_since = None   # monotonic time the CURRENT stationary stretch began
+        self._ever_locked = False       # has a lock ever succeeded? (the dwell only applies after)
+        self._dwell_log_t = 0.0
         self._cmd_tick = 0         # separate decimation counter for the in-follow STOP gesture
         self._stop_streak = 0      # consecutive STOP-gesture checks the seed held both hands up
         self._ms = collections.deque(maxlen=200)   # rolling pose-inference ms (latency instrument)
@@ -377,8 +380,40 @@ class GestureTrigger(LockTrigger):
         # path while the robot is driving. Gesture re-acquire after a loss defers to the stood
         # S_REACQUIRE that follows the scan; the other three states command no motion.
         if state not in (S_SEARCH, S_REACQUIRE, S_PARKED):
+            self._stationary_since = None       # left the stationary states -> restart the dwell
             gdbg(self.a, "STATE-SKIP state=%s not in (SEARCH,REACQUIRE,PARKED) -> pose not run "
                  "(raise a hand while stationary/searching, not while following or scanning)" % state)
+            return None
+        # ACQUISITION DWELL (2026-09-10 operator: "gestures are firing all the time eating a lot
+        # of the budget ... only need gestures when the robot looses the user its following and
+        # when it needs to be locked on").
+        #
+        # State-gating alone was not enough. Pose fired the INSTANT the follow dropped to a
+        # stationary state, and most of those drops are momentary: the 2026-09-10 run logged 187
+        # SEARCH entries against only 2 real LOST events. Each one immediately cost a 111 ms p50 /
+        # 568 ms p99 pose inference against a 100 ms budget, on a 6-core Orin already at load 11.
+        # That is a feedback loop -- the blip costs pose, pose slows the loop, the slow loop makes
+        # tracking worse, which causes more blips.
+        #
+        # A momentary loss is recovered by the tracker and re-ID, NOT by a gesture: nobody raises
+        # a hand within 200 ms of the robot glancing away. So once a lock has existed, wait
+        # --gesture-dwell-s in the stationary state before paying for pose. That is exactly the
+        # operator distinction -- the robot has GENUINELY lost you.
+        #
+        # THE EXCEPTION: before any lock has EVER succeeded the operator is standing there
+        # deliberately waiting to be locked onto. Making them wait would regress the very case
+        # the trigger exists for, and it costs nothing -- the robot is stood still with no follow
+        # loop to protect. So the dwell applies only after a first successful lock.
+        now = time.monotonic()
+        if self._stationary_since is None:
+            self._stationary_since = now
+        _dwell = max(0.0, float(getattr(self.a, "gesture_dwell_s", 0.0)))
+        if self._ever_locked and _dwell > 0.0 and (now - self._stationary_since) < _dwell:
+            if (now - self._dwell_log_t) >= 2.0:
+                self._dwell_log_t = now
+                gdbg(self.a, "DWELL-SKIP %.1fs/%.1fs in %s -> pose deferred (a momentary loss is "
+                     "re-IDs job; gesture is for a genuine loss)"
+                     % (now - self._stationary_since, _dwell, state))
             return None
         self._tick += 1
         if self.every_n > 1 and (self._tick % self.every_n) != 0:

@@ -139,6 +139,8 @@ gap_profile: "on"
 gap_profile_bins: 48
 gap_max_detour_deg: 35.0
 gap_steer_yield_deg: 34.0
+yaw_cross_dwell_ticks: 2
+gesture_dwell_s: 2.0
 gap_fit_margin_m: 0.12
 map_assist: ""
 map_assist_confirm_m: 0.5
