@@ -33,10 +33,32 @@ fi
 # run's tuning recommendations before starting the next one. ADVISORY ONLY --
 # the launcher does NOT source or apply the patch (safety-critical config must
 # not silently mutate; merge into a profile deliberately). Absent file -> no-op.
+# STALENESS GUARD (2026-09-10, operator: "ensure auto improve never gets neglected"). The loop
+# had been dead since the previous evening while five runs came and went, and nothing said so --
+# this block printed whatever latest.yaml held, so stale hints were indistinguishable from fresh.
+# The honest test is NOT file age (old hints are fine if no runs have happened since) but whether
+# a run bundle exists that is NEWER than the hints: that proves the analyser never processed it.
+# Loud, and on stderr right next to the launch line, so a broken loop cannot stay invisible.
 if [ -f /home/booster/tune_hints/latest.yaml ]; then
   echo "==== TUNE HINTS from last run (advisory; not applied) ====" >&2
   sed 's/^/[tune-hints] /' /home/booster/tune_hints/latest.yaml >&2
+  _hint_age=$(( $(date +%s) - $(stat -c %Y /home/booster/tune_hints/latest.yaml 2>/dev/null || echo 0) ))
+  _newest_run=$(ls -1dt /home/booster/runs/*/ 2>/dev/null | head -1)
+  if [ -n "$_newest_run" ]; then
+    _run_t=$(stat -c %Y "$_newest_run" 2>/dev/null || echo 0)
+    _hint_t=$(stat -c %Y /home/booster/tune_hints/latest.yaml 2>/dev/null || echo 0)
+    if [ "$_run_t" -gt "$_hint_t" ]; then
+      echo "[run_follow] TUNE-STALE: run bundle $(basename "$_newest_run") is NEWER than the latest tune hints (hints are ${_hint_age}s old)." >&2
+      echo "[run_follow] TUNE-STALE: the auto-improve loop did not process the last run -- it is probably not running." >&2
+      echo "[run_follow] TUNE-STALE: on the workstation check: Get-Content (Get-ChildItem 'runtime\\runs\\_autotune_logs\\autotune_*.log' | Sort LastWriteTime -Desc | Select -First 1)" >&2
+      echo "[run_follow] TUNE-STALE: restart it by running desktop\\Auto-Tune-Service.ps1, or re-logon (Startup folder launches it)." >&2
+    else
+      echo "[run_follow] tune hints are CURRENT (newer than the last run bundle) -- auto-improve loop is alive." >&2
+    fi
+  fi
   echo "==== end TUNE HINTS ====" >&2
+else
+  echo "[run_follow] TUNE-STALE: /home/booster/tune_hints/latest.yaml is MISSING -- the auto-improve loop has never delivered hints to this robot." >&2
 fi
 # SESSION-LENGTH OVERRIDE (2026-09-10, operator: "it should be able to record for 2000 seconds").
 # K1Finder passes --max-seconds 1200 on the CLI and CLI beats the config profile by design, so

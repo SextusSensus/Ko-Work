@@ -144,7 +144,13 @@ gap_profile_bins: 48
 # and still refuses the absurd 75-81 deg ones. This does NOT weaken lock protection: pushing the
 # operator out of frame is prevented by gap_steer_max_bearing_deg (40), a SEPARATE guard keyed off
 # the OPERATOR's bearing rather than the gap's.
-gap_max_detour_deg: 60.0
+# DERIVED, not chosen: the yaw SATURATION angle vyaw_max/k_yaw = 0.300/0.477 = 0.6289 rad
+# = 36.0 deg. Past that bearing the tracking term vyaw = -k_yaw*bearing is already railed, so a
+# detour bigger than 36 deg is one the tracker cannot pull back inside a single command. (A
+# previous edit put 60 here, which was a guess.) The CRITICAL cap below is what opens up when the
+# robot is actually stuck; normal operation stays inside the tracker's recovery angle.
+# Checked against run 2's rejected detours [36,37,42,43,45,46,50,53,75,78,81]: 36.0 accepts 1.
+gap_max_detour_deg: 36.0
 gap_steer_yield_deg: 34.0
 gap_steer_deadband_deg: 8.0
 # 2026-09-10 operator: "engage earlier on the gap steer by 50%". Gap steering's own blocked-path
@@ -166,7 +172,13 @@ gap_horizon_m: 1.375
 # Only ever WIDENS what gap steer may consider, and vx stays the brake's business, so this cannot
 # authorise forward motion -- at worst the robot yaws on the spot. <=0 disables.
 gap_critical_m: 0.85
-gap_critical_detour_deg: 90.0
+# DERIVED, not chosen: the camera half-FOV, hfov_deg/2 = 105.8/2 = 52.9 deg. A gap further than
+# half-FOV from the operator's bearing is on the far side of the frame from them, which is the
+# honest geometric definition of "not on the way to the operator". (A previous edit put 90 here,
+# which was a guess and is also unreachable -- no single gap bearing can exceed the half-FOV.)
+# Checked against run 2's rejected detours: 52.9 accepts [36,37,42,43,45,46,50], still refusing
+# [53,75,78,81] -- i.e. it recovers the 7 detours the robot was denied while crawling at 0.02 m/s.
+gap_critical_detour_deg: 52.9
 yaw_cross_dwell_ticks: 2
 gesture_dwell_s: 2.0
 gap_fit_margin_m: 0.12
