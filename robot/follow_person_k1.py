@@ -579,6 +579,7 @@ class Follower:
         self._rev_state = None       # (x0, y0, t0, budget_m) while backing off, else None
         self._bs = None              # body-scan state while sweeping a full turn, else None
         self._clear_pose = None      # last odom pose where the way ahead was CLEAR (retrace anchor)
+        self._gap_mag = 0.0          # |yaw| the commit hold replays; 0 -> fall back to the rail
         self._gap_dir = 0            # GAP-STEER committed side (+1 left, -1 right, 0 none):
         self._gap_dir_t = 0.0        # when the current committed side started (for --gap-steer-commit-s hold)
                                      # hysteresis, so a detour is committed to instead of
@@ -2764,7 +2765,10 @@ class Follower:
                 _hold_edge = max(_hold_edge, self.a.dark_obstacle_widen_deg)
             _hold_left = self._gap_dir > 0
             if not (abs(bearing) >= math.radians(_hold_edge) and ((bearing > 0.0) == _hold_left)):
-                return self.a.gap_steer_rate * (1.0 if _hold_left else -1.0)
+                # Replay the magnitude that COMMITTED, not the rail. Emitting gap_steer_rate
+                # here turned a 0.004 rad/s proportional command into 0.24 rad/s for 2 s.
+                _hm = abs(getattr(self, "_gap_mag", 0.0)) or self.a.gap_steer_rate
+                return _hm * (1.0 if _hold_left else -1.0)
         if (clr_centre is not None and target_range is not None
                 and clr_centre > (target_range - self.a.obstacle_target_margin)):
             if not _in_hold:
@@ -2779,7 +2783,8 @@ class Follower:
         if _in_hold and (clr_centre is None or clr_centre >= trig
                           or (clr_centre is not None and target_range is not None
                               and clr_centre > (target_range - self.a.obstacle_target_margin))):
-            return self.a.gap_steer_rate * (1.0 if self._gap_dir > 0 else -1.0)
+            _hm = abs(getattr(self, "_gap_mag", 0.0)) or self.a.gap_steer_rate
+            return _hm * (1.0 if self._gap_dir > 0 else -1.0)
         # FOLLOW-THE-GAP PATH (2026-09-09). Preferred over the 3-sector binary test: it can see
         # a gap that straddles sectors, it validates the opening against the robot's own swept
         # width before committing, and it steers PROPORTIONALLY to how far off the gap is
@@ -2790,6 +2795,26 @@ class Follower:
             _g = self._gap_profile(target_bearing=bearing)
             if _g is not None:
                 _gb, _gw, _gr = _g
+                # A GAP DEAD AHEAD IS NOT A DETOUR (2026-09-10 field fix). Measured: 5 of 14
+                # GAP-PROFILE lines reported body-forward open at 1.89-2.92 m wide while the
+                # corridor had called the centre blocked -- the two measurements disagreeing.
+                # _cmd then came out ~0.004: too small to steer with, but non-zero, and both the
+                # yaw-gain relax and the commit latch key off non-zero rather than magnitude. So a
+                # forward gap halved the tracker's authority (operator 19-28 deg off-axis at the
+                # time) and latched a 2 s hold on the sign of noise.
+                # Standing down returns EXACTLY 0.0, which restores full k_yaw and clears the
+                # commitment -- strictly less yaw than before, and vx is the brake's business.
+                if abs(_gb) <= math.radians(max(0.0, self.a.gap_steer_deadband_deg)):
+                    self._gap_dir = 0
+                    self._gap_mag = 0.0
+                    if (time.monotonic() - getattr(self, "_gapdead_log_t", 0.0)) >= 2.0:
+                        self._gapdead_log_t = time.monotonic()
+                        log("GAP-STANDDOWN gap %+.0fdeg is within %.0fdeg of forward "
+                            "(width %.2fm at %.2fm) -> no detour, full yaw returned to the tracker "
+                            "(operator %+.0fdeg)"
+                            % (math.degrees(_gb), self.a.gap_steer_deadband_deg, _gw, _gr,
+                               math.degrees(bearing)))
+                    return 0.0
                 # Steer toward the gap centre proportionally: error is how far the gap sits off
                 # the current heading. Scaled by --gap-steer-rate and clamped to it, so this can
                 # never command a harder yaw than the fixed-rate path it replaces.
@@ -2806,6 +2831,7 @@ class Follower:
                 if self._gap_dir != _new_dir2:
                     self._gap_dir = _new_dir2
                     self._gap_dir_t = time.monotonic()
+                self._gap_mag = abs(_cmd)      # so the hold replays THIS, not the rail
                 if (time.monotonic() - getattr(self, "_gapprof_log_t", 0.0)) >= 1.0:
                     self._gapprof_log_t = time.monotonic()
                     log("GAP-PROFILE gap bearing %+.0fdeg width %.2fm at %.2fm -> yaw %+.2f rad/s "
@@ -2827,6 +2853,7 @@ class Follower:
             if (self.a.head_scan == "on" and self._scan_hint != 0
                     and (time.monotonic() - self._scan_hint_t) <= max(1.0, self.a.head_scan_hint_ttl_s)):
                 self._gap_dir = self._scan_hint
+                self._gap_mag = self.a.gap_steer_rate   # scan hint is a full-rate commitment
                 return self.a.gap_steer_rate * (1.0 if self._scan_hint > 0 else -1.0)
             self._gap_dir = 0                      # boxed in -> brake handles it; never guess
             return 0.0
@@ -2884,6 +2911,7 @@ class Follower:
         if self._gap_dir != _new_dir:
             self._gap_dir = _new_dir
             self._gap_dir_t = time.monotonic()     # start the commit-hold timer on a fresh direction
+        self._gap_mag = self.a.gap_steer_rate      # the sector path IS a full-rate commitment
         return self.a.gap_steer_rate * (1.0 if want_left else -1.0)
 
     def _sector_audit(self, target_bearing_rad, clr_centre):
@@ -5748,6 +5776,17 @@ def parse_args(argv):
                         "in one run. A momentary loss is re-IDs job, not a gesture. Does NOT "
                         "apply before the first lock, when the operator is deliberately "
                         "waiting to be locked onto. 0 disables.")
+    p.add_argument("--gap-steer-deadband-deg", type=float, default=8.0,
+                   help="GAP: treat a gap within this many degrees of body-forward as "
+                        "\"straight on\" rather than a detour -- stand down, clear the "
+                        "commitment, and hand full yaw back to the tracker. Measured "
+                        "2026-09-10: 5 of 14 profile hits reported forward open at "
+                        "1.89-2.92 m wide while the corridor called the centre blocked, "
+                        "yielding a ~0.004 rad/s command that still halved k_yaw (the "
+                        "relax keys off non-zero) and latched a 2 s hold on the sign of "
+                        "noise, with the operator 19-28 deg off-axis. False cases sat at "
+                        "0-1 deg and every true detour at 19-38 deg, so 8 deg splits them "
+                        "with room. Only ever REDUCES |vyaw|. 0 disables (diff-empty).")
     p.add_argument("--gap-steer-yield-deg", type=float, default=34.0,
                    help="past this operator bearing, gap-steer yields its yaw bias to the tracker. "
                         "Set just INSIDE the yaw saturation point (vyaw_max/k_yaw = 0.30/0.477 = "
