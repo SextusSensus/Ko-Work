@@ -2048,6 +2048,14 @@ function Start-Follow([bool]$drive){
     }
     $ip=$ipCtrl.Text.Trim(); if(-not $ip){ Add-LogCtrl 'Enter the robot IP (connection box) first.' $amber; return $false }
     $script:RobotIP=$ip
+    # Same pre-flight contract as Start-Tracker: signal the operator session before the first deploy
+    # byte, and confirm no earlier follow node is running. Every abort below returns $false and the
+    # toggle handler closes the session.
+    Open-OperatorSession
+    $old = Stop-RobotFollowNode $ip
+    if($old -eq 'UNKNOWN'){ $old = Stop-RobotFollowNode $ip }   # one retry: a slow answer is not a refusal
+    if($old -eq 'STILL-RUNNING'){ Add-LogCtrl ('An earlier follow node is still running on the robot 8 s after SIGTERM -- NOT starting a second one. If it does not exit, force it:  ssh {0}@{1} "pkill -KILL -f ''follow_person_k1\.py''"  then toggle Follow again. If the robot is moving, use the gamepad / e-stop.' -f $script:SshUser,$ip) $red; return $false }
+    if($old -ne 'GONE'){ Add-LogCtrl ("Could not confirm that no follow node is running on {0} (the robot did not answer) -- NOT launching. Toggle Follow again." -f $ip) $red; return $false }
     # SINGLE CAMERA CONSUMER: stop the Live View stream (it also decodes the head
     # camera) so the camera is only ever streamed once.
     if($script:LiveOn){ Add-LogCtrl 'Stopping Live View (single camera consumer)...' $amber; Stop-Live }
@@ -2100,9 +2108,19 @@ function Stop-Follow([bool]$procAlreadyDead=$false){
     # reset the toggle UI without re-entering its handler
     $script:FollowToggleGuard=$true; $followToggle.Checked=$false; $script:FollowToggleGuard=$false
     $followToggle.Text='Follow Marker (QR): OFF'; $followToggle.UseVisualStyleBackColor=$true; $followToggle.ForeColor=[System.Drawing.SystemColors]::ControlText
-    $followStatus.Text='Follow stopped. Robot sent stop + PREP on exit.'; $followStatus.ForeColor=[System.Drawing.Color]::DimGray
-    Add-LogCtrl 'Follow stopped (Ctrl-C sent; robot does stop + PREP).' $amber
+    # Confirm on the robot (belt-and-braces SIGTERM after the Ctrl-C), and say what actually happened.
+    $gone='UNKNOWN'; $ipF=''; try{ $ipF=$ipCtrl.Text.Trim() }catch{}
+    if($ipF){ $gone = Stop-RobotFollowNode $ipF }
+    if($gone -eq 'GONE'){
+        $followStatus.Text='Follow stopped. No follow node left on the robot (checked).'
+        Add-LogCtrl 'Follow stopped (Ctrl-C sent; no follow node left on the robot -- checked).' $amber
+    } else {
+        $followStatus.Text='Follow stop NOT confirmed -- check the robot.'
+        Add-LogCtrl ('Follow stop NOT confirmed ({0}). If the robot is moving, use the gamepad / e-stop.' -f $(if($ipF){$gone}else{'no robot IP'})) $red
+    }
+    $followStatus.ForeColor=[System.Drawing.Color]::DimGray
     $statusLbl.Text='Follow stopped.'
+    Close-OperatorSession   # session over -> the Auto-Tune loop may use the link again (shared contract)
 }
 
 # ============================================================================
@@ -2701,6 +2719,7 @@ $followToggle.Add_CheckedChanged({
     if($followToggle.Checked){
         $drive=[bool]$followDriveChk.Checked
         $ok=Start-Follow $drive
+        if(-not $ok){ Close-OperatorSession }   # launch aborted -> release the Auto-Tune loop (shared contract)
         if($ok){
             if($drive){ $followToggle.Text='Follow: DRIVING - click to STOP'; $followToggle.BackColor=$red }
             else { $followToggle.Text='Follow: PREVIEW - click to STOP'; $followToggle.BackColor=$accent }
