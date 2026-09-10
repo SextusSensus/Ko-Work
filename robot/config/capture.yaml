@@ -19,22 +19,27 @@ require_heartbeat: true       # operator deadman mandatory (active-consent tethe
 obstacle_brake: true          # depth forward-clearance reflex on (only ever reduces vx)
 max_follow_range: 3.0         # geofence: stand if depth-range to target > 3.0 m
 coast_frames: 6               # coast ~0.6 s (yaw-only) through brief occlusions
-# 120 -> 1800 (2026-09-10 operator: "rerun cuts way too short"). The 120 s watchdog terminated
-# every capture at 2 minutes and the .rrd closes with the session -- the 761 MB recording measured
-# at ~6.3 MB/s is exactly 120 s, which is precisely what the operator was seeing. This profile
-# EXISTS to collect data, so a 2-minute cap defeats its purpose. 1800 s outlasts a battery, so the
-# run now ends when the operator or the pack decides, not the clock.
+# 120 -> 0 == NO SESSION CAP (2026-09-10 operator: "rerun cuts way too short ... should have no
+# limit and record until run ends"). The 120 s watchdog terminated every capture at 2 minutes and
+# the .rrd closes with the session -- the 761 MB recording measured at ~6.3 MB/s is exactly 120 s,
+# which is precisely what the operator was seeing. This profile EXISTS to collect data, so a
+# 2-minute cap defeats its purpose. The run now ends when the operator stops it or the battery
+# does. (0 is handled explicitly in run(): `max_seconds > 0 and elapsed >= max_seconds`, because a
+# bare `elapsed >= 0` is true on the FIRST tick and would end the run instantly.)
 #
-# SAFETY, deliberately scoped: max_seconds is a real runaway bound, so this is raised ONLY here.
-# defaults.yaml (120), field.yaml (120) and demo.yaml (90) are UNTOUCHED -- a normal follow still
-# self-terminates at 2 minutes. Capture is the supervised, operator-present case, and K1Finder's
-# 'Controller run' forces --preview where the node cannot command velocity at all, so a long
-# session carries no drive risk. Every other bound is unchanged: require_heartbeat above, the
-# obstacle brake, max_follow_range 3.0, the C++ staleness floor, and the hardware e-stop.
+# SAFETY, deliberately scoped two ways:
+#  * Only THIS profile is unbounded. defaults.yaml (120), field.yaml (120) and demo.yaml (90) are
+#    UNTOUCHED, so a normal follow still self-terminates at 2 minutes.
+#  * An unbounded session while DRIVING is FAIL-CLOSED: parse_args refuses --drive with
+#    max_seconds <= 0 unless --allow-untethered-unsafe is passed deliberately. So
+#    run_follow_capture.sh drive will REFUSE to start with this profile until the operator opts in,
+#    while a preview/controller run (no bridge -> velocity cannot be commanded at all) records
+#    unbounded and free. Every other bound is unchanged: require_heartbeat above, the obstacle
+#    brake, max_follow_range 3.0, the C++ staleness floor, and the hardware e-stop.
 #
-# DISK: ~6.3 MB/s at rerun_image_every_n 2 => ~11 GB for a full 30 min; offload_run.sh keeps the
-# last 10 bundles, so worst case ~110 GB against 247 GB free (measured 2026-09-10).
-max_seconds: 1800.0
+# DISK: ~6.3 MB/s at rerun_image_every_n 2 => ~23 GB/hour; offload_run.sh keeps the last 10
+# bundles. 247 GB free measured 2026-09-10, so watch `df -h /home` on very long sessions.
+max_seconds: 0.0
 obstacle_target_margin: 0.4   # don't brake on the operator being followed
 
 # --- recording bundle (the point of this profile) ---

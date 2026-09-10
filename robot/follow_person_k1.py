@@ -2711,6 +2711,25 @@ class Follower:
             want_left = bearing < 0.0              # fresh choice: least detour off the follow line
         else:
             want_left = left_ok
+        # DON'T FIGHT THE TRACKER AT THE YAW RAIL (2026-09-10 field fix). vyaw = -k_yaw*bearing
+        # saturates vyaw_max at |bearing| = vyaw_max/k_yaw = 0.30/0.477 = 36.0 deg. Measured live,
+        # 20% of frames sat beyond that and 20% of vyaw samples were railed. The edge guard below
+        # keys off --gap-steer-max-bearing-deg (40), which is ABOVE that 36 deg saturation point,
+        # so gap-steer kept adding bias exactly when the tracking term had no authority left --
+        # observed as "GAP-STEER bias +0.24 (bearing +37deg)", i.e. steering LEFT while the
+        # operator was 37 deg RIGHT. That both delays re-centring and contributes to the yaw
+        # limit cycle the operator sees as spinning left/right.
+        # Past saturation the operator is the only thing that matters: yield the yaw budget to the
+        # tracker. This only ever REMOVES bias (returns 0.0), so it cannot steer the robot
+        # anywhere new, and the brake still governs vx independently.
+        if abs(bearing) >= math.radians(max(1.0, self.a.gap_steer_yield_deg)):
+            if (time.monotonic() - getattr(self, "_gap_yield_log_t", 0.0)) >= 2.0:
+                self._gap_yield_log_t = time.monotonic()
+                log("GAP-YIELD operator at %+.0fdeg past the %.0fdeg yaw-saturation point -> "
+                    "gap-steer bias suppressed so the tracker keeps full yaw authority"
+                    % (math.degrees(bearing), self.a.gap_steer_yield_deg))
+            self._gap_dir = 0
+            return 0.0
         # DARK-OBSTACLE widening (2026-09-09 couch fix). When _corridor_clearance
         # has classified the forward view as a persistent fail-open surface
         # (couch/dark fabric), a normal gap-steer edge of 40 deg still leaves the
@@ -3303,7 +3322,14 @@ class Follower:
                         % ((t0 - _prev_t0) * 1000.0, self.state, self.walking, self.standing))
                 self._last_tick_t0 = t0
 
-                if (t0 - self.t_start) >= self.a.max_seconds:
+                # max_seconds <= 0 means NO SESSION CAP -- run until the operator stops it (2026-09-10
+                # operator request: "should have no limit and record until run ends"). Note the
+                # comparison must be guarded rather than relying on 0: `elapsed >= 0` is true on the
+                # FIRST tick, so a bare 0 would terminate the run instantly instead of unbounding it.
+                # An unlimited DRIVE is refused in parse_args unless explicitly overridden, so by the
+                # time we get here an unbounded session is either preview (cannot command velocity)
+                # or a deliberate, logged operator choice.
+                if self.a.max_seconds > 0 and (t0 - self.t_start) >= self.a.max_seconds:
                     log("WATCHDOG max-seconds (%.0fs) reached -> stop" % self.a.max_seconds)
                     break
 
@@ -5570,6 +5596,14 @@ def parse_args(argv):
                         "that to be pickier about gaps would widen the brake corridor and cause more "
                         "phantom braking. Field-observed 2026-09-09: gaps of 0.81-0.97 m accepted "
                         "against a 0.80 m requirement -- threading needles. 0 restores the old fit.")
+    p.add_argument("--gap-steer-yield-deg", type=float, default=34.0,
+                   help="past this operator bearing, gap-steer yields its yaw bias to the tracker. "
+                        "Set just INSIDE the yaw saturation point (vyaw_max/k_yaw = 0.30/0.477 = "
+                        "36.0 deg): beyond it the tracking term is railed and has no authority "
+                        "left, so any added bias only delays re-centring and feeds the yaw limit "
+                        "cycle. Field-observed 2026-09-10: 'GAP-STEER bias +0.24 (bearing +37deg)' "
+                        "steering LEFT while the operator was 37 deg RIGHT. Only ever removes "
+                        "bias, never adds; the brake still governs vx.")
     p.add_argument("--gap-max-detour-deg", type=float, default=35.0,
                    help="a --gap-profile gap is only considered when its centre bearing is within "
                         "this angle of the OPERATOR's bearing. Without it the layer picks any wide "
@@ -6260,6 +6294,19 @@ def parse_args(argv):
     # explicit unsafe override. Fires HERE (parse_args) before Follower/rclpy.init/CamNode/YOLO/
     # bridge -- so no motion path is ever spawned for an untethered-unsafe config. Inverts today's
     # dangerous default (drive silently ran with the deadman OFF). Preview is unaffected.
+    # UNLIMITED SESSION + DRIVE is fail-closed (2026-09-10). max_seconds <= 0 removes the session
+    # runaway bound, which is exactly what a data-capture run wants -- but on a DRIVING robot it
+    # also removes the last time-based backstop, so it must be a deliberate choice rather than a
+    # profile side effect. Preview is unaffected: with no bridge the node cannot command velocity,
+    # so an unbounded preview/controller run is free. Mirrors the deadman gate below, and fires
+    # here (before Follower/rclpy/YOLO/bridge) so no motion path is spawned for such a config.
+    if args.drive and args.max_seconds <= 0 and not args.allow_untethered_unsafe:
+        p.error("REFUSING TO DRIVE: --max-seconds %g removes the session watchdog, and an "
+                "unbounded DRIVING session has no time-based backstop if the operator loses "
+                "track of it. Either set a positive --max-seconds, run without --drive (a "
+                "preview/controller run records unbounded and cannot command velocity), or pass "
+                "--allow-untethered-unsafe to accept an unbounded drive deliberately."
+                % args.max_seconds)
     if args.drive and not args.require_heartbeat and not args.allow_untethered_unsafe:
         p.error("REFUSING TO DRIVE: --drive without --require-heartbeat is untethered-unsafe "
                 "(no operator deadman -- a lost operator cannot stop the robot). Add "
