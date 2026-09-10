@@ -131,7 +131,19 @@ while (-not $stopReq) {
       & scp.exe @args 2>$null | Out-Null
     }
     if (-not (Test-Path (Join-Path $localDir 'k1_follow.err'))) {
-      Write-Host ("  WARN: pull incomplete for {0} (no k1_follow.err) -- will retry next tick" -f $chosen) -ForegroundColor Yellow
+      # Check if the source file even exists on the robot -- a bundle without k1_follow.err
+      # on the robot side is a permanent condition (crashed offload, wrong bundle shape), so
+      # mark it processed to stop the loop from retrying forever. A pull that fails for a
+      # TRANSIENT reason (ssh timeout) will re-fire cleanly on the next tick because
+      # ledger-mark below only lands if the source-check confirms permanent absence.
+      $exists = Ssh-Text ("test -f '{0}/{1}/k1_follow.err' && echo yes" -f $RemoteRuns, $chosen)
+      if ($exists -match 'yes') {
+        Write-Host ("  WARN: pull incomplete for {0} (transient) -- will retry next tick" -f $chosen) -ForegroundColor Yellow
+      } else {
+        Write-Host ("  SKIP: {0} has no k1_follow.err on robot -- marking processed" -f $chosen) -ForegroundColor DarkYellow
+        $processed[$chosen] = $true
+        $chosen | Out-File -Append -Encoding utf8 $ledgerPath
+      }
       Start-Sleep -Seconds $PollSec
       continue
     }
