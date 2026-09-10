@@ -458,6 +458,14 @@ class Follower:
         # P1.2: record when drive is running via the unsafe override (the parse_args gate let it
         # through only because --allow-untethered-unsafe was passed) so the log/.rrd captures that
         # the operator deadman was deliberately bypassed.
+        # Record an unbounded DRIVING session in the log/.rrd so post-incident it is never a
+        # question whether the session watchdog was in play.
+        if self.drive and getattr(args, "max_seconds", 1.0) <= 0:
+            log("UNBOUNDED-DRIVE active: NO session watchdog (--max-seconds 0). Bound is the "
+                "operator deadman%s -- the robot stops when the heartbeat goes stale, not on a "
+                "clock. Obstacle brake, geofence and the C++ staleness floor unchanged."
+                % (" (require_heartbeat ARMED)" if self.require_hb
+                   else " ... which is NOT armed -- keep a hand on the gamepad e-stop"))
         if self.drive and getattr(args, "allow_untethered_unsafe", False) and not self.require_hb:
             log("WARN UNTETHERED-UNSAFE override active: driving with NO operator deadman "
                 "(--allow-untethered-unsafe). Keep a hand on the gamepad e-stop.")
@@ -1422,6 +1430,35 @@ class Follower:
             r = float(np.percentile(vv, self.a.obstacle_pctile))
             if best is None or r < best:
                 best = r
+                best_m = m
+        # BRAKE-BLOB FORENSICS (2026-09-10). The brake was pinning clearance at 0.65-0.68 m with
+        # vx<=0.02 on 47% of frames and nothing in the log said WHERE that return was, so its
+        # identity was guesswork -- I attributed it to the hands, then found the arms are behind
+        # the camera at rest and could not have produced it. One line ends the guessing: the
+        # winning blob's image centroid, pixel extent, and world height band. Read it as:
+        #   near the bottom centre + height ~0 -> floor / ground-reject leak
+        #   low + wide + height 0.6-0.8        -> the robot's own body or hands
+        #   off to one side, height 0.3-1.0    -> real furniture
+        #   coincident with the tracked person -> the operator (target-margin should exclude them)
+        # Rate-limited to 1/s, and ONLY when the blob is inside the braking band, so a healthy
+        # frame costs nothing. Pure observation: nothing here changes a decision.
+        if (best is not None and best < self.a.obstacle_brake_start
+                and (time.monotonic() - getattr(self, "_blob_dbg_t", 0.0)) >= 1.0):
+            self._blob_dbg_t = time.monotonic()
+            try:
+                ys, xs = np.nonzero(best_m)
+                if hgt is not None:
+                    hb = hgt[best_m]
+                    hs = "h=[%.2f..%.2f]m" % (float(np.nanmin(hb)), float(np.nanmax(hb)))
+                else:
+                    hs = "h=n/a"
+                log("BRAKE-BLOB %.2fm px=%d centroid=(%d,%d) u=[%d..%d] v=[%d..%d] %s "
+                    "(self_range=%.2f brake_stop=%.2f)"
+                    % (best, int(best_m.sum()), int(xs.mean()), int(ys.mean()),
+                       int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max()), hs,
+                       self.a.obstacle_self_range_m, self.a.obstacle_brake_stop))
+            except Exception:  # noqa: BLE001 -- forensics must never break the brake
+                pass
         return best, int(sizes.max())
 
     def _is_ground(self, z, h, npx):
@@ -6063,6 +6100,17 @@ def parse_args(argv):
     p.add_argument("--hb-stale-ms", type=int, default=400,
                    help="heartbeat older than this (ms) = operator absent -> stop (this node's gate; "
                         "the bridge applies its own HB_STALE_MS/HB_PREP_MS tiers independently)")
+    p.add_argument("--allow-unbounded-drive", action=argparse.BooleanOptionalAction, default=False,
+                   help="permit --drive with NO session cap (--max-seconds 0), for long capture "
+                        "runs that should record until the operator stops them. DELIBERATELY "
+                        "SEPARATE from --allow-untethered-unsafe: that flag waives the operator "
+                        "DEADMAN, which is a far larger concession than waiving a timer, and "
+                        "nobody should have to give up the deadman to get unlimited recording "
+                        "time. With --require-heartbeat armed the deadman IS the bound -- the "
+                        "robot stops the moment the operator's heartbeat goes stale, whatever the "
+                        "clock says -- so an unbounded session is genuinely held by active "
+                        "consent rather than by a timeout. Refused by default so an unbounded "
+                        "drive is always an explicit choice.")
     p.add_argument("--allow-untethered-unsafe", action=argparse.BooleanOptionalAction, default=False,
                    help="DANGEROUS override: permit --drive WITHOUT --require-heartbeat (no operator "
                         "deadman). Default off -> such a config is REFUSED at startup. Only for a "
@@ -6300,13 +6348,19 @@ def parse_args(argv):
     # profile side effect. Preview is unaffected: with no bridge the node cannot command velocity,
     # so an unbounded preview/controller run is free. Mirrors the deadman gate below, and fires
     # here (before Follower/rclpy/YOLO/bridge) so no motion path is spawned for such a config.
-    if args.drive and args.max_seconds <= 0 and not args.allow_untethered_unsafe:
-        p.error("REFUSING TO DRIVE: --max-seconds %g removes the session watchdog, and an "
-                "unbounded DRIVING session has no time-based backstop if the operator loses "
-                "track of it. Either set a positive --max-seconds, run without --drive (a "
-                "preview/controller run records unbounded and cannot command velocity), or pass "
-                "--allow-untethered-unsafe to accept an unbounded drive deliberately."
+    if args.drive and args.max_seconds <= 0 and not args.allow_unbounded_drive:
+        p.error("REFUSING TO DRIVE: --max-seconds %g removes the session watchdog. Pass "
+                "--allow-unbounded-drive to record until you stop it (keep --require-heartbeat "
+                "armed -- the deadman then IS the bound), or set a positive --max-seconds."
                 % args.max_seconds)
+    # An unbounded drive with NO deadman has neither a time bound nor an operator bound. That
+    # combination needs both overrides, and it is worth refusing loudly rather than letting the two
+    # independently-reasonable flags silently compose into a robot nothing will stop.
+    if (args.drive and args.max_seconds <= 0 and not args.require_heartbeat
+            and not args.allow_untethered_unsafe):
+        p.error("REFUSING TO DRIVE: unbounded session AND no operator deadman -- nothing bounds "
+                "this run in time or by consent. Arm --require-heartbeat (recommended: the "
+                "heartbeat becomes the bound), or set a positive --max-seconds.")
     if args.drive and not args.require_heartbeat and not args.allow_untethered_unsafe:
         p.error("REFUSING TO DRIVE: --drive without --require-heartbeat is untethered-unsafe "
                 "(no operator deadman -- a lost operator cannot stop the robot). Add "

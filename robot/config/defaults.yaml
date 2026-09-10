@@ -17,6 +17,7 @@
 # the code's shipped defaults so `no profile` == today's behavior byte-for-byte.
 admit_conf: 0.6
 admit_spacing: 5
+allow_unbounded_drive: false
 allow_untethered_unsafe: false
 anchor_floor: null
 appearance: 'global'
@@ -137,6 +138,7 @@ yolo_trt_cache: '/home/booster/trt_cache'
 gap_profile: "on"
 gap_profile_bins: 48
 gap_max_detour_deg: 35.0
+gap_steer_yield_deg: 34.0
 gap_fit_margin_m: 0.12
 map_assist: ""
 map_assist_confirm_m: 0.5
@@ -154,7 +156,17 @@ ground_corr: -0.60
 ground_min_px: 500
 obstacle_corridor_frac: 0.55
 self_mask: ""
-obstacle_self_range_m: 0.65
+# 0.65 -> 0.75 (2026-09-10 field fix). MUST stay ABOVE obstacle_brake_stop (0.70), or the
+# full-stop zone lands inside the band where the robot's OWN HANDS return. The URDF puts the
+# hands at 0.67 m (see _corridor_clearance's height note), so at 0.65 they passed the self gate
+# and landed at 0.65-0.68 -- i.e. below brake_stop 0.70 = instant vx=0. Measured live: clearance
+# pinned at 0.65-0.68 with vx<=0.02 on 47% of frames, which starved forward motion, let the
+# operator drift past 36 deg bearing (where k_yaw*bearing saturates vyaw_max) and left the robot
+# railing yaw left/right instead of following. The graded brake (0.70..1.15) still works for real
+# obstacles from 0.75 out; min_safe_range 0.60 and the C++ floor are untouched.
+# PROPER FIX is a populated self-MASK (models/self_mask.npy is currently ALL-FALSE, so
+# self_mask: "" is doing nothing) -- range alone cannot tell a hand at 0.67 from a chair at 0.67.
+obstacle_self_range_m: 0.75
 obstacle_max_m: 5.0
 obstacle_memory_max_turn_deg: 25.0
 obstacle_memory_s: 0.5

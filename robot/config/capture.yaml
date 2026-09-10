@@ -40,6 +40,12 @@ coast_frames: 6               # coast ~0.6 s (yaw-only) through brief occlusions
 # DISK: ~6.3 MB/s at rerun_image_every_n 2 => ~23 GB/hour; offload_run.sh keeps the last 10
 # bundles. 247 GB free measured 2026-09-10, so watch `df -h /home` on very long sessions.
 max_seconds: 0.0
+# Permits the unbounded session ABOVE while driving (2026-09-10 operator: "while driving make sure
+# it has unlimited time"). Deliberately NOT --allow-untethered-unsafe: that waives the operator
+# DEADMAN, and require_heartbeat above stays TRUE. So this run is bounded by ACTIVE CONSENT rather
+# than by a clock -- the robot stops the instant the operator's heartbeat goes stale, however long
+# the session has been going. That is a stronger guarantee than a 120 s timer, not a weaker one.
+allow_unbounded_drive: true
 obstacle_target_margin: 0.4   # don't brake on the operator being followed
 
 # --- recording bundle (the point of this profile) ---
