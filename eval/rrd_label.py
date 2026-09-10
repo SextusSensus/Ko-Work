@@ -39,6 +39,19 @@ _VAL = {"floor": [], "wall": []}
 # node's hfov setting and must not be trusted for 3-D placement -- see floor_calibration.
 K1_FX, K1_FY, K1_CX, K1_CY = 205.8, 205.8, 247.3, 236.9
 NOMINAL_CAM_HEIGHT_M = 0.86
+# RGB <-> depth pairing. Every frame carries a 'wall' stamp (time.time() at its camera callback);
+# depth's frame_idx is only the RGB seq current when it arrived (docs/RUN_ARTIFACTS.md 3.1), so pairing
+# is by wall time: the newest depth that arrived NO LATER than the RGB frame and at most this long
+# before it. 0.5 s is the node's own depth-freshness contract -- robot/common.py DEPTH_FRESH_S ==
+# perception.latest_depth(max_age=0.5) -- so no label rests on depth older than the robot itself would
+# act on. A frame without such depth keeps its 2-D labels and gets no 3-D placement.
+DEPTH_MAX_AGE_S = 0.5
+# The gate is INCONCLUSIVE when fewer labelled frames than this pair. Measured 2026-09-10 on the 74
+# local recordings with RGB+depth (2026-07-14 .. 09-10, stride 2): every run with clean streams (no RGB
+# or depth gap > 1 s, >= 50 labelled frames; N=30) paired >= 87.9% -- the shortfall is the decimated
+# depth cadence (logged depth ~every 450 ms). Runs with stream dropouts went down to 82.8%, short runs
+# (< 50 frames) to 55.6%. Below 85% a run pairs worse than any clean run on record.
+MIN_DEPTH_PAIRED_FRAC = 0.85
 
 
 def _kd(dw, dh):
@@ -104,7 +117,33 @@ def recorded_pinhole(path):
     return None
 
 
-def validate_geometry(h_eff):
+def wall_stamps(path):
+    """({frame_idx: wall s} for /camera/rgb, the same for /camera/depth) from the .rrd 'wall' timeline.
+    Same views as read_rrd's rerun-0.23 reader (index frame_idx, last row per frame_idx wins), so each
+    stamp belongs to the frame read_rrd kept. Unreadable -> empty -> nothing pairs -> INCONCLUSIVE."""
+    out = ({}, {})
+    try:
+        import pyarrow as pa
+        import pyarrow.compute as pc
+        import rerun as rr
+        rec = rr.dataframe.load_recording(path)
+        for (ent, comps), d in zip((("/camera/rgb", ["ImageBuffer", "ImageFormat"]),
+                                    ("/camera/depth", ["ImageBuffer", "ImageFormat", "DepthMeter"])), out):
+            t = rec.view(index="frame_idx", contents={ent: comps}).select().read_all()
+            cb = next((n for n in t.column_names if n.endswith("ImageBuffer")), None)
+            if cb is None or "frame_idx" not in t.column_names or "wall" not in t.column_names:
+                continue
+            ok = t.column(cb).is_valid().to_numpy(zero_copy_only=False)
+            for k, ns, v in zip(t.column("frame_idx").to_pylist(),
+                                pc.cast(t.column("wall"), pa.int64()).to_pylist(), ok):
+                if k is not None and ns is not None and v:
+                    d[int(k)] = ns / 1e9
+    except Exception as e:  # noqa: BLE001 -- no stamps means no pairing, never a guessed one
+        print("  NOTE: wall timeline unreadable (%s) -- no frame gets depth" % e)
+    return out
+
+
+def validate_geometry(h_eff, pairing=None):
     """PASS / FAIL / INCONCLUSIVE on the back-projected semantic geometry -- FAIL-CLOSED.
 
     Only PASS is ever sent to the robot, and PASS requires every check to have actually RUN and
@@ -118,17 +157,42 @@ def validate_geometry(h_eff):
             any focal length or depth scale, including the synthesized 70-deg pinhole this gate
             exists to catch (H*fy ~ 204 m.px over fy 388.5 = 0.53 m). Only an absolute band catches it.
     walls : wall points must not land below the floor (<= 5% more than 0.10 m under it).
+    depth_pairing : `pairing` (counts from main) -- at least MIN_DEPTH_PAIRED_FRAC of the labelled
+            frames must have depth <= DEPTH_MAX_AGE_S old and never from the future. The checks above
+            cannot see a misaligned pairing (a floor looks the same from any heading), so too little
+            aligned depth is INCONCLUSIVE, never PASS; no counts at all is a SKIP.
 
-    Status: FAIL if any check that ran failed; else INCONCLUSIVE if any check could not run; else
-    PASS.
+    Status: FAIL if any check that ran failed; else INCONCLUSIVE if any check could not run or the
+    depth pairing is too sparse; else PASS.
     """
     import math
     import numpy as np
-    out = {"checks": {}}
+    # gate_version: bump whenever the gate's meaning changes, so a report says which gate made it. NOTE:
+    # nothing re-labels on it yet -- desktop/Autotune-Stage.ps1 keeps any existing label_validation.json.
+    out = {"gate_version": 3, "checks": {}}
     failed = skipped = False
+
+    n_lab = int((pairing or {}).get("labelled_frames") or 0)
+    if n_lab <= 0:
+        out["checks"]["depth_pairing"] = {"status": "SKIP", "why": "no depth-pairing counts"}
+        skipped = True
+    else:
+        c = dict(pairing)
+        paired = int(c.get("paired") or 0)
+        c["frac_paired"] = round(paired / float(n_lab), 4)
+        c["min_frac"] = MIN_DEPTH_PAIRED_FRAC
+        if paired >= MIN_DEPTH_PAIRED_FRAC * n_lab:
+            c["status"] = "PASS"
+        else:
+            c["status"] = "INCONCLUSIVE"
+            c["why"] = ("only %d of %d labelled frames have depth <= %.1f s old -- too little aligned "
+                        "depth to vouch for the 3-D labels" % (paired, n_lab, DEPTH_MAX_AGE_S))
+            skipped = True
+        out["checks"]["depth_pairing"] = c
 
     fl = np.concatenate(_VAL["floor"]) if _VAL["floor"] else None
     floor_h = None
+    h_ok = h_eff is not None and math.isfinite(h_eff)
     if fl is None or len(fl) < 200:
         out["checks"]["floor"] = {"status": "SKIP", "why": "too few floor points (%d)"
                                   % (0 if fl is None else len(fl))}
@@ -137,27 +201,39 @@ def validate_geometry(h_eff):
         A = np.c_[fl[:, 0], fl[:, 1], np.ones(len(fl))]
         coef, *_ = np.linalg.lstsq(A, fl[:, 2], rcond=None)
         tilt = math.degrees(math.atan(math.hypot(coef[0], coef[1])))
-        floor_h = float(np.median(fl[:, 2]))
-        c = {"points": int(len(fl)), "tilt_deg": round(tilt, 2), "height_m": round(floor_h, 3),
-             "plane_residual_m": round(float(np.std(fl[:, 2] - A @ coef)), 3)}
-        if h_eff is not None:
-            c["expected_height_m"] = round(-h_eff, 3)
-        if tilt > 5.0:
-            c["status"], c["why"] = "FAIL", "floor plane tilted %.1f deg (> 5)" % tilt
-            failed = True
-        elif h_eff is None:
-            c["status"], c["why"] = "SKIP", "no floor calibration -- height unchecked"
-            skipped = True
-        elif abs(floor_h + h_eff) > 0.10:
-            c["status"], c["why"] = "FAIL", "floor at %.2f m, calibration says %.2f m" % (floor_h, -h_eff)
+        med = float(np.median(fl[:, 2]))
+        resid = float(np.std(fl[:, 2] - A @ coef))
+        c = {"points": int(len(fl))}
+        if not all(math.isfinite(v) for v in (tilt, med, resid)):
+            # NaN compares False against every threshold, so it would fall through to PASS -- and
+            # json.dump would write NaN, which is not JSON. Fail, and keep the report finite.
+            c["status"], c["why"] = "FAIL", "non-finite floor fit"
             failed = True
         else:
-            c["status"] = "PASS"
+            floor_h = med
+            c.update({"tilt_deg": round(tilt, 2), "height_m": round(floor_h, 3),
+                      "plane_residual_m": round(resid, 3)})
+            if h_ok:
+                c["expected_height_m"] = round(-h_eff, 3)
+            if not tilt <= 5.0:
+                c["status"], c["why"] = "FAIL", "floor plane tilted %.1f deg (> 5)" % tilt
+                failed = True
+            elif h_eff is None:
+                c["status"], c["why"] = "SKIP", "no floor calibration -- height unchecked"
+                skipped = True
+            elif not (h_ok and abs(floor_h + h_eff) <= 0.10):
+                c["status"], c["why"] = "FAIL", "floor at %.2f m does not match the calibration" % floor_h
+                failed = True
+            else:
+                c["status"] = "PASS"
         out["checks"]["floor"] = c
 
     if h_eff is None:
         out["checks"]["scale"] = {"status": "SKIP", "why": "no floor calibration"}
         skipped = True
+    elif not h_ok:
+        out["checks"]["scale"] = {"status": "FAIL", "why": "non-finite camera height"}
+        failed = True
     else:
         sc = {"camera_height_m": round(float(h_eff), 3), "nominal_m": NOMINAL_CAM_HEIGHT_M,
               "band_m": [0.70, 1.10]}
@@ -176,7 +252,7 @@ def validate_geometry(h_eff):
                                   % (0 if wl is None else len(wl))}
         skipped = True
     else:
-        ref = floor_h if floor_h is not None else (-h_eff if h_eff is not None else None)
+        ref = floor_h if floor_h is not None else (-h_eff if h_ok else None)
         c = {"points": int(len(wl)),
              "height_span_m": round(float(np.percentile(wl[:, 2], 90) - np.percentile(wl[:, 2], 10)), 3)}
         if ref is None:
@@ -197,10 +273,16 @@ def focal_px(w, hfov_deg):
     return (w / 2.0) / math.tan(math.radians(hfov_deg) / 2.0)
 
 
-def nearest_earlier(keys_sorted, fi):
+def pair_depth(t_rgb, dwall, dkeys, max_age=DEPTH_MAX_AGE_S):
+    """(key, age_s) of the newest depth frame that arrived no later than an RGB frame stamped t_rgb.
+    key is None when that depth is older than max_age; (None, None) when no depth arrived before it.
+    dwall: depth wall stamps, ascending; dkeys: the matching read_rrd depth keys."""
     import bisect
-    i = bisect.bisect_right(keys_sorted, fi) - 1
-    return keys_sorted[max(0, i)] if keys_sorted else None
+    i = bisect.bisect_right(dwall, t_rgb) - 1 if t_rgb is not None else -1
+    if i < 0:
+        return None, None
+    age = t_rgb - dwall[i]
+    return (dkeys[i] if age <= max_age else None), age
 
 
 def sample_box_depth(d, x1, y1, x2, y2, sw, sh):
@@ -438,7 +520,9 @@ def main():
     except Exception as e:
         print("blueprint note:", e)
 
-    depth_fis = sorted(depth)
+    rgb_wall, depth_wall = wall_stamps(a.rrd)
+    dpairs = sorted((t, k) for k, t in depth_wall.items() if k in depth)
+    dwall, dkeys = [t for t, _k in dpairs], [k for _t, k in dpairs]
     img_fis = sorted(images)
     jf = open(a.jsonl, "w") if a.jsonl else None
     n_obj = 0
@@ -448,6 +532,8 @@ def main():
                                               "rng": [], "frames": [], "corr": 0})
 
     labeled_frames = [fi for k, fi in enumerate(img_fis) if k % a.stride == 0]
+    pairing = {"labelled_frames": len(labeled_frames), "paired": 0, "dropped_too_old": 0,
+               "dropped_no_prior_depth": 0, "max_age_s": DEPTH_MAX_AGE_S}
     for si, fi in enumerate(labeled_frames):
         rgb = images[fi]
         h, w = rgb.shape[:2]
@@ -458,7 +544,14 @@ def main():
         res = (model.track(bgr, persist=True, conf=a.conf, verbose=False, tracker="bytetrack.yaml")[0]
                if a.track else model.predict(bgr, conf=a.conf, verbose=False)[0])
 
-        d = depth.get(nearest_earlier(depth_fis, fi)) if depth_fis else None
+        dk, age = pair_depth(rgb_wall.get(fi), dwall, dkeys)
+        d = depth[dk] if dk is not None else None       # None: 2-D labels only, no 3-D, no _VAL
+        if d is not None:
+            pairing["paired"] += 1
+        elif age is None:                               # no depth before it (or an unstamped frame)
+            pairing["dropped_no_prior_depth"] += 1
+        else:
+            pairing["dropped_too_old"] += 1
         sw = (d.shape[1] / float(w)) if d is not None else 1.0
         sh = (d.shape[0] / float(h)) if d is not None else 1.0
 
@@ -514,6 +607,9 @@ def main():
 
     if jf:
         jf.close()
+    print("DEPTH PAIRING: %d of %d labelled frames paired (depth <= %.1f s old, never future); dropped: "
+          "%d too old, %d with no earlier depth" % (pairing["paired"], pairing["labelled_frames"],
+          DEPTH_MAX_AGE_S, pairing["dropped_too_old"], pairing["dropped_no_prior_depth"]))
 
     # ---- dedup summary (tracking) ----
     uniq_out = None
@@ -593,7 +689,7 @@ def main():
         print("wrote %s" % a.summary_json)
 
     # ---- geometry validation gate: "labeled properly" as numbers, not an assertion ----
-    val = validate_geometry(h_eff)
+    val = validate_geometry(h_eff, pairing)
     val["intrinsics"] = {k: round(float(v), 3) for k, v in _K.items()}
     val["floor_calibration"] = cal
     val["recorded_pinhole"] = rec_pin
