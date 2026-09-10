@@ -233,7 +233,9 @@ if (Test-Path $os) {
     $lines += ('detections: {0}' -f $o.detections)
   }
 }
-$lines | Out-File -Encoding utf8 (Join-Path $adir 'SUMMARY.txt')
+# UTF-8 WITHOUT a byte-order mark: run_follow.sh prints this file on the robot, and Windows PowerShell
+# 5.1's Out-File -Encoding utf8 writes a BOM that showed up as a stray character in the digest.
+[IO.File]::WriteAllLines((Join-Path $adir 'SUMMARY.txt'), [string[]]$lines, (New-Object System.Text.UTF8Encoding($false)))
 
 if ($v.status -ne 'PASS') {
   Write-Host ("  *** stage: geometry validation {0} for {1} -- labels NOT sent to the robot (see {2}) ***" -f $v.status, $RunId, $val) -ForegroundColor Red
