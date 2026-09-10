@@ -26,8 +26,8 @@
   labelling error or timeout, attempts exhausted, robot unreachable).
 #>
 param(
-  [Parameter(Mandatory = $true)][string]$RunId,
-  [Parameter(Mandatory = $true)][string]$LocalRunDir,
+  [string]$RunId,
+  [string]$LocalRunDir,
   [string]$RrdPath,
   [string]$AutotuneDir  = '',
   [string]$Python       = '',
@@ -39,17 +39,22 @@ param(
   [string]$User           = 'booster',
   [string]$Ip             = '192.168.9.75',
   [string]$RemoteAutotune = '/home/booster/autotune',
-  [ValidateRange(1, 1440)][int]$LabelTimeoutMin = 90,
+  [int]$LabelTimeoutMin = 90,
   [switch]$NoSend
 )
 $ErrorActionPreference = 'Stop'
 # Unexpected errors are RETRYABLE (exit 2), never the verdict code 1: under powershell.exe -File an
 # unhandled throw exits 1, which the loop and a by-hand caller would read as a final geometry FAIL.
 trap { Write-Host ("  stage: unexpected error -- {0} (retried later)" -f $_.Exception.Message) -ForegroundColor Yellow; exit 2 }
+# Parameters are checked HERE, after the trap, not with Mandatory/ValidateRange: a parameter-binding failure
+# happens before any trap and exits 1 under -File -- the verdict code (round 3). Every problem is a 2.
+if (-not $RunId -or -not $LocalRunDir) { Write-Host '  stage: -RunId and -LocalRunDir are required' -ForegroundColor Yellow; exit 2 }
+if ($LabelTimeoutMin -lt 1 -or $LabelTimeoutMin -gt 1440) {
+  Write-Host ("  stage: -LabelTimeoutMin {0} is outside 1..1440" -f $LabelTimeoutMin) -ForegroundColor Yellow; exit 2
+}
 # Defaults resolved HERE, not in param(): in Windows PowerShell 5.1, $PSScriptRoot is EMPTY while an
-# ADVANCED script's param() defaults are evaluated -- [CmdletBinding()] or any [Parameter()], as the
-# Mandatory RunId above makes this one -- when it is started with `powershell.exe -File`. Isolated
-# by per-factor repro: a plain param() works; encoding, BOM and help blocks are irrelevant.
+# ADVANCED script's param() defaults are evaluated ([CmdletBinding()] or any [Parameter()]) when it is
+# started with `powershell.exe -File` (per-factor repro). Kept in the body so it stays right either way.
 $here = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 if (-not $AutotuneDir) { $AutotuneDir = Join-Path $here '..\autotune' }
 if (-not $Python)      { $Python      = Join-Path $here '..\.venv-analysis\Scripts\python.exe' }
@@ -58,6 +63,10 @@ if (-not $WeightsDir)  { $WeightsDir  = Join-Path $env:USERPROFILE '.cache\k1_we
 $SSH_OPTS = @('-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=8',
               '-o', 'ServerAliveInterval=10', '-o', 'BatchMode=yes')
 $target = '{0}@{1}' -f $User, $Ip
+# Robot processes that mean "the operator owns the robot": the follow node, K1Finder's Live stream and its
+# manual Loco session (round 3 -- the pull used to see only the follow node). Dots are escaped and the last
+# name is bracketed, so the pattern never matches the shell line of the probe that carries it.
+$OperatorProcs = 'follow_person_k1\.py|stream_cam\.py|run_loco\.sh|b1_loco_example_clien[t]'
 
 function Invoke-Logged([string]$exe, [string[]]$argv, [string]$log) {
   # Windows PowerShell 5.1 wraps every stderr line of a native command in an ErrorRecord, and under
@@ -97,6 +106,9 @@ if (Test-Path $val) {
   if ($gv -lt $GateVersion) {
     Move-Item -LiteralPath $val -Destination (Join-Path $adir ('label_validation.gate{0}.json' -f [math]::Max($gv, 0))) -Force
     Remove-Item -LiteralPath (Join-Path $adir '.label_attempts') -Force -ErrorAction SilentlyContinue
+    # A bundle already sent under the old gate is re-sent if the new verdict is PASS (round 3): the marker
+    # would otherwise stop the send. Until then the robot's 'latest' ignores it (gate-aware selection below).
+    Remove-Item -LiteralPath (Join-Path $adir '.sent_to_robot'), (Join-Path $adir '.send_attempts') -Force -ErrorAction SilentlyContinue
     Write-Host ("  stage: {0} was validated by gate v{1}, current is v{2} -- re-labelling" -f $RunId, [math]::Max($gv, 0), $GateVersion) -ForegroundColor DarkGray
   }
 }
@@ -148,7 +160,12 @@ if (-not (Test-Path $val)) {
   $lk = @(([string](Get-Content $lock -ErrorAction SilentlyContinue | Select-Object -First 1)) -split '\s+' | Where-Object { $_ })
   if ($lk.Count -eq 3) {
     $lp = Get-Process -Id ([int]$lk[0]) -ErrorAction SilentlyContinue
-    $lt = if ($lp) { try { $lp.StartTime.ToUniversalTime().Ticks } catch { -1 } } else { -1 }
+    $lt = if ($lp) { try { $lp.StartTime.ToUniversalTime().Ticks } catch { $null } } else { -1 }
+    if ($null -eq $lt) {
+      # Alive but its start time cannot be read (e.g. an elevated labeller): busy, never stale (round 3).
+      Write-Host ("  stage: {0}'s lock names a live pid {1} whose start time cannot be read -- treated as busy" -f $RunId, $lk[0]) -ForegroundColor DarkGray
+      exit 2
+    }
     if ($lt -eq [int64]$lk[1]) {
       $ageMin = ((Get-Date).ToUniversalTime() - $lp.StartTime.ToUniversalTime()).TotalMinutes
       if ($ageMin -le ([int]$lk[2] + 5)) {
@@ -266,7 +283,7 @@ foreach ($n in 'Global\K1-Operator-Session', 'Local\K1-Operator-Session') {
     exit 2
   }
 }
-$probe = 'if pgrep -f ''follow_person_k1\.py'' >/dev/null; then echo busy; elif [ $? -eq 1 ]; then echo idle; else echo err; fi'
+$probe = ('if pgrep -f ''{0}'' >/dev/null; then echo busy; elif [ $? -eq 1 ]; then echo idle; else echo err; fi' -f $OperatorProcs)
 $pl = @(& { $ErrorActionPreference = 'Continue'; & ssh.exe @($SSH_OPTS + @($target, $probe)) 2>$null } | Where-Object { $_ -and $_.Trim() })
 if (-not ($pl.Count -gt 0 -and $pl[-1].Trim() -eq 'idle')) {
   Write-Host ("  stage: robot busy (follow live) or unreachable -- send of {0} deferred (retried later)" -f $RunId) -ForegroundColor Yellow
@@ -294,13 +311,16 @@ foreach ($f in @('label_validation.json', 'obstacle_summary.json', 'tune_patch.y
     if ($rc -ne 0) { $ok = $false; break }
   }
 }
-# 'latest' -> the NEWEST complete bundle on the robot, not "this run" (review C11): retries arrive out
-# of order, so "this run" can move latest BACKWARDS. Then VERIFIED to be a symlink to that bundle: GNU
-# ln into a real directory named latest exits 0 without repointing anything. No double quotes on
-# purpose: Windows PowerShell 5.1 mangles embedded double quotes passed to native programs.
+# 'latest' -> the NEWEST complete bundle on the robot WHOSE REPORT IS AT THE CURRENT GATE, not "this run"
+# (review C11: retries arrive out of order, so "this run" can move latest BACKWARDS; round 3: a bundle sent
+# under an older gate must never be selected -- 20260910T094533Z_d35f670 was). Then VERIFIED to be a symlink
+# to that bundle: GNU ln into a real directory named latest exits 0 without repointing anything. No double
+# quotes on purpose: Windows PowerShell 5.1 mangles embedded double quotes passed to native programs, so the
+# JSON quote after gate_version is matched with '.'.
 if ($ok) {
+  $gre = if ($GateVersion -le 9) { '([{0}-9]|[1-9][0-9])' -f $GateVersion } else { '[1-9][0-9]' }
   $lncmd = "cd '" + $RemoteAutotune + "' && mv -f '" + $RunId + "/SUMMARY.txt.part' '" + $RunId + "/SUMMARY.txt' && " +
-           'n=$(ls -1d 20*/SUMMARY.txt 2>/dev/null | sort | tail -n 1) && test ${#n} -gt 0 && ln -sfn ${n%/SUMMARY.txt} latest && test -L latest && test $(readlink latest) = ${n%/SUMMARY.txt}'
+           ('n=$(for f in 20*/SUMMARY.txt; do d=${{f%/SUMMARY.txt}}; grep -Eq ''gate_version.: *{0}'' $d/label_validation.json 2>/dev/null && echo $d; done | sort | tail -n 1) && test ${{#n}} -gt 0 && ln -sfn $n latest && test -L latest && test $(readlink latest) = $n' -f $gre)
   $rc = Invoke-Logged 'ssh.exe' ($SSH_OPTS + @($target, $lncmd)) $null
   $ok = ($rc -eq 0)
 }

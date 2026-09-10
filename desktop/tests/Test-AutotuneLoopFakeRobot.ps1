@@ -45,14 +45,15 @@ function scp.exe {
 
 # ---- a realistic bundle, from a real local run
 $real = Get-ChildItem (Join-Path $repo 'runs') -Directory | Where-Object { (Test-Path "$($_.FullName)\k1_follow.err") -and (Test-Path "$($_.FullName)\config\defaults.yaml") } | Sort-Object Name -Descending | Select-Object -First 1
-function New-FakeRun([string]$rid, [int]$errShortBy = 0) {
+function New-FakeRun([string]$rid, [int]$errShortBy = 0, [switch]$NoErr) {
   $d = Join-Path $R "runs\$rid"; New-Item -ItemType Directory -Force -Path (Join-Path $d 'config') | Out-Null
   Copy-Item "$($real.FullName)\k1_follow.err" "$d\k1_follow.err"
   Copy-Item "$($real.FullName)\config\defaults.yaml" "$d\config\defaults.yaml"
   $eb = (Get-Item "$d\k1_follow.err").Length
   $yb = (Get-Item "$d\config\defaults.yaml").Length
-  @{ run_id = $rid; files = @(@{ name = 'k1_follow.err'; bytes = ($eb + $errShortBy) }, @{ name = 'config/defaults.yaml'; bytes = $yb },
-                              @{ name = 'k1_follow_1.rrd'; bytes = 1000 }) } | ConvertTo-Json -Depth 4 | Out-File -Encoding ascii "$d\manifest.json"
+  $files = @(@{ name = 'k1_follow.err'; bytes = ($eb + $errShortBy) }, @{ name = 'config/defaults.yaml'; bytes = $yb }, @{ name = 'k1_follow_1.rrd'; bytes = 1000 })
+  if ($NoErr) { $files = @($files | Where-Object { $_.name -ne 'k1_follow.err' }) }
+  @{ run_id = $rid; files = $files } | ConvertTo-Json -Depth 4 | Out-File -Encoding ascii "$d\manifest.json"
 }
 # Hashtable splatting: an ARRAY splatted into a PowerShell script binds positionally ('-User' is a value).
 $common = @{ Once = $true; User = 'x'; Ip = 'fake'; PollSec = 1; RemoteRuns = '/fake/runs'; RemoteHints = '/fake/hints';
@@ -80,6 +81,19 @@ New-FakeRun '20990103T000003Z_ccccccc' 50
 $o3 = & $loop @common *>&1 | Out-String
 $led = @(Get-Content $ledger -ErrorAction SilentlyContinue)
 Check 'L3 short k1_follow.err -> WARN, not ledgered, no hints' ((-not ($led -contains '20990103T000003Z_ccccccc')) -and $o3 -match 'incomplete pull' -and -not (Test-Path "$R\hints\20990103T000003Z_ccccccc.yaml")) ("ledger={0}" -f ($led -join ','))
+
+# L4 a NEWER run ledgered by the SKIP path (no k1_follow.err) must not keep latest.yaml off an older run's hints
+New-FakeRun '20990106T000006Z_fffffff' -NoErr
+$o4a = & $loop @common *>&1 | Out-String                       # SKIP-ledgers fffffff
+New-FakeRun '20990105T000005Z_eeeeeee'
+$o4b = & $loop @common *>&1 | Out-String                       # processes eeeeeee
+Check 'L4 SKIP-ledgered newer run does not block latest.yaml' (($o4a -match 'SKIP') -and ($o4b -match 'OK: report') -and ($o4b -notmatch 'latest.yaml stays on the newest')) ''
+
+# L5 a run that THROWS after taking the loop mutex (bad -Analyser) must release it on the way out
+$bad = $common.Clone(); $bad.Analyser = 'C:\nope\missing_analyser.py'
+try { & $loop @bad *>&1 | Out-Null } catch { }
+$state = & powershell.exe -NoProfile -Command "try { `$m = [System.Threading.Mutex]::OpenExisting('Global\K1-AutoTune-Loop'); if (`$m.WaitOne(0)) { `$m.ReleaseMutex(); 'free' } else { 'held' } } catch [System.Threading.WaitHandleCannotBeOpenedException] { 'gone' } catch [System.Threading.AbandonedMutexException] { 'abandoned' }"
+Check 'L5 loop mutex released after a throw' ($state -in @('free', 'gone')) ("mutex={0}" -f $state)
 
 "---- L1 output ----"; $o1
 "---- L3 output ----"; $o3

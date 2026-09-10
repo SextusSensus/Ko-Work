@@ -154,5 +154,23 @@ $c = New-Case '20990101T000017Z_t17' 'PASS'
 $r = Invoke-Stage 't17' @('-RunId', '20990101T000017Z_t17', '-LocalRunDir', $c.run, '-AutotuneDir', $c.aut, '-Ip', $dead)
 Check 'T17 unreachable at send -> deferred, not counted' ($r.rc -eq 2 -and $r.log -match 'deferred' -and -not (Test-Path "$($c.adir)\.send_attempts")) ("rc={0} {1}s" -f $r.rc, $r.s)
 
+# T18 missing -RunId -> exit 2 (a parameter problem is retryable, never the verdict code 1)
+$c = New-Case '20990101T000018Z_t18' 'PASS'
+$r = Invoke-Stage 't18' @('-LocalRunDir', $c.run, '-AutotuneDir', $c.aut, '-Ip', $dead)
+Check 'T18 missing -RunId -> 2' ($r.rc -eq 2 -and $r.log -match 'required') ("rc={0}" -f $r.rc)
+
+# T19 -LabelTimeoutMin 0 -> exit 2 (was a ValidateRange binding failure = exit 1)
+$r = Invoke-Stage 't19' @('-RunId', '20990101T000018Z_t18', '-LocalRunDir', $c.run, '-AutotuneDir', $c.aut, '-Ip', $dead, '-LabelTimeoutMin', '0')
+Check 'T19 -LabelTimeoutMin 0 -> 2' ($r.rc -eq 2 -and $r.log -match 'outside 1..1440') ("rc={0}" -f $r.rc)
+
+# T20 a bundle SENT under an older gate -> re-labelled at v3 and its sent marker cleared, so a PASS re-sends
+$c = New-RrdCase '20990101T000020Z_t20'
+'{"gate_version": 2, "status": "PASS", "checks": {}}' | Out-File -Encoding ascii (Join-Path $c.adir 'label_validation.json')
+'sent' | Out-File -Encoding ascii (Join-Path $c.adir '.sent_to_robot')
+$env:FAKE_LABEL_SLEEP = '0'
+$r = Invoke-Stage 't20' @('-RunId', '20990101T000020Z_t20', '-LocalRunDir', $c.run, '-AutotuneDir', $c.aut, '-Label', $fake, '-NoSend')
+$gv = try { (Get-Content "$($c.adir)\label_validation.json" -Raw | ConvertFrom-Json).gate_version } catch { $null }
+Check 'T20 sent under old gate -> re-labelled, marker cleared' ($r.rc -eq 0 -and $gv -eq 3 -and -not (Test-Path "$($c.adir)\.sent_to_robot")) ("rc={0} gate={1}" -f $r.rc, $gv)
+
 Write-Host ("`n{0} failure(s); logs in {1}" -f $fails, $T)
 exit $fails

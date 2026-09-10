@@ -86,6 +86,9 @@ try { $loopMutex = New-Object System.Threading.Mutex($false, 'Global\K1-AutoTune
 catch { $loopMutex = New-Object System.Threading.Mutex($false, 'Local\K1-AutoTune-Loop') }
 try { $ownLoop = $loopMutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $ownLoop = $true }
 if (-not $ownLoop) { Write-Host 'another Auto-Tune-Loop is already running -- exiting' -ForegroundColor Yellow; exit 3 }
+# Everything after the acquisition runs inside try/finally, so the mutex is released on EVERY way out
+# (round 3). The body below is deliberately not re-indented.
+try {
 
 # Key-only SSH -- K1Finder handles pass auth separately; the loop must never
 # prompt.
@@ -94,6 +97,13 @@ $SSH_OPTS = @('-o','StrictHostKeyChecking=accept-new','-o','ConnectTimeout=8',
 $target = ('{0}@{1}' -f $User, $Ip)
 $ScpExe = 'scp.exe'      # the watched .rrd pull runs it as a child process (Receive-RrdPolled)
 $SshExe = 'ssh.exe'      # ...and the pull's one streamed robot monitor
+# Robot processes that mean "the operator owns the robot": the follow node, K1Finder's Live stream and its
+# manual Loco session (round 3 -- the pull used to see only the follow node). Dots are escaped and the last
+# name is bracketed, so the pattern never matches the shell line of the probe that carries it.
+$OperatorProcs = 'follow_person_k1\.py|stream_cam\.py|run_loco\.sh|b1_loco_example_clien[t]'
+# The stage's current gate (Autotune-Stage.ps1 $GateVersion, eval/rrd_label.py gate_version). The retry
+# re-labels any report older than this; keep the two in step.
+$StageGateVersion = 3
 
 # Windows PowerShell 5.1 wraps every stderr line of a native command in an ErrorRecord, and with
 # $ErrorActionPreference = 'Stop' (above) the FIRST one is a TERMINATING error. The service log
@@ -141,7 +151,7 @@ function Test-RobotIdle {
   # fail-closed (round 2). Judged on the LAST output line, so a login banner cannot fake an answer.
   # The escaped \. keeps pgrep from matching this command's own shell line.
   if (Test-OperatorSession) { return $false }
-  $st = @(Ssh-Text 'if pgrep -f ''follow_person_k1\.py'' >/dev/null; then echo busy; elif [ $? -eq 1 ]; then echo idle; else echo err; fi' |
+  $st = @(Ssh-Text ('if pgrep -f ''{0}'' >/dev/null; then echo busy; elif [ $? -eq 1 ]; then echo idle; else echo err; fi' -f $OperatorProcs) |
           Where-Object { $_ -and $_.Trim() })
   return ($st.Count -gt 0 -and $st[-1].Trim() -eq 'idle')
 }
@@ -191,7 +201,7 @@ function Receive-RrdPolled([string]$remote, [string]$local) {
   $ErrorActionPreference = 'Continue'
   $slog = $local + '.scp.log'
   $mlog = $local + '.mon.log'
-  $mcmd = 'while :; do if pgrep -f ''follow_person_k1\.py'' >/dev/null; then echo busy; elif [ $? -eq 1 ]; then echo idle; else echo err; fi; sleep 2; done'
+  $mcmd = ('while :; do if pgrep -f ''{0}'' >/dev/null; then echo busy; elif [ $? -eq 1 ]; then echo idle; else echo err; fi; sleep 2; done' -f $OperatorProcs)
   $mon = Start-Process -FilePath $SshExe -ArgumentList (($SSH_OPTS -join ' ') + ' ' + $target + ' "' + $mcmd + '"') -NoNewWindow -PassThru `
                        -RedirectStandardOutput $mlog -RedirectStandardError ($mlog + '.err')
   $null = $mon.Handle
@@ -228,7 +238,14 @@ function Get-LocalRrd([string]$dir, [string]$rid) {
   # from data. Returns the local path, or $null with the reason printed.
   $mf = Join-Path $dir 'manifest.json'
   if (-not (Test-Path $mf)) { return $null }
-  $m = Get-Content $mf -Raw | ConvertFrom-Json
+  $m = try { Get-Content $mf -Raw | ConvertFrom-Json } catch { $null }
+  if (-not $m) {
+    # A torn manifest (a dropped re-fetch) must not wedge the run: remove it and count a failed pull.
+    Write-Host ("  rrd: {0}'s manifest does not parse -- removed, counted as a failed pull" -f $rid) -ForegroundColor Yellow
+    Remove-Item -LiteralPath $mf -Force -ErrorAction SilentlyContinue
+    Note-PullFailure $rid
+    return $null
+  }
   $name = $null; $bytes = 0
   foreach ($f in $m.files) { if ($f.name -like '*.rrd') { $name = $f.name; $bytes = [int64]$f.bytes; break } }
   if (-not $name) {
@@ -268,6 +285,35 @@ function Get-LocalRrd([string]$dir, [string]$rid) {
   Note-PullFailure $rid
   return $null
 }
+function Invoke-DepthReplay([string]$dir, [string]$rrd) {
+  # DEPTH REPLAY -- the steering invariants on the recorded depth. The regression net for the class of bug
+  # thresholds cannot express: the gap-steer sign inversion (fc88b19) made the robot steer AWAY from its
+  # chosen gap on every run since August. Fail-soft: never blocks hints or labelling. Called by the main
+  # path AND the retry's relabel path (round 3: a deferred or crashed pull used to be labelled but never
+  # replayed).
+  try {
+    if ($rrd -and (Test-Path $Replay) -and (Test-Path $ReplayPython)) {
+      $rj = Join-Path $dir 'depth_replay.json'
+      $rlog = Join-Path $dir '.replay.log'
+      $null = Invoke-Logged $ReplayPython @($Replay, '--rrd', $rrd, '--json', $rj) $rlog
+      if (Test-Path $rj) {
+        $r = Get-Content $rj -Raw | ConvertFrom-Json
+        $bad = @($r.invariants | Where-Object { $_.total -gt 0 -and $_.good -lt $_.total })
+        Write-Host ("  replay: {0} frames, {1} scored, {2} steers" -f $r.frames, $r.scored, $r.steers) -ForegroundColor DarkGray
+        if ($bad.Count -gt 0) {
+          # A failed invariant is a DEFECT IN THE SHIPPED CODE, not a tuning hint -- printed in red and never
+          # folded into the advisory YAML.
+          Write-Host "  *** INVARIANT VIOLATION -- the steering law is WRONG, not mistuned ***" -ForegroundColor Red
+          foreach ($b in $bad) { Write-Host ("      {0}: {1}/{2}   rule: {3}" -f $b.name, $b.good, $b.total, $b.rule) -ForegroundColor Red }
+        } else {
+          Write-Host "  replay: all steering invariants PASS" -ForegroundColor Green
+        }
+      } else {
+        Write-Host ("  replay: produced no scorecard -- see {0}" -f $rlog) -ForegroundColor Yellow
+      }
+    }
+  } catch { Write-Host ("  replay: skipped ({0})" -f $_.Exception.Message) -ForegroundColor Yellow }
+}
 $script:lastRelabel = [datetime]::MinValue
 function Retry-PendingSends {
   # Once per tick, FIRST. Revisits unfinished autotune folders:
@@ -283,28 +329,31 @@ function Retry-PendingSends {
   # tick (U1). Every folder is handled in its own try/catch.
   if (-not (Test-Path $StageScript) -or -not (Test-Path $AutotuneDir)) { return }
   $cands = @(Get-ChildItem $AutotuneDir -Directory |
-             Where-Object { $_.Name -match '^[0-9]{8}T[0-9]{6}Z_' } |
-             Where-Object { -not (Test-Path (Join-Path $_.FullName '.sent_to_robot')) -and
-                            -not (Test-Path (Join-Path $_.FullName '.no_send')) })
+             Where-Object { $_.Name -match '^[0-9]{8}T[0-9]{6}Z_' -and -not (Test-Path (Join-Path $_.FullName '.no_send')) })
   if ($cands.Count -eq 0) { return }
-  if (-not (Test-RobotIdle)) { return }
   $send = @(); $relabel = @()
   foreach ($d in $cands) {
     try {
       $vf = Join-Path $d.FullName 'label_validation.json'
-      if (Test-Path $vf) {
-        $st = try { (Get-Content $vf -Raw | ConvertFrom-Json).status } catch { $null }   # unreadable = not PASS
-        if ($st -ne 'PASS') { continue }
+      $gv = -1; $st = $null
+      if (Test-Path $vf) { try { $j = Get-Content $vf -Raw | ConvertFrom-Json; $st = $j.status; $gv = [int]$j.gate_version } catch { } }
+      if ((Test-Path $vf) -and $gv -ge $StageGateVersion) {
+        # A current-gate report: only a PASS that never reached the robot is a SEND candidate.
+        if ($st -ne 'PASS' -or (Test-Path (Join-Path $d.FullName '.sent_to_robot'))) { continue }
         $sa = Join-Path $d.FullName '.send_attempts'
         if ((Test-Path $sa) -and ((Get-Date) - (Get-Item $sa).LastWriteTime).TotalMinutes -lt ([math]::Min((Get-Count $sa), 6) * 10)) { continue }
         $send += $d
       } elseif ($processed.ContainsKey($d.Name) -and
                 (Get-Count (Join-Path $d.FullName '.label_attempts')) -lt 3 -and
                 (Get-Count (Join-Path $d.FullName '.pull_attempts')) -lt 3) {
+        # No report, or one from an OLDER gate -- sent or not, any status (round 3): RELABEL. The stage moves
+        # the old report aside, and a new PASS is re-sent over the old bundle.
         $relabel += $d
       }
     } catch { Write-Host ("  retry {0}: {1}" -f $d.Name, $_.Exception.Message) -ForegroundColor Yellow }
   }
+  if ($send.Count -eq 0 -and ($relabel.Count -eq 0 -or ((Get-Date) - $script:lastRelabel).TotalMinutes -lt 10)) { return }
+  if (-not (Test-RobotIdle)) { return }         # one probe, and only when there is something to do
   foreach ($d in @($send | Sort-Object Name -Descending | Select-Object -First 3)) {
     try {
       & $StageScript -RunId $d.Name -LocalRunDir (Join-Path $LocalRuns $d.Name) -AutotuneDir $AutotuneDir `
@@ -322,11 +371,13 @@ function Retry-PendingSends {
     if (-not (Test-Path $lmf)) {
       # The run's local copy is gone: fetch its manifest again, or count a failed pull.
       New-Item -ItemType Directory -Force -Path $ldir | Out-Null
-      $null = Scp-Down ("{0}/{1}/manifest.json" -f $RemoteRuns, $d.Name) $lmf
-      if (-not (Test-Path $lmf)) { Note-PullFailure $d.Name; return }
+      $rcm = Scp-Down ("{0}/{1}/manifest.json" -f $RemoteRuns, $d.Name) $lmf
+      $okm = ($rcm -eq 0) -and (Test-Path $lmf) -and [bool](try { Get-Content $lmf -Raw | ConvertFrom-Json } catch { $null })
+      if (-not $okm) { Remove-Item -LiteralPath $lmf -Force -ErrorAction SilentlyContinue; Note-PullFailure $d.Name; return }
     }
     $rrd = Get-LocalRrd $ldir $d.Name
     if (-not $rrd) { return }
+    if (-not (Test-Path (Join-Path $ldir 'depth_replay.json'))) { Invoke-DepthReplay $ldir $rrd }
     & $StageScript -RunId $d.Name -LocalRunDir $ldir -RrdPath $rrd -AutotuneDir $AutotuneDir `
                    -Python $ReplayPython -User $User -Ip $Ip -RemoteAutotune $RemoteAutotune | Out-Host
   } catch { Write-Host ("  retry-relabel {0}: {1}" -f $d.Name, $_.Exception.Message) -ForegroundColor Yellow }
@@ -470,7 +521,10 @@ while (-not $stopReq) {
     $ok1 = Scp-Up $src ("{0}/{1}.yaml" -f $RemoteHints, $chosen)
     # latest.yaml must never move BACKWARDS (round 2): a backlog is processed newest-first, so an older
     # run's hints go to <run>.yaml only and latest.yaml keeps the newest processed run's.
-    $newer = @($processed.Keys | Where-Object { [string]::CompareOrdinal([string]$_, $chosen) -gt 0 })
+    # Only runs that produced hints count: a SKIP-ledgered newer run (no k1_follow.err) must not keep
+    # latest.yaml on even older hints (round 3).
+    $newer = @($processed.Keys | Where-Object { [string]::CompareOrdinal([string]$_, $chosen) -gt 0 -and
+                                                (Test-Path (Join-Path $LocalRuns ('{0}\tune_report.json' -f $_))) })
     if ($newer.Count -eq 0) {
       $ok2 = Scp-Up $src ("{0}/latest.yaml" -f $RemoteHints)
     } else {
@@ -482,6 +536,11 @@ while (-not $stopReq) {
                     $out, $pat, $RemoteHints, $chosen) -ForegroundColor Green
       $processed[$chosen] = $true
       $chosen | Out-File -Append -Encoding utf8 $ledgerPath
+      # The run's autotune folder exists from the moment it is ledgered (round 3): a reboot or a killed
+      # service during the multi-minute pull, replay or labelling below then leaves it to Retry-PendingSends.
+      # Over-cap and .rrd-less runs are never labelled, so they get no folder.
+      $rb = @($man.files | Where-Object { $_.name -like '*.rrd' } | ForEach-Object { [int64]$_.bytes } | Select-Object -First 1)
+      if ($rb.Count -and $rb[0] -le ([int64]$MaxRrdPullMB * 1MB)) { $null = Ensure-AutotuneFolder $chosen }
     } else {
       Write-Host ("  WARN: scp back failed (rc1={0} rc2={1}) -- will retry next tick" -f $ok1, $ok2) -ForegroundColor Yellow
     }
@@ -491,32 +550,8 @@ while (-not $stopReq) {
     try { $localRrd = Get-LocalRrd $localDir $chosen }
     catch { Write-Host ("  rrd: {0}" -f $_.Exception.Message) -ForegroundColor Yellow; $null = Ensure-AutotuneFolder $chosen }
 
-    # 3c) DEPTH REPLAY -- the steering invariants on the recorded depth. The regression net for the
-    # class of bug thresholds cannot express: the gap-steer sign inversion (fc88b19) made the robot
-    # steer AWAY from its chosen gap on every run since August. Fail-soft: the advisory hints below
-    # are the loop's primary job and must never be blocked by a replay problem.
-    try {
-      if ($localRrd -and (Test-Path $Replay) -and (Test-Path $ReplayPython)) {
-        $rj = Join-Path $localDir 'depth_replay.json'
-        $rlog = Join-Path $localDir '.replay.log'
-        $null = Invoke-Logged $ReplayPython @($Replay, '--rrd', $localRrd, '--json', $rj) $rlog
-        if (Test-Path $rj) {
-          $r = Get-Content $rj -Raw | ConvertFrom-Json
-          $bad = @($r.invariants | Where-Object { $_.total -gt 0 -and $_.good -lt $_.total })
-          Write-Host ("  replay: {0} frames, {1} scored, {2} steers" -f $r.frames, $r.scored, $r.steers) -ForegroundColor DarkGray
-          if ($bad.Count -gt 0) {
-            # A failed invariant is a DEFECT IN THE SHIPPED CODE, not a tuning hint -- printed in
-            # red and never folded into the advisory YAML.
-            Write-Host "  *** INVARIANT VIOLATION -- the steering law is WRONG, not mistuned ***" -ForegroundColor Red
-            foreach ($b in $bad) { Write-Host ("      {0}: {1}/{2}   rule: {3}" -f $b.name, $b.good, $b.total, $b.rule) -ForegroundColor Red }
-          } else {
-            Write-Host "  replay: all steering invariants PASS" -ForegroundColor Green
-          }
-        } else {
-          Write-Host ("  replay: produced no scorecard -- see {0}" -f $rlog) -ForegroundColor Yellow
-        }
-      }
-    } catch { Write-Host ("  replay: skipped ({0})" -f $_.Exception.Message) -ForegroundColor Yellow }
+    # 3c) DEPTH REPLAY -- the steering invariants on the recorded depth (fail-soft; see Invoke-DepthReplay).
+    Invoke-DepthReplay $localDir $localRrd
 
     # 3d) SEMANTIC LABELLING -> GEOMETRY VALIDATION -> runtime\autotune\<run_id>\ -> robot.
     # Autotune-Stage.ps1 labels the recording on the GPU (objects + walls/floor), gates it on the
@@ -536,7 +571,11 @@ while (-not $stopReq) {
   if ($Once) { break }
   Start-Sleep -Seconds $PollSec
 }
-# Release the single-instance mutex: an interactive -Once leaves its console thread alive, and an
-# unreleased mutex would lock the service's loop out until that window closed (round 2).
-try { $loopMutex.ReleaseMutex() } catch { }
+} finally {
+  # Released on every way out -- normal end, a throw (e.g. a wrong -Analyser path), Ctrl+C in a console. An
+  # interactive run's console thread stays alive afterwards, and an unreleased mutex locked the service's
+  # loop out (exit 3 every 30 s) until that window closed (round 3; a fall-through release was not enough).
+  try { $loopMutex.ReleaseMutex() } catch { }
+  $loopMutex.Dispose()
+}
 Write-Host "`nAuto-Tune-Loop exiting." -ForegroundColor Cyan
