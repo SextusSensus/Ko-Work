@@ -142,5 +142,17 @@ $c = New-RrdCase '20990101T000015Z_t15'
 $r = Invoke-Stage 't15' @('-RunId', '20990101T000015Z_t15', '-LocalRunDir', $c.run, '-AutotuneDir', $c.aut, '-Label', $fake, '-NoSend')
 Check 'T15 reused PID in lock -> stale, labelled' ($r.rc -eq 0 -and (Test-Path "$($c.adir)\label_validation.json") -and -not (Test-Path "$($c.adir)\.labelling")) ("rc={0}" -f $r.rc)
 
+# T16 K1Finder holds the operator session -> the send is deferred (2) before any ssh, nothing sent or counted
+$c = New-Case '20990101T000016Z_t16' 'PASS'
+try { $op = New-Object System.Threading.Mutex($false, 'Global\K1-Operator-Session') } catch { $op = New-Object System.Threading.Mutex($false, 'Local\K1-Operator-Session') }
+$r = Invoke-Stage 't16' @('-RunId', '20990101T000016Z_t16', '-LocalRunDir', $c.run, '-AutotuneDir', $c.aut, '-Ip', $dead)
+$op.Dispose()
+Check 'T16 operator session -> send deferred, not counted' ($r.rc -eq 2 -and $r.log -match 'operator session' -and $r.s -lt 7 -and -not (Test-Path "$($c.adir)\.sent_to_robot") -and -not (Test-Path "$($c.adir)\.send_attempts")) ("rc={0} {1}s" -f $r.rc, $r.s)
+
+# T17 robot unreachable at send time -> deferred by the probe, NOT counted as a failed send
+$c = New-Case '20990101T000017Z_t17' 'PASS'
+$r = Invoke-Stage 't17' @('-RunId', '20990101T000017Z_t17', '-LocalRunDir', $c.run, '-AutotuneDir', $c.aut, '-Ip', $dead)
+Check 'T17 unreachable at send -> deferred, not counted' ($r.rc -eq 2 -and $r.log -match 'deferred' -and -not (Test-Path "$($c.adir)\.send_attempts")) ("rc={0} {1}s" -f $r.rc, $r.s)
+
 Write-Host ("`n{0} failure(s); logs in {1}" -f $fails, $T)
 exit $fails

@@ -252,6 +252,27 @@ if (Test-Path $hold) {
 $mark = Join-Path $adir '.sent_to_robot'
 if (Test-Path $mark) { exit 0 }
 
+# ---- never START a send inside an operator session or during a live follow ----
+# The loop's idle check can be many minutes old by now (labelling takes 1-90 min), and a send is up to 7
+# robot logins. Re-check right here: K1Finder's operator-session mutex (shared contract; same semantics
+# as the loop's Test-OperatorSession, a mutex that exists but cannot be opened counts as held), then one
+# fail-closed pgrep probe. Busy or unreachable -> deferred (exit 2), not counted as a failed send.
+foreach ($n in 'Global\K1-Operator-Session', 'Local\K1-Operator-Session') {
+  $om = $null
+  $held = try { [System.Threading.Mutex]::TryOpenExisting($n, [ref]$om) } catch [System.UnauthorizedAccessException] { $true } catch { $false }
+  if ($held) {
+    if ($om) { $om.Dispose() }
+    Write-Host ("  stage: K1Finder operator session active -- send of {0} deferred (retried later)" -f $RunId) -ForegroundColor DarkGray
+    exit 2
+  }
+}
+$probe = 'if pgrep -f ''follow_person_k1\.py'' >/dev/null; then echo busy; elif [ $? -eq 1 ]; then echo idle; else echo err; fi'
+$pl = @(& { $ErrorActionPreference = 'Continue'; & ssh.exe @($SSH_OPTS + @($target, $probe)) 2>$null } | Where-Object { $_ -and $_.Trim() })
+if (-not ($pl.Count -gt 0 -and $pl[-1].Trim() -eq 'idle')) {
+  Write-Host ("  stage: robot busy (follow live) or unreachable -- send of {0} deferred (retried later)" -f $RunId) -ForegroundColor Yellow
+  exit 2
+}
+
 # ---- send the SMALL bundle, from this folder, to the robot ----
 $rdir = '{0}/{1}' -f $RemoteAutotune, $RunId
 $rc = Invoke-Logged 'ssh.exe' ($SSH_OPTS + @($target, ("mkdir -p '{0}'" -f $rdir))) $null
