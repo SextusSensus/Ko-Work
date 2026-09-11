@@ -560,7 +560,7 @@ $script:FollowStart=[datetime]::MinValue
 $script:FollowToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 
 # ============================================================================
-#  Visual system — Tesla × SpaceX × Apple (near-black / white / cyan / Tesla red STOP)
+#  Visual system — "forge steel" (dark industrial; teal action + amber caution)
 #  Brand-first header. Tracker hierarchy: Primary > Avoidance > Advanced > Cmd.
 # ============================================================================
 function New-K1Font([string]$Family, [float]$Size, [System.Drawing.FontStyle]$Style = 'Regular') {
@@ -579,20 +579,20 @@ $fontStatus= New-K1Font 'Bahnschrift' 16 ([System.Drawing.FontStyle]::Bold)
 $mono      = New-K1Font 'Cascadia Mono' 9.25
 if (-not $mono) { $mono = New-Object System.Drawing.Font('Consolas', 9) }
 
-# Palette — near-black / cyan accent / Tesla red
-$bg        = [System.Drawing.Color]::FromArgb(0, 0, 0)           # pure black
-$surface   = [System.Drawing.Color]::FromArgb(10, 10, 10)       # panels
+# Palette — forge steel (graphite panels, teal action, amber caution)
+$bg        = [System.Drawing.Color]::FromArgb(14, 17, 22)       # near-black graphite
+$surface   = [System.Drawing.Color]::FromArgb(22, 27, 34)      # panels
 $panelBg   = $surface                                          # group / panel fill (alias)
-$surface2  = [System.Drawing.Color]::FromArgb(28, 28, 30)      # raised (#1C1C1E)
-$stroke    = [System.Drawing.Color]::FromArgb(44, 44, 46)      # #2C2C2E
-$text      = [System.Drawing.Color]::FromArgb(245, 245, 247)   # #F5F5F7
-$muted     = [System.Drawing.Color]::FromArgb(142, 142, 147)   # #8E8E93
-$accent    = [System.Drawing.Color]::FromArgb(50, 212, 255)    # cyan #32D4FF
-$green     = [System.Drawing.Color]::FromArgb(180, 230, 200)   # ok
-$red       = [System.Drawing.Color]::FromArgb(227, 25, 55)     # Tesla STOP #E31937
-$amber     = [System.Drawing.Color]::FromArgb(200, 170, 90)    # caution
+$surface2  = [System.Drawing.Color]::FromArgb(32, 39, 49)      # raised
+$stroke    = [System.Drawing.Color]::FromArgb(48, 58, 72)
+$text      = [System.Drawing.Color]::FromArgb(232, 236, 241)
+$muted     = [System.Drawing.Color]::FromArgb(138, 149, 164)
+$accent    = [System.Drawing.Color]::FromArgb(38, 184, 168)     # teal — primary action
+$green     = [System.Drawing.Color]::FromArgb(52, 196, 140)     # ok / verify
+$red       = [System.Drawing.Color]::FromArgb(224, 82, 68)      # danger / STOP
+$amber     = [System.Drawing.Color]::FromArgb(232, 168, 56)     # caution
 $dark      = $bg                                                 # logs / video wells (compat alias)
-$chipBg    = [System.Drawing.Color]::FromArgb(28, 28, 30)
+$chipBg    = [System.Drawing.Color]::FromArgb(40, 48, 60)
 
 function Set-K1PrimaryButton([System.Windows.Forms.Button]$b) {
     $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0

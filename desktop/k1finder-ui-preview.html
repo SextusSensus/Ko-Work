@@ -6,23 +6,23 @@
   <title>K1 Finder — UI preview</title>
   <style>
     :root {
-      --bg: #000000;
-      --surface: #0A0A0A;
-      --panel: #141414;
-      --raised: #1C1C1E;
-      --stroke: #2C2C2E;
-      --text: #F5F5F7;
-      --muted: #8E8E93;
-      --accent: #32D4FF;
-      --danger: #E31937;
-      --ok: #B4E6C8;
-      --amber: #C8AA5A;
+      --bg: #0e1116;
+      --surface: #161b22;
+      --panel: #161b22;
+      --raised: #202731;
+      --stroke: #303a48;
+      --text: #e8ecf1;
+      --muted: #8a95a4;
+      --accent: #26b8a8;
+      --danger: #e05244;
+      --ok: #34c48c;
+      --amber: #e8a838;
       --font: "Bahnschrift", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
       --mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      min-height: 100vh; background: radial-gradient(1200px 600px at 70% -10%, #0a1a22 0%, var(--bg) 55%);
+      min-height: 100vh; background: radial-gradient(1200px 600px at 20% -10%, #1a2430 0%, var(--bg) 55%);
       color: var(--text); font-family: var(--font);
     }
     .app {
@@ -185,21 +185,36 @@ ready.</div>
           <label class="chk danger"><input type="checkbox" /> DRIVE (walk)</label>
           <label class="chk danger"><input type="checkbox" /> ARM MOTION</label>
           <button class="btn-danger">STOP</button>
+          <label class="chk" style="color:var(--muted)"><input type="checkbox" /> mute lock sound</label>
           <label class="field">IP <input type="text" value="192.168.1.81" /></label>
           <label class="field">Distance <input type="text" value="1.2 m" style="min-width:64px" /></label>
           <label class="field">Speed <input type="text" value="0.18 m/s" style="min-width:72px" /></label>
-          <label class="chk danger"><input type="checkbox" checked /> Deadman HB</label>
           <div class="hairline"></div>
           <div class="section">AVOIDANCE</div>
           <label class="field">Gap steer <select><option>off</option><option>audit</option><option>on</option></select></label>
           <label class="field">Head scan <select><option>off</option><option>audit</option><option>on</option><option>patient</option></select></label>
           <label class="field">Hit box <select><option>frac</option><option selected>footprint</option></select></label>
+          <label class="field">Escape <select><option>off</option><option>spin</option><option>spin+back</option></select></label>
           <label class="chk accent"><input type="checkbox" checked /> Obstacle brake</label>
+          <label class="chk"><input type="checkbox" /> Class brake</label>
+          <label class="chk accent"><input type="checkbox" /> Floor reject</label>
           <label class="chk accent"><input type="checkbox" checked /> Local map</label>
+          <label class="chk accent"><input type="checkbox" /> Map assist</label>
+          <label class="chk accent"><input type="checkbox" checked /> Head probe</label>
           <div class="hairline"></div>
           <div class="section">ADVANCED</div>
           <label class="field">Perception <select><option>global</option><option selected>osnet</option></select></label>
+          <label class="chk"><input type="checkbox" /> Coast occlusions</label>
+          <label class="chk"><input type="checkbox" checked /> Auto re-acq</label>
+          <label class="chk"><input type="checkbox" /> Range fence</label>
+          <label class="chk danger"><input type="checkbox" /> Arm re-lock</label>
+          <label class="chk danger"><input type="checkbox" checked /> Deadman HB</label>
           <label class="chk accent"><input type="checkbox" checked /> Gesture lock</label>
+          <label class="chk"><input type="checkbox" /> A/B (compare)</label>
+          <label class="chk accent"><input type="checkbox" disabled /> Voice cmds</label>
+          <span class="chk" style="color:var(--muted)">Voice: off</span>
+          <span class="chk" style="background:var(--raised);border:1px solid var(--stroke);padding:4px 10px;font-weight:700">REID: --</span>
+          <label class="chk accent"><input type="checkbox" /> Rerun</label>
           <label class="chk" style="color:var(--amber)"><input type="checkbox" /> Controller run (no follow)</label>
           <div class="hairline"></div>
           <div class="section">CMD</div>
@@ -243,7 +258,7 @@ ready.</div>
         </div>
       </section>
     </main>
-    <footer class="status" id="status">Ready. · Tesla × SpaceX × Apple preview (Linux)</footer>
+    <footer class="status" id="status">Ready. · forge steel preview (Linux)</footer>
   </div>
 
   <script>
@@ -288,7 +303,7 @@ ready.</div>
         document.querySelectorAll('.panel').forEach(function (p) { p.classList.remove('active'); });
         btn.setAttribute('aria-selected', 'true');
         document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
-        document.getElementById('status').textContent = 'Tab: ' + btn.textContent + ' · Tesla × SpaceX × Apple preview';
+        document.getElementById('status').textContent = 'Tab: ' + btn.textContent + ' · forge steel preview';
         if (btn.dataset.tab === 'map') resizeMap();
       });
     });
@@ -422,14 +437,14 @@ ready.</div>
         var nose = project(pose.x + Math.cos(pose.yaw) * 0.35, pose.y + Math.sin(pose.yaw) * 0.35, 0.3);
         ctx.fillStyle = '#F5F5F7';
         ctx.beginPath(); ctx.arc(r.x, r.y, 7, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = '#32D4FF'; ctx.lineWidth = 2;
+        ctx.strokeStyle = '#26b8a8'; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(r.x, r.y); ctx.lineTo(nose.x, nose.y); ctx.stroke();
       }
       var d = domains.find(function (x) { return x.id === activeDomain; });
       ctx.fillStyle = '#8E8E93';
       ctx.font = '11px Cascadia Mono, Consolas, monospace';
       ctx.fillText(cells.length + ' cells · orbit drag · pan right-drag · scroll zoom', 14, 22);
-      ctx.fillStyle = '#32D4FF';
+      ctx.fillStyle = '#26b8a8';
       ctx.fillText('LOCAL MAP · ' + ((d && d.name) || activeDomain), 14, h - 16);
     }
 
@@ -480,8 +495,14 @@ ready.</div>
       }
     }, 80);
 
-    // Open on Local Map for domain demo screenshots
-    document.querySelector('.tab[data-tab="map"]').click();
+    // Deep-link: ?tab=discover|tracker|map  or  #discover|#tracker|#map
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var want = params.get('tab') || (location.hash || '').replace(/^#/, '') || 'discover';
+      var btn = document.querySelector('.tab[data-tab="' + want + '"]');
+      if (btn) btn.click();
+      else document.querySelector('.tab[data-tab="discover"]').click();
+    })();
   </script>
 </body>
 </html>

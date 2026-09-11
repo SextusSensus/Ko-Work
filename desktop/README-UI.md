@@ -1,40 +1,21 @@
-# K1 Finder UI (Tesla × SpaceX × Apple)
+# K1 Finder UI (forge steel)
 
-Near-black chrome, white type, cyan accent (`#32D4FF`), Tesla red STOP (`#E31937`).
+Dark industrial graphite panels, Bahnschrift type, teal accent (`#26B8A8`), amber caution, red STOP (`#E05244`).
 
-## Local Map = domains
+## Preview on Linux
 
-The **Local Map** tab is a **domain** system: each domain is a separate environment/area the robot has mapped (kitchen, warehouse bay, patio). Follow/capture runs **merge** occupancy into the **active** domain over time — they do not blindly replace the whole map.
+WinForms does not run here. Open the static mirror:
 
-### Persistence
+```bash
+cd desktop
+python3 -m http.server 8765
+# http://127.0.0.1:8765/k1finder-ui-preview.html#discover
+# http://127.0.0.1:8765/k1finder-ui-preview.html#tracker
+# http://127.0.0.1:8765/k1finder-ui-preview.html#map
+```
 
-| Path | Role |
-|------|------|
-| `desktop/localmap-data/domains.json` | Registry: `active` + domain list (name, updated, run_count, cell_count) |
-| `desktop/localmap-data/domains/<id>/manifest.json` | Per-domain metadata |
-| `desktop/localmap-data/domains/<id>/occupancy.json` | Accumulated cells + pose for the Three.js viewer |
-| `desktop/localmap-viewer/` | Interactive 3D host (`index.html`, `viewer.js`, vendored `three.min.js`) |
-| `desktop/localmap-viewer/feed.json` | Live poll mirror of the **active** domain occupancy |
+Or open `k1finder-ui-preview.html` directly in a browser.
 
-### Operator UX
+## Windows
 
-- **Domain chips** in the 3D viewer (and Domain combo on the WinForms toolbar): click to switch; scene reloads that domain’s occupancy.
-- **+ New domain**: create when you bring the robot to a new environment (empty map ready to accumulate).
-- **Import last run** / **Refresh**: pull robot dump (or sample) and **merge** cells into the active domain (hits accumulate by quantized grid key).
-- Seed data ships for **Kitchen**, **Warehouse Bay A**, and **Outdoor Patio** so the preview is never empty.
-
-### Hosting in K1 Finder
-
-1. **WebView2** (preferred): Chromium embeds `localmap-viewer/index.html`.
-2. **WebBrowser** fallback: IE-based; prefer **Open in browser** for full Three.js.
-3. **Open in browser**: always available.
-
-HTML `+ New domain` / chip switches sync to disk via a document-title bridge polled by the WinForms host.
-
-### Drive safety
-
-Local Map is observe-only. Tracker DRIVE / ARM / STOP / Deadman HB wiring is unchanged.
-
-### Linux preview
-
-Open `desktop/k1finder-ui-preview.html` — Discover + Tracker + Local Map with **domain chips** and a 3D canvas mock (no WinForms required).
+Run `K1 Finder.bat` / `K1Finder.ps1`. Tracker control panel is organized Primary → Avoidance → Advanced → Cmd. Local Map hosts `localmap-viewer/` (WebView2 preferred).
