@@ -70,9 +70,9 @@
       "default_asset": "warehouse/bollard",
       "placement": "footprint",
       "scale_m": [
-        0.16,
-        0.55,
-        0.16
+        0.15,
+        0.7,
+        0.15
       ],
       "domains": [
         "warehouse-bay-a",

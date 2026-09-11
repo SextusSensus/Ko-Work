@@ -672,7 +672,7 @@
     // bollards
     var bollard = stdMat(SAFETY, { metalness: 0.3, roughness: 0.4, emissive: SAFETY, emissiveIntensity: 0.05 });
     [[-1.8, -8.0], [1.8, -8.0], [-2.2, 4.2], [2.2, 4.2]].forEach(function (p) {
-      envGroup.add(makeBox(0.16, 0.55, 0.16, bollard, p[0], 0.28, p[1]));
+      envGroup.add(makeBox(0.15, 0.70, 0.15, bollard, p[0], 0.35, p[1]));
     });
 
     // Free library props (Poly Haven / Kenney / authored pallet)
@@ -1049,15 +1049,15 @@
     var body = stdMat(0xe0a820, { metalness: 0.35, roughness: 0.42 });
     var dark = stdMat(0x1c1c1e, { metalness: 0.4, roughness: 0.35 });
     var g = new THREE.Group();
-    g.add(makeBox(0.95, 0.55, 1.55, body, 0, 0.55, 0));
-    g.add(makeBox(0.85, 0.35, 0.55, dark, 0, 1.0, -0.35));
-    g.add(makeBox(0.08, 1.4, 0.08, metalMat(0x9aa7b5), -0.28, 1.1, 0.85));
-    g.add(makeBox(0.08, 1.4, 0.08, metalMat(0x9aa7b5), 0.28, 1.1, 0.85));
-    g.add(makeBox(0.7, 0.05, 0.9, metalMat(0xb0bac4), 0, 0.35, 1.15));
-    g.add(makeBox(0.22, 0.22, 0.12, dark, -0.4, 0.22, 0.4));
-    g.add(makeBox(0.22, 0.22, 0.12, dark, 0.4, 0.22, 0.4));
-    g.add(makeBox(0.22, 0.22, 0.12, dark, -0.4, 0.22, -0.5));
-    g.add(makeBox(0.22, 0.22, 0.12, dark, 0.4, 0.22, -0.5));
+    g.add(makeBox(1.05, 0.50, 1.70, body, 0, 0.52, -0.05));
+    g.add(makeBox(0.90, 0.38, 0.55, dark, 0, 0.98, -0.45));
+    g.add(makeBox(0.07, 1.55, 0.07, metalMat(0x9aa7b5), -0.30, 1.15, 0.85));
+    g.add(makeBox(0.07, 1.55, 0.07, metalMat(0x9aa7b5), 0.30, 1.15, 0.85));
+    g.add(makeBox(0.65, 0.05, 0.85, metalMat(0xb0bac4), 0, 0.32, 1.15));
+    g.add(makeBox(0.20, 0.20, 0.12, dark, -0.42, 0.20, 0.45));
+    g.add(makeBox(0.20, 0.20, 0.12, dark, 0.42, 0.20, 0.45));
+    g.add(makeBox(0.20, 0.20, 0.12, dark, -0.42, 0.20, -0.55));
+    g.add(makeBox(0.20, 0.20, 0.12, dark, 0.42, 0.20, -0.55));
     g.position.set(x, 0, z);
     g.rotation.y = yaw || 0;
     envGroup.add(g);
@@ -1070,27 +1070,70 @@
     }), x, y, z + 0.04));
   }
 
-  function placeGltfClone(name, x, y, z, scale, rotY) {
+  // Real-world-ish metre targets for free meshes that ship non-metre / cartoon-huge.
+  // Aligns with asset-ontology scale_m. K1 proxy stays ~0.95×0.40×0.18 m.
+  var PROP_SCALE_M = {
+    "lib-cone": [0.35, 0.72, 0.35],
+    "cone": [0.30, 0.70, 0.30],
+    "lib-shelves": [1.10, 2.20, 0.50],
+    "ph-rack": [0.90, 1.90, 0.55],
+    "lib-crush": [2.20, 1.10, 0.45],
+    "lib-block": [1.60, 0.85, 0.55],
+    "lib-barrier": [1.55, 0.82, 0.55],
+    "lib-handtruck": [0.55, 1.20, 0.70],
+    "lib-hand-truck": [0.55, 1.20, 0.70],
+    "box-large": [0.55, 0.50, 0.50],
+    "box-wide": [0.50, 0.45, 0.70],
+    "ph-box": [0.40, 0.35, 0.45],
+    "ph-crate": [0.60, 0.45, 0.45],
+    "ph-plastic": [0.45, 0.35, 0.45],
+    "ph-tote": [0.55, 0.35, 0.40],
+    "lib-barrel": [0.60, 0.90, 0.60],
+    "lib-pallet": [1.10, 0.12, 1.10],
+    "lib-shutter": [3.20, 3.20, 0.25],
+    "lib-wet": [0.30, 0.65, 0.35],
+    "door-wide-open": [3.40, 3.20, 0.20]
+  };
+
+  function fitRootToScaleM(root, scaleM) {
+    if (!scaleM || !scaleM.length) return;
+    var box3 = new THREE.Box3().setFromObject(root);
+    var size = new THREE.Vector3();
+    box3.getSize(size);
+    if (size.x < 1e-4 || size.y < 1e-4 || size.z < 1e-4) return;
+    var sx = scaleM[0] / size.x;
+    var sy = scaleM[1] / size.y;
+    var sz = scaleM[2] / size.z;
+    var s = Math.min(sx, sz);
+    root.scale.set(s, sy, s);
+  }
+
+  function placeGltfClone(name, x, y, z, scale, rotY, parent) {
     var src = gltfCache[name];
     if (!src) return;
     var root = new THREE.Group();
     var clone = src.clone(true);
     root.add(clone);
-    root.scale.setScalar(scale || 1);
+    if (Array.isArray(scale)) {
+      fitRootToScaleM(root, scale);
+    } else if (PROP_SCALE_M[name]) {
+      fitRootToScaleM(root, PROP_SCALE_M[name]);
+    } else {
+      root.scale.setScalar(scale == null ? 1 : scale);
+    }
     if (rotY) root.rotation.y = rotY;
     root.position.set(x, y || 0, z);
     root.traverse(function (o) {
       if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
     });
-    // Ground to floor unless caller passed an explicit elevated Y (e.g. microwave on counter)
     if (y == null || y === 0) {
       var box3 = new THREE.Box3().setFromObject(root);
       if (isFinite(box3.min.y)) root.position.y -= box3.min.y;
     }
-    envGroup.add(root);
+    (parent || envGroup).add(root);
   }
 
-  function buildDistributionHub() {
+  function buildDistributionHub  function buildDistributionHub() {
     clearGroup(envGroup);
     var floorMap = texRepeat(antiSlipTex || floorTex, 14, 14);
     var floorMat = floorMap
@@ -1189,7 +1232,7 @@
     // Safety bollards + barriers at dock
     var bollard = stdMat(SAFETY, { metalness: 0.3, roughness: 0.4, emissive: SAFETY, emissiveIntensity: 0.08 });
     [[-7.2, -8.6], [-3.2, -8.6], [3.2, -8.6], [7.2, -8.6], [-1.0, 4.8], [1.0, 4.8], [-4.6, -2], [4.6, -2]].forEach(function (p) {
-      envGroup.add(makeBox(0.18, 0.62, 0.18, bollard, p[0], 0.31, p[1]));
+      envGroup.add(makeBox(0.15, 0.75, 0.15, bollard, p[0], 0.375, p[1]));
     });
     // low barrier rails
     var rail = stdMat(SAFETY, { metalness: 0.35, roughness: 0.4 });
@@ -1199,8 +1242,8 @@
     // Safety cones (procedural + Kenney if loaded)
     var coneMat = stdMat(0xe07020, { metalness: 0.15, roughness: 0.55, emissive: 0xe07020, emissiveIntensity: 0.12 });
     [[-2.4, -8.2], [2.4, -8.2], [6.5, 1.0], [-6.5, 7.5]].forEach(function (p) {
-      var cone = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.45, 10), coneMat);
-      cone.position.set(p[0], 0.22, p[1]);
+      var cone = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.70, 10), coneMat);
+      cone.position.set(p[0], 0.35, p[1]);
       cone.castShadow = true;
       envGroup.add(cone);
     });
@@ -1219,9 +1262,9 @@
     // Hand-truck / pallet-jack proxies
     var jack = metalMat(0x4a5560);
     [[-0.8, -6.8], [2.2, 6.5]].forEach(function (p) {
-      envGroup.add(makeBox(0.55, 0.08, 1.1, jack, p[0], 0.12, p[1]));
-      envGroup.add(makeBox(0.08, 0.55, 0.08, jack, p[0] - 0.2, 0.4, p[1] - 0.45));
-      envGroup.add(makeBox(0.45, 0.05, 0.05, jack, p[0], 0.7, p[1] - 0.45));
+      envGroup.add(makeBox(0.50, 0.08, 1.0, jack, p[0], 0.10, p[1]));
+      envGroup.add(makeBox(0.07, 0.85, 0.07, jack, p[0] - 0.18, 0.50, p[1] - 0.40));
+      envGroup.add(makeBox(0.40, 0.04, 0.04, jack, p[0], 0.95, p[1] - 0.40));
     });
 
     // Free CC0 Kenney / Poly Haven props — dock + center aisle (orbit-readable)
