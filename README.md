@@ -26,6 +26,7 @@ Organized by **deploy target** (P2.1):
 |---|---|
 | `desktop/K1Finder.ps1` · `K1 Finder.bat` · `Launch K1 Finder (no console).vbs` | The Windows K1 Finder app (main entry point) + launchers. |
 | `desktop/README.md` | **Full app documentation** (all six tabs, in detail). |
+| `desktop/localmap-viewer/` · `telemetry-bridge/` | Local Map Three.js viewer + realtime WebSocket telemetry bridge (see `docs/realtime-telemetry.md`). |
 | `robot/follow_person_k1.py` | Robot-side markerless person-follow (lock-and-handoff: ArUco/gesture is a one-time trigger, then YOLO tracks the person). |
 | `robot/loco_follow_bridge.cpp` | Compiled-on-robot bridge that turns follow velocities into Booster SDK `MoveCommand`s; the hard-clamp backstop. |
 | `robot/config/` | YAML config (`defaults.yaml` + `dev`/`demo`/`field` profiles); the node loads it fail-closed. |

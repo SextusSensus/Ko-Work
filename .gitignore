@@ -42,6 +42,9 @@ runs/
 # Local Claude Code settings (per-machine)
 .claude/settings.local.json
 
+# Node deps (telemetry bridge)
+node_modules/
+
 # Local behavior-diff gate harness (ROS/onnxruntime stubs + synthetic clip; machine-
 # specific, must never ship). Persistent dev aid for the IMPLEMENTATION_README refactor;
 # rebuildable from the k1finder-local-gate memory note. See _gate/README.md.
