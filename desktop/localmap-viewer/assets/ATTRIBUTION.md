@@ -91,6 +91,18 @@ Extra Kenney Factory Kit meshes: `hopper-round`, `structure-wall`, `catwalk-stra
 | `traffic/Traffic_Cone.glb`, `Crush_Barrier.glb`, `Road_Block.glb` | [Quaternius](https://quaternius.com/) | CC0 |
 | Person placeholder, bollard, floor tape, pillar, stairs, elevator | procedural | CC0 |
 
+
+## Office (`library/office/`)
+
+| Asset | Source | License |
+|-------|--------|---------|
+| `metal_office_desk`, `SchoolDesk_01`, `Shelf_01`, `plastic_monobloc_chair_01`, `potted_plant_02`, `Television_01` | Poly Haven | CC0 |
+| `textures/carpet_diff.jpg` | ambientCG Carpet010 | CC0 |
+| `textures/ceiling_tile_diff.jpg` | ambientCG Tiles074 | CC0 |
+| Elevator / cubicle / window / exit / water cooler / wall module | procedural (`asset-placer.js`) | CC0 |
+
+Sofa: shared `library/generic/Sofa_01`. Autofill: [`docs/localmap-autofill.md`](../../docs/localmap-autofill.md).
+
 ## Robot (`library/robot/k1/`)
 
 | Asset | Source | License |

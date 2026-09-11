@@ -1,0 +1,2247 @@
+{
+  "version": 1,
+  "updated": "2026-09-11T10:15:00Z",
+  "scope": "global",
+  "description": "Cross-domain label\u2192asset map for autofill / auto-tune. Prefer scope:global catalog rows; domain_assets override when active domain is known.",
+  "catalog_ref": "../localmap-viewer/assets/catalog.json",
+  "ontology_ref": "./asset-ontology.json",
+  "assets": [
+    {
+      "id": "cross-domain/caged-hanging-light",
+      "name": "Caged hanging light",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/caged_hanging_light/caged_hanging_light_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/caged_hanging_light",
+      "fallback_procedural": "hanging_light",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/crush-barrier",
+      "name": "Crush barrier",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/traffic/Crush_Barrier.glb",
+      "license": "CC0",
+      "source": "OpenGameArt Traffic Road Assets",
+      "source_url": "https://opengameart.org/content/traffic-road-assets",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/k1-robot-proxy",
+      "name": "Booster K1 dimension proxy",
+      "category": "cross-domain",
+      "status": "procedural",
+      "procedural": "k1_robot",
+      "license": "internal",
+      "source": "URDF-accurate fallback (~0.95\u00d70.40\u00d70.18 m) when robot/k1 GLB missing",
+      "source_url": "https://github.com/BoosterRobotics/booster_assets",
+      "fallback_of": "robot/k1",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/metal-fence-quaternius",
+      "name": "Quaternius metal fence twin",
+      "category": "cross-domain",
+      "status": "free_link",
+      "license": "CC0",
+      "source": "Quaternius via Poly Pizza",
+      "source_url": "https://poly.pizza/m/qWKhREFj7H",
+      "fallback_procedural": "fence",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/person-placeholder",
+      "name": "Person placeholder",
+      "category": "cross-domain",
+      "status": "procedural",
+      "procedural": "person",
+      "license": "CC0",
+      "source": "procedural capsule",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/road-block",
+      "name": "Road block",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/traffic/Road_Block.glb",
+      "license": "CC0",
+      "source": "OpenGameArt Traffic Road Assets",
+      "source_url": "https://opengameart.org/content/traffic-road-assets",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/safety-cone",
+      "name": "Safety cone",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/kenney/cone.glb",
+      "license": "CC0",
+      "source": "Kenney Prototype Pack",
+      "source_url": "https://kenney.nl/",
+      "fallback_procedural": "cone",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/traffic-cone-oga",
+      "name": "Traffic cone",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/traffic/Traffic_Cone.glb",
+      "license": "CC0",
+      "source": "OpenGameArt Traffic Road Assets",
+      "source_url": "https://opengameart.org/content/traffic-road-assets",
+      "fallback_procedural": "cone",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/warning-triangle",
+      "name": "Warning triangle",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/traffic/Warning_Triangle.glb",
+      "license": "CC0",
+      "source": "OpenGameArt Traffic Road Assets",
+      "source_url": "https://opengameart.org/content/traffic-road-assets",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/wet-floor-sign",
+      "name": "Wet floor sign",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/WetFloorSign_01/WetFloorSign_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/WetFloorSign_01",
+      "fallback_procedural": "sign_wet",
+      "scope": "global"
+    },
+    {
+      "id": "generic/bed",
+      "name": "Bed",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "bed",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/book",
+      "name": "Book stack",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "book",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/clock",
+      "name": "Wall clock",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "clock",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/elevator",
+      "name": "Elevator door",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "elevator",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/pillar",
+      "name": "Structural pillar",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "pillar",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/potted-plant",
+      "name": "Potted plant",
+      "category": "generic",
+      "status": "downloaded",
+      "path": "assets/library/generic/potted_plant_01/potted_plant_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/potted_plant_01",
+      "fallback_procedural": "plant",
+      "scope": "global"
+    },
+    {
+      "id": "generic/signage",
+      "name": "Wall signage",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "signage",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/sofa",
+      "name": "Sofa",
+      "category": "generic",
+      "status": "downloaded",
+      "path": "assets/library/generic/Sofa_01/Sofa_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Sofa_01",
+      "fallback_procedural": "sofa",
+      "scope": "global"
+    },
+    {
+      "id": "generic/stairs",
+      "name": "Stairs",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "stairs",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/toilet",
+      "name": "Toilet",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "toilet",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/wall-segment",
+      "name": "Wall segment",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "wall",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "office/bookcase",
+      "name": "Bookcase",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/Shelf_01/Shelf_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Shelf_01",
+      "fallback_procedural": "bookcase",
+      "scope": "global",
+      "label_classes": [
+        "bookcase"
+      ],
+      "real_world_m": [
+        0.9,
+        2.1,
+        0.4
+      ]
+    },
+    {
+      "id": "office/ceiling-tile",
+      "name": "Ceiling tile",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "ceiling_tile",
+      "license": "CC0",
+      "source": "procedural + ambientCG Tiles074",
+      "source_url": "https://ambientcg.com/view?id=Tiles074",
+      "scope": "global",
+      "label_classes": [
+        "ceiling_tile"
+      ],
+      "real_world_m": [
+        0.6,
+        0.02,
+        0.6
+      ],
+      "texture": "assets/library/office/textures/ceiling_tile_diff.jpg"
+    },
+    {
+      "id": "office/couch",
+      "name": "Lounge sofa",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/generic/Sofa_01/Sofa_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Sofa_01",
+      "fallback_procedural": "sofa",
+      "scope": "global",
+      "label_classes": [
+        "couch",
+        "sofa"
+      ],
+      "real_world_m": [
+        1.8,
+        0.85,
+        0.85
+      ]
+    },
+    {
+      "id": "office/cubicle",
+      "name": "Cubicle partition",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "cubicle",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "cubicle",
+        "office_partition",
+        "quiet_cube"
+      ],
+      "real_world_m": [
+        1.6,
+        1.5,
+        1.6
+      ]
+    },
+    {
+      "id": "office/doorway",
+      "name": "Office doorway",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "door_frame",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "doorway",
+        "door"
+      ],
+      "real_world_m": [
+        1.0,
+        2.1,
+        0.15
+      ]
+    },
+    {
+      "id": "office/elevator-doors",
+      "name": "Elevator doors",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "elevator",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "elevator",
+        "elevator_door"
+      ],
+      "real_world_m": [
+        1.2,
+        2.2,
+        0.2
+      ]
+    },
+    {
+      "id": "office/exit-sign",
+      "name": "Exit sign",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "exit_sign",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "exit_sign"
+      ],
+      "real_world_m": [
+        0.4,
+        0.2,
+        0.06
+      ]
+    },
+    {
+      "id": "office/hallway-carpet",
+      "name": "Hallway carpet",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "hallway_carpet",
+      "license": "CC0",
+      "source": "procedural + ambientCG Carpet010",
+      "source_url": "https://ambientcg.com/view?id=Carpet010",
+      "scope": "global",
+      "label_classes": [
+        "hallway_carpet",
+        "carpet"
+      ],
+      "real_world_m": [
+        10.0,
+        0.02,
+        1.4
+      ],
+      "texture": "assets/library/office/textures/carpet_diff.jpg"
+    },
+    {
+      "id": "office/meeting-table",
+      "name": "Meeting / side table",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/SchoolDesk_01/SchoolDesk_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/SchoolDesk_01",
+      "fallback_procedural": "table",
+      "scope": "global",
+      "label_classes": [
+        "dining_table",
+        "table",
+        "meeting_table"
+      ],
+      "real_world_m": [
+        1.2,
+        0.75,
+        0.7
+      ]
+    },
+    {
+      "id": "office/metal-office-desk",
+      "name": "Metal office desk",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/metal_office_desk/metal_office_desk_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/metal_office_desk",
+      "fallback_procedural": "desk",
+      "scope": "global",
+      "label_classes": [
+        "desk",
+        "office_desk"
+      ],
+      "real_world_m": [
+        1.4,
+        0.75,
+        0.7
+      ]
+    },
+    {
+      "id": "office/office-chair",
+      "name": "Office chair",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/plastic_monobloc_chair_01/plastic_monobloc_chair_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/plastic_monobloc_chair_01",
+      "fallback_procedural": "chair",
+      "scope": "global",
+      "label_classes": [
+        "chair",
+        "office_chair"
+      ],
+      "real_world_m": [
+        0.5,
+        0.9,
+        0.5
+      ]
+    },
+    {
+      "id": "office/potted-plant",
+      "name": "Office potted plant",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/potted_plant_02/potted_plant_02_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/potted_plant_02",
+      "fallback_procedural": "plant",
+      "scope": "global",
+      "label_classes": [
+        "potted_plant",
+        "plant"
+      ],
+      "real_world_m": [
+        0.4,
+        1.0,
+        0.4
+      ]
+    },
+    {
+      "id": "office/shelf",
+      "name": "Office shelf",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/Shelf_01/Shelf_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Shelf_01",
+      "fallback_procedural": "shelf",
+      "scope": "global",
+      "label_classes": [
+        "shelf",
+        "bookcase"
+      ],
+      "real_world_m": [
+        0.9,
+        2.1,
+        0.4
+      ]
+    },
+    {
+      "id": "office/television",
+      "name": "TV / monitor",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/Television_01/Television_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Television_01",
+      "fallback_procedural": "tv",
+      "scope": "global",
+      "label_classes": [
+        "tv",
+        "monitor",
+        "television"
+      ],
+      "real_world_m": [
+        1.0,
+        0.6,
+        0.1
+      ]
+    },
+    {
+      "id": "office/wall-module",
+      "name": "Interior wall module",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "wall",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "wall",
+        "wall_segment"
+      ],
+      "real_world_m": [
+        4.0,
+        3.0,
+        0.2
+      ]
+    },
+    {
+      "id": "office/water-cooler",
+      "name": "Water cooler",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "water_cooler",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "water_cooler"
+      ],
+      "real_world_m": [
+        0.4,
+        1.2,
+        0.4
+      ]
+    },
+    {
+      "id": "office/window",
+      "name": "Window module",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "window",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "window"
+      ],
+      "real_world_m": [
+        1.6,
+        1.4,
+        0.12
+      ]
+    }
+  ],
+  "label_aliases": {
+    "assembly_station": {
+      "label_class": "assembly_station",
+      "default_asset": "assembly-line/assembly-station",
+      "aliases": [
+        "workstation",
+        "assembly_bench",
+        "work_bench"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.4,
+        1.1,
+        0.75
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "workstation": {
+      "alias_of": "station",
+      "default_asset": "assembly-line/station"
+    },
+    "assembly_bench": {
+      "alias_of": "assembly_station",
+      "default_asset": "assembly-line/assembly-station"
+    },
+    "work_bench": {
+      "alias_of": "assembly_station",
+      "default_asset": "assembly-line/assembly-station"
+    },
+    "barrel": {
+      "label_class": "barrel",
+      "default_asset": "warehouse/barrel",
+      "aliases": [
+        "drum"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.6,
+        0.9,
+        0.6
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "drum": {
+      "alias_of": "barrel",
+      "default_asset": "warehouse/barrel"
+    },
+    "bed": {
+      "label_class": "bed",
+      "default_asset": "generic/bed",
+      "aliases": [],
+      "coco_id": 59,
+      "scale_m": [
+        2.0,
+        0.55,
+        1.4
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "coco:59": {
+      "alias_of": "bed",
+      "default_asset": "generic/bed"
+    },
+    "bollard": {
+      "label_class": "bollard",
+      "default_asset": "warehouse/bollard",
+      "aliases": [
+        "post",
+        "safety_post"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.18,
+        0.75,
+        0.18
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "post": {
+      "alias_of": "bollard",
+      "default_asset": "warehouse/bollard"
+    },
+    "safety_post": {
+      "alias_of": "bollard",
+      "default_asset": "warehouse/bollard"
+    },
+    "book": {
+      "label_class": "book",
+      "default_asset": "generic/book",
+      "aliases": [],
+      "coco_id": 73,
+      "scale_m": [
+        0.2,
+        0.05,
+        0.15
+      ],
+      "placement": "anchor",
+      "domain_assets": {}
+    },
+    "coco:73": {
+      "alias_of": "book",
+      "default_asset": "generic/book"
+    },
+    "bookcase": {
+      "label_class": "bookcase",
+      "default_asset": "office/bookcase",
+      "aliases": [
+        "bookshelf",
+        "book_case"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.9,
+        2.1,
+        0.4
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "bookshelf": {
+      "alias_of": "bookcase",
+      "default_asset": "office/bookcase"
+    },
+    "book_case": {
+      "alias_of": "bookcase",
+      "default_asset": "office/bookcase"
+    },
+    "cabinet": {
+      "label_class": "cabinet",
+      "default_asset": "kitchen/drawer-cabinet",
+      "aliases": [
+        "cupboard",
+        "drawer_cabinet"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.8,
+        1.0,
+        0.5
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "cupboard": {
+      "alias_of": "cabinet",
+      "default_asset": "kitchen/drawer-cabinet"
+    },
+    "drawer_cabinet": {
+      "alias_of": "cabinet",
+      "default_asset": "kitchen/drawer-cabinet"
+    },
+    "cardboard_box": {
+      "label_class": "cardboard_box",
+      "default_asset": "warehouse/cardboard-box",
+      "aliases": [
+        "box",
+        "carton",
+        "package"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.45,
+        0.4,
+        0.4
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "box": {
+      "alias_of": "cardboard_box",
+      "default_asset": "warehouse/cardboard-box"
+    },
+    "carton": {
+      "alias_of": "cardboard_box",
+      "default_asset": "warehouse/cardboard-box"
+    },
+    "package": {
+      "alias_of": "cardboard_box",
+      "default_asset": "warehouse/cardboard-box"
+    },
+    "catwalk": {
+      "label_class": "catwalk",
+      "default_asset": "assembly-line/catwalk",
+      "aliases": [
+        "walkway"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.0,
+        0.3,
+        2.0
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "walkway": {
+      "alias_of": "catwalk",
+      "default_asset": "assembly-line/catwalk"
+    },
+    "ceiling_tile": {
+      "label_class": "ceiling_tile",
+      "default_asset": "office/ceiling-tile",
+      "aliases": [
+        "drop_ceiling",
+        "ceiling_panel"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.6,
+        0.02,
+        0.6
+      ],
+      "placement": "anchor",
+      "domain_assets": {}
+    },
+    "drop_ceiling": {
+      "alias_of": "ceiling_tile",
+      "default_asset": "office/ceiling-tile"
+    },
+    "ceiling_panel": {
+      "alias_of": "ceiling_tile",
+      "default_asset": "office/ceiling-tile"
+    },
+    "chair": {
+      "label_class": "chair",
+      "default_asset": "kitchen/dining-chair",
+      "aliases": [
+        "dining_chair",
+        "office_chair",
+        "seat",
+        "task_chair"
+      ],
+      "coco_id": 56,
+      "scale_m": [
+        0.45,
+        0.95,
+        0.5
+      ],
+      "placement": "footprint",
+      "domain_assets": {
+        "office": "office/office-chair"
+      }
+    },
+    "dining_chair": {
+      "alias_of": "chair",
+      "default_asset": "kitchen/dining-chair"
+    },
+    "office_chair": {
+      "alias_of": "chair",
+      "default_asset": "kitchen/dining-chair"
+    },
+    "seat": {
+      "alias_of": "chair",
+      "default_asset": "kitchen/dining-chair"
+    },
+    "task_chair": {
+      "alias_of": "chair",
+      "default_asset": "kitchen/dining-chair"
+    },
+    "coco:56": {
+      "alias_of": "chair",
+      "default_asset": "kitchen/dining-chair"
+    },
+    "clock": {
+      "label_class": "clock",
+      "default_asset": "generic/clock",
+      "aliases": [],
+      "coco_id": 74,
+      "scale_m": [
+        0.35,
+        0.35,
+        0.06
+      ],
+      "placement": "wall",
+      "domain_assets": {}
+    },
+    "coco:74": {
+      "alias_of": "clock",
+      "default_asset": "generic/clock"
+    },
+    "control_panel": {
+      "label_class": "control_panel",
+      "default_asset": "assembly-line/control-panel",
+      "aliases": [
+        "hmi",
+        "hmi_pedestal",
+        "operator_panel"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.45,
+        1.35,
+        0.4
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "hmi": {
+      "alias_of": "control_panel",
+      "default_asset": "assembly-line/control-panel"
+    },
+    "hmi_pedestal": {
+      "alias_of": "control_panel",
+      "default_asset": "assembly-line/control-panel"
+    },
+    "operator_panel": {
+      "alias_of": "control_panel",
+      "default_asset": "assembly-line/control-panel"
+    },
+    "conveyor": {
+      "label_class": "conveyor",
+      "default_asset": "assembly-line/conveyor-long",
+      "aliases": [
+        "conveyor_belt"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        2.0,
+        0.85,
+        0.7
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "conveyor_belt": {
+      "alias_of": "conveyor",
+      "default_asset": "assembly-line/conveyor-long"
+    },
+    "conveyor_curve": {
+      "label_class": "conveyor_curve",
+      "default_asset": "assembly-line/conveyor-curve",
+      "aliases": [
+        "conveyor_corner"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.2,
+        0.85,
+        1.2
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "conveyor_corner": {
+      "alias_of": "conveyor_curve",
+      "default_asset": "assembly-line/conveyor-curve"
+    },
+    "conveyor_elevated": {
+      "label_class": "conveyor_elevated",
+      "default_asset": "assembly-line/conveyor-elevated",
+      "aliases": [
+        "overhead_conveyor"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        2.4,
+        1.8,
+        0.7
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "overhead_conveyor": {
+      "alias_of": "conveyor_elevated",
+      "default_asset": "assembly-line/conveyor-elevated"
+    },
+    "corner_shelf": {
+      "label_class": "corner_shelf",
+      "default_asset": "warehouse/steel-shelves",
+      "aliases": [
+        "steel_shelf",
+        "shelving",
+        "steel_frame_shelves"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.1,
+        2.2,
+        0.5
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "steel_shelf": {
+      "alias_of": "corner_shelf",
+      "default_asset": "warehouse/steel-shelves"
+    },
+    "shelving": {
+      "alias_of": "corner_shelf",
+      "default_asset": "warehouse/steel-shelves"
+    },
+    "steel_frame_shelves": {
+      "alias_of": "corner_shelf",
+      "default_asset": "warehouse/steel-shelves"
+    },
+    "couch": {
+      "label_class": "couch",
+      "default_asset": "generic/sofa",
+      "aliases": [
+        "sofa"
+      ],
+      "coco_id": 57,
+      "scale_m": [
+        1.8,
+        0.85,
+        0.85
+      ],
+      "placement": "footprint",
+      "domain_assets": {
+        "office": "office/couch"
+      }
+    },
+    "sofa": {
+      "alias_of": "couch",
+      "default_asset": "generic/sofa"
+    },
+    "coco:57": {
+      "alias_of": "couch",
+      "default_asset": "generic/sofa"
+    },
+    "counter": {
+      "label_class": "counter",
+      "default_asset": "kitchen/counter",
+      "aliases": [
+        "kitchen_counter",
+        "countertop"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.8,
+        0.9,
+        0.65
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "kitchen_counter": {
+      "alias_of": "counter",
+      "default_asset": "kitchen/counter"
+    },
+    "countertop": {
+      "alias_of": "counter",
+      "default_asset": "kitchen/counter"
+    },
+    "crate": {
+      "label_class": "crate",
+      "default_asset": "warehouse/wooden-crate",
+      "aliases": [
+        "wooden_crate",
+        "plastic_crate"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.6,
+        0.5,
+        0.45
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "wooden_crate": {
+      "alias_of": "crate",
+      "default_asset": "warehouse/wooden-crate"
+    },
+    "plastic_crate": {
+      "alias_of": "crate",
+      "default_asset": "warehouse/wooden-crate"
+    },
+    "cubicle": {
+      "label_class": "cubicle",
+      "default_asset": "office/cubicle",
+      "aliases": [
+        "office_partition",
+        "quiet_cube",
+        "partition",
+        "cubicle_wall",
+        "privacy_screen"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.6,
+        1.5,
+        1.6
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "office_partition": {
+      "alias_of": "cubicle",
+      "default_asset": "office/cubicle"
+    },
+    "quiet_cube": {
+      "alias_of": "cubicle",
+      "default_asset": "office/cubicle"
+    },
+    "partition": {
+      "alias_of": "cubicle",
+      "default_asset": "office/cubicle"
+    },
+    "cubicle_wall": {
+      "alias_of": "cubicle",
+      "default_asset": "office/cubicle"
+    },
+    "privacy_screen": {
+      "alias_of": "cubicle",
+      "default_asset": "office/cubicle"
+    },
+    "desk": {
+      "label_class": "desk",
+      "default_asset": "office/metal-office-desk",
+      "aliases": [
+        "office_desk",
+        "work_desk",
+        "writing_desk"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.4,
+        0.75,
+        0.7
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "office_desk": {
+      "alias_of": "desk",
+      "default_asset": "office/metal-office-desk"
+    },
+    "work_desk": {
+      "alias_of": "desk",
+      "default_asset": "office/metal-office-desk"
+    },
+    "writing_desk": {
+      "alias_of": "desk",
+      "default_asset": "office/metal-office-desk"
+    },
+    "dining_table": {
+      "label_class": "dining_table",
+      "default_asset": "kitchen/dining-table",
+      "aliases": [
+        "conference_table",
+        "meeting_table",
+        "table"
+      ],
+      "coco_id": 60,
+      "scale_m": [
+        1.4,
+        0.75,
+        0.85
+      ],
+      "placement": "footprint",
+      "domain_assets": {
+        "office": "office/meeting-table"
+      }
+    },
+    "conference_table": {
+      "alias_of": "dining_table",
+      "default_asset": "kitchen/dining-table"
+    },
+    "meeting_table": {
+      "alias_of": "dining_table",
+      "default_asset": "kitchen/dining-table"
+    },
+    "table": {
+      "alias_of": "dining_table",
+      "default_asset": "kitchen/dining-table"
+    },
+    "coco:60": {
+      "alias_of": "dining_table",
+      "default_asset": "kitchen/dining-table"
+    },
+    "dock_door": {
+      "label_class": "dock_door",
+      "default_asset": "warehouse/dock-door",
+      "aliases": [
+        "loading_door",
+        "rollershutter",
+        "shutter"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        3.2,
+        3.2,
+        0.25
+      ],
+      "placement": "wall",
+      "domain_assets": {}
+    },
+    "loading_door": {
+      "alias_of": "dock_door",
+      "default_asset": "warehouse/dock-door"
+    },
+    "rollershutter": {
+      "alias_of": "dock_door",
+      "default_asset": "warehouse/dock-door"
+    },
+    "shutter": {
+      "alias_of": "dock_door",
+      "default_asset": "warehouse/dock-door"
+    },
+    "doorway": {
+      "label_class": "doorway",
+      "default_asset": "kitchen/doorway",
+      "aliases": [
+        "door",
+        "door_frame"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.0,
+        2.1,
+        0.15
+      ],
+      "placement": "wall",
+      "domain_assets": {
+        "office": "office/doorway"
+      }
+    },
+    "door": {
+      "alias_of": "doorway",
+      "default_asset": "kitchen/doorway"
+    },
+    "door_frame": {
+      "alias_of": "doorway",
+      "default_asset": "kitchen/doorway"
+    },
+    "drill_press": {
+      "label_class": "drill_press",
+      "default_asset": "assembly-line/drill-press",
+      "aliases": [
+        "drillpress",
+        "machine_tool"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.6,
+        1.6,
+        0.7
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "drillpress": {
+      "alias_of": "drill_press",
+      "default_asset": "assembly-line/drill-press"
+    },
+    "machine_tool": {
+      "alias_of": "drill_press",
+      "default_asset": "assembly-line/drill-press"
+    },
+    "elevator": {
+      "label_class": "elevator",
+      "default_asset": "office/elevator-doors",
+      "aliases": [
+        "elevator_door",
+        "lift",
+        "lift_door"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.2,
+        2.2,
+        0.2
+      ],
+      "placement": "wall",
+      "domain_assets": {
+        "office": "office/elevator-doors"
+      }
+    },
+    "elevator_door": {
+      "alias_of": "elevator",
+      "default_asset": "office/elevator-doors"
+    },
+    "lift": {
+      "alias_of": "elevator",
+      "default_asset": "office/elevator-doors"
+    },
+    "lift_door": {
+      "alias_of": "elevator",
+      "default_asset": "office/elevator-doors"
+    },
+    "exit_sign": {
+      "label_class": "exit_sign",
+      "default_asset": "office/exit-sign",
+      "aliases": [
+        "exit",
+        "emergency_exit_sign"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.4,
+        0.2,
+        0.06
+      ],
+      "placement": "wall",
+      "domain_assets": {}
+    },
+    "exit": {
+      "alias_of": "exit_sign",
+      "default_asset": "office/exit-sign"
+    },
+    "emergency_exit_sign": {
+      "alias_of": "exit_sign",
+      "default_asset": "office/exit-sign"
+    },
+    "fence": {
+      "label_class": "fence",
+      "default_asset": "assembly-line/fencing",
+      "aliases": [
+        "fencing",
+        "safety_fence",
+        "guardrail"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        2.0,
+        1.2,
+        0.15
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "fencing": {
+      "alias_of": "fence",
+      "default_asset": "assembly-line/fencing"
+    },
+    "safety_fence": {
+      "label_class": "safety_fence",
+      "default_asset": "assembly-line/safety-fence",
+      "aliases": [
+        "machine_guard",
+        "perimeter_fence"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        2.0,
+        1.4,
+        0.08
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "guardrail": {
+      "alias_of": "fence",
+      "default_asset": "assembly-line/fencing"
+    },
+    "fire_extinguisher": {
+      "label_class": "fire_extinguisher",
+      "default_asset": "assembly-line/fire-extinguisher",
+      "aliases": [
+        "extinguisher"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.2,
+        0.7,
+        0.2
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "extinguisher": {
+      "alias_of": "fire_extinguisher",
+      "default_asset": "assembly-line/fire-extinguisher"
+    },
+    "floor_markings": {
+      "label_class": "floor_markings",
+      "default_asset": "materials/floor-markings",
+      "aliases": [
+        "road_lines"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        2,
+        0.01,
+        2
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "road_lines": {
+      "alias_of": "floor_markings",
+      "default_asset": "materials/floor-markings"
+    },
+    "floor_tape": {
+      "label_class": "floor_tape",
+      "default_asset": "warehouse/floor-tape",
+      "aliases": [
+        "aisle_tape",
+        "safety_tape"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.1,
+        0.01,
+        4.0
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "aisle_tape": {
+      "alias_of": "floor_tape",
+      "default_asset": "warehouse/floor-tape"
+    },
+    "safety_tape": {
+      "alias_of": "floor_tape",
+      "default_asset": "warehouse/floor-tape"
+    },
+    "forklift": {
+      "label_class": "forklift",
+      "default_asset": "warehouse/forklift",
+      "aliases": [],
+      "coco_id": null,
+      "scale_m": [
+        1.2,
+        2.1,
+        2.4
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "hallway_carpet": {
+      "label_class": "hallway_carpet",
+      "default_asset": "office/hallway-carpet",
+      "aliases": [
+        "carpet",
+        "runner",
+        "carpet_runner"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        10.0,
+        0.02,
+        1.4
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "carpet": {
+      "alias_of": "hallway_carpet",
+      "default_asset": "office/hallway-carpet"
+    },
+    "runner": {
+      "alias_of": "hallway_carpet",
+      "default_asset": "office/hallway-carpet"
+    },
+    "carpet_runner": {
+      "alias_of": "hallway_carpet",
+      "default_asset": "office/hallway-carpet"
+    },
+    "ladder": {
+      "label_class": "ladder",
+      "default_asset": "assembly-line/ladder-sectioned",
+      "aliases": [
+        "sectioned_ladder"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.5,
+        2.5,
+        0.3
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "sectioned_ladder": {
+      "alias_of": "ladder",
+      "default_asset": "assembly-line/ladder-sectioned"
+    },
+    "laptop": {
+      "label_class": "laptop",
+      "default_asset": "warehouse/laptop",
+      "aliases": [],
+      "coco_id": 63,
+      "scale_m": [
+        0.35,
+        0.02,
+        0.25
+      ],
+      "placement": "anchor",
+      "domain_assets": {}
+    },
+    "coco:63": {
+      "alias_of": "laptop",
+      "default_asset": "warehouse/laptop"
+    },
+    "light_curtain": {
+      "label_class": "light_curtain",
+      "default_asset": "assembly-line/safety-fence",
+      "aliases": [
+        "safety_light_curtain"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.12,
+        1.6,
+        0.12
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "safety_light_curtain": {
+      "alias_of": "light_curtain",
+      "default_asset": "assembly-line/safety-fence"
+    },
+    "microwave": {
+      "label_class": "microwave",
+      "default_asset": "kitchen/microwave",
+      "aliases": [],
+      "coco_id": 68,
+      "scale_m": [
+        0.5,
+        0.3,
+        0.4
+      ],
+      "placement": "anchor",
+      "domain_assets": {}
+    },
+    "coco:68": {
+      "alias_of": "microwave",
+      "default_asset": "kitchen/microwave"
+    },
+    "oven": {
+      "label_class": "oven",
+      "default_asset": "kitchen/electric-stove",
+      "aliases": [
+        "stove",
+        "electric_stove",
+        "range"
+      ],
+      "coco_id": 69,
+      "scale_m": [
+        0.6,
+        0.9,
+        0.65
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "stove": {
+      "alias_of": "oven",
+      "default_asset": "kitchen/electric-stove"
+    },
+    "electric_stove": {
+      "alias_of": "oven",
+      "default_asset": "kitchen/electric-stove"
+    },
+    "range": {
+      "alias_of": "oven",
+      "default_asset": "kitchen/electric-stove"
+    },
+    "coco:69": {
+      "alias_of": "oven",
+      "default_asset": "kitchen/electric-stove"
+    },
+    "overhead_gantry": {
+      "label_class": "overhead_gantry",
+      "default_asset": "assembly-line/overhead-gantry",
+      "aliases": [
+        "gantry",
+        "crane_rail",
+        "overhead_crane"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        4.0,
+        3.0,
+        0.8
+      ],
+      "placement": "anchor",
+      "domain_assets": {}
+    },
+    "gantry": {
+      "alias_of": "overhead_gantry",
+      "default_asset": "assembly-line/overhead-gantry"
+    },
+    "crane_rail": {
+      "alias_of": "overhead_gantry",
+      "default_asset": "assembly-line/overhead-gantry"
+    },
+    "overhead_crane": {
+      "alias_of": "overhead_gantry",
+      "default_asset": "assembly-line/overhead-gantry"
+    },
+    "pallet": {
+      "label_class": "pallet",
+      "default_asset": "warehouse/pallet",
+      "aliases": [
+        "wood_pallet"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.2,
+        0.14,
+        1.0
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "wood_pallet": {
+      "alias_of": "pallet",
+      "default_asset": "warehouse/pallet"
+    },
+    "pallet_jack": {
+      "alias_of": "pallet_jack",
+      "default_asset": "warehouse/hand-truck"
+    },
+    "hand_truck": {
+      "alias_of": "pallet_jack",
+      "default_asset": "warehouse/hand-truck"
+    },
+    "pallet_rack": {
+      "label_class": "pallet_rack",
+      "default_asset": "warehouse/pallet-rack",
+      "aliases": [
+        "rack",
+        "worn_metal_rack"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.2,
+        3.0,
+        0.9
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "rack": {
+      "alias_of": "pallet_rack",
+      "default_asset": "warehouse/pallet-rack"
+    },
+    "worn_metal_rack": {
+      "alias_of": "pallet_rack",
+      "default_asset": "warehouse/pallet-rack"
+    },
+    "parts_bin": {
+      "alias_of": "tote_bin",
+      "default_asset": "warehouse/tote-bin"
+    },
+    "parts_tote": {
+      "alias_of": "parts_bin",
+      "default_asset": "assembly-line/parts-bin"
+    },
+    "kanban_bin": {
+      "alias_of": "parts_bin",
+      "default_asset": "assembly-line/parts-bin"
+    },
+    "person": {
+      "label_class": "person",
+      "default_asset": "cross-domain/person-placeholder",
+      "aliases": [
+        "human",
+        "operator",
+        "bystander"
+      ],
+      "coco_id": 0,
+      "scale_m": [
+        0.45,
+        1.7,
+        0.35
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "human": {
+      "alias_of": "person",
+      "default_asset": "cross-domain/person-placeholder"
+    },
+    "operator": {
+      "alias_of": "person",
+      "default_asset": "cross-domain/person-placeholder"
+    },
+    "bystander": {
+      "alias_of": "person",
+      "default_asset": "cross-domain/person-placeholder"
+    },
+    "coco:0": {
+      "alias_of": "person",
+      "default_asset": "cross-domain/person-placeholder"
+    },
+    "pillar": {
+      "label_class": "pillar",
+      "default_asset": "generic/pillar",
+      "aliases": [
+        "column"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.4,
+        3.5,
+        0.4
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "column": {
+      "alias_of": "pillar",
+      "default_asset": "generic/pillar"
+    },
+    "potted_plant": {
+      "label_class": "potted_plant",
+      "default_asset": "generic/potted-plant",
+      "aliases": [
+        "plant"
+      ],
+      "coco_id": 64,
+      "scale_m": [
+        0.35,
+        0.9,
+        0.35
+      ],
+      "placement": "footprint",
+      "domain_assets": {
+        "office": "office/potted-plant"
+      }
+    },
+    "plant": {
+      "alias_of": "potted_plant",
+      "default_asset": "generic/potted-plant"
+    },
+    "coco:64": {
+      "alias_of": "potted_plant",
+      "default_asset": "generic/potted-plant"
+    },
+    "refrigerator": {
+      "label_class": "refrigerator",
+      "default_asset": "kitchen/fridge",
+      "aliases": [
+        "fridge"
+      ],
+      "coco_id": 72,
+      "scale_m": [
+        0.7,
+        1.8,
+        0.7
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "fridge": {
+      "alias_of": "refrigerator",
+      "default_asset": "kitchen/fridge"
+    },
+    "coco:72": {
+      "alias_of": "refrigerator",
+      "default_asset": "kitchen/fridge"
+    },
+    "robot": {
+      "label_class": "robot",
+      "default_asset": "robot/k1",
+      "aliases": [
+        "k1",
+        "booster_k1"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.4,
+        0.95,
+        0.18
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "k1": {
+      "alias_of": "robot",
+      "default_asset": "robot/k1"
+    },
+    "booster_k1": {
+      "alias_of": "robot",
+      "default_asset": "robot/k1"
+    },
+    "robot_arm": {
+      "alias_of": "robotic_arm",
+      "default_asset": "assembly-line/robotic-arm"
+    },
+    "arm": {
+      "alias_of": "robot_arm",
+      "default_asset": "assembly-line/robot-arm"
+    },
+    "crane": {
+      "alias_of": "robot_arm",
+      "default_asset": "assembly-line/robot-arm"
+    },
+    "manipulator": {
+      "alias_of": "robotic_arm",
+      "default_asset": "assembly-line/robotic-arm"
+    },
+    "robotic_arm": {
+      "label_class": "robotic_arm",
+      "default_asset": "assembly-line/robotic-arm",
+      "aliases": [
+        "robot_arm",
+        "manipulator",
+        "pick_place_arm"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.7,
+        1.6,
+        0.7
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "pick_place_arm": {
+      "alias_of": "robotic_arm",
+      "default_asset": "assembly-line/robotic-arm"
+    },
+    "safety_barrier": {
+      "label_class": "safety_barrier",
+      "default_asset": "warehouse/concrete-barrier",
+      "aliases": [
+        "barrier"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.5,
+        0.9,
+        0.5
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "barrier": {
+      "alias_of": "safety_barrier",
+      "default_asset": "warehouse/concrete-barrier"
+    },
+    "safety_cone": {
+      "label_class": "safety_cone",
+      "default_asset": "cross-domain/safety-cone",
+      "aliases": [
+        "cone",
+        "traffic_cone"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.35,
+        0.7,
+        0.35
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "cone": {
+      "alias_of": "safety_cone",
+      "default_asset": "cross-domain/safety-cone"
+    },
+    "traffic_cone": {
+      "alias_of": "safety_cone",
+      "default_asset": "cross-domain/safety-cone"
+    },
+    "machine_guard": {
+      "alias_of": "safety_fence",
+      "default_asset": "assembly-line/safety-fence"
+    },
+    "perimeter_fence": {
+      "alias_of": "safety_fence",
+      "default_asset": "assembly-line/safety-fence"
+    },
+    "shelf": {
+      "label_class": "shelf",
+      "default_asset": "office/shelf",
+      "aliases": [
+        "bookshelf_shelf",
+        "wall_shelf",
+        "storage_shelf"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.9,
+        2.1,
+        0.4
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "bookshelf_shelf": {
+      "alias_of": "shelf",
+      "default_asset": "office/shelf"
+    },
+    "wall_shelf": {
+      "alias_of": "shelf",
+      "default_asset": "office/shelf"
+    },
+    "storage_shelf": {
+      "alias_of": "shelf",
+      "default_asset": "office/shelf"
+    },
+    "shrink_wrap_pallet": {
+      "label_class": "shrink_wrap_pallet",
+      "default_asset": "warehouse/shrink-wrap-pallet",
+      "aliases": [
+        "shrink_wrap",
+        "wrapped_pallet",
+        "stretch_wrap"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.2,
+        1.4,
+        1.0
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "shrink_wrap": {
+      "alias_of": "shrink_wrap_pallet",
+      "default_asset": "warehouse/shrink-wrap-pallet"
+    },
+    "wrapped_pallet": {
+      "alias_of": "shrink_wrap_pallet",
+      "default_asset": "warehouse/shrink-wrap-pallet"
+    },
+    "stretch_wrap": {
+      "alias_of": "shrink_wrap_pallet",
+      "default_asset": "warehouse/shrink-wrap-pallet"
+    },
+    "signage": {
+      "label_class": "signage",
+      "default_asset": "cross-domain/wet-floor-sign",
+      "aliases": [
+        "sign",
+        "wet_floor_sign"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.35,
+        0.9,
+        0.2
+      ],
+      "placement": "footprint",
+      "domain_assets": {
+        "office": "office/exit-sign"
+      }
+    },
+    "sign": {
+      "alias_of": "signage",
+      "default_asset": "cross-domain/wet-floor-sign"
+    },
+    "wet_floor_sign": {
+      "alias_of": "signage",
+      "default_asset": "cross-domain/wet-floor-sign"
+    },
+    "stairs": {
+      "label_class": "stairs",
+      "default_asset": "generic/stairs",
+      "aliases": [],
+      "coco_id": null,
+      "scale_m": [
+        1.2,
+        2.5,
+        3.0
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "station": {
+      "label_class": "station",
+      "default_asset": "assembly-line/station",
+      "aliases": [
+        "workstation",
+        "work_station",
+        "hopper"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.0,
+        1.4,
+        1.0
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "work_station": {
+      "alias_of": "station",
+      "default_asset": "assembly-line/station"
+    },
+    "hopper": {
+      "alias_of": "station",
+      "default_asset": "assembly-line/station"
+    },
+    "storage_cart": {
+      "label_class": "storage_cart",
+      "default_asset": "assembly-line/industrial-storage-cart",
+      "aliases": [
+        "cart",
+        "industrial_cart"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.8,
+        1.0,
+        1.2
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "cart": {
+      "alias_of": "storage_cart",
+      "default_asset": "assembly-line/industrial-storage-cart"
+    },
+    "industrial_cart": {
+      "alias_of": "storage_cart",
+      "default_asset": "assembly-line/industrial-storage-cart"
+    },
+    "toilet": {
+      "label_class": "toilet",
+      "default_asset": "generic/toilet",
+      "aliases": [],
+      "coco_id": 61,
+      "scale_m": [
+        0.4,
+        0.75,
+        0.65
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "coco:61": {
+      "alias_of": "toilet",
+      "default_asset": "generic/toilet"
+    },
+    "tool_chest": {
+      "label_class": "tool_chest",
+      "default_asset": "assembly-line/metal-tool-chest",
+      "aliases": [
+        "toolchest",
+        "toolbox"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.7,
+        1.0,
+        0.45
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "toolchest": {
+      "alias_of": "tool_chest",
+      "default_asset": "assembly-line/metal-tool-chest"
+    },
+    "toolbox": {
+      "alias_of": "tool_chest",
+      "default_asset": "assembly-line/metal-tool-chest"
+    },
+    "tote_bin": {
+      "label_class": "tote_bin",
+      "default_asset": "warehouse/tote-bin",
+      "aliases": [
+        "bin",
+        "parts_bin",
+        "plastic_container",
+        "tote"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.55,
+        0.35,
+        0.4
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "bin": {
+      "alias_of": "trash",
+      "default_asset": "kitchen/trashbag"
+    },
+    "plastic_container": {
+      "alias_of": "tote_bin",
+      "default_asset": "warehouse/tote-bin"
+    },
+    "tote": {
+      "alias_of": "tote_bin",
+      "default_asset": "warehouse/tote-bin"
+    },
+    "trash": {
+      "label_class": "trash",
+      "default_asset": "kitchen/trashbag",
+      "aliases": [
+        "trash_can",
+        "garbage",
+        "bin"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.4,
+        0.7,
+        0.4
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "trash_can": {
+      "alias_of": "trash",
+      "default_asset": "kitchen/trashbag"
+    },
+    "garbage": {
+      "alias_of": "trash",
+      "default_asset": "kitchen/trashbag"
+    },
+    "tv": {
+      "label_class": "tv",
+      "default_asset": "office/television",
+      "aliases": [
+        "computer_monitor",
+        "display",
+        "monitor",
+        "screen",
+        "television"
+      ],
+      "coco_id": 62,
+      "scale_m": [
+        1.0,
+        0.6,
+        0.08
+      ],
+      "placement": "anchor",
+      "domain_assets": {
+        "office": "office/television"
+      }
+    },
+    "computer_monitor": {
+      "alias_of": "tv",
+      "default_asset": "office/television"
+    },
+    "display": {
+      "alias_of": "tv",
+      "default_asset": "office/television"
+    },
+    "monitor": {
+      "alias_of": "tv",
+      "default_asset": "office/television"
+    },
+    "screen": {
+      "alias_of": "tv",
+      "default_asset": "office/television"
+    },
+    "television": {
+      "alias_of": "tv",
+      "default_asset": "office/television"
+    },
+    "coco:62": {
+      "alias_of": "tv",
+      "default_asset": "office/television"
+    },
+    "wall": {
+      "label_class": "wall",
+      "default_asset": "generic/wall-segment",
+      "aliases": [
+        "wall_segment"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        4.0,
+        3.0,
+        0.2
+      ],
+      "placement": "wall",
+      "domain_assets": {
+        "office": "office/wall-module"
+      }
+    },
+    "wall_segment": {
+      "alias_of": "wall",
+      "default_asset": "generic/wall-segment"
+    },
+    "warehouse_shell": {
+      "label_class": "warehouse_shell",
+      "default_asset": "warehouse/modular-shell",
+      "aliases": [
+        "modular_shell",
+        "hangar",
+        "bay_shell"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        4.0,
+        4.0,
+        4.0
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "modular_shell": {
+      "alias_of": "warehouse_shell",
+      "default_asset": "warehouse/modular-shell"
+    },
+    "hangar": {
+      "alias_of": "warehouse_shell",
+      "default_asset": "warehouse/modular-shell"
+    },
+    "bay_shell": {
+      "alias_of": "warehouse_shell",
+      "default_asset": "warehouse/modular-shell"
+    },
+    "water_cooler": {
+      "label_class": "water_cooler",
+      "default_asset": "office/water-cooler",
+      "aliases": [
+        "watercooler",
+        "drinking_fountain",
+        "cooler"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        0.4,
+        1.2,
+        0.4
+      ],
+      "placement": "footprint",
+      "domain_assets": {}
+    },
+    "watercooler": {
+      "alias_of": "water_cooler",
+      "default_asset": "office/water-cooler"
+    },
+    "drinking_fountain": {
+      "alias_of": "water_cooler",
+      "default_asset": "office/water-cooler"
+    },
+    "cooler": {
+      "alias_of": "water_cooler",
+      "default_asset": "office/water-cooler"
+    },
+    "window": {
+      "label_class": "window",
+      "default_asset": "office/window",
+      "aliases": [
+        "window_frame",
+        "office_window",
+        "glazing"
+      ],
+      "coco_id": null,
+      "scale_m": [
+        1.6,
+        1.4,
+        0.12
+      ],
+      "placement": "wall",
+      "domain_assets": {}
+    },
+    "window_frame": {
+      "alias_of": "window",
+      "default_asset": "office/window"
+    },
+    "office_window": {
+      "alias_of": "window",
+      "default_asset": "office/window"
+    },
+    "glazing": {
+      "alias_of": "window",
+      "default_asset": "office/window"
+    }
+  },
+  "autofill": {
+    "api": "k1LocalMap.registerDetections / assignAsset",
+    "flow": [
+      "collect run (follow / capture)",
+      "label detections {class|label, x, y, yaw, w, h, confidence, run_id}",
+      "ontology / global-assets label_aliases lookup",
+      "place catalog asset at real-world pose in active or new domain"
+    ]
+  }
+}

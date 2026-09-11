@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-09-11T09:50:00Z",
+  "updated": "2026-09-11T10:15:00Z",
   "description": "CC0 / free-only 3D asset catalog for K1 Local Map. Statuses: downloaded | procedural | free_link. NEVER paid/purchase.",
   "license_default": "CC0",
   "assets": [
@@ -429,7 +429,8 @@
       "license": "CC0",
       "source": "Poly Haven",
       "source_url": "https://polyhaven.com/a/caged_hanging_light",
-      "fallback_procedural": "hanging_light"
+      "fallback_procedural": "hanging_light",
+      "scope": "global"
     },
     {
       "id": "cross-domain/crush-barrier",
@@ -439,7 +440,8 @@
       "path": "assets/library/cross-domain/traffic/Crush_Barrier.glb",
       "license": "CC0",
       "source": "OpenGameArt Traffic Road Assets",
-      "source_url": "https://opengameart.org/content/traffic-road-assets"
+      "source_url": "https://opengameart.org/content/traffic-road-assets",
+      "scope": "global"
     },
     {
       "id": "cross-domain/k1-robot-proxy",
@@ -450,7 +452,8 @@
       "license": "internal",
       "source": "URDF-accurate fallback (~0.95\u00d70.40\u00d70.18 m) when robot/k1 GLB missing",
       "source_url": "https://github.com/BoosterRobotics/booster_assets",
-      "fallback_of": "robot/k1"
+      "fallback_of": "robot/k1",
+      "scope": "global"
     },
     {
       "id": "cross-domain/metal-fence-quaternius",
@@ -460,7 +463,8 @@
       "license": "CC0",
       "source": "Quaternius via Poly Pizza",
       "source_url": "https://poly.pizza/m/qWKhREFj7H",
-      "fallback_procedural": "fence"
+      "fallback_procedural": "fence",
+      "scope": "global"
     },
     {
       "id": "cross-domain/person-placeholder",
@@ -469,7 +473,8 @@
       "status": "procedural",
       "procedural": "person",
       "license": "CC0",
-      "source": "procedural capsule"
+      "source": "procedural capsule",
+      "scope": "global"
     },
     {
       "id": "cross-domain/road-block",
@@ -479,7 +484,8 @@
       "path": "assets/library/cross-domain/traffic/Road_Block.glb",
       "license": "CC0",
       "source": "OpenGameArt Traffic Road Assets",
-      "source_url": "https://opengameart.org/content/traffic-road-assets"
+      "source_url": "https://opengameart.org/content/traffic-road-assets",
+      "scope": "global"
     },
     {
       "id": "cross-domain/safety-cone",
@@ -490,7 +496,8 @@
       "license": "CC0",
       "source": "Kenney Prototype Pack",
       "source_url": "https://kenney.nl/",
-      "fallback_procedural": "cone"
+      "fallback_procedural": "cone",
+      "scope": "global"
     },
     {
       "id": "cross-domain/traffic-cone-oga",
@@ -501,7 +508,8 @@
       "license": "CC0",
       "source": "OpenGameArt Traffic Road Assets",
       "source_url": "https://opengameart.org/content/traffic-road-assets",
-      "fallback_procedural": "cone"
+      "fallback_procedural": "cone",
+      "scope": "global"
     },
     {
       "id": "cross-domain/warning-triangle",
@@ -511,7 +519,8 @@
       "path": "assets/library/cross-domain/traffic/Warning_Triangle.glb",
       "license": "CC0",
       "source": "OpenGameArt Traffic Road Assets",
-      "source_url": "https://opengameart.org/content/traffic-road-assets"
+      "source_url": "https://opengameart.org/content/traffic-road-assets",
+      "scope": "global"
     },
     {
       "id": "cross-domain/wet-floor-sign",
@@ -522,7 +531,8 @@
       "license": "CC0",
       "source": "Poly Haven",
       "source_url": "https://polyhaven.com/a/WetFloorSign_01",
-      "fallback_procedural": "sign_wet"
+      "fallback_procedural": "sign_wet",
+      "scope": "global"
     },
     {
       "id": "generic/bed",
@@ -531,7 +541,8 @@
       "status": "procedural",
       "procedural": "bed",
       "license": "CC0",
-      "source": "procedural"
+      "source": "procedural",
+      "scope": "global"
     },
     {
       "id": "generic/book",
@@ -540,7 +551,8 @@
       "status": "procedural",
       "procedural": "book",
       "license": "CC0",
-      "source": "procedural"
+      "source": "procedural",
+      "scope": "global"
     },
     {
       "id": "generic/clock",
@@ -549,7 +561,8 @@
       "status": "procedural",
       "procedural": "clock",
       "license": "CC0",
-      "source": "procedural"
+      "source": "procedural",
+      "scope": "global"
     },
     {
       "id": "generic/elevator",
@@ -558,7 +571,8 @@
       "status": "procedural",
       "procedural": "elevator",
       "license": "CC0",
-      "source": "procedural"
+      "source": "procedural",
+      "scope": "global"
     },
     {
       "id": "generic/pillar",
@@ -567,7 +581,8 @@
       "status": "procedural",
       "procedural": "pillar",
       "license": "CC0",
-      "source": "procedural"
+      "source": "procedural",
+      "scope": "global"
     },
     {
       "id": "generic/potted-plant",
@@ -578,7 +593,8 @@
       "license": "CC0",
       "source": "Poly Haven",
       "source_url": "https://polyhaven.com/a/potted_plant_01",
-      "fallback_procedural": "plant"
+      "fallback_procedural": "plant",
+      "scope": "global"
     },
     {
       "id": "generic/signage",
@@ -587,7 +603,8 @@
       "status": "procedural",
       "procedural": "signage",
       "license": "CC0",
-      "source": "procedural"
+      "source": "procedural",
+      "scope": "global"
     },
     {
       "id": "generic/sofa",
@@ -598,7 +615,8 @@
       "license": "CC0",
       "source": "Poly Haven",
       "source_url": "https://polyhaven.com/a/Sofa_01",
-      "fallback_procedural": "sofa"
+      "fallback_procedural": "sofa",
+      "scope": "global"
     },
     {
       "id": "generic/stairs",
@@ -607,7 +625,8 @@
       "status": "procedural",
       "procedural": "stairs",
       "license": "CC0",
-      "source": "procedural"
+      "source": "procedural",
+      "scope": "global"
     },
     {
       "id": "generic/toilet",
@@ -616,7 +635,8 @@
       "status": "procedural",
       "procedural": "toilet",
       "license": "CC0",
-      "source": "procedural"
+      "source": "procedural",
+      "scope": "global"
     },
     {
       "id": "generic/wall-segment",
@@ -625,7 +645,8 @@
       "status": "procedural",
       "procedural": "wall",
       "license": "CC0",
-      "source": "procedural"
+      "source": "procedural",
+      "scope": "global"
     },
     {
       "id": "kitchen/counter",
@@ -791,6 +812,347 @@
       "license": "CC0",
       "source": "Poly Haven",
       "source_url": "https://polyhaven.com/a/long_white_tiles"
+    },
+    {
+      "id": "office/bookcase",
+      "name": "Bookcase",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/Shelf_01/Shelf_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Shelf_01",
+      "fallback_procedural": "bookcase",
+      "scope": "global",
+      "label_classes": [
+        "bookcase"
+      ],
+      "real_world_m": [
+        0.9,
+        2.1,
+        0.4
+      ]
+    },
+    {
+      "id": "office/ceiling-tile",
+      "name": "Ceiling tile",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "ceiling_tile",
+      "license": "CC0",
+      "source": "procedural + ambientCG Tiles074",
+      "source_url": "https://ambientcg.com/view?id=Tiles074",
+      "scope": "global",
+      "label_classes": [
+        "ceiling_tile"
+      ],
+      "real_world_m": [
+        0.6,
+        0.02,
+        0.6
+      ],
+      "texture": "assets/library/office/textures/ceiling_tile_diff.jpg"
+    },
+    {
+      "id": "office/couch",
+      "name": "Lounge sofa",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/generic/Sofa_01/Sofa_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Sofa_01",
+      "fallback_procedural": "sofa",
+      "scope": "global",
+      "label_classes": [
+        "couch",
+        "sofa"
+      ],
+      "real_world_m": [
+        1.8,
+        0.85,
+        0.85
+      ]
+    },
+    {
+      "id": "office/cubicle",
+      "name": "Cubicle partition",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "cubicle",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "cubicle",
+        "office_partition",
+        "quiet_cube"
+      ],
+      "real_world_m": [
+        1.6,
+        1.5,
+        1.6
+      ]
+    },
+    {
+      "id": "office/doorway",
+      "name": "Office doorway",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "door_frame",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "doorway",
+        "door"
+      ],
+      "real_world_m": [
+        1.0,
+        2.1,
+        0.15
+      ]
+    },
+    {
+      "id": "office/elevator-doors",
+      "name": "Elevator doors",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "elevator",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "elevator",
+        "elevator_door"
+      ],
+      "real_world_m": [
+        1.2,
+        2.2,
+        0.2
+      ]
+    },
+    {
+      "id": "office/exit-sign",
+      "name": "Exit sign",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "exit_sign",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "exit_sign"
+      ],
+      "real_world_m": [
+        0.4,
+        0.2,
+        0.06
+      ]
+    },
+    {
+      "id": "office/hallway-carpet",
+      "name": "Hallway carpet",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "hallway_carpet",
+      "license": "CC0",
+      "source": "procedural + ambientCG Carpet010",
+      "source_url": "https://ambientcg.com/view?id=Carpet010",
+      "scope": "global",
+      "label_classes": [
+        "hallway_carpet",
+        "carpet"
+      ],
+      "real_world_m": [
+        10.0,
+        0.02,
+        1.4
+      ],
+      "texture": "assets/library/office/textures/carpet_diff.jpg"
+    },
+    {
+      "id": "office/meeting-table",
+      "name": "Meeting / side table",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/SchoolDesk_01/SchoolDesk_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/SchoolDesk_01",
+      "fallback_procedural": "table",
+      "scope": "global",
+      "label_classes": [
+        "dining_table",
+        "table",
+        "meeting_table"
+      ],
+      "real_world_m": [
+        1.2,
+        0.75,
+        0.7
+      ]
+    },
+    {
+      "id": "office/metal-office-desk",
+      "name": "Metal office desk",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/metal_office_desk/metal_office_desk_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/metal_office_desk",
+      "fallback_procedural": "desk",
+      "scope": "global",
+      "label_classes": [
+        "desk",
+        "office_desk"
+      ],
+      "real_world_m": [
+        1.4,
+        0.75,
+        0.7
+      ]
+    },
+    {
+      "id": "office/office-chair",
+      "name": "Office chair",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/plastic_monobloc_chair_01/plastic_monobloc_chair_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/plastic_monobloc_chair_01",
+      "fallback_procedural": "chair",
+      "scope": "global",
+      "label_classes": [
+        "chair",
+        "office_chair"
+      ],
+      "real_world_m": [
+        0.5,
+        0.9,
+        0.5
+      ]
+    },
+    {
+      "id": "office/potted-plant",
+      "name": "Office potted plant",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/potted_plant_02/potted_plant_02_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/potted_plant_02",
+      "fallback_procedural": "plant",
+      "scope": "global",
+      "label_classes": [
+        "potted_plant",
+        "plant"
+      ],
+      "real_world_m": [
+        0.4,
+        1.0,
+        0.4
+      ]
+    },
+    {
+      "id": "office/shelf",
+      "name": "Office shelf",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/Shelf_01/Shelf_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Shelf_01",
+      "fallback_procedural": "shelf",
+      "scope": "global",
+      "label_classes": [
+        "shelf",
+        "bookcase"
+      ],
+      "real_world_m": [
+        0.9,
+        2.1,
+        0.4
+      ]
+    },
+    {
+      "id": "office/television",
+      "name": "TV / monitor",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/Television_01/Television_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Television_01",
+      "fallback_procedural": "tv",
+      "scope": "global",
+      "label_classes": [
+        "tv",
+        "monitor",
+        "television"
+      ],
+      "real_world_m": [
+        1.0,
+        0.6,
+        0.1
+      ]
+    },
+    {
+      "id": "office/wall-module",
+      "name": "Interior wall module",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "wall",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "wall",
+        "wall_segment"
+      ],
+      "real_world_m": [
+        4.0,
+        3.0,
+        0.2
+      ]
+    },
+    {
+      "id": "office/water-cooler",
+      "name": "Water cooler",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "water_cooler",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "water_cooler"
+      ],
+      "real_world_m": [
+        0.4,
+        1.2,
+        0.4
+      ]
+    },
+    {
+      "id": "office/window",
+      "name": "Window module",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "window",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "window"
+      ],
+      "real_world_m": [
+        1.6,
+        1.4,
+        0.12
+      ]
     },
     {
       "id": "robot/k1",

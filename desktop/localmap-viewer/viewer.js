@@ -144,7 +144,7 @@
   var currentMap = null;
   var activeDomainId = null;
   var floorTex = null, metalTex = null, plasterTex = null, concreteTex = null, concreteRough = null;
-  var woodTex = null, cardboardTex = null, shutterTex = null, antiSlipTex = null;
+  var woodTex = null, cardboardTex = null, shutterTex = null, antiSlipTex = null, carpetTex = null;
   var beltTex = null, cautionTex = null, brushMetalTex = null;
   var gltfCache = {};
   var texLoader = new THREE.TextureLoader();
@@ -1215,7 +1215,14 @@
     'lib-barrel': [0.60, 0.90, 0.60],
     'lib-pallet': [1.20, 0.14, 1.00],     // Euro/GMA-ish pallet
     'lib-shutter': [3.20, 3.20, 0.25],    // dock door ~3–4 × 3–4 m
-    'lib-wet': [0.35, 0.90, 0.20]
+    'lib-wet': [0.35, 0.90, 0.20],
+    'off-desk': [1.40, 0.75, 0.70],
+    'off-chair': [0.50, 0.90, 0.50],
+    'off-shelf': [0.90, 2.10, 0.40],
+    'off-table': [1.20, 0.75, 0.70],
+    'off-tv': [0.70, 0.45, 0.10],
+    'off-plant': [0.40, 1.00, 0.40],
+    'off-sofa': [1.80, 0.85, 0.85]
   };
 
   function fitRootToScaleM(root, scaleM) {
@@ -1430,16 +1437,88 @@
     envGroup.visible = layers.env;
   }
 
+
+  function buildOffice() {
+    beginEnvBuild();
+    var carpetMap = texRepeat(carpetTex || woodTex || floorTex, 6, 6);
+    var floorMat = carpetMap
+      ? new THREE.MeshStandardMaterial({ map: carpetMap, color: 0xb8a898, metalness: 0.02, roughness: 0.92 })
+      : stdMat(0x8a7a6a, { metalness: 0.03, roughness: 0.9 });
+    var floor = new THREE.Mesh(new THREE.PlaneGeometry(14, 12), floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    envGroup.add(floor);
+    var grid = new THREE.GridHelper(14, 14, 0x3a3a3e, 0x2a2a2e);
+    grid.position.y = 0.002;
+    envGroup.add(grid);
+
+    var wallMap = texRepeat(plasterTex || concreteTex, 3, 1.2);
+    var wall = wallMap
+      ? new THREE.MeshStandardMaterial({
+          map: wallMap, color: 0xd8dce0, metalness: 0.04, roughness: 0.88,
+          roughnessMap: concreteRough || null
+        })
+      : stdMat(0xd0d4d8, { metalness: 0.05, roughness: 0.9 });
+    exteriorGroup.add(makeBox(14, 3.0, 0.18, wall, 0, 1.5, -5.5));
+    exteriorGroup.add(makeBox(14, 3.0, 0.18, wall, 0, 1.5, 5.5));
+    exteriorGroup.add(makeBox(0.18, 3.0, 12, wall, -6.5, 1.5, 0));
+    exteriorGroup.add(makeBox(0.18, 3.0, 12, wall, 6.5, 1.5, 0));
+
+    var part = stdMat(0xc8ccd0, { metalness: 0.05, roughness: 0.8 });
+    [[-2, 0], [2, 0]].forEach(function (p) {
+      envGroup.add(makeBox(1.5, 1.35, 0.06, part, p[0], 0.68, -0.75));
+      envGroup.add(makeBox(0.06, 1.35, 1.5, part, p[0] - 0.75, 0.68, 0));
+      envGroup.add(makeBox(0.06, 1.35, 1.5, part, p[0] + 0.75, 0.68, 0));
+    });
+
+    var ceil = stdMat(0xe8e8ea, { metalness: 0.02, roughness: 0.95, emissive: 0xdde4ea, emissiveIntensity: 0.22 });
+    for (var cx = -4; cx <= 4; cx += 2) {
+      for (var cz = -3; cz <= 3; cz += 2) {
+        envGroup.add(makeBox(1.7, 0.04, 1.7, ceil, cx, 2.85, cz));
+      }
+    }
+
+    var glass = stdMat(0xa8c8e8, { metalness: 0.1, roughness: 0.15, transparent: true, opacity: 0.4 });
+    envGroup.add(makeBox(1.5, 1.2, 0.06, glass, -2.5, 1.6, -5.35));
+    envGroup.add(makeBox(1.5, 1.2, 0.06, glass, 2.5, 1.6, -5.35));
+
+    var elev = metalMat(0x8a96a4);
+    envGroup.add(makeBox(1.15, 2.2, 0.12, elev, -5.4, 1.1, 5.25));
+    envGroup.add(makeBox(1.15, 2.2, 0.12, elev, -3.8, 1.1, 5.25));
+
+    placeGltfClone('off-desk', -3.0, 0, -1.2, null, 0);
+    placeGltfClone('off-desk', -1.0, 0, -1.2, null, 0);
+    placeGltfClone('off-desk', 1.0, 0, -1.2, null, 0);
+    placeGltfClone('off-desk', 3.0, 0, -1.2, null, 0);
+    placeGltfClone('off-chair', -3.0, 0, -0.45, null, Math.PI);
+    placeGltfClone('off-chair', -1.0, 0, -0.45, null, Math.PI);
+    placeGltfClone('off-chair', 1.0, 0, -0.45, null, Math.PI);
+    placeGltfClone('off-chair', 3.0, 0, -0.45, null, Math.PI);
+    placeGltfClone('off-shelf', 5.2, 0, 2.5, null, Math.PI / 2);
+    placeGltfClone('off-shelf', 5.2, 0, -2.8, null, Math.PI / 2);
+    placeGltfClone('off-table', -3.5, 0, 2.8, null, 0.2);
+    placeGltfClone('off-tv', -3.0, 0.75, -1.45, null, 0);
+    placeGltfClone('off-tv', 1.0, 0.75, -1.45, null, 0);
+    placeGltfClone('off-plant', 4.6, 0, 4.2, null, 0);
+    placeGltfClone('off-plant', -5.2, 0, -4.2, null, 0.3);
+    placeGltfClone('off-sofa', 3.2, 0, 3.2, null, -0.4);
+    placeGltfClone('lib-light', 0, 2.6, 0, 1.0, 0);
+    placeGltfClone('lib-light', -3, 2.6, -2, 1.0, 0);
+    placeGltfClone('lib-light', 3, 2.6, 2, 1.0, 0);
+
+    envGroup.visible = layers.env;
+  }
+
   function buildEnvironmentFor(domainId) {
     var id = String(domainId || '').toLowerCase();
-    if (id.indexOf('assembly') >= 0 || id.indexOf('factory') >= 0 || id.indexOf('kitchen') >= 0) {
+    if (id.indexOf('office') >= 0) {
+      buildOffice();
+    } else if (id.indexOf('assembly') >= 0 || id.indexOf('factory') >= 0 || id.indexOf('kitchen') >= 0) {
       buildAssemblyFactory(); // kitchen id legacy → factory
     } else if (id.indexOf('distribution') >= 0 || id.indexOf('hub') >= 0) {
       buildDistributionHub();
     } else if (id.indexOf('patio') >= 0 || id.indexOf('outdoor') >= 0) {
       buildDistributionHub(); // legacy ids
-    } else if (id.indexOf('office') >= 0) {
-      buildWarehouse(); // office uses warehouse shell until dedicated builder ships
     } else {
       buildWarehouse();
     }
@@ -1491,7 +1570,14 @@
       ['ph-drill', './assets/library/assembly-line/polyhaven/drill_press_01/drill_press_01_1k.gltf'],
       ['ph-extinguisher', './assets/library/assembly-line/polyhaven/korean_fire_extinguisher_01/korean_fire_extinguisher_01_1k.gltf'],
       ['ph-ladder', './assets/library/assembly-line/polyhaven/ladder_sectioned_01/ladder_sectioned_01_1k.gltf'],
-      ['ph-pipe-lamp', './assets/library/assembly-line/polyhaven/industrial_pipe_lamp/industrial_pipe_lamp_1k.gltf']
+      ['ph-pipe-lamp', './assets/library/assembly-line/polyhaven/industrial_pipe_lamp/industrial_pipe_lamp_1k.gltf'],
+      ['off-desk', './assets/library/office/metal_office_desk/metal_office_desk_1k.gltf'],
+      ['off-chair', './assets/library/office/plastic_monobloc_chair_01/plastic_monobloc_chair_01_1k.gltf'],
+      ['off-shelf', './assets/library/office/Shelf_01/Shelf_01_1k.gltf'],
+      ['off-table', './assets/library/office/SchoolDesk_01/SchoolDesk_01_1k.gltf'],
+      ['off-tv', './assets/library/office/Television_01/Television_01_1k.gltf'],
+      ['off-plant', './assets/library/office/potted_plant_02/potted_plant_02_1k.gltf'],
+      ['off-sofa', './assets/library/generic/Sofa_01/Sofa_01_1k.gltf'],
       ['k1-robot', './assets/library/robot/k1/k1_22dof.glb']
     ];
     return Promise.all(jobs.map(function (pair) {
@@ -1933,7 +2019,8 @@
     loadTexFallback('./assets/distribution-hub/floor_anti_slip_diff.jpg', './assets/distribution-hub/floor_warehouse_diff.jpg').then(function (t) { antiSlipTex = t; }),
     loadTexFallback('./assets/library/assembly-line/textures/rubber_belt_diff.jpg', './assets/library/assembly-line/textures/rubber_mat_diff.jpg').then(function (t) { beltTex = t; }),
     loadTex('./assets/library/assembly-line/textures/caution_stripes_diff.jpg').then(function (t) { cautionTex = t; }),
-    loadTexFallback('./assets/library/assembly-line/textures/brushed_metal_diff.jpg', './assets/library/assembly-line/textures/scratched_metal_diff.jpg').then(function (t) { brushMetalTex = t; })
+    loadTexFallback('./assets/library/assembly-line/textures/brushed_metal_diff.jpg', './assets/library/assembly-line/textures/scratched_metal_diff.jpg').then(function (t) { brushMetalTex = t; }),
+    loadTex('./assets/library/office/textures/carpet_diff.jpg').then(function (t) { carpetTex = t; })
   ]).then(function () {
     if (activeDomainId) buildEnvironmentFor(activeDomainId);
     return preloadHubGltf();

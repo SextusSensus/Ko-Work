@@ -18,6 +18,7 @@ This ships the catalog, ontology, viewer hooks, procedural fallbacks, and a mock
 | `desktop/localmap-viewer/assets/library/<category>/<asset-id>/` | glTF/GLB + textures |
 | `desktop/localmap-viewer/assets/ATTRIBUTION.md` | License / source courtesy |
 | `desktop/localmap-data/asset-ontology.json` | Label class → default asset + scale + domains |
+| `desktop/localmap-data/global-assets.json` | Cross-domain `scope:global` catalog + `label_aliases` for autofill |
 | `desktop/localmap-data/domains/<id>/instances.json` | Placed instances (reruns append) |
 | `desktop/localmap-viewer/asset-placer.js` | Runtime: resolve label, load mesh, place, persist |
 
@@ -54,6 +55,8 @@ python3 -m http.server 8765
 # http://127.0.0.1:8765/localmap-viewer/index.html?domain=assembly-factory
 # Distribution hub + force mock detections:
 # http://127.0.0.1:8765/localmap-viewer/index.html?domain=distribution-hub&demo_assets=1
+# Office + force mock detections:
+# http://127.0.0.1:8765/localmap-viewer/index.html?domain=office&demo_assets=1
 ```
 
 ## How label → asset works
@@ -75,6 +78,7 @@ Plan A / COCO classes in `robot/common.py` (`CLASS_BRAKE_*`) are first-class ont
 
 ## Domains covered
 
+- **office** — desks, chairs, cubicles, elevators, shelves, windows, TVs, plants, couch, procedural walls/doors/exit/cooler (primary follow-test domain)
 - **assembly-factory** — dense assembly line (conveyors, stations, arms, fencing, HMI, Poly Haven industrial); legacy `kitchen` id maps here
 - **kitchen (removed as seed)** — stove, cabinets, table/chairs, fridge (procedural), microwave, trash, doorway, person
 - **warehouse-bay-a** — racks, pallets, boxes, cones, bollards, dock
@@ -84,3 +88,5 @@ Plan A / COCO classes in `robot/common.py` (`CLASS_BRAKE_*`) are first-class ont
 ## Licenses
 
 Prefer **CC0** (Poly Haven, ambientCG, Kenney, Quaternius). See `assets/ATTRIBUTION.md` and `assets/FREE-ASSETS.md`. Skipped non-CC0 / ambiguous marketplace hits (full fridge mesh, branded forklift) — procedural proxies used instead. **No paid marketplace URLs** (including CGTrader) are kept as a purchase wishlist.
+
+See also: [`localmap-autofill.md`](./localmap-autofill.md) for the collect → label → ontology → place loop.

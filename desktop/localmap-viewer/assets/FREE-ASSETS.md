@@ -36,6 +36,7 @@ Never `paid` / `purchase` / `link_only` / marketplace purchase targets.
 | Distribution Hub | Kenney conveyors/doors + Poly Haven props + procedural forklifts/dock |
 | Assembly line (hub east zone) | Kenney Factory Kit conveyors/crane/hopper + procedural stations/arms/fence/HMI + rubber/metal/caution textures |
 | Generic indoor | Sofa, plant, procedural walls/pillars/doors |
+| **Office** | Poly Haven desk/chair/shelf/TV/plant + procedural elevators/cubicles/windows/exit/cooler; ambientCG carpet/ceiling |
 | Robot | Official Booster K1 URDF mesh (BSD-3) in `library/robot/k1/`; procedural fallback |
 
 ## Explicitly rejected

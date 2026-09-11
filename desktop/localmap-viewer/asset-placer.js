@@ -8,9 +8,11 @@
   var DATA_ROOT = '../localmap-data';
   var CATALOG_URL = './assets/catalog.json';
   var ONTOLOGY_URL = DATA_ROOT + '/asset-ontology.json';
+  var GLOBAL_ASSETS_URL = DATA_ROOT + '/global-assets.json';
 
   var catalog = { version: 0, assets: [] };
   var ontology = { version: 0, label_classes: [] };
+  var globalAssets = { version: 0, scope: 'global', assets: [], label_aliases: {} };
   var assetById = {};
   var labelByKey = {};
   var meshCache = {};
@@ -177,6 +179,52 @@
         add(box(sx, sy, sz, metal), 0, sy / 2, 0);
         add(box(sx * 0.4, sy * 0.85, 0.02, accent), -sx * 0.22, sy / 2, sz * 0.55);
         add(box(sx * 0.4, sy * 0.85, 0.02, accent), sx * 0.22, sy / 2, sz * 0.55);
+        break;
+      case 'desk':
+        add(box(sx, 0.05, sz, wood), 0, sy * 0.72, 0);
+        add(box(sx * 0.95, sy * 0.55, sz * 0.08, dark), 0, sy * 0.35, -sz * 0.4);
+        [[-1, -1], [-1, 1], [1, -1], [1, 1]].forEach(function (c) {
+          add(box(0.05, sy * 0.7, 0.05, metal), c[0] * sx * 0.42, sy * 0.35, c[1] * sz * 0.4);
+        });
+        break;
+      case 'shelf':
+      case 'bookcase':
+        add(box(sx, sy, sz * 0.15, wood), 0, sy / 2, -sz * 0.35);
+        for (var sh = 0; sh < 5; sh++) {
+          add(box(sx * 0.95, 0.03, sz * 0.85, wood), 0, 0.15 + sh * (sy - 0.25) / 4, 0);
+        }
+        break;
+      case 'cubicle':
+        add(box(sx, sy * 0.85, 0.06, stdMat(0xc5c9ce, { roughness: 0.75 })), 0, sy * 0.42, -sz * 0.48);
+        add(box(0.06, sy * 0.85, sz, stdMat(0xc5c9ce, { roughness: 0.75 })), -sx * 0.48, sy * 0.42, 0);
+        add(box(0.06, sy * 0.85, sz, stdMat(0xc5c9ce, { roughness: 0.75 })), sx * 0.48, sy * 0.42, 0);
+        add(box(sx * 0.9, 0.04, sz * 0.9, dark), 0, sy * 0.72, 0);
+        break;
+      case 'window':
+        add(box(sx, sy, sz, metal), 0, sy / 2, 0);
+        add(box(sx * 0.85, sy * 0.75, 0.02, stdMat(0xa8c8e8, {
+          transparent: true, opacity: 0.45, metalness: 0.1, roughness: 0.15
+        })), 0, sy / 2, sz * 0.4);
+        add(box(0.04, sy * 0.75, 0.03, metal), 0, sy / 2, sz * 0.35);
+        break;
+      case 'water_cooler':
+        add(box(sx * 0.7, sy * 0.55, sz * 0.7, light), 0, sy * 0.28, 0);
+        add(cyl(sx * 0.28, sx * 0.28, sy * 0.4, stdMat(0x7ec8e8, {
+          transparent: true, opacity: 0.55, roughness: 0.2
+        })), 0, sy * 0.75, 0);
+        add(box(sx * 0.15, 0.08, sz * 0.15, metal), sx * 0.25, sy * 0.45, sz * 0.35);
+        break;
+      case 'exit_sign':
+        add(box(sx, sy, sz, stdMat(0x1a3a28, { metalness: 0.2, roughness: 0.4 })), 0, sy / 2, 0);
+        add(box(sx * 0.85, sy * 0.55, 0.02, stdMat(0x3cff8a, {
+          emissive: 0x3cff8a, emissiveIntensity: 0.55, metalness: 0.1, roughness: 0.35
+        })), 0, sy / 2, sz * 0.6);
+        break;
+      case 'hallway_carpet':
+        add(box(sx, Math.max(sy, 0.02), sz, stdMat(0x5a4a3a, { roughness: 0.95, metalness: 0.02 })), 0, 0.01, 0);
+        break;
+      case 'ceiling_tile':
+        add(box(sx, Math.max(sy, 0.02), sz, light), 0, 0, 0);
         break;
       case 'signage':
         add(box(sx, sy, sz, dark), 0, sy / 2, 0);
@@ -366,6 +414,33 @@
     (catalog.assets || []).forEach(function (a) { assetById[a.id] = a; });
   }
 
+  function indexGlobalAssets(ga) {
+    globalAssets = ga || globalAssets;
+    (globalAssets.assets || []).forEach(function (a) {
+      if (a && a.id && !assetById[a.id]) assetById[a.id] = a;
+    });
+    var aliases = globalAssets.label_aliases || {};
+    Object.keys(aliases).forEach(function (key) {
+      var entry = aliases[key];
+      if (!entry) return;
+      var canonId = entry.alias_of || entry.label_class || key;
+      var k = String(key).toLowerCase();
+      if (labelByKey[k]) return;
+      if (labelByKey[String(canonId).toLowerCase()]) {
+        labelByKey[k] = labelByKey[String(canonId).toLowerCase()];
+      } else if (entry.default_asset) {
+        labelByKey[k] = {
+          id: canonId,
+          default_asset: entry.default_asset,
+          scale_m: entry.scale_m,
+          placement: entry.placement || 'footprint',
+          domain_assets: entry.domain_assets || {},
+          scope: 'global'
+        };
+      }
+    });
+  }
+
   function indexOntology(ont) {
     ontology = ont || ontology;
     labelByKey = {};
@@ -389,7 +464,7 @@
     var lc = resolveLabel(labelClass);
     if (!lc) return null;
     var assetId = lc.default_asset;
-    // Domain-specific override hook (future)
+    // Domain-specific override (office desks/chairs) — else global catalog default
     if (lc.domain_assets && domainId && lc.domain_assets[domainId]) {
       assetId = lc.domain_assets[domainId];
     }
@@ -621,17 +696,45 @@
     if (opts.scene) attachToScene(opts.scene);
     return Promise.all([
       loadJson(CATALOG_URL).catch(function () { return { assets: [] }; }),
-      loadJson(ONTOLOGY_URL).catch(function () { return { label_classes: [] }; })
+      loadJson(ONTOLOGY_URL).catch(function () { return { label_classes: [] }; }),
+      loadJson(GLOBAL_ASSETS_URL).catch(function () { return { assets: [], label_aliases: {} }; })
     ]).then(function (pair) {
       indexCatalog(pair[0]);
       indexOntology(pair[1]);
+      indexGlobalAssets(pair[2]);
       ready = true;
-      return { catalog: catalog, ontology: ontology };
+      return { catalog: catalog, ontology: ontology, globalAssets: globalAssets };
     });
   }
 
   function demoSeedFor(domainId) {
     var id = String(domainId || '').toLowerCase();
+    if (id.indexOf('office') >= 0) {
+      return [
+        { class: 'elevator', x: -5.4, y: 4.6, yaw: 0, w: 1.2, h: 0.25, confidence: 0.94, run_id: 'demo-office-1' },
+        { class: 'elevator', x: -3.8, y: 4.6, yaw: 0, w: 1.2, h: 0.25, confidence: 0.93, run_id: 'demo-office-1' },
+        { class: 'door', x: 5.5, y: -0.2, yaw: 1.57, w: 1.0, h: 0.15, confidence: 0.9, run_id: 'demo-office-1' },
+        { class: 'window', x: -2.5, y: 4.9, yaw: 0, w: 1.6, h: 0.12, confidence: 0.88, run_id: 'demo-office-1' },
+        { class: 'window', x: 2.5, y: 4.9, yaw: 0, w: 1.6, h: 0.12, confidence: 0.87, run_id: 'demo-office-1' },
+        { class: 'desk', x: -3.0, y: -1.2, yaw: 0, w: 1.4, h: 0.7, confidence: 0.91, run_id: 'demo-office-2' },
+        { class: 'desk', x: -1.0, y: -1.2, yaw: 0, w: 1.4, h: 0.7, confidence: 0.9, run_id: 'demo-office-2' },
+        { class: 'desk', x: 1.0, y: -1.2, yaw: 0, w: 1.4, h: 0.7, confidence: 0.89, run_id: 'demo-office-2' },
+        { class: 'chair', x: -3.0, y: -0.45, yaw: 3.14, confidence: 0.86, run_id: 'demo-office-2' },
+        { class: 'chair', x: -1.0, y: -0.45, yaw: 3.14, confidence: 0.85, run_id: 'demo-office-2' },
+        { class: 'cubicle', x: -2.0, y: 0.0, yaw: 0, w: 1.6, h: 1.6, confidence: 0.82, run_id: 'demo-office-2' },
+        { class: 'cubicle', x: 2.0, y: 0.0, yaw: 0, w: 1.6, h: 1.6, confidence: 0.81, run_id: 'demo-office-2' },
+        { class: 'monitor', x: -3.0, y: -1.45, yaw: 0, w: 0.55, h: 0.08, confidence: 0.8, run_id: 'demo-office-2' },
+        { class: 'shelf', x: 5.2, y: 2.5, yaw: 1.57, w: 0.4, h: 1.2, confidence: 0.87, run_id: 'demo-office-3' },
+        { class: 'bookcase', x: 5.2, y: -2.8, yaw: 1.57, w: 0.4, h: 1.0, confidence: 0.85, run_id: 'demo-office-3' },
+        { class: 'table', x: -3.5, y: 2.8, yaw: 0.2, w: 1.6, h: 0.9, confidence: 0.86, run_id: 'demo-office-3' },
+        { class: 'couch', x: 3.2, y: 3.2, yaw: -0.4, w: 1.8, h: 0.85, confidence: 0.84, run_id: 'demo-office-3' },
+        { class: 'plant', x: 4.6, y: 4.2, yaw: 0, confidence: 0.78, run_id: 'demo-office-3' },
+        { class: 'water_cooler', x: 4.8, y: -4.2, yaw: 0, confidence: 0.8, run_id: 'demo-office-3' },
+        { class: 'exit_sign', x: 5.5, y: 0.6, yaw: 1.57, confidence: 0.95, run_id: 'demo-office-1' },
+        { class: 'hallway_carpet', x: 0, y: -3.8, yaw: 0, w: 10, h: 1.4, confidence: 0.99, run_id: 'demo-office-1' },
+        { class: 'person', x: 0.4, y: -3.2, yaw: 0.5, confidence: 0.92, run_id: 'demo-office-3' }
+      ];
+    }
     if (id.indexOf('assembly') >= 0 || id.indexOf('factory') >= 0 || id.indexOf('kitchen') >= 0) {
       return [
         { class: 'conveyor', x: -3.4, y: 0, yaw: 0, w: 0.9, h: 8, confidence: 0.93, run_id: 'demo-factory-1' },
@@ -694,6 +797,7 @@
     attachToScene: attachToScene,
     getCatalog: function () { return catalog; },
     getOntology: function () { return ontology; },
+    getGlobalAssets: function () { return globalAssets; },
     resolveLabel: resolveLabel,
     resolveAsset: resolveAsset,
     assignAsset: assignAsset,
@@ -730,6 +834,7 @@
     k.runAssetDemo = function (domainId) { return api.runDemo(domainId || k.getActiveDomain()); };
     k.getAssetCatalog = function () { return api.getCatalog(); };
     k.getAssetOntology = function () { return api.getOntology(); };
+    k.getGlobalAssets = function () { return api.getGlobalAssets(); };
     return true;
   }
 
