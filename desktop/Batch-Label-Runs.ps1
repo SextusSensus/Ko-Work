@@ -10,10 +10,11 @@
 
   Outputs land under ..\autotune\<run_id>\ (same layout as the live loop):
     labeled.rrd, label_validation.json, obstacle_summary.json, obstacles.jsonl, SUMMARY.txt
+    obstacle_set.json (Phase-2 suspect_iddrift via eval/rrd_obstacles.py)
 
   Already-labelled runs (label_validation.json at the current gate) are skipped unless -Force.
-  Prints a final PASS / FAIL / INCONCLUSIVE / skipped / errors tally and writes
-  ..\autotune\batch_label_tally.json for scoring.
+  Prints a final PASS / FAIL / INCONCLUSIVE / skipped / errors tally plus depth_pairing and
+  suspect_iddrift aggregates; writes ..\autotune\batch_label_tally.json for scoring.
 
 .EXAMPLE
   # Dry-run: list eligible runs, label nothing
@@ -200,10 +201,34 @@ $tally = [ordered]@{
   skipped_pass = 0; skipped_fail = 0; skipped_inconclusive = 0; skipped_other = 0
   started_utc = (Get-Date).ToUniversalTime().ToString('o')
   gate_version = $GateVersion
+  depth_pairing = [ordered]@{ pass = 0; inconclusive = 0; skip = 0; other = 0; frac_paired = @() }
+  suspect_iddrift = [ordered]@{ runs_with_suspects = 0; total_suspects = 0 }
   runs = $null
 }
 # ArrayList avoids the PS 5.1 `@() += $x` scalarization trap on the first append.
 $runRows = New-Object System.Collections.ArrayList
+
+function Add-QualityStats($row, [string]$adir) {
+  $row['depth_pairing'] = Get-DepthPairingStats $adir
+  if ($row['depth_pairing']) {
+    switch ($row['depth_pairing'].status) {
+      'PASS'         { $script:tally.depth_pairing.pass++ }
+      'INCONCLUSIVE' { $script:tally.depth_pairing.inconclusive++ }
+      'SKIP'         { $script:tally.depth_pairing.skip++ }
+      default        { $script:tally.depth_pairing.other++ }
+    }
+    if ($null -ne $row['depth_pairing'].frac_paired) {
+      $script:tally.depth_pairing.frac_paired += [double]$row['depth_pairing'].frac_paired
+    }
+  }
+  if (-not $DryRun) {
+    $row['iddrift'] = Get-IdDriftStats $adir $Python
+    if ($row['iddrift'] -and [int]$row['iddrift'].n_suspect_iddrift -gt 0) {
+      $script:tally.suspect_iddrift.runs_with_suspects++
+      $script:tally.suspect_iddrift.total_suspects += [int]$row['iddrift'].n_suspect_iddrift
+    }
+  }
+}
 
 foreach ($c in $candidates) {
   $adir = Join-Path $AutotuneDir $c.RunId
@@ -229,6 +254,7 @@ foreach ($c in $candidates) {
       default        { $tally.skipped_other++ }
     }
     Write-Host ("  SKIP  {0}  ({1:N0} MB) -- already {2}" -f $c.RunId, ($c.Bytes / 1MB), $prior) -ForegroundColor DarkGray
+    Add-QualityStats $row $adir
     [void]$runRows.Add($row)
     continue
   }
@@ -273,6 +299,13 @@ foreach ($c in $candidates) {
   $row.stage_exit = $rc
   $st = Get-ValidationStatus $adir
   $row.status = $st
+  Add-QualityStats $row $adir
+  if ($row['depth_pairing']) {
+    Write-Host ("         depth_pairing={0} frac={1}" -f $row['depth_pairing'].status, $row['depth_pairing'].frac_paired) -ForegroundColor DarkGray
+  }
+  if ($row['iddrift']) {
+    Write-Host ("         suspect_iddrift={0}/{1} obstacles" -f $row['iddrift'].n_suspect_iddrift, $row['iddrift'].n_obstacles) -ForegroundColor DarkGray
+  }
 
   if ($rc -eq 0 -and $st -eq 'PASS') {
     $tally.pass++
@@ -290,8 +323,20 @@ foreach ($c in $candidates) {
 }
 
 $tally.runs = @($runRows.ToArray())
+$fracs = @($tally.depth_pairing.frac_paired)
+if ($fracs.Count -gt 0) {
+  $sorted = @($fracs | Sort-Object)
+  $tally.depth_pairing.frac_summary = [ordered]@{
+    n = $fracs.Count
+    min = [math]::Round([double]$sorted[0], 4)
+    median = [math]::Round([double]$sorted[[int](($sorted.Count - 1) / 2)], 4)
+    max = [math]::Round([double]$sorted[-1], 4)
+  }
+} else {
+  $tally.depth_pairing.frac_summary = $null
+}
 $tally.finished_utc = (Get-Date).ToUniversalTime().ToString('o')
-$tally | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $OutTally -Encoding utf8
+$tally | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $OutTally -Encoding utf8
 
 Write-Host ''
 Write-Host '======== batch tally (mutually exclusive) ========' -ForegroundColor Cyan
@@ -306,12 +351,21 @@ $corpusPass = $tally.pass + $tally.skipped_pass
 $corpusFail = $tally.fail + $tally.skipped_fail
 $corpusInc  = $tally.inconclusive + $tally.skipped_inconclusive
 Write-Host ("  corpus        PASS={0} FAIL={1} INC={2}  (this batch + skipped priors)" -f $corpusPass, $corpusFail, $corpusInc) -ForegroundColor DarkGray
+Write-Host ("  depth_pairing PASS={0} INC={1} SKIP={2}" -f `
+  $tally.depth_pairing.pass, $tally.depth_pairing.inconclusive, $tally.depth_pairing.skip)
+if ($tally.depth_pairing.frac_summary) {
+  $fs = $tally.depth_pairing.frac_summary
+  Write-Host ("  frac_paired   min={0} median={1} max={2} (n={3})" -f $fs.min, $fs.median, $fs.max, $fs.n)
+}
+Write-Host ("  suspect_iddrift  runs_with={0}  total_suspects={1}" -f `
+  $tally.suspect_iddrift.runs_with_suspects, $tally.suspect_iddrift.total_suspects)
 Write-Host ("tally -> {0}" -f $OutTally) -ForegroundColor DarkGray
 Write-Host ''
 Write-Host 'Send back for Plan A scoring (small; do NOT zip labeled.rrd unless asked):' -ForegroundColor Cyan
 Write-Host '  autotune\batch_label_tally.json'
 Write-Host '  autotune\<run_id>\label_validation.json'
 Write-Host '  autotune\<run_id>\obstacle_summary.json'
+Write-Host '  autotune\<run_id>\obstacle_set.json   (suspect_iddrift)'
 Write-Host '  autotune\<run_id>\SUMMARY.txt'
 Write-Host 'Optional per-detection detail: autotune\<run_id>\obstacles.jsonl'
 Write-Host 'View a PASS locally:  .\View-Autotune.ps1 -List   then   .\View-Autotune.ps1 -Run <id>'
