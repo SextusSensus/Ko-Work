@@ -900,6 +900,19 @@
     placeGltfClone('ph-plastic', 7.4, 0, -0.8, 1.0, 0.5);
     placeGltfClone('ph-tote', 7.5, 0, 2.2, 1.0, 0);
     placeGltfClone('ph-rack', -8.6, 0, 2.0, 1.0, Math.PI / 2);
+    placeGltfClone('lib-barrier', -7.5, 0, -8.8, 1.0, 0.1);
+    placeGltfClone('lib-barrier', 7.5, 0, -8.8, 1.0, -0.1);
+    placeGltfClone('lib-cone', 2.4, 0, -8.2, 1.0, 0);
+    placeGltfClone('lib-crush', -8.8, 0, -4.0, 1.0, Math.PI / 2);
+    placeGltfClone('lib-block', 8.8, 0, -6.5, 1.0, 0);
+    placeGltfClone('lib-handtruck', -0.9, 0, -6.5, 1.0, 0.4);
+    placeGltfClone('lib-shelves', -9.2, 0, 6.5, 1.0, Math.PI / 2);
+    placeGltfClone('lib-barrel', -7.4, 0, 5.2, 1.0, 0.2);
+    placeGltfClone('lib-barrel', -6.8, 0, 5.5, 1.0, -0.3);
+    placeGltfClone('lib-shutter', 0, 0, -10.15, 1.15, 0);
+    placeGltfClone('lib-light', -3.8, 3.8, 0, 1.0, 0);
+    placeGltfClone('lib-light', 3.8, 3.8, 0, 1.0, 0);
+    placeGltfClone('lib-wet', 1.2, 0, -7.5, 1.0, 0.15);
 
     envGroup.visible = layers.env;
   }
@@ -924,7 +937,17 @@
       ['ph-crate', './assets/distribution-hub/polyhaven/wooden_crate_01/wooden_crate_01_1k.gltf'],
       ['ph-plastic', './assets/distribution-hub/polyhaven/plastic_crate_01/plastic_crate_01_1k.gltf'],
       ['ph-tote', './assets/distribution-hub/polyhaven/industrial_pastic_container/industrial_pastic_container_1k.gltf'],
-      ['ph-rack', './assets/distribution-hub/polyhaven/worn_metal_rack/worn_metal_rack_1k.gltf']
+      ['ph-rack', './assets/distribution-hub/polyhaven/worn_metal_rack/worn_metal_rack_1k.gltf'],
+      ['lib-barrier', './assets/library/warehouse/concrete_road_barrier/concrete_road_barrier_1k.gltf'],
+      ['lib-cone', './assets/library/cross-domain/traffic/Traffic_Cone.glb'],
+      ['lib-crush', './assets/library/cross-domain/traffic/Crush_Barrier.glb'],
+      ['lib-block', './assets/library/cross-domain/traffic/Road_Block.glb'],
+      ['lib-handtruck', './assets/library/warehouse/hand_truck/hand_truck_1k.gltf'],
+      ['lib-shelves', './assets/library/warehouse/steel_frame_shelves_01/steel_frame_shelves_01_1k.gltf'],
+      ['lib-barrel', './assets/library/warehouse/Barrel_01/Barrel_01_1k.gltf'],
+      ['lib-shutter', './assets/library/warehouse/rollershutter_door/rollershutter_door_1k.gltf'],
+      ['lib-light', './assets/library/cross-domain/caged_hanging_light/caged_hanging_light_1k.gltf'],
+      ['lib-wet', './assets/library/cross-domain/WetFloorSign_01/WetFloorSign_01_1k.gltf']
     ];
     return Promise.all(jobs.map(function (pair) {
       return new Promise(function (resolve) {

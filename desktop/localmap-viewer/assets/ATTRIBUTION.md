@@ -80,3 +80,31 @@ Official URDF: https://github.com/BoosterRobotics/booster_assets (`robots/K1/`).
 | Sketchfab “realistic warehouse” GLTFs | Many CC-BY with non-commercial / no-derivatives clauses — skipped |
 | Free3D high-detail forklift / dock door | Paywalled or license-unclear — skipped |
 | ambientCG API host `api.ambientcg.com` | TLS name mismatch in this environment; used `ambientcg.com` web get instead |
+
+
+## `library/warehouse/` (shared domain library)
+
+Poly Haven glTF 1K props — **CC0** (https://polyhaven.com/):
+
+| Folder | Source |
+|--------|--------|
+| `cardboard_box_01/` | https://polyhaven.com/a/cardboard_box_01 |
+| `wooden_crate_01/` | https://polyhaven.com/a/wooden_crate_01 |
+| `plastic_crate_01/` | https://polyhaven.com/a/plastic_crate_01 |
+| `industrial_pastic_container/` | https://polyhaven.com/a/industrial_pastic_container |
+| `worn_metal_rack/` | https://polyhaven.com/a/worn_metal_rack |
+| `concrete_road_barrier/` | https://polyhaven.com/a/concrete_road_barrier |
+| `hand_truck/` | https://polyhaven.com/a/hand_truck |
+| `rollershutter_door/` | https://polyhaven.com/a/rollershutter_door |
+| `steel_frame_shelves_01/` | https://polyhaven.com/a/steel_frame_shelves_01 |
+| `Barrel_01/` | https://polyhaven.com/a/Barrel_01 |
+| `kenney/` | Kenney Factory Kit subset — CC0 (see `kenney/LICENSE.txt`) |
+| `wooden_pallet_cc0/` | Lightweight procedural/CC0 pallet proxy mesh (no third-party textures) |
+
+## `library/cross-domain/`
+
+| Path | Source | License |
+|------|--------|---------|
+| `traffic/*.glb` | MilkAndBanana — Traffic Road Assets | CC0 (`traffic/LICENSE.txt`) |
+| `caged_hanging_light/` | Poly Haven | CC0 |
+| `WetFloorSign_01/` | Poly Haven | CC0 |
