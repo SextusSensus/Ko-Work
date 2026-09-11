@@ -1,0 +1,73 @@
+{
+  "domain_id": "warehouse-bay-a",
+  "updated": "2026-09-11T09:15:00Z",
+  "notes": "Seed instances from mock aisle labels",
+  "instances": [
+    {
+      "id": "wh-rack-l",
+      "label_class": "pallet_rack",
+      "asset_id": "warehouse/steel-shelves",
+      "x": -3.15,
+      "y": 2.0,
+      "yaw": 0,
+      "confidence": 0.9,
+      "run_id": "demo-wh-1",
+      "source": "mock_label"
+    },
+    {
+      "id": "wh-rack-r",
+      "label_class": "pallet_rack",
+      "asset_id": "warehouse/pallet-rack",
+      "x": 3.15,
+      "y": -1.0,
+      "yaw": 0,
+      "confidence": 0.88,
+      "run_id": "demo-wh-1",
+      "source": "mock_label"
+    },
+    {
+      "id": "wh-pallet-1",
+      "label_class": "pallet",
+      "asset_id": "warehouse/pallet",
+      "x": -1.6,
+      "y": 6.5,
+      "yaw": 0,
+      "confidence": 0.8,
+      "run_id": "demo-wh-2",
+      "source": "mock_label"
+    },
+    {
+      "id": "wh-box-1",
+      "label_class": "cardboard_box",
+      "asset_id": "warehouse/cardboard-box",
+      "x": -1.55,
+      "y": 6.55,
+      "yaw": 0.2,
+      "confidence": 0.82,
+      "run_id": "demo-wh-2",
+      "source": "mock_label"
+    },
+    {
+      "id": "wh-cone-1",
+      "label_class": "safety_cone",
+      "asset_id": "cross-domain/safety-cone",
+      "x": 0.5,
+      "y": -7.5,
+      "yaw": 0,
+      "confidence": 0.9,
+      "run_id": "demo-wh-3",
+      "source": "mock_label"
+    },
+    {
+      "id": "wh-bollard-1",
+      "label_class": "bollard",
+      "asset_id": "warehouse/bollard",
+      "x": -1.8,
+      "y": -8.0,
+      "yaw": 0,
+      "confidence": 0.95,
+      "run_id": "demo-wh-3",
+      "source": "mock_label"
+    }
+  ]
+}

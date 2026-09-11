@@ -223,12 +223,7 @@
     (function () {
       function bootAssets() {
         if (!window.k1LocalMapAssets || !window.k1LocalMap) return;
-        var scene = null;
-        try {
-          // instance group attaches via API; scene grabbed from placer after init
-        } catch (e) {}
         window.k1LocalMapAssets.init({}).then(function () {
-          // Attach to same scene as viewer via DOM canvas owner — placer adds its own group when told
           if (window.k1LocalMap._scene) {
             window.k1LocalMapAssets.attachToScene(window.k1LocalMap._scene);
           }
@@ -237,20 +232,16 @@
           function loadFor(id) {
             if (!id) return;
             var demo = q.get('demo_assets') === '1' || q.get('assets') === 'demo';
-            var p = window.k1LocalMapAssets.loadInstancesForDomain(id);
-            if (demo) {
-              p = p.then(function () { return window.k1LocalMap.runAssetDemo(id); });
-            }
-            return p;
+            // Prefer seed instances.json; ?demo_assets=1 forces mock detections API path
+            if (demo) return window.k1LocalMap.runAssetDemo(id);
+            return window.k1LocalMapAssets.loadInstancesForDomain(id);
           }
-          window.k1LocalMapOnDomainChange = function (id) {
-            loadFor(id);
-          };
+          window.k1LocalMapOnDomainChange = function (id) { loadFor(id); };
           loadFor(domain);
         });
       }
-      if (document.readyState === 'complete') setTimeout(bootAssets, 50);
-      else window.addEventListener('load', function () { setTimeout(bootAssets, 50); });
+      if (document.readyState === 'complete') setTimeout(bootAssets, 80);
+      else window.addEventListener('load', function () { setTimeout(bootAssets, 80); });
     })();
   </script>
 </body>

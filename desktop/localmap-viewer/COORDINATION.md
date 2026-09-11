@@ -13,7 +13,7 @@ Updated: 2026-09-11T09:12:30Z
 | Interaction QA | bc-4e7074e9 | verify drag-orbit + assets |
 | Free-only catalog | bc-1677a491 | downloads + FREE-ASSETS.md; strip paid |
 | CGTrader→free twins | bc-9406d79e | free equivalents only |
-| Asset ontology / label→asset | bc-9bd2d943 | catalog schema + assignAsset API |
+| Asset ontology / label→asset | bc-9bd2d943 | catalog schema + assignAsset API + asset-placer.js + instances.json (**shipped**) |
 | Distribution hub domain | bc-f69a0a82 | hub domain content |
 | Realtime telemetry | bc-137a8586 | WS bridge/feed only |
 | Local Map polish | bc-653b389d | warehouse beauty; defer camera |

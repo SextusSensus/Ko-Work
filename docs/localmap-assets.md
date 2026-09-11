@@ -13,7 +13,7 @@ This ships the catalog, ontology, viewer hooks, procedural fallbacks, and a mock
 
 | Path | Role |
 |------|------|
-| `desktop/localmap-viewer/assets/catalog.json` | Machine-readable asset list (`downloaded` / `procedural` / `linked`) |
+| `desktop/localmap-viewer/assets/catalog.json` | Machine-readable asset list (`downloaded` / `procedural` / `free_link`) |
 | `desktop/localmap-viewer/assets/library/<category>/<asset-id>/` | glTF/GLB + textures |
 | `desktop/localmap-viewer/assets/ATTRIBUTION.md` | License / source courtesy |
 | `desktop/localmap-data/asset-ontology.json` | Label class → default asset + scale + domains |

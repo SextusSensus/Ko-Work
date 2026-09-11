@@ -620,12 +620,26 @@
       envGroup.add(makeBox(0.16, 0.55, 0.16, bollard, p[0], 0.28, p[1]));
     });
 
-    // pallet stacks in aisle margins
-    var wood = stdMat(0x5a4632, { metalness: 0.05, roughness: 0.75 });
-    [[-1.6, 6.5], [1.7, 6.2], [-1.5, -6.0]].forEach(function (p) {
-      envGroup.add(makeBox(1.0, 0.12, 1.0, wood, p[0], 0.06, p[1]));
-      envGroup.add(makeBox(0.85, 0.55, 0.85, stdMat(0x4a5560, { roughness: 0.7 }), p[0], 0.42, p[1]));
-    });
+    // Free library props (Poly Haven / Kenney / authored pallet)
+    placeGltfClone('lib-pallet', -1.6, 0, 6.5, 1.0, 0);
+    placeGltfClone('ph-box', -1.55, 0.12, 6.55, 1.0, 0.2);
+    placeGltfClone('lib-pallet', 1.7, 0, 6.2, 1.0, -0.15);
+    placeGltfClone('ph-crate', 1.7, 0.12, 6.2, 1.0, -0.1);
+    placeGltfClone('lib-pallet', -1.5, 0, -6.0, 1.0, 0.1);
+    placeGltfClone('ph-box', -1.45, 0.12, -5.95, 0.95, 0.35);
+    placeGltfClone('lib-cone', 0.5, 0, -7.5, 1.1, 0);
+    placeGltfClone('lib-barrier', -7.2, 0, -8.4, 1.0, Math.PI / 2);
+    placeGltfClone('lib-barrier', 7.2, 0, -8.4, 1.0, -Math.PI / 2);
+    placeGltfClone('lib-handtruck', 2.0, 0, -4.0, 1.0, 0.5);
+    placeGltfClone('ph-plastic', 2.4, 0, -3.5, 1.0, 0.2);
+    placeGltfClone('lib-shelves', -8.6, 0, 2.5, 1.0, Math.PI / 2);
+    placeGltfClone('ph-rack', 8.6, 0, -1.5, 1.0, -Math.PI / 2);
+    placeGltfClone('lib-barrel', -6.8, 0, 5.5, 1.0, 0.2);
+    placeGltfClone('lib-barrel', -6.2, 0, 5.8, 1.0, -0.3);
+    placeGltfClone('lib-shutter', 0, 0, -9.55, 1.05, 0);
+    placeGltfClone('lib-light', -3.5, 4.0, 0, 1.0, 0);
+    placeGltfClone('lib-light', 3.5, 4.0, 0, 1.0, 0);
+    placeGltfClone('lib-wet', 1.2, 0, -7.2, 1.0, 0.15);
 
     envGroup.visible = layers.env;
   }
@@ -650,13 +664,17 @@
     }
     var cab = stdMat(0x2a2a2e, { metalness: 0.22, roughness: 0.52 });
     var counter = stdMat(0xd8d4cc, { metalness: 0.12, roughness: 0.42 });
+    // Island counter + back run (architecture); free GLTF props drop in on top
     envGroup.add(makeBox(1.8, 0.9, 0.9, cab, 0, 0.45, 0.5));
     envGroup.add(makeBox(1.9, 0.04, 1.0, counter, 0, 0.92, 0.5));
     envGroup.add(makeBox(4.5, 0.9, 0.6, cab, 0, 0.45, -2.8));
+    envGroup.add(makeBox(4.6, 0.04, 0.68, counter, 0, 0.92, -2.8));
     envGroup.add(makeBox(0.6, 0.9, 3.2, cab, -2.6, 0.45, -0.8));
     envGroup.add(makeBox(0.6, 0.9, 3.2, cab, 2.6, 0.45, -0.8));
-    // Fridge (procedural shell — catalog fridge also placed via instances)
+    // Procedural fridge (no free CC0 fridge mesh in catalog)
     envGroup.add(makeBox(0.7, 1.8, 0.7, stdMat(0xe8e8ea, { metalness: 0.55, roughness: 0.28 }), -2.5, 0.9, 1.6));
+    envGroup.add(makeBox(0.02, 0.7, 0.55, stdMat(0x8a96a4, { metalness: 0.7, roughness: 0.3 }), -2.14, 1.35, 1.6));
+    envGroup.add(makeBox(0.02, 0.65, 0.55, stdMat(0x8a96a4, { metalness: 0.7, roughness: 0.3 }), -2.14, 0.55, 1.6));
     // Doorway
     envGroup.add(makeBox(0.08, 2.1, 0.08, cab, 2.8, 1.05, 2.4));
     envGroup.add(makeBox(0.08, 2.1, 0.08, cab, 3.8, 1.05, 2.4));
@@ -665,6 +683,20 @@
     var wash = stdMat(0xf2f2f7, { emissive: 0xd8e8f8, emissiveIntensity: 0.35, roughness: 1, metalness: 0 });
     envGroup.add(makeBox(1.2, 0.05, 1.2, wash, 0, 2.6, 0));
     envGroup.add(makeBox(1.2, 0.05, 1.2, wash, -2, 2.6, -1.5));
+    envGroup.add(makeBox(1.2, 0.05, 1.2, wash, 2, 2.6, -1.2));
+
+    // Free Poly Haven kitchen props (catalog library/)
+    placeGltfClone('kit-stove', 1.35, 0, -2.45, 1.0, 0);
+    placeGltfClone('kit-cabinet', 2.35, 0, -0.7, 1.0, Math.PI / 2);
+    placeGltfClone('kit-table', 0.15, 0, -1.05, 1.0, 0.15);
+    placeGltfClone('kit-chair', -0.55, 0, -0.95, 1.0, 0.4);
+    placeGltfClone('kit-chair', 0.85, 0, -1.25, 1.0, -0.35);
+    placeGltfClone('kit-stool', -1.1, 0, 0.35, 1.0, 0.2);
+    placeGltfClone('kit-microwave', -2.2, 0.95, -2.55, 1.0, 0);
+    placeGltfClone('kit-trash', 2.15, 0, 1.35, 1.0, 0.2);
+    placeGltfClone('lib-wet', 3.1, 0, 1.8, 1.0, -0.4);
+    placeGltfClone('lib-light', 0, 2.45, 0.2, 1.0, 0);
+
     envGroup.visible = layers.env;
   }
 
@@ -779,14 +811,21 @@
   function placeGltfClone(name, x, y, z, scale, rotY) {
     var src = gltfCache[name];
     if (!src) return;
+    var root = new THREE.Group();
     var clone = src.clone(true);
-    clone.position.set(x, y || 0, z);
-    clone.scale.setScalar(scale || 1);
-    if (rotY) clone.rotation.y = rotY;
-    clone.traverse(function (o) {
+    root.add(clone);
+    root.scale.setScalar(scale || 1);
+    if (rotY) root.rotation.y = rotY;
+    root.position.set(x, y || 0, z);
+    root.traverse(function (o) {
       if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
     });
-    envGroup.add(clone);
+    // Ground to floor unless caller passed an explicit elevated Y (e.g. microwave on counter)
+    if (y == null || y === 0) {
+      var box3 = new THREE.Box3().setFromObject(root);
+      if (isFinite(box3.min.y)) root.position.y -= box3.min.y;
+    }
+    envGroup.add(root);
   }
 
   function buildDistributionHub() {
@@ -991,12 +1030,20 @@
       ['lib-crush', './assets/library/cross-domain/traffic/Crush_Barrier.glb'],
       ['lib-block', './assets/library/cross-domain/traffic/Road_Block.glb'],
       ['lib-handtruck', './assets/library/warehouse/hand_truck/hand_truck_1k.gltf'],
+      ['lib-hand-truck', './assets/library/warehouse/hand_truck/hand_truck_1k.gltf'],
       ['lib-shelves', './assets/library/warehouse/steel_frame_shelves_01/steel_frame_shelves_01_1k.gltf'],
       ['lib-barrel', './assets/library/warehouse/Barrel_01/Barrel_01_1k.gltf'],
       ['lib-shutter', './assets/library/warehouse/rollershutter_door/rollershutter_door_1k.gltf'],
       ['lib-light', './assets/library/cross-domain/caged_hanging_light/caged_hanging_light_1k.gltf'],
       ['lib-wet', './assets/library/cross-domain/WetFloorSign_01/WetFloorSign_01_1k.gltf'],
-      ['lib-pallet', './assets/library/warehouse/wooden_pallet_cc0/wooden_pallet_cc0.gltf']
+      ['lib-pallet', './assets/library/warehouse/wooden_pallet_cc0/wooden_pallet_cc0.gltf'],
+      ['kit-stove', './assets/library/kitchen/electric_stove/electric_stove_1k.gltf'],
+      ['kit-cabinet', './assets/library/kitchen/drawer_cabinet/drawer_cabinet_1k.gltf'],
+      ['kit-table', './assets/library/kitchen/dining_table/dining_table_1k.gltf'],
+      ['kit-chair', './assets/library/kitchen/dining_chair_02/dining_chair_02_1k.gltf'],
+      ['kit-stool', './assets/library/kitchen/wooden_stool_01/wooden_stool_01_1k.gltf'],
+      ['kit-microwave', './assets/library/kitchen/vintage_microwave/vintage_microwave_1k.gltf'],
+      ['kit-trash', './assets/library/kitchen/trashbag/trashbag_1k.gltf']
     ];
     return Promise.all(jobs.map(function (pair) {
       return new Promise(function (resolve) {
@@ -1006,9 +1053,8 @@
         }, undefined, function () { resolve(null); });
       });
     })).then(function () {
-      if (activeDomainId && String(activeDomainId).indexOf('distribution') >= 0) {
-        buildDistributionHub();
-      }
+      // Rebuild active domain so free meshes appear after async load
+      if (activeDomainId) buildEnvironmentFor(activeDomainId);
     });
   }
 
