@@ -67,6 +67,6 @@ Official URDF: https://github.com/BoosterRobotics/booster_assets
 
 Docs: [`docs/localmap-assets.md`](../../docs/localmap-assets.md)
 
-## CGTrader wishlist (not redistributed)
+## Paid marketplaces (rejected)
 
-See [`CGTRADER.md`](./CGTRADER.md) / [`cgtrader-catalog.json`](./cgtrader-catalog.json). No paid or Royalty-Free CGTrader binaries are committed. Runtime uses CC0/procedural only.
+No paid CGTrader (or other marketplace) purchase URLs or binaries are kept in this repo. Runtime uses CC0 / procedural / free_link only — see [`FREE-ASSETS.md`](./FREE-ASSETS.md).

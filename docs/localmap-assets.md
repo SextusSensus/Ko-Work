@@ -14,8 +14,7 @@ This ships the catalog, ontology, viewer hooks, procedural fallbacks, and a mock
 | Path | Role |
 |------|------|
 | `desktop/localmap-viewer/assets/catalog.json` | Machine-readable **CC0** asset list (`downloaded` / `procedural` / `free_link`) |
-| `desktop/localmap-viewer/assets/cgtrader-catalog.json` | CGTrader **purchase wishlist** (`link_only` / `free_download` / `local`) |
-| `desktop/localmap-viewer/assets/CGTRADER.md` | Human-readable CGTrader shortlist |
+| `desktop/localmap-viewer/assets/FREE-ASSETS.md` | Free-only policy + domain coverage |
 | `desktop/localmap-viewer/assets/library/<category>/<asset-id>/` | glTF/GLB + textures |
 | `desktop/localmap-viewer/assets/ATTRIBUTION.md` | License / source courtesy |
 | `desktop/localmap-data/asset-ontology.json` | Label class → default asset + scale + domains |
@@ -80,8 +79,4 @@ Plan A / COCO classes in `robot/common.py` (`CLASS_BRAKE_*`) are first-class ont
 
 ## Licenses
 
-Prefer **CC0** (Poly Haven, ambientCG, Kenney, Quaternius). See `assets/ATTRIBUTION.md`. Skipped non-CC0 / ambiguous Sketchfab Free3D hits (full fridge mesh, branded forklift) — procedural proxies used instead.
-
-## CGTrader wishlist
-
-Premium hub/kitchen props are cataloged from cgtrader.com as URLs only. Ontology fields `cgtrader_preferred` / `cgtrader_url` let label classes remember the target model while `default_asset` stays free. After licensing, drop `library/<id>/model.glb` and set wishlist status to `local`. **Paid CGTrader assets are link-only until licensed; RF free items are not committed.**
+Prefer **CC0** (Poly Haven, ambientCG, Kenney, Quaternius). See `assets/ATTRIBUTION.md` and `assets/FREE-ASSETS.md`. Skipped non-CC0 / ambiguous marketplace hits (full fridge mesh, branded forklift) — procedural proxies used instead. **No paid marketplace URLs** (including CGTrader) are kept as a purchase wishlist.

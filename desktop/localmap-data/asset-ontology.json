@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated": "2026-09-11T09:13:37Z",
-  "description": "Label class \u2192 free Local Map asset (default_asset). Optional cgtrader_preferred id references the purchase wishlist (cgtrader-catalog.json) while runtime keeps CC0/procedural until licensed.",
+  "updated": "2026-09-11T09:21:51Z",
+  "description": "Label class → free Local Map asset (default_asset). Runtime uses CC0/procedural/free_link only — see assets/FREE-ASSETS.md and catalog.json.",
   "catalog_ref": "../localmap-viewer/assets/catalog.json",
   "placement_modes": {
     "footprint": "Sit on floor; use w/h as ground footprint metres when present",
@@ -24,10 +24,7 @@
       "domains": [
         "warehouse-bay-a",
         "distribution-hub"
-      ],
-      "cgtrader_preferred": "cgt-hub-storage-kit-12",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/other/industrial-storage-and-racking-kit-12-pbr-warehouse-assets",
-      "cgtrader_status": "link_only"
+      ]
     },
     {
       "id": "bed",
@@ -61,12 +58,6 @@
       "domains": [
         "warehouse-bay-a",
         "distribution-hub"
-      ],
-      "cgtrader_preferred": "cgt-hub-dock-kit-32",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/industrial-machine/modular-loading-dock-equipment-kit-32-assets",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-hub-dock-bundle-68"
       ]
     },
     {
@@ -100,13 +91,6 @@
       ],
       "domains": [
         "kitchen"
-      ],
-      "cgtrader_preferred": "cgt-kit-cozy-scandi",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/interior/kitchen/cozy-kitchen-pack-scandinavian-kitchen-with-island-and-exterior",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-kit-pack-ad",
-        "cgt-kit-classic"
       ]
     },
     {
@@ -127,14 +111,6 @@
         "warehouse-bay-a",
         "distribution-hub",
         "*"
-      ],
-      "cgtrader_preferred": "cgt-hub-storage-kit-12",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/other/industrial-storage-and-racking-kit-12-pbr-warehouse-assets",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-hub-boxes-stacked-free",
-        "cgt-hub-box-tall-free",
-        "cgt-hub-boxes-free"
       ]
     },
     {
@@ -156,14 +132,7 @@
         "generic",
         "*"
       ],
-      "tier": "P1",
-      "cgtrader_preferred": "cgt-kit-cozy-scandi",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/interior/kitchen/cozy-kitchen-pack-scandinavian-kitchen-with-island-and-exterior",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-kit-classic",
-        "cgt-kit-japandi"
-      ]
+      "tier": "P1"
     },
     {
       "id": "clock",
@@ -196,13 +165,6 @@
       "domains": [
         "distribution-hub",
         "warehouse-bay-a"
-      ],
-      "cgtrader_preferred": "cgt-hub-conveyor-kit-36",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/industrial-machine/modular-industrial-conveyor-and-roller-system-kit-36-assets",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-hub-dock-bundle-68",
-        "cgt-hub-asrs-59"
       ]
     },
     {
@@ -238,13 +200,6 @@
       ],
       "domains": [
         "kitchen"
-      ],
-      "cgtrader_preferred": "cgt-kit-cozy-scandi",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/interior/kitchen/cozy-kitchen-pack-scandinavian-kitchen-with-island-and-exterior",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-kit-japandi",
-        "cgt-kit-scandi-island"
       ]
     },
     {
@@ -263,12 +218,6 @@
       "domains": [
         "warehouse-bay-a",
         "distribution-hub"
-      ],
-      "cgtrader_preferred": "cgt-hub-storage-kit-12",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/other/industrial-storage-and-racking-kit-12-pbr-warehouse-assets",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-hub-boxes-stacked-free"
       ]
     },
     {
@@ -288,14 +237,7 @@
         "kitchen",
         "*"
       ],
-      "tier": "P1",
-      "cgtrader_preferred": "cgt-kit-cozy-scandi",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/interior/kitchen/cozy-kitchen-pack-scandinavian-kitchen-with-island-and-exterior",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-kit-classic",
-        "cgt-kit-japandi"
-      ]
+      "tier": "P1"
     },
     {
       "id": "dock_door",
@@ -314,13 +256,6 @@
       "domains": [
         "warehouse-bay-a",
         "distribution-hub"
-      ],
-      "cgtrader_preferred": "cgt-hub-dock-kit-32",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/industrial-machine/modular-loading-dock-equipment-kit-32-assets",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-hub-dock-bundle-68",
-        "cgt-hub-roll-door-clean"
       ]
     },
     {
@@ -338,12 +273,6 @@
       ],
       "domains": [
         "*"
-      ],
-      "cgtrader_preferred": "cgt-hub-roll-door-clean",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/architectural/door/industrial-roll-up-door-warehouse-gate-clean",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-kit-apartment-props"
       ]
     },
     {
@@ -410,13 +339,6 @@
       "domains": [
         "warehouse-bay-a",
         "distribution-hub"
-      ],
-      "cgtrader_preferred": "cgt-hub-forklift-cargo",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/other/industrial-forklift-warehouse-cargo-collection",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-hub-forklift-hd",
-        "cgt-hub-logistics-scene"
       ]
     },
     {
@@ -450,13 +372,7 @@
         "kitchen",
         "*"
       ],
-      "tier": "P2",
-      "cgtrader_preferred": "cgt-kit-pack-v2",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/furniture/kitchen-furniture/kitchen-pack-1ab1687b-d832-4896-acaf-4dc698bacca0",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-kit-cozy-scandi"
-      ]
+      "tier": "P2"
     },
     {
       "id": "oven",
@@ -476,14 +392,7 @@
       "domains": [
         "kitchen"
       ],
-      "tier": "P2",
-      "cgtrader_preferred": "cgt-kit-cozy-scandi",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/interior/kitchen/cozy-kitchen-pack-scandinavian-kitchen-with-island-and-exterior",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-kit-classic",
-        "cgt-kit-pack-v2"
-      ]
+      "tier": "P2"
     },
     {
       "id": "pallet",
@@ -501,14 +410,7 @@
         "warehouse-bay-a",
         "distribution-hub"
       ],
-      "notes": "CC0 authored wooden_pallet_cc0; procedural fallback",
-      "cgtrader_preferred": "cgt-hub-storage-kit-12",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/other/industrial-storage-and-racking-kit-12-pbr-warehouse-assets",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-hub-forklift-cargo",
-        "cgt-hub-stretch-wrap-machine"
-      ]
+      "notes": "CC0 authored wooden_pallet_cc0; procedural fallback"
     },
     {
       "id": "pallet_jack",
@@ -526,10 +428,7 @@
       "domains": [
         "warehouse-bay-a",
         "distribution-hub"
-      ],
-      "cgtrader_preferred": "cgt-hub-pallet-jack-free",
-      "cgtrader_url": "https://www.cgtrader.com/free-3d-models/industrial/industrial-machine/stylized-industrial-electric-pallet-jack",
-      "cgtrader_status": "free_download"
+      ]
     },
     {
       "id": "pallet_rack",
@@ -549,14 +448,6 @@
       "domains": [
         "warehouse-bay-a",
         "distribution-hub"
-      ],
-      "cgtrader_preferred": "cgt-hub-storage-kit-12",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/other/industrial-storage-and-racking-kit-12-pbr-warehouse-assets",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-hub-rack-system",
-        "cgt-hub-shelving-free",
-        "cgt-hub-rack-free-game"
       ]
     },
     {
@@ -577,13 +468,7 @@
       "domains": [
         "*"
       ],
-      "tier": "P0",
-      "cgtrader_preferred": "cgt-robot-digit-loader",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/character/sci-fi-character/agility-robotics-digit-loader-robot-animated-rigged-for-blender",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-robot-digit"
-      ]
+      "tier": "P0"
     },
     {
       "id": "pillar",
@@ -599,12 +484,6 @@
       ],
       "domains": [
         "*"
-      ],
-      "cgtrader_preferred": "cgt-hub-hangar-kit",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/other/modular-industrial-hangar-e-warehouse-kit",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-hub-old-warehouse-mod"
       ]
     },
     {
@@ -641,14 +520,7 @@
       "domains": [
         "kitchen"
       ],
-      "tier": "P2",
-      "cgtrader_preferred": "cgt-kit-minifridge-free",
-      "cgtrader_url": "https://www.cgtrader.com/free-3d-models/interior/kitchen/mini-fridge-3d-model-compact-high-poly-refrigerator",
-      "cgtrader_status": "free_download",
-      "cgtrader_alternates": [
-        "cgt-kit-classic",
-        "cgt-kit-cozy-scandi"
-      ]
+      "tier": "P2"
     },
     {
       "id": "robot",
@@ -666,14 +538,7 @@
       "domains": [
         "*"
       ],
-      "tier": "P0",
-      "cgtrader_preferred": "cgt-robot-digit-loader",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/character/sci-fi-character/agility-robotics-digit-loader-robot-animated-rigged-for-blender",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-robot-digit",
-        "cgt-robot-digit-walk"
-      ]
+      "tier": "P0"
     },
     {
       "id": "safety_barrier",
@@ -691,13 +556,6 @@
         "warehouse-bay-a",
         "distribution-hub",
         "*"
-      ],
-      "cgtrader_preferred": "cgt-hub-safety-barrier",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/other/safety-barrier-pbr-game-ready",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-hub-dock-kit-32",
-        "cgt-hub-dock-bundle-68"
       ]
     },
     {
@@ -715,10 +573,7 @@
       ],
       "domains": [
         "*"
-      ],
-      "cgtrader_preferred": "cgt-hub-safety-barrier",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/other/safety-barrier-pbr-game-ready",
-      "cgtrader_status": "link_only"
+      ]
     },
     {
       "id": "signage",
@@ -735,12 +590,6 @@
       ],
       "domains": [
         "*"
-      ],
-      "cgtrader_preferred": "cgt-hub-safety-barrier",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/other/safety-barrier-pbr-game-ready",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-hub-logistics-scene"
       ]
     },
     {
@@ -790,12 +639,6 @@
       "domains": [
         "warehouse-bay-a",
         "distribution-hub"
-      ],
-      "cgtrader_preferred": "cgt-hub-tote-green",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/industrial/tool/standard-green-shallow-pallet-storage-plastic-crate-box-tray-bin",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-hub-storage-kit-12"
       ]
     },
     {
@@ -852,23 +695,9 @@
       ],
       "domains": [
         "*"
-      ],
-      "cgtrader_preferred": "cgt-hub-old-warehouse-mod",
-      "cgtrader_url": "https://www.cgtrader.com/3d-models/architectural/other/asset-pack-vol-11-modular-old-warehouse",
-      "cgtrader_status": "link_only",
-      "cgtrader_alternates": [
-        "cgt-hub-hangar-kit"
       ]
     }
   ],
   "policy": "no_paid_assets",
-  "docs": "../localmap-viewer/assets/FREE-ASSETS.md",
-  "cgtrader_catalog_ref": "../localmap-viewer/assets/cgtrader-catalog.json",
-  "cgtrader_doc": "../localmap-viewer/assets/CGTRADER.md",
-  "cgtrader_policy": {
-    "wishlist_only_until_licensed": true,
-    "runtime_default_asset_remains_cc0_or_procedural": true,
-    "never_auto_download": true,
-    "after_license": "drop GLB under assets/library/<cgtrader_id>/model.glb; set cgtrader-catalog status=local"
-  }
+  "docs": "../localmap-viewer/assets/FREE-ASSETS.md"
 }

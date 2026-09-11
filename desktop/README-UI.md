@@ -70,24 +70,5 @@ Textures and free meshes (Poly Haven / ambientCG / Kenney / OpenGameArt CC0) liv
 | [`localmap-viewer/assets/catalog.json`](localmap-viewer/assets/catalog.json) | Machine-readable inventory (`downloaded` \| `procedural` \| `free_link`) |
 | [`localmap-data/asset-ontology.json`](localmap-data/asset-ontology.json) | Label class → free catalog id |
 
-**Hard rule:** never catalog paid marketplace purchase targets. Prefer CC0 twins or procedural Three.js stand-ins.
-
-## CGTrader purchase wishlist (premium hub / kitchen)
-
-Runtime ships **CC0 only** (`FREE-ASSETS.md`). Separately, CGTrader is mined as a **link-only purchase list**:
-
-| Path | Role |
-|------|------|
-| [`localmap-viewer/assets/CGTRADER.md`](localmap-viewer/assets/CGTRADER.md) | Curated shortlist |
-| [`localmap-viewer/assets/cgtrader-catalog.json`](localmap-viewer/assets/cgtrader-catalog.json) | Machine-readable wishlist |
-| [`localmap-data/asset-ontology.json`](localmap-data/asset-ontology.json) | `cgtrader_preferred` + `cgtrader_url` on label classes |
-
-### Drop-in after Todd licenses a model
-
-1. Purchase/download on cgtrader.com (accept Royalty Free terms).
-2. Place GLB at `desktop/localmap-viewer/assets/library/<catalog-id>/model.glb`.
-3. In `cgtrader-catalog.json`, set `"status": "local"` and `"library_path": "library/<catalog-id>/model.glb"`.
-4. Keep the `url` field. **Do not commit unlicensed paid/RF binaries.**
-
-Paid CGTrader assets remain link-only until licensed. Free CGTrader RF items are `free_download` for local use only — never git.
+**Hard rule:** never catalog paid marketplace purchase targets (including CGTrader). Prefer CC0 twins from Poly Haven / Kenney / ambientCG / OpenGameArt or procedural Three.js stand-ins. See [`FREE-ASSETS.md`](localmap-viewer/assets/FREE-ASSETS.md).
 
