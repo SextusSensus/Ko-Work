@@ -41,6 +41,7 @@ Never `paid` / `purchase` / `link_only` / marketplace purchase targets.
 | Distribution Hub | Kenney conveyors/doors + Poly Haven props + procedural forklifts/dock |
 | Assembly line (hub east zone) | Kenney Factory Kit conveyors/crane/hopper + procedural stations/arms/fence/HMI + rubber/metal/caution textures |
 | Generic indoor | Sofa, plant, procedural walls/pillars/doors |
+| **Office** | Poly Haven desk/chair/shelf/TV/plant + procedural elevators/cubicles/windows/exit/cooler; ambientCG carpet/ceiling |
 | Robot | Official Booster K1 URDF mesh (BSD-3) in `library/robot/k1/`; procedural fallback |
 
 ## Explicitly rejected
@@ -56,3 +57,7 @@ If a paid marketplace listing (or Meshy paid export) looks useful, scrape **free
 ### Domains
 - **assembly-factory** — dense factory line (Kenney + Poly Haven industrial + procedural)
 - **warehouse-bay-a** / **distribution-hub** — warehouse / hub (exterior shell toggle)
+
+## Quality bar
+
+Prefer Poly Haven glTF + 1k/2k PBR textures over flat Kenney when both exist. Quaternius only if quality holds. Procedural last resort. No paid CGTrader.

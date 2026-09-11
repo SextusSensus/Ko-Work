@@ -39,6 +39,12 @@ k1_paths_list.txt
 # index is derived on demand by desktop/Runs.ps1. Never tracked in git.
 runs/
 
+# Local Map domain ingest keeps small pose/label manifests under domains/*/runs/
+# (not robot offload bundles). Force-track those provenance files.
+!desktop/localmap-data/domains/*/runs/
+!desktop/localmap-data/domains/*/runs/**
+
+
 # Local Claude Code settings (per-machine)
 .claude/settings.local.json
 

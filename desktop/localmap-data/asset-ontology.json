@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated": "2026-09-11T09:59:48Z",
-  "description": "Label class \u2192 free Local Map asset (default_asset). Runtime uses CC0/procedural/free_link only \u2014 see assets/FREE-ALTERNATIVES.md and catalog.json.",
+  "updated": "2026-09-11T10:43:09Z",
+  "description": "Label class \u2192 free Local Map asset (default_asset). Global catalog (scope:global) supports cross-domain autofill from detections.",
   "catalog_ref": "../localmap-viewer/assets/catalog.json",
   "placement_modes": {
     "footprint": "Sit on floor; use w/h as ground footprint metres when present",
@@ -9,6 +9,23 @@
     "wall": "Yaw faces outward from wall; ignore footprint height"
   },
   "label_classes": [
+    {
+      "id": "armchair",
+      "aliases": [
+        "lounge_chair"
+      ],
+      "default_asset": "office/modern-armchair",
+      "placement": "footprint",
+      "scale_m": [
+        0.75,
+        0.9,
+        0.75
+      ],
+      "domains": [
+        "office",
+        "*"
+      ]
+    },
     {
       "id": "assembly_station",
       "aliases": [
@@ -96,12 +113,31 @@
       "tier": "P2"
     },
     {
+      "id": "bookcase",
+      "aliases": [
+        "bookshelf",
+        "book_case"
+      ],
+      "default_asset": "office/wooden-bookshelf",
+      "placement": "footprint",
+      "scale_m": [
+        0.9,
+        2.1,
+        0.4
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "scope": "global"
+    },
+    {
       "id": "cabinet",
       "aliases": [
         "cupboard",
         "drawer_cabinet"
       ],
-      "default_asset": "kitchen/drawer-cabinet",
+      "default_asset": "office/modern-cabinet",
       "placement": "footprint",
       "scale_m": [
         0.8,
@@ -149,13 +185,34 @@
       ]
     },
     {
+      "id": "ceiling_tile",
+      "aliases": [
+        "drop_ceiling",
+        "ceiling_panel"
+      ],
+      "default_asset": "office/ceiling-tile",
+      "placement": "anchor",
+      "scale_m": [
+        0.6,
+        0.02,
+        0.6
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "scope": "global"
+    },
+    {
       "id": "chair",
       "coco_id": 56,
       "aliases": [
+        "dining_chair",
+        "office_chair",
         "seat",
-        "dining_chair"
+        "task_chair"
       ],
-      "default_asset": "kitchen/dining-chair",
+      "default_asset": "office/office-chair",
       "placement": "footprint",
       "scale_m": [
         0.45,
@@ -163,11 +220,16 @@
         0.5
       ],
       "domains": [
+        "*",
         "assembly-factory",
         "generic",
-        "*"
+        "office"
       ],
-      "tier": "P1"
+      "tier": "P1",
+      "domain_assets": {
+        "office": "office/office-chair"
+      },
+      "scope": "global"
     },
     {
       "id": "clock",
@@ -184,6 +246,21 @@
         "*"
       ],
       "tier": "P2"
+    },
+    {
+      "id": "coffee_table",
+      "aliases": [],
+      "default_asset": "office/coffee-table",
+      "placement": "footprint",
+      "scale_m": [
+        1.1,
+        0.4,
+        0.6
+      ],
+      "domains": [
+        "office",
+        "*"
+      ]
     },
     {
       "id": "control_panel",
@@ -258,7 +335,6 @@
       "id": "corner_shelf",
       "aliases": [
         "steel_shelf",
-        "shelf",
         "shelving",
         "steel_frame_shelves"
       ],
@@ -289,9 +365,14 @@
         0.85
       ],
       "domains": [
-        "*"
+        "*",
+        "office"
       ],
-      "tier": "P1"
+      "tier": "P1",
+      "domain_assets": {
+        "office": "office/couch"
+      },
+      "scope": "global"
     },
     {
       "id": "counter",
@@ -316,7 +397,7 @@
         "wooden_crate",
         "plastic_crate"
       ],
-      "default_asset": "warehouse/wooden-crate",
+      "default_asset": "warehouse/plastic-crate-03",
       "placement": "footprint",
       "scale_m": [
         0.6,
@@ -329,9 +410,55 @@
       ]
     },
     {
+      "id": "cubicle",
+      "aliases": [
+        "office_partition",
+        "quiet_cube",
+        "partition",
+        "cubicle_wall",
+        "privacy_screen"
+      ],
+      "default_asset": "office/cubicle",
+      "placement": "footprint",
+      "scale_m": [
+        1.6,
+        1.5,
+        1.6
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "tier": "P1",
+      "scope": "global"
+    },
+    {
+      "id": "desk",
+      "aliases": [
+        "office_desk",
+        "work_desk",
+        "writing_desk"
+      ],
+      "default_asset": "office/metal-office-desk",
+      "placement": "footprint",
+      "scale_m": [
+        1.4,
+        0.75,
+        0.7
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "tier": "P1",
+      "scope": "global"
+    },
+    {
       "id": "dining_table",
       "coco_id": 60,
       "aliases": [
+        "conference_table",
+        "meeting_table",
         "table"
       ],
       "default_asset": "kitchen/dining-table",
@@ -342,10 +469,15 @@
         0.85
       ],
       "domains": [
+        "*",
         "assembly-factory",
-        "*"
+        "office"
       ],
-      "tier": "P1"
+      "tier": "P1",
+      "domain_assets": {
+        "office": "office/meeting-table"
+      },
+      "scope": "global"
     },
     {
       "id": "dock_door",
@@ -380,8 +512,13 @@
         0.15
       ],
       "domains": [
-        "*"
-      ]
+        "*",
+        "office"
+      ],
+      "domain_assets": {
+        "office": "office/doorway"
+      },
+      "scope": "global"
     },
     {
       "id": "drill_press",
@@ -403,9 +540,11 @@
     {
       "id": "elevator",
       "aliases": [
-        "lift"
+        "elevator_door",
+        "lift",
+        "lift_door"
       ],
-      "default_asset": "generic/elevator",
+      "default_asset": "office/elevator-doors",
       "placement": "wall",
       "scale_m": [
         1.2,
@@ -414,7 +553,30 @@
       ],
       "domains": [
         "*"
-      ]
+      ],
+      "domain_assets": {
+        "office": "office/elevator-doors"
+      },
+      "scope": "global"
+    },
+    {
+      "id": "exit_sign",
+      "aliases": [
+        "exit",
+        "emergency_exit_sign"
+      ],
+      "default_asset": "office/exit-sign",
+      "placement": "wall",
+      "scale_m": [
+        0.4,
+        0.2,
+        0.06
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "scope": "global"
     },
     {
       "id": "fence",
@@ -503,6 +665,26 @@
         "warehouse-bay-a",
         "distribution-hub"
       ]
+    },
+    {
+      "id": "hallway_carpet",
+      "aliases": [
+        "carpet",
+        "runner",
+        "carpet_runner"
+      ],
+      "default_asset": "office/carpet-pbr",
+      "placement": "footprint",
+      "scale_m": [
+        10.0,
+        0.02,
+        1.4
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "scope": "global"
     },
     {
       "id": "ladder",
@@ -700,7 +882,8 @@
       "domains": [
         "*"
       ],
-      "tier": "P0"
+      "tier": "P0",
+      "scope": "global"
     },
     {
       "id": "pillar",
@@ -716,7 +899,8 @@
       ],
       "domains": [
         "*"
-      ]
+      ],
+      "scope": "global"
     },
     {
       "id": "potted_plant",
@@ -724,7 +908,7 @@
       "aliases": [
         "plant"
       ],
-      "default_asset": "generic/potted-plant",
+      "default_asset": "office/potted-plant",
       "placement": "footprint",
       "scale_m": [
         0.35,
@@ -732,9 +916,14 @@
         0.35
       ],
       "domains": [
-        "*"
+        "*",
+        "office"
       ],
-      "tier": "P2"
+      "tier": "P2",
+      "domain_assets": {
+        "office": "office/potted-plant"
+      },
+      "scope": "global"
     },
     {
       "id": "refrigerator",
@@ -770,7 +959,8 @@
       "domains": [
         "*"
       ],
-      "tier": "P0"
+      "tier": "P0",
+      "scope": "global"
     },
     {
       "id": "robot_arm",
@@ -853,7 +1043,7 @@
         "machine_guard",
         "perimeter_fence"
       ],
-      "default_asset": "assembly-line/safety-fence",
+      "default_asset": "assembly-line/chainlink-fence",
       "placement": "footprint",
       "scale_m": [
         2.0,
@@ -864,6 +1054,44 @@
         "distribution-hub",
         "warehouse-bay-a"
       ]
+    },
+    {
+      "id": "security_camera",
+      "aliases": [
+        "camera"
+      ],
+      "default_asset": "cross-domain/security-camera",
+      "placement": "anchor",
+      "scale_m": [
+        0.25,
+        0.2,
+        0.3
+      ],
+      "domains": [
+        "*"
+      ]
+    },
+    {
+      "id": "shelf",
+      "aliases": [
+        "bookshelf_shelf",
+        "wall_shelf",
+        "storage_shelf"
+      ],
+      "default_asset": "office/shelf",
+      "placement": "footprint",
+      "scale_m": [
+        0.9,
+        2.1,
+        0.4
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "tier": "P1",
+      "scope": "global",
+      "notes": "Indoor shelf \u2014 warehouse steel units use corner_shelf; pallet bays use pallet_rack"
     },
     {
       "id": "shrink_wrap_pallet",
@@ -899,7 +1127,11 @@
       ],
       "domains": [
         "*"
-      ]
+      ],
+      "domain_assets": {
+        "office": "office/exit-sign"
+      },
+      "scope": "global"
     },
     {
       "id": "stairs",
@@ -913,7 +1145,8 @@
       ],
       "domains": [
         "*"
-      ]
+      ],
+      "scope": "global"
     },
     {
       "id": "station",
@@ -1029,13 +1262,33 @@
       ]
     },
     {
+      "id": "trash_can",
+      "aliases": [
+        "bin",
+        "garbage"
+      ],
+      "default_asset": "warehouse/metal-trash-can",
+      "placement": "footprint",
+      "scale_m": [
+        0.5,
+        0.95,
+        0.5
+      ],
+      "domains": [
+        "*"
+      ]
+    },
+    {
       "id": "tv",
       "coco_id": 62,
       "aliases": [
+        "computer_monitor",
+        "display",
         "monitor",
+        "screen",
         "television"
       ],
-      "default_asset": "warehouse/tv-monitor",
+      "default_asset": "office/television",
       "placement": "anchor",
       "scale_m": [
         1.0,
@@ -1045,7 +1298,11 @@
       "domains": [
         "*"
       ],
-      "tier": "P2"
+      "tier": "P2",
+      "domain_assets": {
+        "office": "office/television"
+      },
+      "scope": "global"
     },
     {
       "id": "wall",
@@ -1061,7 +1318,11 @@
       ],
       "domains": [
         "*"
-      ]
+      ],
+      "domain_assets": {
+        "office": "office/wall-module"
+      },
+      "scope": "global"
     },
     {
       "id": "warehouse_shell",
@@ -1082,8 +1343,50 @@
         "distribution-hub",
         "assembly-line"
       ]
+    },
+    {
+      "id": "water_cooler",
+      "aliases": [
+        "watercooler",
+        "drinking_fountain",
+        "cooler"
+      ],
+      "default_asset": "office/water-cooler",
+      "placement": "footprint",
+      "scale_m": [
+        0.4,
+        1.2,
+        0.4
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "scope": "global"
+    },
+    {
+      "id": "window",
+      "aliases": [
+        "window_frame",
+        "office_window",
+        "glazing"
+      ],
+      "default_asset": "office/window",
+      "placement": "wall",
+      "scale_m": [
+        1.6,
+        1.4,
+        0.12
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "tier": "P2",
+      "scope": "global"
     }
   ],
   "policy": "no_paid_assets",
-  "docs": "../localmap-viewer/assets/FREE-ALTERNATIVES.md"
+  "docs": "../localmap-viewer/assets/FREE-ALTERNATIVES.md",
+  "global_assets_ref": "./global-assets.json"
 }

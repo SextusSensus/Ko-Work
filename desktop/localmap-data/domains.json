@@ -1,6 +1,13 @@
 {
-  "active": "warehouse-bay-a",
+  "active": "office",
   "domains": [
+    {
+      "id": "office",
+      "name": "Office",
+      "updated": "2026-09-11T10:15:00Z",
+      "run_count": 3,
+      "cell_count": 883
+    },
     {
       "id": "assembly-factory",
       "name": "Assembly Factory",
@@ -21,6 +28,13 @@
       "updated": "2026-09-11T09:25:00Z",
       "run_count": 8,
       "cell_count": 202
+    },
+    {
+      "id": "exact-lab",
+      "name": "Exact Lab (Rerun fixture)",
+      "updated": "2026-09-11T10:30:00Z",
+      "run_count": 1,
+      "cell_count": 4
     }
   ]
 }
