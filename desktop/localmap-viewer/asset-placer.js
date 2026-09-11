@@ -194,12 +194,18 @@
           add(box(sx * 0.95, 0.03, sz * 0.85, wood), 0, 0.15 + sh * (sy - 0.25) / 4, 0);
         }
         break;
-      case 'cubicle':
-        add(box(sx, sy * 0.85, 0.06, stdMat(0xc5c9ce, { roughness: 0.75 })), 0, sy * 0.42, -sz * 0.48);
-        add(box(0.06, sy * 0.85, sz, stdMat(0xc5c9ce, { roughness: 0.75 })), -sx * 0.48, sy * 0.42, 0);
-        add(box(0.06, sy * 0.85, sz, stdMat(0xc5c9ce, { roughness: 0.75 })), sx * 0.48, sy * 0.42, 0);
-        add(box(sx * 0.9, 0.04, sz * 0.9, dark), 0, sy * 0.72, 0);
+      case 'cubicle': {
+        // Fabric/plaster partitions + wood worksurface at ~0.75 m (not floating white slab)
+        var part = stdMat(0xb8bcc0, { roughness: 0.88, metalness: 0.04 });
+        var desk = wood;
+        var partH = Math.min(sy * 0.85, 1.25);
+        add(box(sx, partH, 0.05, part), 0, partH / 2, -sz * 0.48);
+        add(box(0.05, partH, sz, part), -sx * 0.48, partH / 2, 0);
+        add(box(sx * 0.12, 0.04, sz * 0.12, metal), -sx * 0.35, 0.72, sz * 0.2);
+        add(box(sx * 0.12, 0.04, sz * 0.12, metal), sx * 0.35, 0.72, sz * 0.2);
+        add(box(sx * 0.85, 0.05, sz * 0.7, desk), 0, 0.75, -sz * 0.05);
         break;
+      }
       case 'window':
         add(box(sx, sy, sz, metal), 0, sy / 2, 0);
         add(box(sx * 0.85, sy * 0.75, 0.02, stdMat(0xa8c8e8, {

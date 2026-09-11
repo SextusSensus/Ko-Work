@@ -185,7 +185,7 @@
       "y": 0.0,
       "yaw": 0,
       "w": 1.6,
-      "h": 1.6,
+      "h": 1.2,
       "confidence": 0.82,
       "run_id": "demo-office-2",
       "source": "mock_label"
@@ -198,7 +198,7 @@
       "y": 0.0,
       "yaw": 0,
       "w": 1.6,
-      "h": 1.6,
+      "h": 1.2,
       "confidence": 0.81,
       "run_id": "demo-office-2",
       "source": "mock_label"
@@ -328,7 +328,7 @@
     {
       "id": "off-carpet-1",
       "label_class": "hallway_carpet",
-      "asset_id": "office/hallway-carpet",
+      "asset_id": "office/carpet-pbr",
       "x": 0,
       "y": -3.8,
       "yaw": 0,

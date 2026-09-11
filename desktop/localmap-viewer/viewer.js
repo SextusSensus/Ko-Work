@@ -2171,7 +2171,7 @@
     loadTexFallback('./assets/library/assembly-line/textures/rubber_belt_diff.jpg', './assets/library/assembly-line/textures/rubber_mat_diff.jpg').then(function (t) { beltTex = t; }),
     loadTex('./assets/library/assembly-line/textures/caution_stripes_diff.jpg').then(function (t) { cautionTex = t; }),
     loadTexFallback('./assets/library/assembly-line/textures/brushed_metal_diff.jpg', './assets/library/assembly-line/textures/scratched_metal_diff.jpg').then(function (t) { brushMetalTex = t; }),
-    loadTexFallback('./assets/library/office/textures/carpet_ph_diff_1k.jpg', './assets/library/office/textures/carpet_diff.jpg').then(function (t) { carpetTex = t; }),
+    loadTex('./assets/library/office/textures/carpet_ph_diff_1k.jpg').then(function (t) { carpetTex = t; }),
     loadTex('./assets/library/office/textures/carpet_ph_nor_gl_1k.jpg').then(function (t) { carpetNorTex = t; }),
     loadTexFallback('./assets/library/materials/concrete_floor_painted_diff_1k.jpg', './assets/distribution-hub/floor_warehouse_diff.jpg').then(function (t) { if (t) floorTex = t; }),
     loadTex('./assets/library/materials/concrete_floor_painted_nor_gl_1k.jpg').then(function (t) { floorNorTex = t; }),
