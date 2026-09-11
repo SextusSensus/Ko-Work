@@ -372,8 +372,8 @@ def main():
     if a.mode == "compare":
         if not a.clip:
             ap.error("compare needs --clip")
-        la = replay(a.node, a.clip, a.flags_a, a.fps)
-        lb = replay(a.node, a.clip, a.flags_b, a.fps)
+        la = replay(a.node, a.clip, a.flags_a, a.fps, depth=cli_depth)
+        lb = replay(a.node, a.clip, a.flags_b, a.fps, depth=cli_depth)
         if a.dump:
             open(a.dump + ".a", "w").write("\n".join(la) + "\n")
             open(a.dump + ".b", "w").write("\n".join(lb) + "\n")
