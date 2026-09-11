@@ -39,3 +39,8 @@ Never `paid` / `purchase` / `link_only` / marketplace purchase targets.
 
 - Any **paid** marketplace listing as a purchase target
 - Marketplace “free” Royalty Free downloads when git redistribution is unclear — use Poly Haven / Kenney CC0 twins or procedural instead
+
+## CGTrader wishlist (link-only)
+
+Todd asked to mine CGTrader for hub/kitchen props. Those URLs live in `CGTRADER.md` / `cgtrader-catalog.json`.
+They are **not** shipped. After a license purchase, drop `model.glb` under `library/<id>/` and flip status to `local` (see README-UI.md).

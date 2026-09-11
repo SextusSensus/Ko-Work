@@ -66,3 +66,7 @@ Official URDF: https://github.com/BoosterRobotics/booster_assets
 - Non-CC0 Quaternius marketplace packs
 
 Docs: [`docs/localmap-assets.md`](../../docs/localmap-assets.md)
+
+## CGTrader wishlist (not redistributed)
+
+See [`CGTRADER.md`](./CGTRADER.md) / [`cgtrader-catalog.json`](./cgtrader-catalog.json). No paid or Royalty-Free CGTrader binaries are committed. Runtime uses CC0/procedural only.
