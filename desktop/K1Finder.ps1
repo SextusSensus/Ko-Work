@@ -136,7 +136,7 @@ function Deploy-FollowFiles {
     # bridge_build.sh is hard-required too (P1.9): it is the ONE copy of the bridge build recipe and
     # every launcher sources it and refuses to start without it (exit 3), so a failed push must abort
     # the launch HERE rather than surface later on the robot as "COMPILE FAILED".
-    foreach ($f in @('follow_person_k1.py','common.py','bridge.py','tracking.py','identity.py','rerun_sink.py','perception.py','triggers.py','calibration.py','map_change.py','loco_follow_bridge.cpp','loco_follow_bridge_ros.cpp','bridge_build.sh','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
+    foreach ($f in @('follow_person_k1.py','common.py','bridge.py','tracking.py','identity.py','rerun_sink.py','perception.py','triggers.py','handcount.py','calibration.py','map_change.py','loco_follow_bridge.cpp','loco_follow_bridge_ros.cpp','bridge_build.sh','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
         $src = Join-Path $ROBOT_DIR $f
         if (-not (Test-Path $src)) { $script:DeployErr = ("local helper file not found: {0}" -f $src); return $false }
         $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f)))
@@ -153,7 +153,7 @@ function Deploy-FollowFiles {
     # abort the launch, not leave a stale config in place and report success.
     $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($defaults, ("{0}@{1}:/home/booster/config/defaults.yaml" -f $script:SshUser, $ip)))
     if ($rc -ne 0) { $script:DeployErr = ("scp of config/defaults.yaml to {0} failed (exit {1}) -- the node fail-closes without it." -f $ip, $rc); return $false }
-    foreach ($prof in @('dev.yaml', 'demo.yaml', 'field.yaml', 'capture.yaml')) {
+    foreach ($prof in @('dev.yaml', 'demo.yaml', 'field.yaml', 'capture.yaml', 'crowd.yaml')) {
         $ps = Join-Path $cfgDir $prof
         if (Test-Path $ps) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($ps, ("{0}@{1}:/home/booster/config/{2}" -f $script:SshUser, $ip, $prof))) }
     }
@@ -972,6 +972,12 @@ $trackHbChk=New-Object System.Windows.Forms.CheckBox; $trackHbChk.Text='Deadman 
 # recognizer that maps spoken words to the SAME command enum the Cmd buttons send.
 $chkGesture=New-Object System.Windows.Forms.CheckBox; $chkGesture.Text='Gesture lock'; $chkGesture.AutoSize=$true; $chkGesture.Location='10,154'; $chkGesture.ForeColor=$accent; $chkGesture.Font=$fontBold; $chkGesture.Checked=$true; $grpTrackCtl.Controls.Add($chkGesture)   # DEFAULT ON (2026-07-05, user request): gesture is the default lock trigger; UNTICK for the (more reliable) ArUco marker. Raise a hand DURING SEARCH to seed.
 $chkAB=New-Object System.Windows.Forms.CheckBox; $chkAB.Text='A/B (compare)'; $chkAB.AutoSize=$true; $chkAB.Location='120,154'; $grpTrackCtl.Controls.Add($chkAB)
+# Crowd 2FA lock (2026-09-11): --lock-trigger gesture2fa + --profile crowd. The lock needs an ORDERED pose
+# sequence from ONE body (right hand up, both up, left up, hands down; or the 5-4-3-2-1-fist countdown once a
+# hand model is deployed) AND the frozen-anchor identity check on every re-seed. Markerless auto re-lock is
+# OFF in this mode (the node refuses to start with it on). Overrides Gesture lock / A/B.
+$chkCrowd=New-Object System.Windows.Forms.CheckBox; $chkCrowd.Text='Crowd 2FA lock'; $chkCrowd.AutoSize=$true; $chkCrowd.Location='230,154'; $chkCrowd.ForeColor=$accent; $grpTrackCtl.Controls.Add($chkCrowd)
+$script:HandModel = '/home/booster/hand_kp.onnx'   # 21-keypoint hand pose model; only used if present on the robot (finger countdown steps)
 $chkVoice=New-Object System.Windows.Forms.CheckBox; $chkVoice.Text='Voice cmds'; $chkVoice.AutoSize=$true; $chkVoice.Location='240,154'; $chkVoice.ForeColor=$accent; $chkVoice.Font=$fontBold; $chkVoice.Enabled=$false; $grpTrackCtl.Controls.Add($chkVoice)
 $voiceStatus=New-Object System.Windows.Forms.Label; $voiceStatus.Text='Voice: off'; $voiceStatus.AutoSize=$true; $voiceStatus.Location='340,156'; $voiceStatus.ForeColor=[System.Drawing.Color]::DimGray; $grpTrackCtl.Controls.Add($voiceStatus)
 # --- persistent ReID-health badge (parsed from the node's REID-ENGINE ok/FAILED + REID-DEGRADED stderr) ---
@@ -1453,6 +1459,13 @@ function Get-TrackExtraArgs {
     $lt='aruco'
     if($chkGesture -and $chkGesture.Checked){ $lt='gesture' }
     if($chkAB -and $chkAB.Checked){ $lt='both' }
+    if($chkCrowd -and $chkCrowd.Checked){
+        # Crowd 2FA: the profile sets the sequence, the identity floors and turns auto re-lock off.
+        # Probe the hand model ONCE (tri-state, never stage on UNKNOWN); pass it only when PRESENT so a
+        # missing file cannot make the node refuse a body-step config.
+        $lt='gesture2fa'; $a += '--profile crowd'
+        if((Get-RobotFileState $ip $script:HandModel) -eq 'PRESENT'){ $a += ('--hand-model {0}' -f $script:HandModel) }
+    }
     # NOTE: --gesture-stop (in-follow both-hands WAIT) is DELIBERATELY OFF here. It runs the pose model
     # DURING follow (S_TRACK); with a slow .pt/torch model that stalls the 10Hz control loop mid-stride
     # and destabilizes the gait (observed: robot tripping after a gesture lock). Re-enable ONLY after the
@@ -1838,7 +1851,7 @@ function Start-Tracker([bool]$drive){
         # hints and autotune label summary ([tune-hints] / [autotune] and their ==== banners) and the
         # [run_follow] TUNE-STALE alarm for a dead auto-improve loop. Filtered out, they never reached
         # the operator (review C12).
-        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|LOOP-MS|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB|RERUN|\[tune-hints\]|\[autotune\]|==== (end )?(TUNE HINTS|AUTOTUNE)|\[run_follow\] (TUNE-STALE|tune hints|REFUSED))')){
+        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|IDENTITY-DOUBT|HAND-|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|LOOP-MS|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB|RERUN|\[tune-hints\]|\[autotune\]|==== (end )?(TUNE HINTS|AUTOTUNE)|\[run_follow\] (TUNE-STALE|tune hints|REFUSED))')){
             $Event.MessageData.Enqueue($d)
         }
     }

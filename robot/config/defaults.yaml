@@ -321,3 +321,11 @@ w_distractor: 0.5
 w_gallery: 0.3
 w_size: 0.3
 yolo_path: '/opt/booster/BoosterFaceDetection/src/detection/yolo11n.onnx'
+# Crowd 2FA lock (2026-09-11). All off/inert here; crowd.yaml turns them on.
+gesture_2fa_steps: 'R_UP,BOTH_UP,L_UP,DOWN'
+gesture_2fa_step_s: 0.6
+gesture_2fa_gap_s: 2.0
+gesture_2fa_total_s: 12.0
+hand_model: ''
+switch_anchor_floor: 0.0
+switch_anchor_frames: 0

@@ -407,8 +407,23 @@ class Follower:
         self._viz_lock_src = None
         self._gesture_overrun_streak = 0
         _aruco = ArucoTrigger()
+        self._id_doubt = 0        # CROWD: consecutive accepted frames below --switch-anchor-floor
         if args.lock_trigger == "aruco":
             self._lock_trigger = _aruco
+        elif args.lock_trigger == "gesture2fa":
+            # CROWD lock: the ordered gesture sequence (triggers.SequenceGestureTrigger). A
+            # finger-count step needs the hand model; parse_args already refused a config that
+            # names one without it, so a missing file here is a deploy fault -> loud, no seed.
+            from triggers import SequenceGestureTrigger
+            from handcount import HandCounter
+            _hand = HandCounter(args.hand_model) if str(args.hand_model or "").strip() else None
+            _gest = SequenceGestureTrigger(
+                args.gesture_model, args,
+                every_n=(args.gesture_every_n if args.gesture_every_n > 0 else 1), hand=_hand)
+            self._lock_trigger = _gest if _gest.ok else _aruco
+            if not _gest.ok:
+                log("LOCK-TRIGGER gesture2fa requested but the trigger is disabled -> ArUco fallback "
+                    "(needs a physical marker; if none is in scene NO SEED is possible)")
         else:
             _gest = GestureTrigger(
                 args.gesture_model, args,
@@ -428,7 +443,7 @@ class Follower:
         log("GESTURE-DEBUG banner: lock_trigger=%s effective=%s model_ok=%s gesture_can_seed=%s "
             "every_n=%s gesture_stop=%s gesture_debug=%s"
             % (args.lock_trigger, _eff.name, getattr(_eff, "ok", True),
-               (args.lock_trigger == "gesture" and getattr(_eff, "ok", True)),
+               (args.lock_trigger in ("gesture", "gesture2fa") and getattr(_eff, "ok", True)),
                getattr(_eff, "every_n", 1), bool(args.gesture_stop), bool(args.gesture_debug)))
 
         # A/B audit accumulators (only allocated in --lock-trigger both).
@@ -4130,7 +4145,9 @@ class Follower:
             # Source-aware prompts; with --lock-trigger aruco (default) these are byte-identical
             # to the original "MARKER" / "HOLD UP MARKER" strings.
             _acq = "GESTURE" if (self._viz_lock_src == "gesture") else "MARKER"
-            _prompt = "RAISE A HAND" if self.a.lock_trigger == "gesture" else "HOLD UP MARKER"
+            _prompt = ("RAISE A HAND" if self.a.lock_trigger == "gesture"
+                       else "DO THE LOCK SEQUENCE" if self.a.lock_trigger == "gesture2fa"
+                       else "HOLD UP MARKER")
             if mc is not None and self.marker_streak > 0:
                 status = 1
                 banner = "ACQUIRING %s (%d/%d)" % (_acq, self.marker_streak, self.a.seed_frames)
@@ -4524,6 +4541,7 @@ class Follower:
         self.state = S_TRACK
         self.lost_count = 0
         self.marker_streak = 0
+        self._id_doubt = 0
         # Arm the gesture acquisition dwell. Before the FIRST lock the operator is standing
         # there waiting to be locked onto, so pose must run immediately; after it, a drop to a
         # stationary state is usually a momentary blip that re-ID recovers, and paying 111 ms
@@ -4818,6 +4836,17 @@ class Follower:
                 if use_anchor and self.sim_fn(self.seed.anchor_hist, ph) < self.a.anchor_floor:
                     continue
                 anchor_sim = g_sim = d_sim = 0.0
+            # CROWD (2026-09-11): a candidate on a DIFFERENT tracker id than the bound one is a
+            # change of body. That needs re-seed-grade proof against the FROZEN anchor
+            # (--switch-anchor-floor, the same bar a gesture re-seed must clear); the bound track
+            # keeps the normal floor so a turned/relit operator is not dropped. 0 = off
+            # (byte-identical). Strangers reached anchor 0.68 in the Sep-10 crowd logs, so the
+            # 0.35 tracking floor alone cannot stop a hand-over on a crossing.
+            if (use_anchor and self.a.switch_anchor_floor > 0.0 and _bound_tid is not None
+                    and p.get("track_id") != _bound_tid):
+                _asw = anchor_sim if gal is not None else self.sim_fn(self.seed.anchor_hist, ph)
+                if _asw < self.a.switch_anchor_floor:
+                    continue
             d = math.hypot(p["cx"] - sx, p["cy"] - sy) / max(diag, 1.0)
             sim = self.sim_fn(self.seed.hist, ph)   # EMA self-sim (feeds hiconf gate); feat-agnostic
             area = max(p["w"] * p["h"], 1.0)
@@ -4914,7 +4943,30 @@ class Follower:
                      and second_cost is not None and cost is not None
                      and (second_cost - cost) < self.a.assoc_margin)
 
-        if best is None or cost is None or cost > self.a.gate or ambiguous:
+        # CROWD identity doubt (2026-09-11). The anchor floor keeps a lock sticky, but a ByteTrack
+        # id can be handed to a stranger on a crossing, and that stranger can sit above the 0.35
+        # floor. When the ACCEPTED candidate stays below --switch-anchor-floor for
+        # --switch-anchor-frames consecutive frames, treat it as a LOSS (stand + REACQUIRE, where
+        # only the lock trigger can re-seed). Both 0 by default = byte-identical.
+        doubt = False
+        if (best is not None and best_hist is not None and self.seed is not None
+                and self.seed.anchor_hist is not None
+                and self.a.switch_anchor_floor > 0.0 and int(self.a.switch_anchor_frames) > 0):
+            try:
+                _as = (self.seed.gallery.score(best_hist)[0] if self.seed.gallery is not None
+                       else self.sim_fn(self.seed.anchor_hist, best_hist))
+            except Exception:  # noqa: BLE001
+                _as = None
+            if _as is not None and _as < self.a.switch_anchor_floor:
+                self._id_doubt += 1
+                if self._id_doubt >= int(self.a.switch_anchor_frames):
+                    doubt = True
+                    log("IDENTITY-DOUBT id=%s anchor=%.2f < %.2f for %d frames -> LOST (re-seed via the lock trigger)"
+                        % (best.get("track_id"), _as, self.a.switch_anchor_floor, self._id_doubt))
+            else:
+                self._id_doubt = 0
+
+        if best is None or cost is None or cost > self.a.gate or ambiguous or doubt:
             # No confident, unambiguous, anchor-matched target this frame. Because
             # _associate ignores anyone who doesn't match the locked anchor, OTHER
             # people in frame do NOT cause a loss -- only the locked person actually
@@ -4925,12 +4977,15 @@ class Follower:
             # never driving toward an unseen target). Only triggers when the locked
             # person has NO detection this frame; an ambiguous-but-visible target
             # falls through to the held-grace path below.
-            if self._try_coast(w_img, h_img):
+            if not doubt and self._try_coast(w_img, h_img):
                 return
+            if doubt:
+                self.lost_count = max(self.lost_count, int(self.a.lost_grace) - 1)   # escalate now
             self.lost_count += 1
             self._viz_range = None   # no live target this frame
-            why = "ambiguous" if ambiguous else "no-match"
+            why = "identity-doubt" if doubt else ("ambiguous" if ambiguous else "no-match")
             if self.lost_count >= self.a.lost_grace:
+                self._id_doubt = 0
                 self.marker_streak = 0
                 # Stage 3: open the passive re-acquire window + reset the vote (used by
                 # BOTH the new SEARCH scan and the REACQUIRE stand).
@@ -6715,11 +6770,34 @@ def parse_args(argv):
                         "DRIVE-READY -> walk. Ignored when --drive-min-fps is 0.")
 
     # --- lock trigger (acquisition primitive) -- SCOPE_lock_trigger_gesture.md ---
-    p.add_argument("--lock-trigger", choices=["aruco", "gesture", "both"], default="aruco",
+    p.add_argument("--lock-trigger", choices=["aruco", "gesture", "both", "gesture2fa"], default="aruco",
                    help="acquisition trigger that seeds identity. 'aruco' (DEFAULT) = today's "
                         "marker, byte-identical. 'gesture' = raised-hand via a YOLO11n-pose model. "
-                        "'both' = ArUco drives + gesture AUDIT-ONLY (the A/B harness). The gesture "
-                        "model is loaded ONLY when != aruco.")
+                        "'both' = ArUco drives + gesture AUDIT-ONLY (the A/B harness). 'gesture2fa' = "
+                        "the CROWD lock: an ordered pose sequence (--gesture-2fa-steps) by one body, "
+                        "then the frozen-anchor identity check. The gesture model is loaded ONLY when != aruco.")
+    # --- crowd 2FA lock (2026-09-11) ---
+    p.add_argument("--gesture-2fa-steps", type=str, default="R_UP,BOTH_UP,L_UP,DOWN",
+                   help="ordered steps for --lock-trigger gesture2fa. Body steps (pose model only): "
+                        "R_UP L_UP BOTH_UP ONE_UP DOWN. Finger steps F5..F0 (one hand up showing N "
+                        "fingers; the 5-4-3-2-1-fist countdown is F5,F4,F3,F2,F1,F0) need --hand-model.")
+    p.add_argument("--gesture-2fa-step-s", type=float, default=0.6,
+                   help="seconds each step must be held (with the --gesture-hold-floor frame minimum)")
+    p.add_argument("--gesture-2fa-gap-s", type=float, default=2.0,
+                   help="max seconds between one held step and the next expected one; longer resets")
+    p.add_argument("--gesture-2fa-total-s", type=float, default=12.0,
+                   help="max seconds for the whole sequence; longer resets")
+    p.add_argument("--hand-model", type=str, default="",
+                   help="21-keypoint HAND pose model (YOLO pose trained on hand-keypoints; .onnx/.engine) "
+                        "for the finger-count steps. Runs on a crop around the raised wrist only. "
+                        "Empty = no finger counting (a config naming F-steps is then REFUSED).")
+    p.add_argument("--switch-anchor-floor", type=float, default=0.0,
+                   help="CROWD: min frozen-anchor similarity for a candidate on a DIFFERENT tracker id "
+                        "than the bound one (a change of body) to be followed at all; also the bar the "
+                        "accepted candidate must keep for --switch-anchor-frames. 0 = off (byte-identical).")
+    p.add_argument("--switch-anchor-frames", type=int, default=0,
+                   help="CROWD: consecutive accepted frames below --switch-anchor-floor before the lock "
+                        "is declared LOST (IDENTITY-DOUBT) and only the lock trigger can re-seed. 0 = off.")
     p.add_argument("--gesture-model", type=str, default="yolo11n-pose.onnx",
                    help="YOLO11n-POSE model path (loaded only when --lock-trigger != aruco). .onnx runs "
                         "via onnxruntime (CUDA EP, fast, same backend as OSNet); a .pt is slower (torch); "
@@ -6835,7 +6913,21 @@ def parse_args(argv):
         args.reloc_iso_bypass_anchor = {"striped": 0.55, "osnet": 0.55}.get(args.appearance, 0.65)
 
     # Lock-trigger refusals (mirror the ARM-REFUSED discipline -- fail LOUD, never silent).
-    if args.lock_trigger in ("gesture", "both"):
+    if args.lock_trigger == "gesture2fa":
+        from triggers import parse_2fa_steps, needs_hand_model
+        try:
+            _steps2fa = parse_2fa_steps(args.gesture_2fa_steps)
+        except ValueError as e:
+            p.error("--gesture-2fa-steps: %s" % e)
+        if needs_hand_model(_steps2fa) and not os.path.isfile(str(args.hand_model or "")):
+            p.error("REFUSING: --gesture-2fa-steps %s has finger-count steps but --hand-model %r is not a "
+                    "file on this robot. Deploy the 21-keypoint hand model, or use body steps only "
+                    "(e.g. R_UP,BOTH_UP,L_UP,DOWN)." % (args.gesture_2fa_steps, args.hand_model))
+        if args.auto_reacquire or args.arm_reacquire:
+            p.error("REFUSING: --lock-trigger gesture2fa is the crowd lock -- markerless auto re-lock "
+                    "must be OFF so that ONLY the 2FA sequence (plus the identity check) can re-seed. "
+                    "Untick auto/armed re-lock.")
+    if args.lock_trigger in ("gesture", "both", "gesture2fa"):
         if not args.track:
             p.error("--lock-trigger %s requires --track: the gesture hold is keyed on the tracker "
                     "id; --no-track makes it untrustworthy" % args.lock_trigger)
