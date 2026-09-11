@@ -180,15 +180,21 @@ is **REFUTED (fixed)**. Commands now emit from the `_drive_vel` chokepoint.
 
 ---
 
-## What to do next (ranked by leverage)
+## Remediation progress (2026-09-11 follow-up)
 
-1. **Key-only Offload/Pull + rotate robot password** — closes the live credential hole that undercuts the app’s key-only posture.
-2. **Emit follow/reid/track obs every tick** (or NaN) — same one-edit class as the cmd fix; highest remaining robot↔pipeline alignment risk.
-3. **RGBD sensor stamps** — capture quality for labels + recon.
-4. **Cluster mid-run lease heartbeat** — otherwise long jobs lie about completion.
-5. **Rewrite `UNTETHERED_FOLLOW.md` body** + HB-restore re-ARM — keep the gate closed, stop the doc from lying.
-6. **Wire Control DRIVE to the HB path or disable it in UI**; add `ServerAliveCountMax=1`; fix DRIVE dialog caps.
-7. **Selftests for Aurora bridge + `_map_assist_confirm`**; bind `splits`→`stats`; odom-on-RGB-distinct keyframes (F4 deeper).
+| # | Item | Status |
+|---|---|---|
+| — | Offload/Pull password defaults | **DEFERRED** (operator: leave alone) |
+| 2 | Every-tick follow/reid/track obs (+ NaN when unlocked; train keeps finite-range only) | **DONE** — `robot/follow_person_k1.py`, `eval/rrd_to_lerobot.py` |
+| 3 | RGBD `msg.header.stamp` timeline | **DONE** — `robot/perception.py` `_stamp_wall` |
+| 4 | Cluster mid-run lease heartbeat | **DONE** — `cluster/worker.py` (+ selftest) |
+| 5 | `UNTETHERED_FOLLOW.md` body rewrite (gate stays closed) | **DONE** |
+
+## Still open (ranked by leverage)
+
+1. **HB-restore / post-kPrepare re-ARM** — stay disarmed until explicit ARM (untethered blocker).
+2. **Wire Control DRIVE to the HB path or disable it in UI**; add `ServerAliveCountMax=1`; fix DRIVE dialog caps.
+3. **Selftests for Aurora bridge + `_map_assist_confirm`**; bind `splits`→`stats`; odom-on-RGB-distinct keyframes (F4 deeper).
 
 ---
 
