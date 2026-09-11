@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>K1 Finder — UI preview</title>
+  <style>
+    :root {
+      --bg: #000000;
+      --surface: #0A0A0A;
+      --panel: #141414;
+      --raised: #1C1C1E;
+      --stroke: #2C2C2E;
+      --text: #F5F5F7;
+      --muted: #8E8E93;
+      --accent: #32D4FF;
+      --danger: #E31937;
+      --ok: #B4E6C8;
+      --amber: #C8AA5A;
+      --font: "Bahnschrift", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+      --mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh; background: radial-gradient(1200px 600px at 70% -10%, #0a1a22 0%, var(--bg) 55%);
+      color: var(--text); font-family: var(--font);
+    }
+    .app {
+      max-width: 1120px; margin: 0 auto; min-height: 100vh;
+      display: flex; flex-direction: column; border-left: 1px solid var(--stroke); border-right: 1px solid var(--stroke);
+      background: var(--bg);
+    }
+    .top-accent { height: 3px; background: var(--accent); }
+    header {
+      padding: 14px 20px 12px; border-bottom: 1px solid var(--stroke);
+    }
+    header h1 {
+      font-size: 28px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1;
+    }
+    header .mission {
+      margin-top: 4px; font-size: 13px; color: var(--muted); letter-spacing: 0.02em;
+    }
+    .tabs {
+      display: flex; gap: 0; border-bottom: 1px solid var(--stroke); background: var(--bg);
+      padding: 0 8px;
+    }
+    .tab {
+      appearance: none; border: 0; background: transparent; color: var(--muted);
+      font: 600 13px/1 var(--font); padding: 14px 18px; cursor: pointer; position: relative;
+    }
+    .tab[aria-selected="true"] { color: var(--text); }
+    .tab[aria-selected="true"]::after {
+      content: ""; position: absolute; left: 10px; right: 10px; bottom: 0; height: 3px; background: var(--accent);
+    }
+    main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+    .panel { display: none; flex: 1; flex-direction: column; min-height: 520px; }
+    .panel.active { display: flex; }
+    .toolbar {
+      display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center;
+      padding: 14px 16px; background: var(--panel); border-bottom: 1px solid var(--stroke);
+    }
+    .toolbar .section {
+      width: 100%; font-size: 11px; letter-spacing: 0.12em; color: var(--muted); font-weight: 700;
+      margin-top: 4px;
+    }
+    .toolbar .section:first-child { margin-top: 0; }
+    label.field { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+    input[type="text"], select {
+      background: var(--raised); color: var(--text); border: 1px solid var(--stroke);
+      padding: 7px 10px; font: 13px/1 var(--mono); min-width: 120px;
+    }
+    button {
+      appearance: none; border: 0; cursor: pointer; font: 600 13px/1 var(--font);
+      padding: 10px 14px; border-radius: 2px;
+    }
+    .btn-primary { background: var(--accent); color: #000; }
+    .btn-ghost { background: var(--raised); color: var(--text); border: 1px solid var(--stroke); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-ok { background: var(--ok); color: #000; }
+    .chk { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
+    .chk.danger { color: var(--danger); font-weight: 700; }
+    .chk.accent { color: var(--accent); font-weight: 700; }
+    .list {
+      flex: 1; overflow: auto; padding: 8px 16px 12px;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; color: var(--muted); font-weight: 600; padding: 10px 8px; border-bottom: 1px solid var(--stroke); }
+    td { padding: 10px 8px; border-bottom: 1px solid #1a1a1a; font-family: var(--mono); font-size: 12px; }
+    td.conf-high { color: var(--ok); }
+    .log {
+      height: 140px; margin: 0 16px 16px; padding: 12px; background: var(--surface);
+      border: 1px solid var(--stroke); font: 12px/1.45 var(--mono); color: var(--accent); overflow: auto;
+    }
+    .video-well {
+      flex: 1; margin: 12px 16px; background: #050505; border: 1px solid var(--stroke);
+      display: grid; place-items: center; color: var(--muted); font-family: var(--mono); font-size: 12px;
+      min-height: 180px; position: relative; overflow: hidden;
+    }
+    .video-well .badge {
+      position: absolute; left: 12px; top: 12px; padding: 6px 12px; background: var(--raised);
+      border: 1px solid var(--stroke); font: 700 12px/1 var(--font); letter-spacing: 0.08em;
+    }
+    .status-strip {
+      margin: 0 16px 12px; height: 48px; display: grid; place-items: center;
+      background: var(--raised); font: 700 18px/1 var(--font); letter-spacing: 0.1em;
+    }
+    .cmd-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 0 0 4px; }
+    #mapCanvas { width: 100%; height: 100%; display: block; }
+    footer.status {
+      padding: 8px 16px; background: var(--surface); border-top: 1px solid var(--stroke);
+      color: var(--muted); font-size: 12px; font-family: var(--mono);
+    }
+    .hairline { height: 1px; background: var(--stroke); width: 100%; margin: 2px 0 6px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="top-accent"></div>
+    <header>
+      <h1>K1 Finder</h1>
+      <div class="mission">mission control · discover · drive · observe</div>
+    </header>
+    <nav class="tabs" role="tablist">
+      <button class="tab" role="tab" aria-selected="true" data-tab="discover">Discover</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="tracker">Tracker</button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="map">Local Map</button>
+    </nav>
+    <main>
+      <!-- DISCOVER -->
+      <section class="panel active" id="panel-discover" role="tabpanel">
+        <div class="toolbar">
+          <span style="color:var(--muted);font-size:13px">Subnets: 192.168.1.0/24 · 10.0.0.0/24</span>
+          <div style="flex-basis:100%;height:0"></div>
+          <button class="btn-primary">Scan for K1</button>
+          <button class="btn-ghost" disabled>Stop</button>
+          <label class="field">Or enter K1 IP <input type="text" value="192.168.1.81" /></label>
+          <button class="btn-ghost">Verify</button>
+        </div>
+        <div class="list">
+          <table>
+            <thead><tr><th>Confidence</th><th>IP Address</th><th>Hostname</th><th>SSH Banner</th><th>Why</th></tr></thead>
+            <tbody>
+              <tr><td class="conf-high">High</td><td>192.168.1.81</td><td>booster-k1</td><td>OpenSSH_8.9</td><td>banner + hostname match</td></tr>
+              <tr><td style="color:var(--amber)">Medium</td><td>192.168.1.44</td><td>orin-dev</td><td>OpenSSH_8.2</td><td>open 22 only</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="padding:0 16px 8px;display:flex;gap:10px">
+          <button class="btn-ok">Verify Selected</button>
+          <button class="btn-ghost">Use this IP everywhere</button>
+        </div>
+        <div class="log">--- Starting scan ---
+[+] 192.168.1.81  High  booster-k1
+ready.</div>
+      </section>
+
+      <!-- TRACKER -->
+      <section class="panel" id="panel-tracker" role="tabpanel">
+        <div class="toolbar">
+          <div class="section">PRIMARY</div>
+          <button class="btn-ghost" style="min-width:140px">Follow: OFF</button>
+          <label class="chk danger"><input type="checkbox" /> DRIVE (walk)</label>
+          <label class="chk danger"><input type="checkbox" /> ARM MOTION</label>
+          <button class="btn-danger">STOP</button>
+          <label class="field">IP <input type="text" value="192.168.1.81" /></label>
+          <label class="field">Distance <input type="text" value="1.2 m" style="min-width:64px" /></label>
+          <label class="field">Speed <input type="text" value="0.18 m/s" style="min-width:72px" /></label>
+          <label class="chk danger"><input type="checkbox" checked /> Deadman HB</label>
+          <div class="hairline"></div>
+          <div class="section">AVOIDANCE</div>
+          <label class="field">Gap steer <select><option>off</option><option>audit</option><option>on</option></select></label>
+          <label class="field">Head scan <select><option>off</option><option>audit</option><option>on</option><option>patient</option></select></label>
+          <label class="field">Hit box <select><option>frac</option><option selected>footprint</option></select></label>
+          <label class="chk accent"><input type="checkbox" checked /> Obstacle brake</label>
+          <label class="chk accent"><input type="checkbox" checked /> Local map</label>
+          <div class="hairline"></div>
+          <div class="section">ADVANCED</div>
+          <label class="field">Perception <select><option>global</option><option selected>osnet</option></select></label>
+          <label class="chk accent"><input type="checkbox" checked /> Gesture lock</label>
+          <label class="chk" style="color:var(--amber)"><input type="checkbox" /> Controller run (no follow)</label>
+          <div class="hairline"></div>
+          <div class="section">CMD</div>
+          <div class="cmd-row">
+            <button class="btn-ghost" disabled>WAIT</button>
+            <button class="btn-ghost" disabled>RESUME</button>
+            <button class="btn-ghost" disabled>PARK</button>
+            <button class="btn-ghost" disabled>STATUS</button>
+            <button class="btn-ghost" disabled>FOLLOW</button>
+            <button class="btn-ghost" style="color:var(--accent)">Open .rrd</button>
+          </div>
+        </div>
+        <div class="video-well">
+          <span class="badge">PREVIEW</span>
+          annotated camera stream
+        </div>
+        <div class="status-strip">IDLE</div>
+        <div class="log" style="height:90px">Tracker: set IP, tune Distance + Speed, then toggle Follow. PREVIEW never moves; tick DRIVE + ARM (confirm) to WALK.</div>
+      </section>
+
+      <!-- LOCAL MAP -->
+      <section class="panel" id="panel-map" role="tabpanel">
+        <div class="toolbar">
+          <label class="field">IP <input type="text" value="192.168.1.81" /></label>
+          <button class="btn-primary" id="mapRefresh">Refresh</button>
+          <button class="btn-ghost" id="mapSample">Load sample</button>
+          <button class="btn-ghost" id="mapClear">Clear</button>
+          <button class="btn-ghost" id="mapReset">Reset view</button>
+          <label class="chk accent"><input type="checkbox" id="mapPose" checked /> Show robot pose</label>
+          <label class="chk"><input type="checkbox" id="mapFollow" checked /> Follow pose</label>
+          <button class="btn-ghost">Import .stcm</button>
+        </div>
+        <div class="video-well" style="margin-bottom:16px;min-height:360px;padding:0">
+          <canvas id="mapCanvas"></canvas>
+        </div>
+      </section>
+    </main>
+    <footer class="status" id="status">Ready. · Tesla × SpaceX × Apple preview (Linux)</footer>
+  </div>
+
+  <script>
+    // Tabs
+    document.querySelectorAll('.tab').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        document.querySelectorAll('.tab').forEach(function (b) { b.setAttribute('aria-selected', 'false'); });
+        document.querySelectorAll('.panel').forEach(function (p) { p.classList.remove('active'); });
+        btn.setAttribute('aria-selected', 'true');
+        document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
+        document.getElementById('status').textContent = 'Tab: ' + btn.textContent + ' · Tesla × SpaceX × Apple preview';
+        if (btn.dataset.tab === 'map') resizeMap();
+      });
+    });
+
+    // Lightweight 3D-ish Local Map mock (no Three.js dependency for preview portability)
+    var canvas = document.getElementById('mapCanvas');
+    var ctx = canvas.getContext('2d');
+    var cells = [];
+    var pose = { x: 0, y: 0, yaw: 0.35 };
+    var cam = { yaw: 0.7, pitch: 0.55, dist: 7, tx: 0, ty: 0 };
+    var dragging = false, panning = false, lx = 0, ly = 0;
+    var showPose = true, follow = true;
+
+    function sampleCells() {
+      cells = [];
+      var pts = [
+        [0.64,-0.16,4],[0.72,-0.08,6],[0.80,0,8],[0.72,0.08,5],[0.64,0.16,3],
+        [1.20,-0.48,3],[1.28,-0.40,5],[1.36,-0.32,7],[1.36,-0.24,6],[1.28,-0.16,4],
+        [1.60,0.72,4],[1.68,0.80,6],[1.76,0.88,5],[1.84,0.80,3],
+        [2.10,-0.10,2],[2.18,-0.02,4],[2.26,0.06,5],[2.34,0.14,3],
+        [0.40,1.20,3],[0.48,1.28,5],[0.56,1.36,4],
+        [-0.80,0.40,2],[-0.88,0.48,4],[-0.96,0.56,6],[-1.04,0.48,3],
+        [0.90,-1.10,3],[0.98,-1.18,5],[1.06,-1.26,4]
+      ];
+      pts.forEach(function (p) { cells.push({ x: p[0], y: p[1], hits: p[2] }); });
+      pose = { x: 0, y: 0, yaw: 0.35 };
+    }
+    sampleCells();
+
+    function resizeMap() {
+      var well = canvas.parentElement;
+      var w = well.clientWidth, h = well.clientHeight;
+      var dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.floor(w * dpr);
+      canvas.height = Math.floor(h * dpr);
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      draw();
+    }
+
+    function project(x, y, z) {
+      var cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+      var cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+      var X = x - (follow ? pose.x : 0) - cam.tx;
+      var Y = y - (follow ? pose.y : 0) - cam.ty;
+      var xr = X * cy - Y * sy;
+      var zr = X * sy + Y * cy;
+      var yr = z;
+      var x2 = xr;
+      var y2 = yr * cp - zr * sp;
+      var z2 = yr * sp + zr * cp;
+      var f = 420 / (cam.dist + z2 + 4);
+      return { x: canvas.clientWidth / 2 + x2 * f, y: canvas.clientHeight * 0.62 - y2 * f, s: f };
+    }
+
+    function draw() {
+      var w = canvas.clientWidth, h = canvas.clientHeight;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, w, h);
+      // grid
+      ctx.strokeStyle = '#1C1C1E';
+      ctx.lineWidth = 1;
+      for (var g = -5; g <= 5; g++) {
+        var a = project(g, -5, 0), b = project(g, 5, 0);
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        var c = project(-5, g, 0), d = project(5, g, 0);
+        ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(d.x, d.y); ctx.stroke();
+      }
+      // range ring
+      ctx.strokeStyle = 'rgba(50,212,255,0.35)';
+      ctx.beginPath();
+      for (var i = 0; i <= 64; i++) {
+        var ang = (i / 64) * Math.PI * 2;
+        var p = project(Math.cos(ang) * 3.5, Math.sin(ang) * 3.5, 0.02);
+        if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+      }
+      ctx.stroke();
+      // cells
+      cells.forEach(function (cell) {
+        var hh = 0.08 + 0.08 * cell.hits;
+        var base = project(cell.x, cell.y, 0);
+        var top = project(cell.x, cell.y, hh);
+        var alpha = 0.45 + 0.08 * cell.hits;
+        ctx.fillStyle = 'rgba(50,212,255,' + alpha + ')';
+        var s = Math.max(3, base.s * 0.06);
+        ctx.fillRect(top.x - s / 2, top.y - (base.y - top.y), s, Math.max(4, base.y - top.y + s / 2));
+      });
+      if (showPose) {
+        var r = project(pose.x, pose.y, 0.3);
+        var nose = project(pose.x + Math.cos(pose.yaw) * 0.35, pose.y + Math.sin(pose.yaw) * 0.35, 0.3);
+        ctx.fillStyle = '#F5F5F7';
+        ctx.beginPath(); ctx.arc(r.x, r.y, 7, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = '#32D4FF'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(r.x, r.y); ctx.lineTo(nose.x, nose.y); ctx.stroke();
+      }
+      ctx.fillStyle = '#8E8E93';
+      ctx.font = '11px Cascadia Mono, Consolas, monospace';
+      ctx.fillText(cells.length + ' cells · orbit drag · pan right-drag · scroll zoom', 14, 22);
+      ctx.fillStyle = '#32D4FF';
+      ctx.fillText('LOCAL MAP · short-horizon occupancy', 14, h - 16);
+    }
+
+    canvas.addEventListener('pointerdown', function (e) {
+      dragging = e.button === 0; panning = e.button === 2 || e.button === 1;
+      lx = e.clientX; ly = e.clientY; canvas.setPointerCapture(e.pointerId);
+    });
+    canvas.addEventListener('pointerup', function () { dragging = panning = false; });
+    canvas.addEventListener('pointermove', function (e) {
+      var dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY;
+      if (dragging) { cam.yaw -= dx * 0.008; cam.pitch = Math.max(0.2, Math.min(1.2, cam.pitch + dy * 0.008)); draw(); }
+      if (panning) { cam.tx -= dx * 0.01; cam.ty += dy * 0.01; draw(); }
+    });
+    canvas.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      cam.dist = Math.max(3, Math.min(16, cam.dist * (e.deltaY > 0 ? 1.08 : 0.92)));
+      draw();
+    }, { passive: false });
+    canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+    document.getElementById('mapSample').onclick = function () { sampleCells(); draw(); };
+    document.getElementById('mapClear').onclick = function () { cells = []; draw(); };
+    document.getElementById('mapReset').onclick = function () { cam = { yaw: 0.7, pitch: 0.55, dist: 7, tx: 0, ty: 0 }; draw(); };
+    document.getElementById('mapRefresh').onclick = function () { sampleCells(); pose.yaw += 0.15; draw(); };
+    document.getElementById('mapPose').onchange = function (e) { showPose = e.target.checked; draw(); };
+    document.getElementById('mapFollow').onchange = function (e) { follow = e.target.checked; draw(); };
+
+    window.addEventListener('resize', resizeMap);
+    resizeMap();
+    // gentle motion
+    setInterval(function () {
+      if (document.getElementById('panel-map').classList.contains('active')) {
+        pose.yaw += 0.01; draw();
+      }
+    }, 80);
+  </script>
+</body>
+</html>

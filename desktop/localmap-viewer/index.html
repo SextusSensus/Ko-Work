@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>K1 Local Map</title>
+  <style>
+    :root {
+      --bg: #000000;
+      --surface: #141414;
+      --raised: #1C1C1E;
+      --text: #F5F5F7;
+      --muted: #8E8E93;
+      --accent: #32D4FF;
+      --danger: #E31937;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text);
+      font-family: "Bahnschrift", "Segoe UI Variable", "Segoe UI", sans-serif; overflow: hidden; }
+    #viewport { position: absolute; inset: 0; }
+    #hud {
+      position: absolute; left: 16px; top: 14px; z-index: 2;
+      pointer-events: none; max-width: min(420px, 70vw);
+    }
+    #hud h1 {
+      font-size: 15px; font-weight: 600; letter-spacing: 0.04em;
+      color: var(--text); margin-bottom: 4px;
+    }
+    #hud p { font-size: 11px; color: var(--muted); line-height: 1.45;
+      font-family: "Cascadia Mono", "Consolas", monospace; }
+    #hud .accent { color: var(--accent); }
+    #hint {
+      position: absolute; right: 16px; bottom: 14px; z-index: 2;
+      font-size: 11px; color: var(--muted);
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      pointer-events: none;
+    }
+    #err {
+      position: absolute; left: 16px; bottom: 14px; z-index: 2;
+      font-size: 11px; color: var(--danger);
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="viewport"></div>
+  <div id="hud">
+    <h1>LOCAL MAP <span class="accent">·</span> short-horizon occupancy</h1>
+    <p id="stats">orbit drag · pan right-drag · scroll zoom</p>
+  </div>
+  <div id="hint">robot-local · depth + odometry</div>
+  <div id="err"></div>
+  <script src="./three.min.js"></script>
+  <script src="./viewer.js"></script>
+</body>
+</html>

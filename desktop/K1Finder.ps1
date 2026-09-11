@@ -4,9 +4,12 @@
 #
 #  Tabs:
 #    1. Discover    - scan the LAN, find/rank the K1, verify reachability
-#    2. SSH & Files - SSH terminal, passwordless key, file upload (scp)
-#    3. Live View   - live MJPEG-over-SSH stream from the K1 head camera
+#    2. SSH         - SSH terminal, passwordless key, file upload (scp)
+#    3. Live        - live MJPEG-over-SSH stream from the K1 head camera
 #    4. Control     - clickable menu of all loco commands (drives the SDK CLI)
+#    5. Files       - robot SDK file browser
+#    6. Tracker     - marker-seeded person-follow cockpit
+#    7. Local Map   - interactive 3D short-horizon occupancy (WebView2 / browser)
 #
 #  Verified against the robot's own SDK (booster_robotics_sdk):
 #    - Loco CLI: b1_loco_example_client <iface>; loopback 127.0.0.1 reaches the
@@ -557,49 +560,164 @@ $script:FollowStart=[datetime]::MinValue
 $script:FollowToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 
 # ============================================================================
-#  Fonts / colors
+#  Visual system — Tesla × SpaceX × Apple (near-black / cyan accent / mission clarity)
+#  Brand-first header. Tracker hierarchy: Primary > Avoidance > Advanced > Cmd.
 # ============================================================================
-$font=New-Object System.Drawing.Font('Segoe UI',9)
-$fontBold=New-Object System.Drawing.Font('Segoe UI',10,[System.Drawing.FontStyle]::Bold)
-$mono=New-Object System.Drawing.Font('Consolas',9)
-$accent=[System.Drawing.Color]::FromArgb(0,120,215)
-$green=[System.Drawing.Color]::FromArgb(16,124,16)
-$red=[System.Drawing.Color]::FromArgb(196,43,28)
-$amber=[System.Drawing.Color]::FromArgb(202,124,0)
-$dark=[System.Drawing.Color]::FromArgb(32,34,37)
+function New-K1Font([string]$Family, [float]$Size, [System.Drawing.FontStyle]$Style = 'Regular') {
+    foreach ($name in @($Family, 'Bahnschrift', 'Segoe UI Variable Display', 'Segoe UI Variable Text', 'Segoe UI')) {
+        try { return New-Object System.Drawing.Font($name, $Size, $Style) } catch {}
+    }
+    return New-Object System.Drawing.Font('Microsoft Sans Serif', $Size, $Style)
+}
+
+$font      = New-K1Font 'Bahnschrift' 9.5
+$fontBold  = New-K1Font 'Bahnschrift' 10.5 ([System.Drawing.FontStyle]::Bold)
+$fontBrand = New-K1Font 'Bahnschrift' 22 ([System.Drawing.FontStyle]::Bold)
+$fontSub   = New-K1Font 'Bahnschrift' 9
+$fontHero  = New-K1Font 'Bahnschrift' 14 ([System.Drawing.FontStyle]::Bold)
+$fontStatus= New-K1Font 'Bahnschrift' 16 ([System.Drawing.FontStyle]::Bold)
+$mono      = New-K1Font 'Cascadia Mono' 9.25
+if (-not $mono) { $mono = New-Object System.Drawing.Font('Consolas', 9) }
+
+# Palette — pure black chassis, one electric cyan accent, Tesla red danger
+$bg        = [System.Drawing.Color]::FromArgb(0, 0, 0)          # #000000
+$surface   = [System.Drawing.Color]::FromArgb(10, 10, 10)      # #0A0A0A
+$panelBg   = [System.Drawing.Color]::FromArgb(20, 20, 20)      # #141414
+$surface2  = [System.Drawing.Color]::FromArgb(28, 28, 30)      # #1C1C1E raised
+$stroke    = [System.Drawing.Color]::FromArgb(44, 44, 46)      # hairline
+$text      = [System.Drawing.Color]::FromArgb(245, 245, 247)   # #F5F5F7
+$muted     = [System.Drawing.Color]::FromArgb(142, 142, 147)   # #8E8E93
+$accent    = [System.Drawing.Color]::FromArgb(50, 212, 255)    # #32D4FF — ONE accent
+$green     = [System.Drawing.Color]::FromArgb(180, 230, 200)   # soft white-green (sparingly)
+$red       = [System.Drawing.Color]::FromArgb(227, 25, 55)     # #E31937 Tesla red
+$amber     = [System.Drawing.Color]::FromArgb(200, 170, 90)    # restrained caution
+$dark      = $bg                                                 # logs / video wells (compat alias)
+$chipBg    = [System.Drawing.Color]::FromArgb(28, 28, 30)
+
+function Set-K1PrimaryButton([System.Windows.Forms.Button]$b) {
+    $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0
+    $b.BackColor = $accent; $b.ForeColor = [System.Drawing.Color]::Black; $b.Font = $fontBold
+    $b.Cursor = [System.Windows.Forms.Cursors]::Hand
+}
+function Set-K1DangerButton([System.Windows.Forms.Button]$b) {
+    $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0
+    $b.BackColor = $red; $b.ForeColor = [System.Drawing.Color]::White; $b.Font = $fontBold
+    $b.Cursor = [System.Windows.Forms.Cursors]::Hand
+}
+function Set-K1GhostButton([System.Windows.Forms.Button]$b) {
+    $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderColor = $stroke; $b.FlatAppearance.BorderSize = 1
+    $b.BackColor = $surface2; $b.ForeColor = $text; $b.Font = $font
+    $b.Cursor = [System.Windows.Forms.Cursors]::Hand
+}
+function Set-K1OkButton([System.Windows.Forms.Button]$b) {
+    $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0
+    $b.BackColor = $green; $b.ForeColor = [System.Drawing.Color]::Black; $b.Font = $fontBold
+    $b.Cursor = [System.Windows.Forms.Cursors]::Hand
+}
+function Set-K1Field([System.Windows.Forms.TextBox]$tb) {
+    $tb.BackColor = $surface2; $tb.ForeColor = $text; $tb.BorderStyle = 'FixedSingle'
+}
+function Set-K1Group([System.Windows.Forms.GroupBox]$g) {
+    $g.ForeColor = $muted; $g.BackColor = $panelBg; $g.Font = $fontBold
+}
+function Set-K1Panel([System.Windows.Forms.Panel]$p) {
+    $p.BackColor = $panelBg
+}
+function Set-K1Check([System.Windows.Forms.CheckBox]$c, [string]$Tone = 'normal') {
+    $c.BackColor = $panelBg; $c.FlatStyle = 'Flat'
+    switch ($Tone) {
+        'danger'  { $c.ForeColor = $red; $c.Font = $fontBold }
+        'accent'  { $c.ForeColor = $accent; $c.Font = $fontBold }
+        'caution' { $c.ForeColor = $amber; $c.Font = $fontBold }
+        default   { $c.ForeColor = $text; $c.Font = $font }
+    }
+}
+function Set-K1Combo([System.Windows.Forms.ComboBox]$cb) {
+    $cb.FlatStyle = 'Flat'; $cb.BackColor = $surface2; $cb.ForeColor = $text
+}
+function Set-K1Label([System.Windows.Forms.Label]$l, [string]$Tone = 'normal') {
+    $l.BackColor = $panelBg
+    switch ($Tone) {
+        'muted'  { $l.ForeColor = $muted; $l.Font = $font }
+        'accent' { $l.ForeColor = $accent; $l.Font = $fontBold }
+        'section'{ $l.ForeColor = $muted; $l.Font = $fontBold }
+        default  { $l.ForeColor = $text; $l.Font = $font }
+    }
+}
+function Set-K1List([System.Windows.Forms.ListView]$lv) {
+    $lv.BackColor = $surface; $lv.ForeColor = $text; $lv.BorderStyle = 'None'
+}
+function Set-K1Log([System.Windows.Forms.RichTextBox]$rtb) {
+    $rtb.BackColor = $bg; $rtb.ForeColor = $accent; $rtb.BorderStyle = 'None'
+}
 
 # ============================================================================
 #  Form + header + tabs + status
 # ============================================================================
 $form=New-Object System.Windows.Forms.Form
-$form.Text='K1 Finder - Booster K1 Discovery, SSH, Live View & Control'
-$form.Size=New-Object System.Drawing.Size(900,720)
-$form.MinimumSize=New-Object System.Drawing.Size(760,600)
-$form.StartPosition='CenterScreen'; $form.Font=$font; $form.BackColor=[System.Drawing.Color]::White
+$form.Text='K1 Finder'
+$form.Size=New-Object System.Drawing.Size(1180,860)
+$form.MinimumSize=New-Object System.Drawing.Size(1000,740)
+$form.StartPosition='CenterScreen'; $form.Font=$font; $form.BackColor=$bg
+$form.ForeColor=$text
 
 $header=New-Object System.Windows.Forms.Panel
-$header.Dock='Top'; $header.Height=50; $header.BackColor=$dark
+$header.Dock='Top'; $header.Height=72; $header.BackColor=$bg
+$header.Padding='0,0,0,0'
+# Subtle top accent line (brand presence without chrome clutter)
+$headerAccent=New-Object System.Windows.Forms.Panel
+$headerAccent.Dock='Top'; $headerAccent.Height=3; $headerAccent.BackColor=$accent
+$header.Controls.Add($headerAccent)
 $title=New-Object System.Windows.Forms.Label
-$title.Text='Booster K1  -  Discover - SSH - Live View - Control'
-$title.ForeColor=[System.Drawing.Color]::White
-$title.Font=New-Object System.Drawing.Font('Segoe UI',12,[System.Drawing.FontStyle]::Bold)
-$title.AutoSize=$true; $title.Location=New-Object System.Drawing.Point(16,12)
+$title.Text='K1 Finder'
+$title.ForeColor=$text
+$title.Font=$fontBrand
+$title.AutoSize=$true; $title.Location=New-Object System.Drawing.Point(20,14)
 $header.Controls.Add($title)
+$subtitle=New-Object System.Windows.Forms.Label
+$subtitle.Text='mission control  ·  discover  ·  drive  ·  observe'
+$subtitle.ForeColor=$muted
+$subtitle.Font=$fontSub
+$subtitle.AutoSize=$true; $subtitle.Location=New-Object System.Drawing.Point(22,46)
+$header.Controls.Add($subtitle)
 
 $status=New-Object System.Windows.Forms.StatusStrip
+$status.BackColor=$surface; $status.ForeColor=$muted
 $statusLbl=New-Object System.Windows.Forms.ToolStripStatusLabel
 $statusLbl.Text='Ready.'
+$statusLbl.ForeColor=$muted
 [void]$status.Items.Add($statusLbl)
 
 $tabs=New-Object System.Windows.Forms.TabControl
-$tabs.Dock='Fill'; $tabs.Font=$font
-$tabDiscover=New-Object System.Windows.Forms.TabPage; $tabDiscover.Text='  1. Discover  '; $tabDiscover.BackColor=[System.Drawing.Color]::White
-$tabSsh=New-Object System.Windows.Forms.TabPage; $tabSsh.Text='  2. SSH & Files  '; $tabSsh.BackColor=[System.Drawing.Color]::White
-$tabLive=New-Object System.Windows.Forms.TabPage; $tabLive.Text='  3. Live View  '; $tabLive.BackColor=[System.Drawing.Color]::White
-$tabCtrl=New-Object System.Windows.Forms.TabPage; $tabCtrl.Text='  4. Control  '; $tabCtrl.BackColor=[System.Drawing.Color]::White
-$tabFiles=New-Object System.Windows.Forms.TabPage; $tabFiles.Text='  5. Robot Files  '; $tabFiles.BackColor=[System.Drawing.Color]::White
-$tabTrack=New-Object System.Windows.Forms.TabPage; $tabTrack.Text='  6. Tracker  '; $tabTrack.BackColor=[System.Drawing.Color]::White
-$tabMap=New-Object System.Windows.Forms.TabPage; $tabMap.Text='  7. SLAM Map  '; $tabMap.BackColor=[System.Drawing.Color]::White
+$tabs.Dock='Fill'; $tabs.Font=$fontBold
+$tabs.SizeMode='Fixed'; $tabs.ItemSize=New-Object System.Drawing.Size(124,32)
+$tabs.Padding=New-Object System.Drawing.Point(12,6)
+$tabs.DrawMode='OwnerDrawFixed'
+$tabs.Add_DrawItem({
+    param($sender, $e)
+    $g = $e.Graphics
+    $r = $e.Bounds
+    $selected = ($e.Index -eq $sender.SelectedIndex)
+    $fill = if ($selected) { $surface2 } else { $bg }
+    $g.FillRectangle((New-Object System.Drawing.SolidBrush $fill), $r)
+    if ($selected) {
+        $g.FillRectangle((New-Object System.Drawing.SolidBrush $accent),
+            (New-Object System.Drawing.Rectangle $r.X, ($r.Bottom - 3), $r.Width, 3))
+    }
+    $txt = $sender.TabPages[$e.Index].Text.Trim()
+    $brush = New-Object System.Drawing.SolidBrush $(if ($selected) { $text } else { $muted })
+    $sf = New-Object System.Drawing.StringFormat
+    $sf.Alignment = 'Center'; $sf.LineAlignment = 'Center'
+    $g.DrawString($txt, $fontBold, $brush, $r, $sf)
+    $brush.Dispose(); $sf.Dispose()
+})
+$tabDiscover=New-Object System.Windows.Forms.TabPage; $tabDiscover.Text='Discover'; $tabDiscover.BackColor=$bg; $tabDiscover.ForeColor=$text
+$tabSsh=New-Object System.Windows.Forms.TabPage; $tabSsh.Text='SSH'; $tabSsh.BackColor=$bg; $tabSsh.ForeColor=$text
+$tabLive=New-Object System.Windows.Forms.TabPage; $tabLive.Text='Live'; $tabLive.BackColor=$bg; $tabLive.ForeColor=$text
+$tabCtrl=New-Object System.Windows.Forms.TabPage; $tabCtrl.Text='Control'; $tabCtrl.BackColor=$bg; $tabCtrl.ForeColor=$text
+$tabFiles=New-Object System.Windows.Forms.TabPage; $tabFiles.Text='Files'; $tabFiles.BackColor=$bg; $tabFiles.ForeColor=$text
+$tabTrack=New-Object System.Windows.Forms.TabPage; $tabTrack.Text='Tracker'; $tabTrack.BackColor=$bg; $tabTrack.ForeColor=$text
+$tabMap=New-Object System.Windows.Forms.TabPage; $tabMap.Text='Local Map'; $tabMap.BackColor=$bg; $tabMap.ForeColor=$text
 [void]$tabs.TabPages.AddRange(@($tabDiscover,$tabSsh,$tabLive,$tabCtrl,$tabFiles,$tabTrack,$tabMap))
 
 $form.Controls.Add($header); $form.Controls.Add($status); $form.Controls.Add($tabs); $tabs.BringToFront()
@@ -607,23 +725,24 @@ $form.Controls.Add($header); $form.Controls.Add($status); $form.Controls.Add($ta
 # ============================================================================
 #  TAB 1 - DISCOVER
 # ============================================================================
-$ctrlPanel=New-Object System.Windows.Forms.Panel; $ctrlPanel.Dock='Top'; $ctrlPanel.Height=96; $ctrlPanel.Padding='12,8,12,8'
-$subnetLbl=New-Object System.Windows.Forms.Label; $subnetLbl.Text='Subnets: (detected at scan time)'; $subnetLbl.AutoSize=$true; $subnetLbl.ForeColor=[System.Drawing.Color]::DimGray; $subnetLbl.Location=New-Object System.Drawing.Point(14,8); $ctrlPanel.Controls.Add($subnetLbl)
-$scanBtn=New-Object System.Windows.Forms.Button; $scanBtn.Text='Scan for K1'; $scanBtn.Size='120,32'; $scanBtn.Location='14,30'; $scanBtn.BackColor=$accent; $scanBtn.ForeColor='White'; $scanBtn.FlatStyle='Flat'; $scanBtn.Font=$fontBold; $ctrlPanel.Controls.Add($scanBtn)
-$stopBtn=New-Object System.Windows.Forms.Button; $stopBtn.Text='Stop'; $stopBtn.Size='70,32'; $stopBtn.Location='140,30'; $stopBtn.FlatStyle='Flat'; $stopBtn.Enabled=$false; $ctrlPanel.Controls.Add($stopBtn)
-$manualLbl=New-Object System.Windows.Forms.Label; $manualLbl.Text='Or enter K1 IP:'; $manualLbl.AutoSize=$true; $manualLbl.Location='230,38'; $ctrlPanel.Controls.Add($manualLbl)
-$ipBox=New-Object System.Windows.Forms.TextBox; $ipBox.Size='130,26'; $ipBox.Location='322,35'; $ipBox.Font=$mono; $ipBox.Text=$K1_DEFAULT_IP; $ctrlPanel.Controls.Add($ipBox)
-$verifyBtn=New-Object System.Windows.Forms.Button; $verifyBtn.Text='Verify'; $verifyBtn.Size='80,32'; $verifyBtn.Location='460,30'; $verifyBtn.FlatStyle='Flat'; $ctrlPanel.Controls.Add($verifyBtn)
-$progress=New-Object System.Windows.Forms.ProgressBar; $progress.Size='180,18'; $progress.Location='560,38'; $progress.Style='Continuous'; $ctrlPanel.Controls.Add($progress)
+$ctrlPanel=New-Object System.Windows.Forms.Panel; $ctrlPanel.Dock='Top'; $ctrlPanel.Height=108; $ctrlPanel.Padding='16,12,16,12'; $ctrlPanel.BackColor=$surface
+$subnetLbl=New-Object System.Windows.Forms.Label; $subnetLbl.Text='Subnets: (detected at scan time)'; $subnetLbl.AutoSize=$true; $subnetLbl.ForeColor=$muted; $subnetLbl.Location=New-Object System.Drawing.Point(16,10); $ctrlPanel.Controls.Add($subnetLbl)
+$scanBtn=New-Object System.Windows.Forms.Button; $scanBtn.Text='Scan for K1'; $scanBtn.Size='132,36'; $scanBtn.Location='16,40'; Set-K1PrimaryButton $scanBtn; $ctrlPanel.Controls.Add($scanBtn)
+$stopBtn=New-Object System.Windows.Forms.Button; $stopBtn.Text='Stop'; $stopBtn.Size='78,36'; $stopBtn.Location='158,40'; Set-K1GhostButton $stopBtn; $stopBtn.Enabled=$false; $ctrlPanel.Controls.Add($stopBtn)
+$manualLbl=New-Object System.Windows.Forms.Label; $manualLbl.Text='Or enter K1 IP'; $manualLbl.AutoSize=$true; $manualLbl.ForeColor=$muted; $manualLbl.Location='268,20'; $ctrlPanel.Controls.Add($manualLbl)
+$ipBox=New-Object System.Windows.Forms.TextBox; $ipBox.Size='148,28'; $ipBox.Location='268,44'; $ipBox.Font=$mono; $ipBox.Text=$K1_DEFAULT_IP; Set-K1Field $ipBox; $ctrlPanel.Controls.Add($ipBox)
+$verifyBtn=New-Object System.Windows.Forms.Button; $verifyBtn.Text='Verify'; $verifyBtn.Size='88,36'; $verifyBtn.Location='428,40'; Set-K1GhostButton $verifyBtn; $ctrlPanel.Controls.Add($verifyBtn)
+$progress=New-Object System.Windows.Forms.ProgressBar; $progress.Size='220,10'; $progress.Location='536,54'; $progress.Style='Continuous'; $progress.ForeColor=$accent; $ctrlPanel.Controls.Add($progress)
 
-$list=New-Object System.Windows.Forms.ListView; $list.View='Details'; $list.FullRowSelect=$true; $list.GridLines=$true; $list.MultiSelect=$false; $list.HideSelection=$false; $list.Dock='Fill'; $list.Font=$font
-[void]$list.Columns.Add('Confidence',90);[void]$list.Columns.Add('IP Address',130);[void]$list.Columns.Add('Hostname',150);[void]$list.Columns.Add('SSH Banner',200);[void]$list.Columns.Add('Why',230)
-$listPanel=New-Object System.Windows.Forms.Panel; $listPanel.Dock='Fill'; $listPanel.Padding='12,4,12,4'; $listPanel.Controls.Add($list)
+$list=New-Object System.Windows.Forms.ListView; $list.View='Details'; $list.FullRowSelect=$true; $list.GridLines=$false; $list.MultiSelect=$false; $list.HideSelection=$false; $list.Dock='Fill'; $list.Font=$font
+$list.BackColor=$surface; $list.ForeColor=$text; $list.BorderStyle='None'
+[void]$list.Columns.Add('Confidence',100);[void]$list.Columns.Add('IP Address',140);[void]$list.Columns.Add('Hostname',160);[void]$list.Columns.Add('SSH Banner',220);[void]$list.Columns.Add('Why',280)
+$listPanel=New-Object System.Windows.Forms.Panel; $listPanel.Dock='Fill'; $listPanel.Padding='16,12,16,8'; $listPanel.BackColor=$bg; $listPanel.Controls.Add($list)
 
-$bottom=New-Object System.Windows.Forms.Panel; $bottom.Dock='Bottom'; $bottom.Height=210; $bottom.Padding='12,4,12,8'
-$connectBtn=New-Object System.Windows.Forms.Button; $connectBtn.Text='Verify Selected'; $connectBtn.Size='130,30'; $connectBtn.Location='12,4'; $connectBtn.BackColor=$green; $connectBtn.ForeColor='White'; $connectBtn.FlatStyle='Flat'; $connectBtn.Font=$fontBold; $bottom.Controls.Add($connectBtn)
-$useBtn=New-Object System.Windows.Forms.Button; $useBtn.Text='Use this IP everywhere'; $useBtn.Size='170,30'; $useBtn.Location='150,4'; $useBtn.FlatStyle='Flat'; $bottom.Controls.Add($useBtn)
-$logBox=New-Object System.Windows.Forms.RichTextBox; $logBox.ReadOnly=$true; $logBox.Dock='Bottom'; $logBox.Height=160; $logBox.BackColor=$dark; $logBox.ForeColor=[System.Drawing.Color]::Gainsboro; $logBox.Font=$mono; $bottom.Controls.Add($logBox)
+$bottom=New-Object System.Windows.Forms.Panel; $bottom.Dock='Bottom'; $bottom.Height=200; $bottom.Padding='16,8,16,12'; $bottom.BackColor=$bg
+$connectBtn=New-Object System.Windows.Forms.Button; $connectBtn.Text='Verify Selected'; $connectBtn.Size='140,34'; $connectBtn.Location='16,4'; Set-K1OkButton $connectBtn; $bottom.Controls.Add($connectBtn)
+$useBtn=New-Object System.Windows.Forms.Button; $useBtn.Text='Use this IP everywhere'; $useBtn.Size='180,34'; $useBtn.Location='168,4'; Set-K1GhostButton $useBtn; $bottom.Controls.Add($useBtn)
+$logBox=New-Object System.Windows.Forms.RichTextBox; $logBox.ReadOnly=$true; $logBox.Dock='Bottom'; $logBox.Height=148; $logBox.BackColor=$surface; $logBox.ForeColor=$accent; $logBox.Font=$mono; $logBox.BorderStyle='None'; $bottom.Controls.Add($logBox)
 $tabDiscover.Controls.Add($ctrlPanel); $tabDiscover.Controls.Add($bottom); $tabDiscover.Controls.Add($listPanel); $listPanel.BringToFront()
 
 # ============================================================================
@@ -634,27 +753,27 @@ $sshLayout=New-Object System.Windows.Forms.TableLayoutPanel; $sshLayout.Dock='Fi
 [void]$sshLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,92)))
 [void]$sshLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,188)))
 [void]$sshLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,100)))
-$grpRobot=New-Object System.Windows.Forms.GroupBox; $grpRobot.Text='Robot'; $grpRobot.Dock='Fill'
-$lblIp2=New-Object System.Windows.Forms.Label; $lblIp2.Text='Robot IP:'; $lblIp2.AutoSize=$true; $lblIp2.Location='12,28'; $grpRobot.Controls.Add($lblIp2)
-$ip2Box=New-Object System.Windows.Forms.TextBox; $ip2Box.Size='150,26'; $ip2Box.Location='78,25'; $ip2Box.Font=$mono; $ip2Box.Text=$K1_DEFAULT_IP; $grpRobot.Controls.Add($ip2Box)
-$pullBtn=New-Object System.Windows.Forms.Button; $pullBtn.Text='Pull from Discover'; $pullBtn.Size='140,26'; $pullBtn.Location='240,25'; $pullBtn.FlatStyle='Flat'; $grpRobot.Controls.Add($pullBtn)
-$testBtn=New-Object System.Windows.Forms.Button; $testBtn.Text='Test SSH'; $testBtn.Size='100,26'; $testBtn.Location='392,25'; $testBtn.FlatStyle='Flat'; $grpRobot.Controls.Add($testBtn)
-$userLbl=New-Object System.Windows.Forms.Label; $userLbl.Text=("login: {0} (SSH key auth)" -f $K1_SSH_USER); $userLbl.AutoSize=$true; $userLbl.ForeColor=[System.Drawing.Color]::DimGray; $userLbl.Location='512,30'; $grpRobot.Controls.Add($userLbl)
-$grpSsh=New-Object System.Windows.Forms.GroupBox; $grpSsh.Text='SSH'; $grpSsh.Dock='Fill'
-$sshDesc=New-Object System.Windows.Forms.Label; $sshDesc.Text='Open a shell on the robot, or install an SSH key so uploads need no password.'; $sshDesc.AutoSize=$true; $sshDesc.ForeColor=[System.Drawing.Color]::DimGray; $sshDesc.Location='12,22'; $grpSsh.Controls.Add($sshDesc)
-$sshTermBtn=New-Object System.Windows.Forms.Button; $sshTermBtn.Text='Open SSH Terminal'; $sshTermBtn.Size='160,30'; $sshTermBtn.Location='12,46'; $sshTermBtn.BackColor=$accent; $sshTermBtn.ForeColor='White'; $sshTermBtn.FlatStyle='Flat'; $sshTermBtn.Font=$fontBold; $grpSsh.Controls.Add($sshTermBtn)
-$keyBtn=New-Object System.Windows.Forms.Button; $keyBtn.Text='Enable passwordless login (install SSH key)'; $keyBtn.Size='300,30'; $keyBtn.Location='184,46'; $keyBtn.FlatStyle='Flat'; $grpSsh.Controls.Add($keyBtn)
-$grpUp=New-Object System.Windows.Forms.GroupBox; $grpUp.Text='Upload files / folders to the K1'; $grpUp.Dock='Fill'
-$addFilesBtn=New-Object System.Windows.Forms.Button; $addFilesBtn.Text='Add files...'; $addFilesBtn.Size='100,28'; $addFilesBtn.Location='12,24'; $addFilesBtn.FlatStyle='Flat'; $grpUp.Controls.Add($addFilesBtn)
-$addFolderBtn=New-Object System.Windows.Forms.Button; $addFolderBtn.Text='Add folder...'; $addFolderBtn.Size='100,28'; $addFolderBtn.Location='118,24'; $addFolderBtn.FlatStyle='Flat'; $grpUp.Controls.Add($addFolderBtn)
-$clearFilesBtn=New-Object System.Windows.Forms.Button; $clearFilesBtn.Text='Clear'; $clearFilesBtn.Size='70,28'; $clearFilesBtn.Location='224,24'; $clearFilesBtn.FlatStyle='Flat'; $grpUp.Controls.Add($clearFilesBtn)
-$fileList=New-Object System.Windows.Forms.ListBox; $fileList.Size='400,92'; $fileList.Location='12,58'; $fileList.Font=$mono; $fileList.HorizontalScrollbar=$true; $grpUp.Controls.Add($fileList)
-$remoteLbl=New-Object System.Windows.Forms.Label; $remoteLbl.Text='Remote path:'; $remoteLbl.AutoSize=$true; $remoteLbl.Location='428,60'; $grpUp.Controls.Add($remoteLbl)
-$remoteBox=New-Object System.Windows.Forms.TextBox; $remoteBox.Size='280,26'; $remoteBox.Location='428,80'; $remoteBox.Font=$mono; $remoteBox.Text='/home/booster/'; $grpUp.Controls.Add($remoteBox)
-$pwlessChk=New-Object System.Windows.Forms.CheckBox; $pwlessChk.Text='Passwordless (SSH key installed) - show result in app'; $pwlessChk.AutoSize=$true; $pwlessChk.Location='428,112'; $grpUp.Controls.Add($pwlessChk)
-$uploadBtn=New-Object System.Windows.Forms.Button; $uploadBtn.Text='Upload to K1'; $uploadBtn.Size='160,34'; $uploadBtn.Location='548,138'; $uploadBtn.BackColor=$green; $uploadBtn.ForeColor='White'; $uploadBtn.FlatStyle='Flat'; $uploadBtn.Font=$fontBold; $grpUp.Controls.Add($uploadBtn)
-$logBox2=New-Object System.Windows.Forms.RichTextBox; $logBox2.ReadOnly=$true; $logBox2.Dock='Fill'; $logBox2.BackColor=$dark; $logBox2.ForeColor=[System.Drawing.Color]::Gainsboro; $logBox2.Font=$mono
-$sshLayout.Controls.Add($grpRobot,0,0); $sshLayout.Controls.Add($grpSsh,0,1); $sshLayout.Controls.Add($grpUp,0,2); $sshLayout.Controls.Add($logBox2,0,3)
+$grpRobot=New-Object System.Windows.Forms.GroupBox; $grpRobot.Text='Robot'; $grpRobot.Dock='Fill'; Set-K1Group $grpRobot
+$lblIp2=New-Object System.Windows.Forms.Label; $lblIp2.Text='Robot IP:'; $lblIp2.AutoSize=$true; $lblIp2.Location='12,28'; Set-K1Label $lblIp2 'muted'; $grpRobot.Controls.Add($lblIp2)
+$ip2Box=New-Object System.Windows.Forms.TextBox; $ip2Box.Size='150,26'; $ip2Box.Location='78,25'; $ip2Box.Font=$mono; $ip2Box.Text=$K1_DEFAULT_IP; Set-K1Field $ip2Box; $grpRobot.Controls.Add($ip2Box)
+$pullBtn=New-Object System.Windows.Forms.Button; $pullBtn.Text='Pull from Discover'; $pullBtn.Size='140,26'; $pullBtn.Location='240,25'; Set-K1GhostButton $pullBtn; $grpRobot.Controls.Add($pullBtn)
+$testBtn=New-Object System.Windows.Forms.Button; $testBtn.Text='Test SSH'; $testBtn.Size='100,26'; $testBtn.Location='392,25'; Set-K1GhostButton $testBtn; $grpRobot.Controls.Add($testBtn)
+$userLbl=New-Object System.Windows.Forms.Label; $userLbl.Text=("login: {0} (SSH key auth)" -f $K1_SSH_USER); $userLbl.AutoSize=$true; $userLbl.Location='512,30'; Set-K1Label $userLbl 'muted'; $grpRobot.Controls.Add($userLbl)
+$grpSsh=New-Object System.Windows.Forms.GroupBox; $grpSsh.Text='SSH'; $grpSsh.Dock='Fill'; Set-K1Group $grpSsh
+$sshDesc=New-Object System.Windows.Forms.Label; $sshDesc.Text='Open a shell on the robot, or install an SSH key so uploads need no password.'; $sshDesc.AutoSize=$true; $sshDesc.Location='12,22'; Set-K1Label $sshDesc 'muted'; $grpSsh.Controls.Add($sshDesc)
+$sshTermBtn=New-Object System.Windows.Forms.Button; $sshTermBtn.Text='Open SSH Terminal'; $sshTermBtn.Size='160,30'; $sshTermBtn.Location='12,46'; Set-K1PrimaryButton $sshTermBtn; $grpSsh.Controls.Add($sshTermBtn)
+$keyBtn=New-Object System.Windows.Forms.Button; $keyBtn.Text='Enable passwordless login (install SSH key)'; $keyBtn.Size='300,30'; $keyBtn.Location='184,46'; Set-K1GhostButton $keyBtn; $grpSsh.Controls.Add($keyBtn)
+$grpUp=New-Object System.Windows.Forms.GroupBox; $grpUp.Text='Upload files / folders to the K1'; $grpUp.Dock='Fill'; Set-K1Group $grpUp
+$addFilesBtn=New-Object System.Windows.Forms.Button; $addFilesBtn.Text='Add files...'; $addFilesBtn.Size='100,28'; $addFilesBtn.Location='12,24'; Set-K1GhostButton $addFilesBtn; $grpUp.Controls.Add($addFilesBtn)
+$addFolderBtn=New-Object System.Windows.Forms.Button; $addFolderBtn.Text='Add folder...'; $addFolderBtn.Size='100,28'; $addFolderBtn.Location='118,24'; Set-K1GhostButton $addFolderBtn; $grpUp.Controls.Add($addFolderBtn)
+$clearFilesBtn=New-Object System.Windows.Forms.Button; $clearFilesBtn.Text='Clear'; $clearFilesBtn.Size='70,28'; $clearFilesBtn.Location='224,24'; Set-K1GhostButton $clearFilesBtn; $grpUp.Controls.Add($clearFilesBtn)
+$fileList=New-Object System.Windows.Forms.ListBox; $fileList.Size='400,92'; $fileList.Location='12,58'; $fileList.Font=$mono; $fileList.HorizontalScrollbar=$true; $fileList.BackColor=$surface2; $fileList.ForeColor=$text; $fileList.BorderStyle='FixedSingle'; $grpUp.Controls.Add($fileList)
+$remoteLbl=New-Object System.Windows.Forms.Label; $remoteLbl.Text='Remote path:'; $remoteLbl.AutoSize=$true; $remoteLbl.Location='428,60'; Set-K1Label $remoteLbl 'muted'; $grpUp.Controls.Add($remoteLbl)
+$remoteBox=New-Object System.Windows.Forms.TextBox; $remoteBox.Size='280,26'; $remoteBox.Location='428,80'; $remoteBox.Font=$mono; $remoteBox.Text='/home/booster/'; Set-K1Field $remoteBox; $grpUp.Controls.Add($remoteBox)
+$pwlessChk=New-Object System.Windows.Forms.CheckBox; $pwlessChk.Text='Passwordless (SSH key installed) - show result in app'; $pwlessChk.AutoSize=$true; $pwlessChk.Location='428,112'; Set-K1Check $pwlessChk; $grpUp.Controls.Add($pwlessChk)
+$uploadBtn=New-Object System.Windows.Forms.Button; $uploadBtn.Text='Upload to K1'; $uploadBtn.Size='160,34'; $uploadBtn.Location='548,138'; Set-K1OkButton $uploadBtn; $grpUp.Controls.Add($uploadBtn)
+$logBox2=New-Object System.Windows.Forms.RichTextBox; $logBox2.ReadOnly=$true; $logBox2.Dock='Fill'; $logBox2.Font=$mono; Set-K1Log $logBox2
+$sshLayout.BackColor=$bg; $sshLayout.Controls.Add($grpRobot,0,0); $sshLayout.Controls.Add($grpSsh,0,1); $sshLayout.Controls.Add($grpUp,0,2); $sshLayout.Controls.Add($logBox2,0,3)
 $tabSsh.Controls.Add($sshLayout)
 
 # ============================================================================
@@ -664,27 +783,27 @@ $liveLayout=New-Object System.Windows.Forms.TableLayoutPanel; $liveLayout.Dock='
 [void]$liveLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,72)))
 [void]$liveLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,100)))
 [void]$liveLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,96)))
-$grpLiveCtl=New-Object System.Windows.Forms.GroupBox; $grpLiveCtl.Text='Camera'; $grpLiveCtl.Dock='Fill'
-$lblIpL=New-Object System.Windows.Forms.Label; $lblIpL.Text='IP:'; $lblIpL.AutoSize=$true; $lblIpL.Location='10,26'; $grpLiveCtl.Controls.Add($lblIpL)
-$ipLive=New-Object System.Windows.Forms.TextBox; $ipLive.Size='120,24'; $ipLive.Location='34,23'; $ipLive.Font=$mono; $ipLive.Text=$K1_DEFAULT_IP; $grpLiveCtl.Controls.Add($ipLive)
-$lblTopic=New-Object System.Windows.Forms.Label; $lblTopic.Text='Topic:'; $lblTopic.AutoSize=$true; $lblTopic.Location='164,26'; $grpLiveCtl.Controls.Add($lblTopic)
-$topicCombo=New-Object System.Windows.Forms.ComboBox; $topicCombo.Size='220,24'; $topicCombo.Location='208,23'; $topicCombo.DropDownStyle='DropDownList'
+$grpLiveCtl=New-Object System.Windows.Forms.GroupBox; $grpLiveCtl.Text='Camera'; $grpLiveCtl.Dock='Fill'; Set-K1Group $grpLiveCtl
+$lblIpL=New-Object System.Windows.Forms.Label; $lblIpL.Text='IP:'; $lblIpL.AutoSize=$true; $lblIpL.Location='10,26'; Set-K1Label $lblIpL 'muted'; $grpLiveCtl.Controls.Add($lblIpL)
+$ipLive=New-Object System.Windows.Forms.TextBox; $ipLive.Size='120,24'; $ipLive.Location='34,23'; $ipLive.Font=$mono; $ipLive.Text=$K1_DEFAULT_IP; Set-K1Field $ipLive; $grpLiveCtl.Controls.Add($ipLive)
+$lblTopic=New-Object System.Windows.Forms.Label; $lblTopic.Text='Topic:'; $lblTopic.AutoSize=$true; $lblTopic.Location='164,26'; Set-K1Label $lblTopic 'muted'; $grpLiveCtl.Controls.Add($lblTopic)
+$topicCombo=New-Object System.Windows.Forms.ComboBox; $topicCombo.Size='220,24'; $topicCombo.Location='208,23'; $topicCombo.DropDownStyle='DropDownList'; Set-K1Combo $topicCombo
 # raw/rgb is the topic that actually delivers frames (the processed head/rgb stays at 0Hz); default to it.
 [void]$topicCombo.Items.AddRange(@('/boostercamera/head/raw/rgb','/boostercamera/head/rgb','/boostercamera/head/right/rgb','/boostercamera/head/raw/combine/rgb','/boostercamera/head/depth')); $topicCombo.SelectedIndex=0; $grpLiveCtl.Controls.Add($topicCombo)
-$lblFps=New-Object System.Windows.Forms.Label; $lblFps.Text='FPS:'; $lblFps.AutoSize=$true; $lblFps.Location='440,26'; $grpLiveCtl.Controls.Add($lblFps)
-$fpsCombo=New-Object System.Windows.Forms.ComboBox; $fpsCombo.Size='55,24'; $fpsCombo.Location='474,23'; $fpsCombo.DropDownStyle='DropDownList'; [void]$fpsCombo.Items.AddRange(@('5','10','12','15','20')); $fpsCombo.SelectedIndex=2; $grpLiveCtl.Controls.Add($fpsCombo)
-$lblQ=New-Object System.Windows.Forms.Label; $lblQ.Text='Q:'; $lblQ.AutoSize=$true; $lblQ.Location='536,26'; $grpLiveCtl.Controls.Add($lblQ)
-$qCombo=New-Object System.Windows.Forms.ComboBox; $qCombo.Size='55,24'; $qCombo.Location='556,23'; $qCombo.DropDownStyle='DropDownList'; [void]$qCombo.Items.AddRange(@('40','55','70','85')); $qCombo.SelectedIndex=2; $grpLiveCtl.Controls.Add($qCombo)
-$startLiveBtn=New-Object System.Windows.Forms.Button; $startLiveBtn.Text='Start'; $startLiveBtn.Size='70,30'; $startLiveBtn.Location='624,21'; $startLiveBtn.BackColor=$green; $startLiveBtn.ForeColor='White'; $startLiveBtn.FlatStyle='Flat'; $startLiveBtn.Font=$fontBold; $grpLiveCtl.Controls.Add($startLiveBtn)
-$stopLiveBtn=New-Object System.Windows.Forms.Button; $stopLiveBtn.Text='Stop'; $stopLiveBtn.Size='60,30'; $stopLiveBtn.Location='698,21'; $stopLiveBtn.FlatStyle='Flat'; $stopLiveBtn.Enabled=$false; $grpLiveCtl.Controls.Add($stopLiveBtn)
-$enableCamBtn=New-Object System.Windows.Forms.Button; $enableCamBtn.Text='Enable cam (beta)'; $enableCamBtn.Size='130,30'; $enableCamBtn.Location='762,21'; $enableCamBtn.FlatStyle='Flat'; $grpLiveCtl.Controls.Add($enableCamBtn)
-$liveStatus=New-Object System.Windows.Forms.Label; $liveStatus.Text='Idle.'; $liveStatus.AutoSize=$true; $liveStatus.ForeColor=[System.Drawing.Color]::DimGray; $liveStatus.Location='12,50'; $grpLiveCtl.Controls.Add($liveStatus)
+$lblFps=New-Object System.Windows.Forms.Label; $lblFps.Text='FPS:'; $lblFps.AutoSize=$true; $lblFps.Location='440,26'; Set-K1Label $lblFps 'muted'; $grpLiveCtl.Controls.Add($lblFps)
+$fpsCombo=New-Object System.Windows.Forms.ComboBox; $fpsCombo.Size='55,24'; $fpsCombo.Location='474,23'; $fpsCombo.DropDownStyle='DropDownList'; Set-K1Combo $fpsCombo; [void]$fpsCombo.Items.AddRange(@('5','10','12','15','20')); $fpsCombo.SelectedIndex=2; $grpLiveCtl.Controls.Add($fpsCombo)
+$lblQ=New-Object System.Windows.Forms.Label; $lblQ.Text='Q:'; $lblQ.AutoSize=$true; $lblQ.Location='536,26'; Set-K1Label $lblQ 'muted'; $grpLiveCtl.Controls.Add($lblQ)
+$qCombo=New-Object System.Windows.Forms.ComboBox; $qCombo.Size='55,24'; $qCombo.Location='556,23'; $qCombo.DropDownStyle='DropDownList'; Set-K1Combo $qCombo; [void]$qCombo.Items.AddRange(@('40','55','70','85')); $qCombo.SelectedIndex=2; $grpLiveCtl.Controls.Add($qCombo)
+$startLiveBtn=New-Object System.Windows.Forms.Button; $startLiveBtn.Text='Start'; $startLiveBtn.Size='70,30'; $startLiveBtn.Location='624,21'; Set-K1OkButton $startLiveBtn; $grpLiveCtl.Controls.Add($startLiveBtn)
+$stopLiveBtn=New-Object System.Windows.Forms.Button; $stopLiveBtn.Text='Stop'; $stopLiveBtn.Size='60,30'; $stopLiveBtn.Location='698,21'; Set-K1GhostButton $stopLiveBtn; $stopLiveBtn.Enabled=$false; $grpLiveCtl.Controls.Add($stopLiveBtn)
+$enableCamBtn=New-Object System.Windows.Forms.Button; $enableCamBtn.Text='Enable cam (beta)'; $enableCamBtn.Size='130,30'; $enableCamBtn.Location='762,21'; Set-K1GhostButton $enableCamBtn; $grpLiveCtl.Controls.Add($enableCamBtn)
+$liveStatus=New-Object System.Windows.Forms.Label; $liveStatus.Text='Idle.'; $liveStatus.AutoSize=$true; $liveStatus.Location='12,50'; Set-K1Label $liveStatus 'muted'; $grpLiveCtl.Controls.Add($liveStatus)
 # marker lock-on badge (driven by the per-frame status byte from the streamer)
-$lockBadge=New-Object System.Windows.Forms.Label; $lockBadge.Text='  MARKER: --  '; $lockBadge.AutoSize=$false; $lockBadge.Size='250,26'; $lockBadge.TextAlign='MiddleCenter'; $lockBadge.Font=$fontBold; $lockBadge.ForeColor='White'; $lockBadge.BackColor=[System.Drawing.Color]::Gray; $lockBadge.Location='430,48'; $grpLiveCtl.Controls.Add($lockBadge)
-$muteChk=New-Object System.Windows.Forms.CheckBox; $muteChk.Text='mute lock sound'; $muteChk.AutoSize=$true; $muteChk.Location='690,50'; $muteChk.ForeColor=[System.Drawing.Color]::DimGray; $grpLiveCtl.Controls.Add($muteChk)
-$livePic=New-Object System.Windows.Forms.PictureBox; $livePic.Dock='Fill'; $livePic.BackColor=[System.Drawing.Color]::Black; $livePic.SizeMode='Zoom'
-$liveLog=New-Object System.Windows.Forms.RichTextBox; $liveLog.ReadOnly=$true; $liveLog.Dock='Fill'; $liveLog.BackColor=$dark; $liveLog.ForeColor=[System.Drawing.Color]::Gainsboro; $liveLog.Font=$mono
-$liveLayout.Controls.Add($grpLiveCtl,0,0); $liveLayout.Controls.Add($livePic,0,1); $liveLayout.Controls.Add($liveLog,0,2)
+$lockBadge=New-Object System.Windows.Forms.Label; $lockBadge.Text='  MARKER: --  '; $lockBadge.AutoSize=$false; $lockBadge.Size='250,26'; $lockBadge.TextAlign='MiddleCenter'; $lockBadge.Font=$fontBold; $lockBadge.ForeColor='White'; $lockBadge.BackColor=$chipBg; $lockBadge.Location='430,48'; $grpLiveCtl.Controls.Add($lockBadge)
+$muteChk=New-Object System.Windows.Forms.CheckBox; $muteChk.Text='mute lock sound'; $muteChk.AutoSize=$true; $muteChk.Location='690,50'; Set-K1Check $muteChk; $muteChk.ForeColor=$muted; $grpLiveCtl.Controls.Add($muteChk)
+$livePic=New-Object System.Windows.Forms.PictureBox; $livePic.Dock='Fill'; $livePic.BackColor=$bg; $livePic.SizeMode='Zoom'
+$liveLog=New-Object System.Windows.Forms.RichTextBox; $liveLog.ReadOnly=$true; $liveLog.Dock='Fill'; $liveLog.Font=$mono; Set-K1Log $liveLog
+$liveLayout.BackColor=$bg; $liveLayout.Controls.Add($grpLiveCtl,0,0); $liveLayout.Controls.Add($livePic,0,1); $liveLayout.Controls.Add($liveLog,0,2)
 $tabLive.Controls.Add($liveLayout)
 
 # ============================================================================
@@ -696,32 +815,35 @@ $ctrlLayout=New-Object System.Windows.Forms.TableLayoutPanel; $ctrlLayout.Dock='
 [void]$ctrlLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,86)))
 [void]$ctrlLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,100)))
 
-$grpConn=New-Object System.Windows.Forms.GroupBox; $grpConn.Text='Controller connection'; $grpConn.Dock='Fill'
-$lblIpC=New-Object System.Windows.Forms.Label; $lblIpC.Text='IP:'; $lblIpC.AutoSize=$true; $lblIpC.Location='10,28'; $grpConn.Controls.Add($lblIpC)
-$ipCtrl=New-Object System.Windows.Forms.TextBox; $ipCtrl.Size='120,24'; $ipCtrl.Location='34,25'; $ipCtrl.Font=$mono; $ipCtrl.Text=$K1_DEFAULT_IP; $grpConn.Controls.Add($ipCtrl)
-$lblIf=New-Object System.Windows.Forms.Label; $lblIf.Text='SDK iface:'; $lblIf.AutoSize=$true; $lblIf.Location='164,28'; $grpConn.Controls.Add($lblIf)
-$ifaceBox=New-Object System.Windows.Forms.TextBox; $ifaceBox.Size='100,24'; $ifaceBox.Location='234,25'; $ifaceBox.Font=$mono; $ifaceBox.Text=$K1_LOCO_IFACE; $grpConn.Controls.Add($ifaceBox)
-$connCtrlBtn=New-Object System.Windows.Forms.Button; $connCtrlBtn.Text='Connect'; $connCtrlBtn.Size='90,30'; $connCtrlBtn.Location='344,22'; $connCtrlBtn.BackColor=$accent; $connCtrlBtn.ForeColor='White'; $connCtrlBtn.FlatStyle='Flat'; $connCtrlBtn.Font=$fontBold; $grpConn.Controls.Add($connCtrlBtn)
-$discCtrlBtn=New-Object System.Windows.Forms.Button; $discCtrlBtn.Text='Disconnect'; $discCtrlBtn.Size='90,30'; $discCtrlBtn.Location='438,22'; $discCtrlBtn.FlatStyle='Flat'; $discCtrlBtn.Enabled=$false; $grpConn.Controls.Add($discCtrlBtn)
-$gftBtn=New-Object System.Windows.Forms.Button; $gftBtn.Text='Test link (gft)'; $gftBtn.Size='110,30'; $gftBtn.Location='532,22'; $gftBtn.FlatStyle='Flat'; $gftBtn.Enabled=$false; $grpConn.Controls.Add($gftBtn)
-$armChk=New-Object System.Windows.Forms.CheckBox; $armChk.Text='ARM MOTION'; $armChk.AutoSize=$true; $armChk.Location='656,28'; $armChk.ForeColor=$red; $armChk.Font=$fontBold; $grpConn.Controls.Add($armChk)
-$connStatus=New-Object System.Windows.Forms.Label; $connStatus.Text='Not connected. Connect, then ARM to enable motion. STOP/Damping stay live.'; $connStatus.AutoSize=$true; $connStatus.ForeColor=[System.Drawing.Color]::DimGray; $connStatus.Location='12,52'; $grpConn.Controls.Add($connStatus)
+$grpConn=New-Object System.Windows.Forms.GroupBox; $grpConn.Text='Controller connection'; $grpConn.Dock='Fill'; Set-K1Group $grpConn
+$lblIpC=New-Object System.Windows.Forms.Label; $lblIpC.Text='IP:'; $lblIpC.AutoSize=$true; $lblIpC.Location='10,28'; Set-K1Label $lblIpC 'muted'; $grpConn.Controls.Add($lblIpC)
+$ipCtrl=New-Object System.Windows.Forms.TextBox; $ipCtrl.Size='120,24'; $ipCtrl.Location='34,25'; $ipCtrl.Font=$mono; $ipCtrl.Text=$K1_DEFAULT_IP; Set-K1Field $ipCtrl; $grpConn.Controls.Add($ipCtrl)
+$lblIf=New-Object System.Windows.Forms.Label; $lblIf.Text='SDK iface:'; $lblIf.AutoSize=$true; $lblIf.Location='164,28'; Set-K1Label $lblIf 'muted'; $grpConn.Controls.Add($lblIf)
+$ifaceBox=New-Object System.Windows.Forms.TextBox; $ifaceBox.Size='100,24'; $ifaceBox.Location='234,25'; $ifaceBox.Font=$mono; $ifaceBox.Text=$K1_LOCO_IFACE; Set-K1Field $ifaceBox; $grpConn.Controls.Add($ifaceBox)
+$connCtrlBtn=New-Object System.Windows.Forms.Button; $connCtrlBtn.Text='Connect'; $connCtrlBtn.Size='90,30'; $connCtrlBtn.Location='344,22'; Set-K1PrimaryButton $connCtrlBtn; $grpConn.Controls.Add($connCtrlBtn)
+$discCtrlBtn=New-Object System.Windows.Forms.Button; $discCtrlBtn.Text='Disconnect'; $discCtrlBtn.Size='90,30'; $discCtrlBtn.Location='438,22'; Set-K1GhostButton $discCtrlBtn; $discCtrlBtn.Enabled=$false; $grpConn.Controls.Add($discCtrlBtn)
+$gftBtn=New-Object System.Windows.Forms.Button; $gftBtn.Text='Test link (gft)'; $gftBtn.Size='110,30'; $gftBtn.Location='532,22'; Set-K1GhostButton $gftBtn; $gftBtn.Enabled=$false; $grpConn.Controls.Add($gftBtn)
+$armChk=New-Object System.Windows.Forms.CheckBox; $armChk.Text='ARM MOTION'; $armChk.AutoSize=$true; $armChk.Location='656,28'; Set-K1Check $armChk 'danger'; $grpConn.Controls.Add($armChk)
+$connStatus=New-Object System.Windows.Forms.Label; $connStatus.Text='Not connected. Connect, then ARM to enable motion. STOP/Damping stay live.'; $connStatus.AutoSize=$true; $connStatus.Location='12,52'; Set-K1Label $connStatus 'muted'; $grpConn.Controls.Add($connStatus)
 
-$grpCmd=New-Object System.Windows.Forms.GroupBox; $grpCmd.Text='Commands'; $grpCmd.Dock='Fill'
+$grpCmd=New-Object System.Windows.Forms.GroupBox; $grpCmd.Text='Commands'; $grpCmd.Dock='Fill'; Set-K1Group $grpCmd
 
 # helper to add a command button
 function Add-Cmd {
     param($parent,$text,$code,$x,$y,$w,[bool]$motion=$true,$color=$null)
     $b=New-Object System.Windows.Forms.Button
-    $b.Text=$text; $b.Location=New-Object System.Drawing.Point($x,$y); $b.Size=New-Object System.Drawing.Size($w,34); $b.FlatStyle='Flat'; $b.Tag=$code; $b.Enabled=$false
-    if($color){ $b.BackColor=$color; $b.ForeColor='White'; $b.Font=$fontBold }
+    $b.Text=$text; $b.Location=New-Object System.Drawing.Point($x,$y); $b.Size=New-Object System.Drawing.Size($w,34); $b.Tag=$code; $b.Enabled=$false
+    if($color -eq $red){ Set-K1DangerButton $b }
+    elseif($color -eq $amber){ $b.FlatStyle='Flat'; $b.FlatAppearance.BorderSize=0; $b.BackColor=$amber; $b.ForeColor=$bg; $b.Font=$fontBold; $b.Cursor=[System.Windows.Forms.Cursors]::Hand }
+    elseif($color -eq $green){ Set-K1OkButton $b }
+    else { Set-K1GhostButton $b }
     $b.Add_Click({ Send-Loco ($this.Tag) })
     [void]$parent.Controls.Add($b)
     if($motion){ $script:MotionButtons += $b }
     return $b
 }
 # Section labels
-function Add-SecLabel($parent,$text,$x,$y){ $l=New-Object System.Windows.Forms.Label; $l.Text=$text; $l.AutoSize=$true; $l.ForeColor=$accent; $l.Font=$fontBold; $l.Location=New-Object System.Drawing.Point($x,$y); $parent.Controls.Add($l) }
+function Add-SecLabel($parent,$text,$x,$y){ $l=New-Object System.Windows.Forms.Label; $l.Text=$text; $l.AutoSize=$true; $l.Location=New-Object System.Drawing.Point($x,$y); Set-K1Label $l 'accent'; $parent.Controls.Add($l) }
 
 # Modes
 Add-SecLabel $grpCmd 'Modes' 14 22
@@ -758,13 +880,13 @@ $btnOk=Add-Cmd $grpCmd 'OK' 'ok' 439 210 55 $true
 $btnGrasp=Add-Cmd $grpCmd 'Grasp' 'grasp' 498 210 70 $true
 
 # --- Follow marker (QR) group: a single ON/OFF toggle + a DRIVE mode checkbox ---
-$grpFollow=New-Object System.Windows.Forms.GroupBox; $grpFollow.Text='Follow marker (QR / ArUco)'; $grpFollow.Dock='Fill'
-$followToggle=New-Object System.Windows.Forms.CheckBox; $followToggle.Appearance='Button'; $followToggle.Text='Follow Marker (QR): OFF'; $followToggle.TextAlign='MiddleCenter'; $followToggle.Size='220,34'; $followToggle.Location='14,22'; $followToggle.FlatStyle='Flat'; $followToggle.Font=$fontBold; $grpFollow.Controls.Add($followToggle)
-$followDriveChk=New-Object System.Windows.Forms.CheckBox; $followDriveChk.Text='DRIVE (walk the robot)'; $followDriveChk.AutoSize=$true; $followDriveChk.Location='246,30'; $followDriveChk.ForeColor=$red; $followDriveChk.Font=$fontBold; $grpFollow.Controls.Add($followDriveChk)
-$followStatus=New-Object System.Windows.Forms.Label; $followStatus.Text='marker = one-time lock onto the person, then follows that person (re-show marker to re-seed). Toggle ON for PREVIEW (no motion); tick DRIVE + ARM to walk.'; $followStatus.AutoSize=$false; $followStatus.Size='660,28'; $followStatus.Location='14,60'; $followStatus.ForeColor=[System.Drawing.Color]::DimGray; $grpFollow.Controls.Add($followStatus)
+$grpFollow=New-Object System.Windows.Forms.GroupBox; $grpFollow.Text='Follow marker (QR / ArUco)'; $grpFollow.Dock='Fill'; Set-K1Group $grpFollow
+$followToggle=New-Object System.Windows.Forms.CheckBox; $followToggle.Appearance='Button'; $followToggle.Text='Follow Marker (QR): OFF'; $followToggle.TextAlign='MiddleCenter'; $followToggle.Size='220,34'; $followToggle.Location='14,22'; $followToggle.FlatStyle='Flat'; $followToggle.Font=$fontBold; $followToggle.BackColor=$surface2; $followToggle.ForeColor=$text; $grpFollow.Controls.Add($followToggle)
+$followDriveChk=New-Object System.Windows.Forms.CheckBox; $followDriveChk.Text='DRIVE (walk the robot)'; $followDriveChk.AutoSize=$true; $followDriveChk.Location='246,30'; Set-K1Check $followDriveChk 'danger'; $grpFollow.Controls.Add($followDriveChk)
+$followStatus=New-Object System.Windows.Forms.Label; $followStatus.Text='marker = one-time lock onto the person, then follows that person (re-show marker to re-seed). Toggle ON for PREVIEW (no motion); tick DRIVE + ARM to walk.'; $followStatus.AutoSize=$false; $followStatus.Size='660,28'; $followStatus.Location='14,60'; Set-K1Label $followStatus 'muted'; $grpFollow.Controls.Add($followStatus)
 
-$ctrlLog=New-Object System.Windows.Forms.RichTextBox; $ctrlLog.ReadOnly=$true; $ctrlLog.Dock='Fill'; $ctrlLog.BackColor=$dark; $ctrlLog.ForeColor=[System.Drawing.Color]::Gainsboro; $ctrlLog.Font=$mono
-$ctrlLayout.Controls.Add($grpConn,0,0); $ctrlLayout.Controls.Add($grpCmd,0,1); $ctrlLayout.Controls.Add($grpFollow,0,2); $ctrlLayout.Controls.Add($ctrlLog,0,3)
+$ctrlLog=New-Object System.Windows.Forms.RichTextBox; $ctrlLog.ReadOnly=$true; $ctrlLog.Dock='Fill'; $ctrlLog.Font=$mono; Set-K1Log $ctrlLog
+$ctrlLayout.BackColor=$bg; $ctrlLayout.Controls.Add($grpConn,0,0); $ctrlLayout.Controls.Add($grpCmd,0,1); $ctrlLayout.Controls.Add($grpFollow,0,2); $ctrlLayout.Controls.Add($ctrlLog,0,3)
 $tabCtrl.Controls.Add($ctrlLayout)
 
 # ============================================================================
@@ -783,108 +905,89 @@ $filesLayout=New-Object System.Windows.Forms.TableLayoutPanel; $filesLayout.Dock
 [void]$filesLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,100)))
 
 # --- top bar: IP + Refresh + status ---------------------------------------
-$grpFilesTop=New-Object System.Windows.Forms.GroupBox; $grpFilesTop.Text='Robot file manifest'; $grpFilesTop.Dock='Fill'
-$lblIpF=New-Object System.Windows.Forms.Label; $lblIpF.Text='IP:'; $lblIpF.AutoSize=$true; $lblIpF.Location='10,26'; $grpFilesTop.Controls.Add($lblIpF)
-$ipFiles=New-Object System.Windows.Forms.TextBox; $ipFiles.Size='120,24'; $ipFiles.Location='34,23'; $ipFiles.Font=$mono; $ipFiles.Text=$(if($script:RobotIP){$script:RobotIP}else{$K1_DEFAULT_IP}); $grpFilesTop.Controls.Add($ipFiles)
-$refreshFilesBtn=New-Object System.Windows.Forms.Button; $refreshFilesBtn.Text='Refresh from robot'; $refreshFilesBtn.Size='150,30'; $refreshFilesBtn.Location='164,20'; $refreshFilesBtn.BackColor=$accent; $refreshFilesBtn.ForeColor='White'; $refreshFilesBtn.FlatStyle='Flat'; $refreshFilesBtn.Font=$fontBold; $grpFilesTop.Controls.Add($refreshFilesBtn)
-$filesStatus=New-Object System.Windows.Forms.Label; $filesStatus.Text='Click "Refresh from robot" to deploy + run tree_manifest.py and load the SDK layout.'; $filesStatus.AutoSize=$true; $filesStatus.MaximumSize='520,40'; $filesStatus.ForeColor=[System.Drawing.Color]::DimGray; $filesStatus.Location='326,24'; $grpFilesTop.Controls.Add($filesStatus)
+$grpFilesTop=New-Object System.Windows.Forms.GroupBox; $grpFilesTop.Text='Robot file manifest'; $grpFilesTop.Dock='Fill'; Set-K1Group $grpFilesTop
+$lblIpF=New-Object System.Windows.Forms.Label; $lblIpF.Text='IP:'; $lblIpF.AutoSize=$true; $lblIpF.Location='10,26'; Set-K1Label $lblIpF 'muted'; $grpFilesTop.Controls.Add($lblIpF)
+$ipFiles=New-Object System.Windows.Forms.TextBox; $ipFiles.Size='120,24'; $ipFiles.Location='34,23'; $ipFiles.Font=$mono; $ipFiles.Text=$(if($script:RobotIP){$script:RobotIP}else{$K1_DEFAULT_IP}); Set-K1Field $ipFiles; $grpFilesTop.Controls.Add($ipFiles)
+$refreshFilesBtn=New-Object System.Windows.Forms.Button; $refreshFilesBtn.Text='Refresh from robot'; $refreshFilesBtn.Size='150,30'; $refreshFilesBtn.Location='164,20'; Set-K1PrimaryButton $refreshFilesBtn; $grpFilesTop.Controls.Add($refreshFilesBtn)
+$filesStatus=New-Object System.Windows.Forms.Label; $filesStatus.Text='Click "Refresh from robot" to deploy + run tree_manifest.py and load the SDK layout.'; $filesStatus.AutoSize=$true; $filesStatus.MaximumSize='520,40'; $filesStatus.Location='326,24'; Set-K1Label $filesStatus 'muted'; $grpFilesTop.Controls.Add($filesStatus)
 
 # --- body: left TreeView | right (key-paths list over file preview) --------
-$filesSplit=New-Object System.Windows.Forms.SplitContainer; $filesSplit.Dock='Fill'; $filesSplit.Orientation='Vertical'; $filesSplit.SplitterWidth=6; $filesSplit.Panel1MinSize=180; $filesSplit.Panel2MinSize=220
+$filesSplit=New-Object System.Windows.Forms.SplitContainer; $filesSplit.Dock='Fill'; $filesSplit.Orientation='Vertical'; $filesSplit.SplitterWidth=6; $filesSplit.Panel1MinSize=180; $filesSplit.Panel2MinSize=220; $filesSplit.BackColor=$bg; $filesSplit.Panel1.BackColor=$bg; $filesSplit.Panel2.BackColor=$bg
 
 # left: SDK + /home/booster tree
-$grpTree=New-Object System.Windows.Forms.GroupBox; $grpTree.Text='SDK + /home/booster'; $grpTree.Dock='Fill'
-$filesTree=New-Object System.Windows.Forms.TreeView; $filesTree.Dock='Fill'; $filesTree.Font=$mono; $filesTree.HideSelection=$false; $filesTree.ShowLines=$true; $filesTree.PathSeparator='/'
+$grpTree=New-Object System.Windows.Forms.GroupBox; $grpTree.Text='SDK + /home/booster'; $grpTree.Dock='Fill'; Set-K1Group $grpTree
+$filesTree=New-Object System.Windows.Forms.TreeView; $filesTree.Dock='Fill'; $filesTree.Font=$mono; $filesTree.HideSelection=$false; $filesTree.ShowLines=$true; $filesTree.PathSeparator='/'; $filesTree.BackColor=$surface; $filesTree.ForeColor=$text; $filesTree.BorderStyle='None'
 $grpTree.Controls.Add($filesTree)
 $filesSplit.Panel1.Controls.Add($grpTree)
 
 # right: key-paths list (top) over file preview (bottom)
-$rightLayout=New-Object System.Windows.Forms.TableLayoutPanel; $rightLayout.Dock='Fill'; $rightLayout.ColumnCount=1; $rightLayout.RowCount=2
+$rightLayout=New-Object System.Windows.Forms.TableLayoutPanel; $rightLayout.Dock='Fill'; $rightLayout.ColumnCount=1; $rightLayout.RowCount=2; $rightLayout.BackColor=$bg
 [void]$rightLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,46)))
 [void]$rightLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,54)))
 
-$grpKeys=New-Object System.Windows.Forms.GroupBox; $grpKeys.Text='Key paths (from k1_paths.json)'; $grpKeys.Dock='Fill'
-$keysList=New-Object System.Windows.Forms.ListView; $keysList.View='Details'; $keysList.FullRowSelect=$true; $keysList.GridLines=$true; $keysList.MultiSelect=$false; $keysList.HideSelection=$false; $keysList.Dock='Fill'; $keysList.Font=$font
+$grpKeys=New-Object System.Windows.Forms.GroupBox; $grpKeys.Text='Key paths (from k1_paths.json)'; $grpKeys.Dock='Fill'; Set-K1Group $grpKeys
+$keysList=New-Object System.Windows.Forms.ListView; $keysList.View='Details'; $keysList.FullRowSelect=$true; $keysList.GridLines=$false; $keysList.MultiSelect=$false; $keysList.HideSelection=$false; $keysList.Dock='Fill'; $keysList.Font=$font; Set-K1List $keysList
 [void]$keysList.Columns.Add('Key',150); [void]$keysList.Columns.Add('Path',360); [void]$keysList.Columns.Add('Exists',70)
 $grpKeys.Controls.Add($keysList)
 
-$grpPreview=New-Object System.Windows.Forms.GroupBox; $grpPreview.Text='File preview (double-click a FILE in the tree)'; $grpPreview.Dock='Fill'
-$previewBox=New-Object System.Windows.Forms.RichTextBox; $previewBox.ReadOnly=$true; $previewBox.Dock='Fill'; $previewBox.BackColor=$dark; $previewBox.ForeColor=[System.Drawing.Color]::Gainsboro; $previewBox.Font=$mono; $previewBox.WordWrap=$false; $previewBox.DetectUrls=$false
+$grpPreview=New-Object System.Windows.Forms.GroupBox; $grpPreview.Text='File preview (double-click a FILE in the tree)'; $grpPreview.Dock='Fill'; Set-K1Group $grpPreview
+$previewBox=New-Object System.Windows.Forms.RichTextBox; $previewBox.ReadOnly=$true; $previewBox.Dock='Fill'; $previewBox.Font=$mono; $previewBox.WordWrap=$false; $previewBox.DetectUrls=$false; Set-K1Log $previewBox
 $grpPreview.Controls.Add($previewBox)
 
 $rightLayout.Controls.Add($grpKeys,0,0); $rightLayout.Controls.Add($grpPreview,0,1)
 $filesSplit.Panel2.Controls.Add($rightLayout)
 
-$filesLayout.Controls.Add($grpFilesTop,0,0); $filesLayout.Controls.Add($filesSplit,0,1)
+$filesLayout.BackColor=$bg; $filesLayout.Controls.Add($grpFilesTop,0,0); $filesLayout.Controls.Add($filesSplit,0,1)
 $tabFiles.Controls.Add($filesLayout)
 
 # ============================================================================
 #  TAB 6 - TRACKER  (cockpit for the marker-seeded markerless PERSON-follow)
+#  Hierarchy: Primary (Follow/DRIVE/ARM/STOP + IP/Distance/Speed)
+#             Avoidance (gap/scan/hit/escape + brakes/maps)
+#             Advanced (perception/gesture/voice/REID/rerun/controller)
+#             Cmd row (WAIT/RESUME/PARK/STATUS/FOLLOW + Open .rrd)
 # ============================================================================
-$trackLayout=New-Object System.Windows.Forms.TableLayoutPanel; $trackLayout.Dock='Fill'; $trackLayout.ColumnCount=1; $trackLayout.RowCount=4; $trackLayout.Padding='10,8,10,8'
-[void]$trackLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,226)))
+$trackLayout=New-Object System.Windows.Forms.TableLayoutPanel; $trackLayout.Dock='Fill'; $trackLayout.ColumnCount=1; $trackLayout.RowCount=4; $trackLayout.Padding='10,8,10,8'; $trackLayout.BackColor=$bg
+[void]$trackLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,292)))
 [void]$trackLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,100)))
 [void]$trackLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,54)))
-[void]$trackLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,118)))
+[void]$trackLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,110)))
 
-# --- top control row -------------------------------------------------------
-$grpTrackCtl=New-Object System.Windows.Forms.GroupBox; $grpTrackCtl.Text='Follow control (marker locks onto a person, then person-follows)'; $grpTrackCtl.Dock='Fill'
-$lblIpT=New-Object System.Windows.Forms.Label; $lblIpT.Text='IP:'; $lblIpT.AutoSize=$true; $lblIpT.Location='10,28'; $grpTrackCtl.Controls.Add($lblIpT)
-$ipTrack=New-Object System.Windows.Forms.TextBox; $ipTrack.Size='120,24'; $ipTrack.Location='34,25'; $ipTrack.Font=$mono; $ipTrack.Text=$(if($script:RobotIP){$script:RobotIP}else{$K1_DEFAULT_IP}); $grpTrackCtl.Controls.Add($ipTrack)
+# --- control panel (taller; no overlapping rows) ---------------------------
+$grpTrackCtl=New-Object System.Windows.Forms.GroupBox; $grpTrackCtl.Text='Tracker  ·  Primary / Avoidance / Advanced / Cmd'; $grpTrackCtl.Dock='Fill'; Set-K1Group $grpTrackCtl
+
+# === PRIMARY: Follow / DRIVE / ARM / STOP + IP + Distance + Speed ==========
+$lblPrimary=New-Object System.Windows.Forms.Label; $lblPrimary.Text='PRIMARY'; $lblPrimary.AutoSize=$true; $lblPrimary.Location='14,4'; Set-K1Label $lblPrimary 'section'; $grpTrackCtl.Controls.Add($lblPrimary)
+$trackToggle=New-Object System.Windows.Forms.CheckBox; $trackToggle.Appearance='Button'; $trackToggle.Text='Follow: OFF'; $trackToggle.TextAlign='MiddleCenter'; $trackToggle.Size='150,34'; $trackToggle.Location='14,22'; $trackToggle.FlatStyle='Flat'; $trackToggle.Font=$fontBold; $trackToggle.BackColor=$surface2; $trackToggle.ForeColor=$text; $grpTrackCtl.Controls.Add($trackToggle)
+$trackDriveChk=New-Object System.Windows.Forms.CheckBox; $trackDriveChk.Text='DRIVE (walk)'; $trackDriveChk.AutoSize=$true; $trackDriveChk.Location='178,30'; Set-K1Check $trackDriveChk 'danger'; $grpTrackCtl.Controls.Add($trackDriveChk)
+$trackArmChk=New-Object System.Windows.Forms.CheckBox; $trackArmChk.Text='ARM MOTION'; $trackArmChk.AutoSize=$true; $trackArmChk.Location='302,30'; Set-K1Check $trackArmChk 'danger'; $grpTrackCtl.Controls.Add($trackArmChk)
+$trackStopBtn=New-Object System.Windows.Forms.Button; $trackStopBtn.Text='STOP'; $trackStopBtn.Size='100,34'; $trackStopBtn.Location='434,22'; Set-K1DangerButton $trackStopBtn; $grpTrackCtl.Controls.Add($trackStopBtn)
+$trackMuteChk=New-Object System.Windows.Forms.CheckBox; $trackMuteChk.Text='mute lock sound'; $trackMuteChk.AutoSize=$true; $trackMuteChk.Location='554,30'; Set-K1Check $trackMuteChk; $trackMuteChk.ForeColor=$muted; $grpTrackCtl.Controls.Add($trackMuteChk)
+
+$lblIpT=New-Object System.Windows.Forms.Label; $lblIpT.Text='IP:'; $lblIpT.AutoSize=$true; $lblIpT.Location='14,68'; Set-K1Label $lblIpT 'muted'; $grpTrackCtl.Controls.Add($lblIpT)
+$ipTrack=New-Object System.Windows.Forms.TextBox; $ipTrack.Size='120,24'; $ipTrack.Location='40,64'; $ipTrack.Font=$mono; $ipTrack.Text=$(if($script:RobotIP){$script:RobotIP}else{$K1_DEFAULT_IP}); Set-K1Field $ipTrack; $grpTrackCtl.Controls.Add($ipTrack)
 
 # Distance / standoff slider (TrackBar ticks in 0.1 m: 6..30 -> 0.6..3.0 m, default 12 -> 1.2 m)
-$lblDistCap=New-Object System.Windows.Forms.Label; $lblDistCap.Text='Distance:'; $lblDistCap.AutoSize=$true; $lblDistCap.Location='168,28'; $grpTrackCtl.Controls.Add($lblDistCap)
-$distTrack=New-Object System.Windows.Forms.TrackBar; $distTrack.Minimum=6; $distTrack.Maximum=30; $distTrack.TickFrequency=2; $distTrack.SmallChange=1; $distTrack.LargeChange=2; $distTrack.Value=12; $distTrack.Size='150,40'; $distTrack.Location='232,20'; $grpTrackCtl.Controls.Add($distTrack)
-$lblDistVal=New-Object System.Windows.Forms.Label; $lblDistVal.Text='1.2 m'; $lblDistVal.AutoSize=$false; $lblDistVal.Size='52,20'; $lblDistVal.TextAlign='MiddleLeft'; $lblDistVal.Font=$fontBold; $lblDistVal.Location='386,28'; $grpTrackCtl.Controls.Add($lblDistVal)
+$lblDistCap=New-Object System.Windows.Forms.Label; $lblDistCap.Text='Distance:'; $lblDistCap.AutoSize=$true; $lblDistCap.Location='178,68'; Set-K1Label $lblDistCap 'muted'; $grpTrackCtl.Controls.Add($lblDistCap)
+$distTrack=New-Object System.Windows.Forms.TrackBar; $distTrack.Minimum=6; $distTrack.Maximum=30; $distTrack.TickFrequency=2; $distTrack.SmallChange=1; $distTrack.LargeChange=2; $distTrack.Value=12; $distTrack.Size='150,40'; $distTrack.Location='244,56'; $distTrack.BackColor=$panelBg; $grpTrackCtl.Controls.Add($distTrack)
+$lblDistVal=New-Object System.Windows.Forms.Label; $lblDistVal.Text='1.2 m'; $lblDistVal.AutoSize=$false; $lblDistVal.Size='52,20'; $lblDistVal.TextAlign='MiddleLeft'; $lblDistVal.Font=$fontBold; $lblDistVal.Location='398,68'; $lblDistVal.ForeColor=$text; $lblDistVal.BackColor=$panelBg; $grpTrackCtl.Controls.Add($lblDistVal)
 
 # Speed / vx-max slider (TrackBar ticks in 0.01 m/s: 5..30 -> 0.05..0.30 m/s, default 18 -> 0.18 m/s)
-$lblSpdCap=New-Object System.Windows.Forms.Label; $lblSpdCap.Text='Speed:'; $lblSpdCap.AutoSize=$true; $lblSpdCap.Location='448,28'; $grpTrackCtl.Controls.Add($lblSpdCap)
-$spdTrack=New-Object System.Windows.Forms.TrackBar; $spdTrack.Minimum=5; $spdTrack.Maximum=30; $spdTrack.TickFrequency=5; $spdTrack.SmallChange=1; $spdTrack.LargeChange=5; $spdTrack.Value=18; $spdTrack.Size='150,40'; $spdTrack.Location='498,20'; $grpTrackCtl.Controls.Add($spdTrack)
-$lblSpdVal=New-Object System.Windows.Forms.Label; $lblSpdVal.Text='0.18 m/s'; $lblSpdVal.AutoSize=$false; $lblSpdVal.Size='66,20'; $lblSpdVal.TextAlign='MiddleLeft'; $lblSpdVal.Font=$fontBold; $lblSpdVal.Location='652,28'; $grpTrackCtl.Controls.Add($lblSpdVal)
+$lblSpdCap=New-Object System.Windows.Forms.Label; $lblSpdCap.Text='Speed:'; $lblSpdCap.AutoSize=$true; $lblSpdCap.Location='460,68'; Set-K1Label $lblSpdCap 'muted'; $grpTrackCtl.Controls.Add($lblSpdCap)
+$spdTrack=New-Object System.Windows.Forms.TrackBar; $spdTrack.Minimum=5; $spdTrack.Maximum=30; $spdTrack.TickFrequency=5; $spdTrack.SmallChange=1; $spdTrack.LargeChange=5; $spdTrack.Value=18; $spdTrack.Size='150,40'; $spdTrack.Location='510,56'; $spdTrack.BackColor=$panelBg; $grpTrackCtl.Controls.Add($spdTrack)
+$lblSpdVal=New-Object System.Windows.Forms.Label; $lblSpdVal.Text='0.18 m/s'; $lblSpdVal.AutoSize=$false; $lblSpdVal.Size='66,20'; $lblSpdVal.TextAlign='MiddleLeft'; $lblSpdVal.Font=$fontBold; $lblSpdVal.Location='664,68'; $lblSpdVal.ForeColor=$text; $lblSpdVal.BackColor=$panelBg; $grpTrackCtl.Controls.Add($lblSpdVal)
 
-# Follow toggle (CheckBox styled as a button) + DRIVE + ARM + Stop
-$trackToggle=New-Object System.Windows.Forms.CheckBox; $trackToggle.Appearance='Button'; $trackToggle.Text='Follow: OFF'; $trackToggle.TextAlign='MiddleCenter'; $trackToggle.Size='150,34'; $trackToggle.Location='34,64'; $trackToggle.FlatStyle='Flat'; $trackToggle.Font=$fontBold; $grpTrackCtl.Controls.Add($trackToggle)
-$trackDriveChk=New-Object System.Windows.Forms.CheckBox; $trackDriveChk.Text='DRIVE (walk)'; $trackDriveChk.AutoSize=$true; $trackDriveChk.Location='196,72'; $trackDriveChk.ForeColor=$red; $trackDriveChk.Font=$fontBold; $grpTrackCtl.Controls.Add($trackDriveChk)
-$trackArmChk=New-Object System.Windows.Forms.CheckBox; $trackArmChk.Text='ARM MOTION'; $trackArmChk.AutoSize=$true; $trackArmChk.Location='320,72'; $trackArmChk.ForeColor=$red; $trackArmChk.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmChk)
-$trackStopBtn=New-Object System.Windows.Forms.Button; $trackStopBtn.Text='STOP'; $trackStopBtn.Size='100,34'; $trackStopBtn.Location='452,64'; $trackStopBtn.BackColor=$red; $trackStopBtn.ForeColor='White'; $trackStopBtn.FlatStyle='Flat'; $trackStopBtn.Font=$fontBold; $grpTrackCtl.Controls.Add($trackStopBtn)
-$trackMuteChk=New-Object System.Windows.Forms.CheckBox; $trackMuteChk.Text='mute lock sound'; $trackMuteChk.AutoSize=$true; $trackMuteChk.Location='572,72'; $trackMuteChk.ForeColor=[System.Drawing.Color]::DimGray; $grpTrackCtl.Controls.Add($trackMuteChk)
+# === AVOIDANCE =============================================================
+$lblAvoid=New-Object System.Windows.Forms.Label; $lblAvoid.Text='AVOIDANCE'; $lblAvoid.AutoSize=$true; $lblAvoid.Location='14,104'; Set-K1Label $lblAvoid 'section'; $grpTrackCtl.Controls.Add($lblAvoid)
 
-# --- 3rd row: perception backend + per-session feature toggles (the new follow-mode flags) ---
-$lblPercep=New-Object System.Windows.Forms.Label; $lblPercep.Text='Perception:'; $lblPercep.AutoSize=$true; $lblPercep.Location='10,112'; $grpTrackCtl.Controls.Add($lblPercep)
-# 'striped' removed from the operator-facing list: it is the documented lock-loser (degraded then lost the lock).
-# The node's --appearance striped path is left intact for a dev who passes it via the CLI (Get-TrackExtraArgs still
-# emits '--appearance striped' when $app -eq 'striped'). Items are now global,osnet -> osnet is index 1.
-$trackApp=New-Object System.Windows.Forms.ComboBox; $trackApp.DropDownStyle='DropDownList'; $trackApp.Size='92,24'; $trackApp.Location='88,108'; [void]$trackApp.Items.AddRange(@('global','osnet')); $trackApp.SelectedIndex=1; $grpTrackCtl.Controls.Add($trackApp)   # default OSNet (deep ReID; armed re-lock needs it)
-$trackCoast=New-Object System.Windows.Forms.CheckBox; $trackCoast.Text='Coast occlusions'; $trackCoast.AutoSize=$true; $trackCoast.Location='192,110'; $grpTrackCtl.Controls.Add($trackCoast)
-$trackReacq=New-Object System.Windows.Forms.CheckBox; $trackReacq.Text='Auto re-acq'; $trackReacq.AutoSize=$true; $trackReacq.Location='322,110'; $trackReacq.Checked=$true; $grpTrackCtl.Controls.Add($trackReacq)
-$trackFence=New-Object System.Windows.Forms.CheckBox; $trackFence.Text='Range fence'; $trackFence.AutoSize=$true; $trackFence.Location='416,110'; $grpTrackCtl.Controls.Add($trackFence)
-# OBSTACLE BRAKE (--obstacle-brake, OBSTACLE_LABELING_PLAN.md Phase 3). Depth forward-clearance
-# reflex: grades forward vx down from --obstacle-brake-start (1.5 m) to ZERO at --obstacle-brake-stop
-# (0.7 m). Percentile + aged-median (never a raw min -> a single depth glitch cannot false-brake),
-# IGNORES the followed operator (--obstacle-target-margin), yaw untouched, fail-to-stop with no depth.
-# Only ever REDUCES vx, so it cannot make the forward path less safe. DEFAULT ON: it was built
-# 2026-07-04 but never wired here, so every session before 2026-09-03 drove with NO obstacle braking.
-$trackObstacle=New-Object System.Windows.Forms.CheckBox; $trackObstacle.Text='Obstacle brake'; $trackObstacle.AutoSize=$true; $trackObstacle.Location='416,132'; $trackObstacle.ForeColor=$accent; $trackObstacle.Font=$fontBold; $trackObstacle.Checked=$true; $grpTrackCtl.Controls.Add($trackObstacle)
-# Plan A class-aware brake (--obstacle-class-brake). Geometry still triggers; COCO class may only
-# TIGHTEN the vx cap (never loosen, never class-only without depth). DEFAULT OFF until Batch-Label
-# tally on laptop runs looks sane (docs/PLAN_A_CLASS_AWARE_BRAKE.md). Requires Obstacle brake on.
-$trackClassBrake=New-Object System.Windows.Forms.CheckBox; $trackClassBrake.Text='Class brake'; $trackClassBrake.AutoSize=$true; $trackClassBrake.Location='416,154'; $trackClassBrake.Checked=$false; $grpTrackCtl.Controls.Add($trackClassBrake)
-
-# HEAD PROBE (--head-probe). ONE-SHOT startup calibration for the head, NOT a follow feature.
-# The firmware MODE-GATES RotateHead: it answers 400 (bad request) in kPrepare and is accepted only
-# in kWalking -- so the head cannot be checked on a parked robot, and the probe has to ride along
-# with a real session. It runs after kWalking is entered but BEFORE velocity is ungated, so the only
-# thing that can move is the head. Costs ~5 s of startup. Leave it on until HEAD-PROBE OK appears in
-# the log with the measured sign, then it can be switched off.
-$trackHeadProbe=New-Object System.Windows.Forms.CheckBox; $trackHeadProbe.Text='Head probe'; $trackHeadProbe.AutoSize=$true; $trackHeadProbe.Location='610,132'; $trackHeadProbe.ForeColor=$accent; $trackHeadProbe.Font=$fontBold; $trackHeadProbe.Checked=$true; $grpTrackCtl.Controls.Add($trackHeadProbe)
 # GAP STEER (stage 5): route AROUND a blocked corridor instead of only stopping for it.
 #   off   - shipped behaviour, brake only (default)
 #   audit - logs SECTOR L/C/R + the bias it WOULD apply, commands nothing. Run this FIRST.
 #   on    - actually steers: yaw bias toward a measured-clear side. Forward speed still sits
 #           entirely under the obstacle brake, so it turns toward the gap with vx capped and
 #           forward resumes by itself once the rotation puts the gap in the centre corridor.
-$lblGap=New-Object System.Windows.Forms.Label; $lblGap.Text='Gap steer'; $lblGap.AutoSize=$true; $lblGap.Location='716,112'; $grpTrackCtl.Controls.Add($lblGap)
-$trackGap=New-Object System.Windows.Forms.ComboBox; $trackGap.DropDownStyle='DropDownList'; $trackGap.Size='74,24'; $trackGap.Location='778,108'; [void]$trackGap.Items.AddRange(@('off','audit','on')); $trackGap.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackGap)
+$lblGap=New-Object System.Windows.Forms.Label; $lblGap.Text='Gap steer'; $lblGap.AutoSize=$true; $lblGap.Location='14,128'; Set-K1Label $lblGap 'muted'; $grpTrackCtl.Controls.Add($lblGap)
+$trackGap=New-Object System.Windows.Forms.ComboBox; $trackGap.DropDownStyle='DropDownList'; $trackGap.Size='74,24'; $trackGap.Location='86,124'; Set-K1Combo $trackGap; [void]$trackGap.Items.AddRange(@('off','audit','on')); $trackGap.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackGap)
 # HEAD SCAN (--head-scan). The freeze fix: when the brake has fully stopped forward motion but the
 # operator is still beyond the standoff, the robot sweeps its head across the room, samples the
 # depth corridor at each position, re-centres, and picks the freest heading. An obstacle at
@@ -893,12 +996,12 @@ $trackGap=New-Object System.Windows.Forms.ComboBox; $trackGap.DropDownStyle='Dro
 # YAW ONLY: forward speed stays under the brake, so a wrong result turns the robot on the spot.
 # Start on 'audit' -- it performs the sweep and logs the HEAD-SCAN map without steering, which is
 # also how the head yaw -> left/right convention gets confirmed from the cx-evidence field.
-$lblScan=New-Object System.Windows.Forms.Label; $lblScan.Text='Head scan'; $lblScan.AutoSize=$true; $lblScan.Location='716,134'; $grpTrackCtl.Controls.Add($lblScan)
+$lblScan=New-Object System.Windows.Forms.Label; $lblScan.Text='Head scan'; $lblScan.AutoSize=$true; $lblScan.Location='172,128'; Set-K1Label $lblScan 'muted'; $grpTrackCtl.Controls.Add($lblScan)
 # 'patient' == on, but the way ahead must stay blocked 2 s before it sweeps. The scan otherwise
 # starts on the FIRST blocked frame, and stops flicker (CLEARANCE, then blob=0px clear, then
 # CLEARANCE), so it swept constantly and mostly aborted mid-sweep -- 16 starts in one 300 s run,
 # most ending "ABORT orphaned". A real obstacle holds the block; flicker does not.
-$trackScan=New-Object System.Windows.Forms.ComboBox; $trackScan.DropDownStyle='DropDownList'; $trackScan.Size='74,24'; $trackScan.Location='778,130'; [void]$trackScan.Items.AddRange(@('off','audit','on','patient')); $trackScan.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackScan)
+$trackScan=New-Object System.Windows.Forms.ComboBox; $trackScan.DropDownStyle='DropDownList'; $trackScan.Size='74,24'; $trackScan.Location='244,124'; Set-K1Combo $trackScan; [void]$trackScan.Items.AddRange(@('off','audit','on','patient')); $trackScan.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackScan)
 
 # HIT BOX (--corridor-mode footprint). Selects depth returns by the robot's OWN physical extent
 # instead of a fixed image fraction. Fixes three measured faults of the fraction corridor:
@@ -908,8 +1011,8 @@ $trackScan=New-Object System.Windows.Forms.ComboBox; $trackScan.DropDownStyle='D
 #   * it is absurdly over-wide at range (5.09 m at 3.5 m), braking for furniture off the shoulder.
 # Also excludes the floor by GEOMETRY, so the band cap that caused the blindness is not needed.
 # Dimensions come from the robot's own URDF: 0.457 m lateral, 0.192 m deep, hands at 0.67 m.
-$lblHit=New-Object System.Windows.Forms.Label; $lblHit.Text='Hit box'; $lblHit.AutoSize=$true; $lblHit.Location='716,156'; $grpTrackCtl.Controls.Add($lblHit)
-$trackHitBox=New-Object System.Windows.Forms.ComboBox; $trackHitBox.DropDownStyle='DropDownList'; $trackHitBox.Size='90,24'; $trackHitBox.Location='778,152'; [void]$trackHitBox.Items.AddRange(@('frac','footprint')); $trackHitBox.SelectedIndex=1; $grpTrackCtl.Controls.Add($trackHitBox)   # DEFAULT footprint: required for Local map + Map assist to engage (map-assist is footprint-gated)
+$lblHit=New-Object System.Windows.Forms.Label; $lblHit.Text='Hit box'; $lblHit.AutoSize=$true; $lblHit.Location='332,128'; Set-K1Label $lblHit 'muted'; $grpTrackCtl.Controls.Add($lblHit)
+$trackHitBox=New-Object System.Windows.Forms.ComboBox; $trackHitBox.DropDownStyle='DropDownList'; $trackHitBox.Size='90,24'; $trackHitBox.Location='388,124'; Set-K1Combo $trackHitBox; [void]$trackHitBox.Items.AddRange(@('frac','footprint')); $trackHitBox.SelectedIndex=1; $grpTrackCtl.Controls.Add($trackHitBox)   # DEFAULT footprint: required for Local map + Map assist to engage (map-assist is footprint-gated)
 
 # ESCAPE (--body-scan / --reverse-when-stuck). What to do when the brake has stopped the robot and
 # NEITHER gap steer nor the head scan can find a way past. That is not stubbornness: from 0.35 m off
@@ -920,8 +1023,21 @@ $trackHitBox=New-Object System.Windows.Forms.ComboBox; $trackHitBox.DropDownStyl
 #             gap. Rotating is NOT blind -- the robot sees everything it turns past.
 #   spin+back = also allow a short bounded REVERSE as a last resort when a turn finds nothing. That
 #             one IS blind (no rear sensor), so it only ever retraces ground just walked forward.
-$lblEsc=New-Object System.Windows.Forms.Label; $lblEsc.Text='Escape'; $lblEsc.AutoSize=$true; $lblEsc.Location='716,178'; $grpTrackCtl.Controls.Add($lblEsc)
-$trackEscape=New-Object System.Windows.Forms.ComboBox; $trackEscape.DropDownStyle='DropDownList'; $trackEscape.Size='90,24'; $trackEscape.Location='778,174'; [void]$trackEscape.Items.AddRange(@('off','spin','spin+back')); $trackEscape.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackEscape)
+$lblEsc=New-Object System.Windows.Forms.Label; $lblEsc.Text='Escape'; $lblEsc.AutoSize=$true; $lblEsc.Location='492,128'; Set-K1Label $lblEsc 'muted'; $grpTrackCtl.Controls.Add($lblEsc)
+$trackEscape=New-Object System.Windows.Forms.ComboBox; $trackEscape.DropDownStyle='DropDownList'; $trackEscape.Size='90,24'; $trackEscape.Location='542,124'; Set-K1Combo $trackEscape; [void]$trackEscape.Items.AddRange(@('off','spin','spin+back')); $trackEscape.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackEscape)
+
+# OBSTACLE BRAKE (--obstacle-brake, OBSTACLE_LABELING_PLAN.md Phase 3). Depth forward-clearance
+# reflex: grades forward vx down from --obstacle-brake-start (1.5 m) to ZERO at --obstacle-brake-stop
+# (0.7 m). Percentile + aged-median (never a raw min -> a single depth glitch cannot false-brake),
+# IGNORES the followed operator (--obstacle-target-margin), yaw untouched, fail-to-stop with no depth.
+# Only ever REDUCES vx, so it cannot make the forward path less safe. DEFAULT ON: it was built
+# 2026-07-04 but never wired here, so every session before 2026-09-03 drove with NO obstacle braking.
+$trackObstacle=New-Object System.Windows.Forms.CheckBox; $trackObstacle.Text='Obstacle brake'; $trackObstacle.AutoSize=$true; $trackObstacle.Location='652,126'; Set-K1Check $trackObstacle 'accent'; $trackObstacle.Checked=$true; $grpTrackCtl.Controls.Add($trackObstacle)
+# Plan A class-aware brake (--obstacle-class-brake). Geometry still triggers; COCO class may only
+# TIGHTEN the vx cap (never loosen, never class-only without depth). DEFAULT OFF until Batch-Label
+# tally on laptop runs looks sane (docs/PLAN_A_CLASS_AWARE_BRAKE.md). Requires Obstacle brake on.
+$trackClassBrake=New-Object System.Windows.Forms.CheckBox; $trackClassBrake.Text='Class brake'; $trackClassBrake.AutoSize=$true; $trackClassBrake.Location='792,126'; Set-K1Check $trackClassBrake; $trackClassBrake.Checked=$false; $grpTrackCtl.Controls.Add($trackClassBrake)
+
 # FLOOR REJECT (--ground-reject). The hit box computes a pixel's height assuming a LEVEL camera;
 # the real pitch is ~10 deg, and the resulting z*sin(pitch) error scales with RANGE, so the floor
 # plane tilts up into the height window and open floor reads as an obstacle at 0.43-0.80 m with vx
@@ -934,28 +1050,43 @@ $trackEscape=New-Object System.Windows.Forms.ComboBox; $trackEscape.DropDownStyl
 # plane, so this is the only control on this page that can HIDE a real obstacle. It is gated on a
 # large blob so ambiguous ones keep braking. Turn it on, then watch the log for GROUND-REJECT lines
 # and check each one was really floor.
-# PLACEMENT: the group's row is RowStyles Absolute 226, so anything past y~190 renders BELOW the
-# visible client area. The first version of this control sat at y=200 and was invisible -- the
-# control existed, the flag was wired, and there was simply no way to reach it. y=72 is the button
-# row, empty right of x~700.
-$trackFloor=New-Object System.Windows.Forms.CheckBox; $trackFloor.Text='Floor reject'; $trackFloor.AutoSize=$true; $trackFloor.Location='716,72'; $trackFloor.ForeColor=$accent; $trackFloor.Font=$fontBold; $grpTrackCtl.Controls.Add($trackFloor)
+$trackFloor=New-Object System.Windows.Forms.CheckBox; $trackFloor.Text='Floor reject'; $trackFloor.AutoSize=$true; $trackFloor.Location='14,154'; Set-K1Check $trackFloor 'accent'; $grpTrackCtl.Controls.Add($trackFloor)
 # LOCAL MAP (--localmap): a short-horizon occupancy memory from the robot's OWN depth + odometry, so
 # it remembers an obstacle after turning away from it instead of forgetting it (obstacle_memory holds
 # ONE, wiped past a 25 deg turn). Only ever REDUCES clearance -- it can brake for something the live
 # view has lost, never release the brake for something it can see. Needs --odom-topic (added below).
 # The three 2026-09-05 audit defects (blind-frame release, cell-key sign, operator-wake writes) are
 # fixed and gated. Default OFF; footprint hit box only (its height model is what places cells).
-$trackLocalMap=New-Object System.Windows.Forms.CheckBox; $trackLocalMap.Text='Local map'; $trackLocalMap.AutoSize=$true; $trackLocalMap.Location='830,72'; $trackLocalMap.ForeColor=$accent; $trackLocalMap.Font=$fontBold; $trackLocalMap.Checked=$true; $grpTrackCtl.Controls.Add($trackLocalMap)
+$trackLocalMap=New-Object System.Windows.Forms.CheckBox; $trackLocalMap.Text='Local map'; $trackLocalMap.AutoSize=$true; $trackLocalMap.Location='128,154'; Set-K1Check $trackLocalMap 'accent'; $trackLocalMap.Checked=$true; $grpTrackCtl.Controls.Add($trackLocalMap)
 # MAP ASSIST (--map-assist): the pre-built Aurora 3D map REINFORCES a live obstacle the local
 # avoidance already sees at the same range; a map obstacle the live view does not confirm is
 # discarded, and it never releases the brake. Pose comes from the robot's OWN odometry, not the
 # Aurora. Assistive, not primary. Footprint hit box only; default OFF, byte-identical when off.
 # (36bf74a had made it ON by default. With the Aurora retired nothing publishes /aurora_odom, so every
 # DRIVE from a freshly started app waited 30 s for that pose and DRIVE-ABORTed -- 2026-09-10 readiness.)
-$trackMapAssist=New-Object System.Windows.Forms.CheckBox; $trackMapAssist.Text='Map assist'; $trackMapAssist.AutoSize=$true; $trackMapAssist.Location='924,72'; $trackMapAssist.ForeColor=$accent; $trackMapAssist.Font=$fontBold; $trackMapAssist.Checked=$false; $grpTrackCtl.Controls.Add($trackMapAssist)
+$trackMapAssist=New-Object System.Windows.Forms.CheckBox; $trackMapAssist.Text='Map assist'; $trackMapAssist.AutoSize=$true; $trackMapAssist.Location='228,154'; Set-K1Check $trackMapAssist 'accent'; $trackMapAssist.Checked=$false; $grpTrackCtl.Controls.Add($trackMapAssist)
+# HEAD PROBE (--head-probe). ONE-SHOT startup calibration for the head, NOT a follow feature.
+# The firmware MODE-GATES RotateHead: it answers 400 (bad request) in kPrepare and is accepted only
+# in kWalking -- so the head cannot be checked on a parked robot, and the probe has to ride along
+# with a real session. It runs after kWalking is entered but BEFORE velocity is ungated, so the only
+# thing that can move is the head. Costs ~5 s of startup. Leave it on until HEAD-PROBE OK appears in
+# the log with the measured sign, then it can be switched off.
+$trackHeadProbe=New-Object System.Windows.Forms.CheckBox; $trackHeadProbe.Text='Head probe'; $trackHeadProbe.AutoSize=$true; $trackHeadProbe.Location='336,154'; Set-K1Check $trackHeadProbe 'accent'; $trackHeadProbe.Checked=$true; $grpTrackCtl.Controls.Add($trackHeadProbe)
+
+# === ADVANCED ==============================================================
+$lblAdv=New-Object System.Windows.Forms.Label; $lblAdv.Text='ADVANCED'; $lblAdv.AutoSize=$true; $lblAdv.Location='14,186'; Set-K1Label $lblAdv 'section'; $grpTrackCtl.Controls.Add($lblAdv)
+
+$lblPercep=New-Object System.Windows.Forms.Label; $lblPercep.Text='Perception:'; $lblPercep.AutoSize=$true; $lblPercep.Location='110,186'; Set-K1Label $lblPercep 'muted'; $grpTrackCtl.Controls.Add($lblPercep)
+# 'striped' removed from the operator-facing list: it is the documented lock-loser (degraded then lost the lock).
+# The node's --appearance striped path is left intact for a dev who passes it via the CLI (Get-TrackExtraArgs still
+# emits '--appearance striped' when $app -eq 'striped'). Items are now global,osnet -> osnet is index 1.
+$trackApp=New-Object System.Windows.Forms.ComboBox; $trackApp.DropDownStyle='DropDownList'; $trackApp.Size='92,24'; $trackApp.Location='188,182'; Set-K1Combo $trackApp; [void]$trackApp.Items.AddRange(@('global','osnet')); $trackApp.SelectedIndex=1; $grpTrackCtl.Controls.Add($trackApp)   # default OSNet (deep ReID; armed re-lock needs it)
+$trackCoast=New-Object System.Windows.Forms.CheckBox; $trackCoast.Text='Coast occlusions'; $trackCoast.AutoSize=$true; $trackCoast.Location='292,184'; Set-K1Check $trackCoast; $grpTrackCtl.Controls.Add($trackCoast)
+$trackReacq=New-Object System.Windows.Forms.CheckBox; $trackReacq.Text='Auto re-acq'; $trackReacq.AutoSize=$true; $trackReacq.Location='430,184'; Set-K1Check $trackReacq; $trackReacq.Checked=$true; $grpTrackCtl.Controls.Add($trackReacq)
+$trackFence=New-Object System.Windows.Forms.CheckBox; $trackFence.Text='Range fence'; $trackFence.AutoSize=$true; $trackFence.Location='538,184'; Set-K1Check $trackFence; $grpTrackCtl.Controls.Add($trackFence)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
-$trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
+$trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='646,184'; Set-K1Check $trackArmReloc 'danger'; $grpTrackCtl.Controls.Add($trackArmReloc)
 # Deadman HB (P2 #12): passes --require-heartbeat to the node (which also env-arms the bridge's own
 # K1_REQUIRE_HB watchdog) and starts the app-side heartbeat relay. The remote loop touches the hb
 # file ONLY on bytes RECEIVED from this app, so mtime freshness == end-to-end connectivity: WiFi
@@ -964,22 +1095,22 @@ $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Ar
 # so an unchecked box = guaranteed launch abort, not the old silent-degrade. Safe flag is the
 # default; untick only for a tethered bench run WITH --allow-untethered-unsafe intent.
 # One pillar of the untethered gate (UNTETHERED_FOLLOW.md).
-$trackHbChk=New-Object System.Windows.Forms.CheckBox; $trackHbChk.Text='Deadman HB'; $trackHbChk.AutoSize=$true; $trackHbChk.Location='610,110'; $trackHbChk.ForeColor=$red; $trackHbChk.Font=$fontBold; $trackHbChk.Checked=$true; $grpTrackCtl.Controls.Add($trackHbChk)
+$trackHbChk=New-Object System.Windows.Forms.CheckBox; $trackHbChk.Text='Deadman HB'; $trackHbChk.AutoSize=$true; $trackHbChk.Location='758,184'; Set-K1Check $trackHbChk 'danger'; $trackHbChk.Checked=$true; $grpTrackCtl.Controls.Add($trackHbChk)
 
 # --- Acquisition + command-surface toggles (LAUNCH-time for gesture/A-B; runtime for voice) ---
 # Gesture lock = --lock-trigger gesture (raised hand seeds instead of the marker). A/B = --lock-trigger
 # both (ArUco still drives, gesture audits -> GBIND data to retire ArUco). Voice = System.Speech keyword
 # recognizer that maps spoken words to the SAME command enum the Cmd buttons send.
-$chkGesture=New-Object System.Windows.Forms.CheckBox; $chkGesture.Text='Gesture lock'; $chkGesture.AutoSize=$true; $chkGesture.Location='10,154'; $chkGesture.ForeColor=$accent; $chkGesture.Font=$fontBold; $chkGesture.Checked=$true; $grpTrackCtl.Controls.Add($chkGesture)   # DEFAULT ON (2026-07-05, user request): gesture is the default lock trigger; UNTICK for the (more reliable) ArUco marker. Raise a hand DURING SEARCH to seed.
-$chkAB=New-Object System.Windows.Forms.CheckBox; $chkAB.Text='A/B (compare)'; $chkAB.AutoSize=$true; $chkAB.Location='120,154'; $grpTrackCtl.Controls.Add($chkAB)
-$chkVoice=New-Object System.Windows.Forms.CheckBox; $chkVoice.Text='Voice cmds'; $chkVoice.AutoSize=$true; $chkVoice.Location='240,154'; $chkVoice.ForeColor=$accent; $chkVoice.Font=$fontBold; $chkVoice.Enabled=$false; $grpTrackCtl.Controls.Add($chkVoice)
-$voiceStatus=New-Object System.Windows.Forms.Label; $voiceStatus.Text='Voice: off'; $voiceStatus.AutoSize=$true; $voiceStatus.Location='340,156'; $voiceStatus.ForeColor=[System.Drawing.Color]::DimGray; $grpTrackCtl.Controls.Add($voiceStatus)
+$chkGesture=New-Object System.Windows.Forms.CheckBox; $chkGesture.Text='Gesture lock'; $chkGesture.AutoSize=$true; $chkGesture.Location='14,216'; Set-K1Check $chkGesture 'accent'; $chkGesture.Checked=$true; $grpTrackCtl.Controls.Add($chkGesture)   # DEFAULT ON (2026-07-05, user request): gesture is the default lock trigger; UNTICK for the (more reliable) ArUco marker. Raise a hand DURING SEARCH to seed.
+$chkAB=New-Object System.Windows.Forms.CheckBox; $chkAB.Text='A/B (compare)'; $chkAB.AutoSize=$true; $chkAB.Location='134,216'; Set-K1Check $chkAB; $grpTrackCtl.Controls.Add($chkAB)
+$chkVoice=New-Object System.Windows.Forms.CheckBox; $chkVoice.Text='Voice cmds'; $chkVoice.AutoSize=$true; $chkVoice.Location='254,216'; Set-K1Check $chkVoice 'accent'; $chkVoice.Enabled=$false; $grpTrackCtl.Controls.Add($chkVoice)
+$voiceStatus=New-Object System.Windows.Forms.Label; $voiceStatus.Text='Voice: off'; $voiceStatus.AutoSize=$true; $voiceStatus.Location='354,218'; Set-K1Label $voiceStatus 'muted'; $grpTrackCtl.Controls.Add($voiceStatus)
 # --- persistent ReID-health badge (parsed from the node's REID-ENGINE ok/FAILED + REID-DEGRADED stderr) ---
 # OSNet(TRT)/OSNet(CUDA)=green, CPU-EP=amber, HIST fallback / DEGRADED=red, '--'=idle. Set by Update-ReidBadge.
-$reidBadge=New-Object System.Windows.Forms.Label; $reidBadge.Text='REID: --'; $reidBadge.AutoSize=$false; $reidBadge.Size='168,22'; $reidBadge.TextAlign='MiddleCenter'; $reidBadge.Location='470,155'; $reidBadge.ForeColor='White'; $reidBadge.BackColor=[System.Drawing.Color]::Gray; $reidBadge.Font=$fontBold; $reidBadge.BorderStyle='FixedSingle'; $grpTrackCtl.Controls.Add($reidBadge)
+$reidBadge=New-Object System.Windows.Forms.Label; $reidBadge.Text='REID: --'; $reidBadge.AutoSize=$false; $reidBadge.Size='168,22'; $reidBadge.TextAlign='MiddleCenter'; $reidBadge.Location='448,214'; $reidBadge.ForeColor='White'; $reidBadge.BackColor=$chipBg; $reidBadge.Font=$fontBold; $reidBadge.BorderStyle='FixedSingle'; $grpTrackCtl.Controls.Add($reidBadge)
 # Rerun (rerun.io) recording toggle -> --rerun (Phase 3). Default OFF and byte-identical to today
 # when off. Records a scrubbable .rrd on the robot; pull+open it with the 'Open .rrd' button below.
-$trackRerun=New-Object System.Windows.Forms.CheckBox; $trackRerun.Text='Rerun'; $trackRerun.AutoSize=$true; $trackRerun.Location='645,156'; $trackRerun.ForeColor=$accent; $trackRerun.Font=$fontBold; $grpTrackCtl.Controls.Add($trackRerun)
+$trackRerun=New-Object System.Windows.Forms.CheckBox; $trackRerun.Text='Rerun'; $trackRerun.AutoSize=$true; $trackRerun.Location='628,216'; Set-K1Check $trackRerun 'accent'; $grpTrackCtl.Controls.Add($trackRerun)
 # CONTROLLER RUN (2026-09-10 operator request): collect a full data bundle while driving the robot
 # MANUALLY on the Booster gamepad, with no autonomous following at all.
 #
@@ -996,7 +1127,7 @@ $trackRerun=New-Object System.Windows.Forms.CheckBox; $trackRerun.Text='Rerun'; 
 #
 # SAFETY: this OVERRIDES the drive button (see the $mode line at launch). Ticked, the follow cannot be
 # commanded to drive under any circumstance, which is what makes it safe to walk the robot by hand.
-$trackCtrlRun=New-Object System.Windows.Forms.CheckBox; $trackCtrlRun.Text='Controller run (no follow)'; $trackCtrlRun.AutoSize=$true; $trackCtrlRun.Location='645,176'; $trackCtrlRun.ForeColor=$amber; $trackCtrlRun.Font=$fontBold; $grpTrackCtl.Controls.Add($trackCtrlRun)
+$trackCtrlRun=New-Object System.Windows.Forms.CheckBox; $trackCtrlRun.Text='Controller run (no follow)'; $trackCtrlRun.AutoSize=$true; $trackCtrlRun.Location='710,216'; Set-K1Check $trackCtrlRun 'caution'; $grpTrackCtl.Controls.Add($trackCtrlRun)
 $trackCtrlRun.Add_CheckedChanged({
     if($trackCtrlRun.Checked){
         $trackRerun.Checked = $true    # the recording bundle IS the point of this mode
@@ -1009,15 +1140,16 @@ $chkGesture.Add_CheckedChanged({ if($chkGesture.Checked -and $chkAB.Checked){ $c
 $chkAB.Add_CheckedChanged({ if($chkAB.Checked -and $chkGesture.Checked){ $chkGesture.Checked=$false } })
 $chkVoice.Add_CheckedChanged({ if($chkVoice.Checked){ Start-Voice } else { Stop-Voice } })
 
-# --- Tier-1 command row (watched-file channel /tmp/k1_cmd; enabled ONLY while a follow session runs).
+# === CMD ROW ===============================================================
+# Tier-1 command row (watched-file channel /tmp/k1_cmd; enabled ONLY while a follow session runs).
 # De-escalating WAIT/PARK/STATUS go immediately; RESUME/FOLLOW carry the per-command ARM credential
 # under DRIVE (ARM MOTION + a typed confirm). The Ctrl-C STOP button stays the supreme deadman.
-$cmdLbl=New-Object System.Windows.Forms.Label; $cmdLbl.Text='Cmd:'; $cmdLbl.AutoSize=$true; $cmdLbl.Location='10,192'; $grpTrackCtl.Controls.Add($cmdLbl)
-$btnWait=New-Object System.Windows.Forms.Button; $btnWait.Text='WAIT'; $btnWait.Size='58,28'; $btnWait.Location='48,186'; $btnWait.FlatStyle='Flat'; $btnWait.Enabled=$false; $grpTrackCtl.Controls.Add($btnWait)
-$btnResume=New-Object System.Windows.Forms.Button; $btnResume.Text='RESUME'; $btnResume.Size='70,28'; $btnResume.Location='112,186'; $btnResume.FlatStyle='Flat'; $btnResume.Enabled=$false; $grpTrackCtl.Controls.Add($btnResume)
-$btnPark=New-Object System.Windows.Forms.Button; $btnPark.Text='PARK'; $btnPark.Size='58,28'; $btnPark.Location='188,186'; $btnPark.FlatStyle='Flat'; $btnPark.Enabled=$false; $grpTrackCtl.Controls.Add($btnPark)
-$btnStatus=New-Object System.Windows.Forms.Button; $btnStatus.Text='STATUS'; $btnStatus.Size='66,28'; $btnStatus.Location='252,186'; $btnStatus.FlatStyle='Flat'; $btnStatus.Enabled=$false; $grpTrackCtl.Controls.Add($btnStatus)
-$btnFollowCmd=New-Object System.Windows.Forms.Button; $btnFollowCmd.Text='FOLLOW'; $btnFollowCmd.Size='66,28'; $btnFollowCmd.Location='324,186'; $btnFollowCmd.FlatStyle='Flat'; $btnFollowCmd.Enabled=$false; $grpTrackCtl.Controls.Add($btnFollowCmd)
+$cmdLbl=New-Object System.Windows.Forms.Label; $cmdLbl.Text='Cmd:'; $cmdLbl.AutoSize=$true; $cmdLbl.Location='14,254'; Set-K1Label $cmdLbl 'muted'; $grpTrackCtl.Controls.Add($cmdLbl)
+$btnWait=New-Object System.Windows.Forms.Button; $btnWait.Text='WAIT'; $btnWait.Size='64,28'; $btnWait.Location='52,248'; Set-K1GhostButton $btnWait; $btnWait.Enabled=$false; $grpTrackCtl.Controls.Add($btnWait)
+$btnResume=New-Object System.Windows.Forms.Button; $btnResume.Text='RESUME'; $btnResume.Size='76,28'; $btnResume.Location='122,248'; Set-K1GhostButton $btnResume; $btnResume.Enabled=$false; $grpTrackCtl.Controls.Add($btnResume)
+$btnPark=New-Object System.Windows.Forms.Button; $btnPark.Text='PARK'; $btnPark.Size='64,28'; $btnPark.Location='204,248'; Set-K1GhostButton $btnPark; $btnPark.Enabled=$false; $grpTrackCtl.Controls.Add($btnPark)
+$btnStatus=New-Object System.Windows.Forms.Button; $btnStatus.Text='STATUS'; $btnStatus.Size='72,28'; $btnStatus.Location='274,248'; Set-K1GhostButton $btnStatus; $btnStatus.Enabled=$false; $grpTrackCtl.Controls.Add($btnStatus)
+$btnFollowCmd=New-Object System.Windows.Forms.Button; $btnFollowCmd.Text='FOLLOW'; $btnFollowCmd.Size='72,28'; $btnFollowCmd.Location='352,248'; Set-K1GhostButton $btnFollowCmd; $btnFollowCmd.Enabled=$false; $grpTrackCtl.Controls.Add($btnFollowCmd)
 $btnWait.Add_Click({ Send-FollowCmd 'HOLD' })
 $btnResume.Add_Click({ Send-FollowCmd 'RESUME' })
 $btnPark.Add_Click({ Send-FollowCmd 'PARK' })
@@ -1025,7 +1157,8 @@ $btnStatus.Add_Click({ Send-FollowCmd 'STATUS' })
 $btnFollowCmd.Add_Click({ Send-FollowCmd 'FOLLOW' })
 # Rerun (Phase 3): pull the newest .rrd off the robot and open it in the laptop viewer. Always
 # enabled (unlike the session-only Cmd buttons) -- you scrub AFTER a run. No-op-safe if none exists.
-$btnRrd=New-Object System.Windows.Forms.Button; $btnRrd.Text='Open .rrd'; $btnRrd.Size='110,28'; $btnRrd.Location='598,186'; $btnRrd.FlatStyle='Flat'; $btnRrd.ForeColor=$accent; $grpTrackCtl.Controls.Add($btnRrd)
+# Placed clear of Controller run / avoidance combos (was overlapping "Open .rrd" on the dense layout).
+$btnRrd=New-Object System.Windows.Forms.Button; $btnRrd.Text='Open .rrd'; $btnRrd.Size='110,28'; $btnRrd.Location='440,248'; Set-K1GhostButton $btnRrd; $btnRrd.ForeColor=$accent; $grpTrackCtl.Controls.Add($btnRrd)
 $btnRrd.Add_Click({
     $ip=$ipTrack.Text.Trim(); if(-not $ip){ Add-LogTrack 'Enter the robot IP first.' $amber; return }
     $script:RobotIP=$ip
@@ -1039,33 +1172,224 @@ $btnRrd.Add_Click({
 })
 
 # --- big annotated video --------------------------------------------------
-$trackPic=New-Object System.Windows.Forms.PictureBox; $trackPic.Dock='Fill'; $trackPic.BackColor=[System.Drawing.Color]::Black; $trackPic.SizeMode='Zoom'
+$trackPic=New-Object System.Windows.Forms.PictureBox; $trackPic.Dock='Fill'; $trackPic.BackColor=$bg; $trackPic.SizeMode='Zoom'
 
 # --- big state badge ------------------------------------------------------
-$trackBadge=New-Object System.Windows.Forms.Label; $trackBadge.Text='IDLE'; $trackBadge.Dock='Fill'; $trackBadge.TextAlign='MiddleCenter'; $trackBadge.ForeColor='White'; $trackBadge.BackColor=[System.Drawing.Color]::Gray; $trackBadge.Font=(New-Object System.Drawing.Font('Segoe UI',16,[System.Drawing.FontStyle]::Bold))
+$trackBadge=New-Object System.Windows.Forms.Label; $trackBadge.Text='IDLE'; $trackBadge.Dock='Fill'; $trackBadge.TextAlign='MiddleCenter'; $trackBadge.ForeColor='White'; $trackBadge.BackColor=$chipBg; $trackBadge.Font=$fontHero
 
 # --- small status-transition log ------------------------------------------
-$trackLog=New-Object System.Windows.Forms.RichTextBox; $trackLog.ReadOnly=$true; $trackLog.Dock='Fill'; $trackLog.BackColor=$dark; $trackLog.ForeColor=[System.Drawing.Color]::Gainsboro; $trackLog.Font=$mono
+$trackLog=New-Object System.Windows.Forms.RichTextBox; $trackLog.ReadOnly=$true; $trackLog.Dock='Fill'; $trackLog.Font=$mono; Set-K1Log $trackLog
 
 $trackLayout.Controls.Add($grpTrackCtl,0,0); $trackLayout.Controls.Add($trackPic,0,1); $trackLayout.Controls.Add($trackBadge,0,2); $trackLayout.Controls.Add($trackLog,0,3)
 $tabTrack.Controls.Add($trackLayout)
 
 # ============================================================================
-#  TAB 7 - SLAM MAP  (render the Aurora occupancy grid so the operator can SEE the space)
+#  TAB 7 - LOCAL MAP  (interactive 3D short-horizon occupancy — robot-local)
+#  Primary UX: WebView2 (or WebBrowser fallback) hosting desktop/localmap-viewer/
+#  Advanced: Import .stcm still available for legacy Aurora static renders.
 # ============================================================================
-# Static map view: shells to eval/stcm_grid.py (anaconda python + numpy + PIL) to render a chosen
-# .stcm/.vslam into a PNG, then shows it. The occupancy layer is 2D; a LIVE pose-on-map overlay is
-# the next step and is gated on the pose chain proving out on hardware (see robot/aurora/).
-$mapLayout=New-Object System.Windows.Forms.TableLayoutPanel; $mapLayout.Dock='Fill'; $mapLayout.ColumnCount=1; $mapLayout.RowCount=2; $mapLayout.Padding='10,8,10,8'
-[void]$mapLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,52)))
+$script:LocalMapViewerDir = Join-Path $SCRIPT_DIR 'localmap-viewer'
+$script:LocalMapIndex     = Join-Path $script:LocalMapViewerDir 'index.html'
+$script:LocalMapFeed      = Join-Path $script:LocalMapViewerDir 'feed.json'
+$script:LocalMapSample    = Join-Path $script:LocalMapViewerDir 'sample.json'
+$script:MapHostMode       = 'none'   # webview2 | webbrowser | external
+$script:MapWebView        = $null
+$script:MapBrowser        = $null
+
+$mapLayout=New-Object System.Windows.Forms.TableLayoutPanel
+$mapLayout.Dock='Fill'; $mapLayout.ColumnCount=1; $mapLayout.RowCount=2; $mapLayout.Padding='12,8,12,8'; $mapLayout.BackColor=$bg
+[void]$mapLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,78)))
 [void]$mapLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,100)))
-$mapBar=New-Object System.Windows.Forms.Panel; $mapBar.Dock='Fill'
-$btnMapRender=New-Object System.Windows.Forms.Button; $btnMapRender.Text='Render map...'; $btnMapRender.Size='110,32'; $btnMapRender.Location='0,6'; $btnMapRender.FlatStyle='Flat'; $btnMapRender.Font=$fontBold
-$mapInfo=New-Object System.Windows.Forms.Label; $mapInfo.AutoSize=$false; $mapInfo.Size='860,40'; $mapInfo.Location='122,6'; $mapInfo.TextAlign='MiddleLeft'; $mapInfo.Text='Pick a .stcm / .vslam to render.  Legend once shown: dark = walls, light = free floor, grey = never observed.'
-$mapBar.Controls.AddRange(@($btnMapRender,$mapInfo))
-$mapPic=New-Object System.Windows.Forms.PictureBox; $mapPic.Dock='Fill'; $mapPic.SizeMode='Zoom'; $mapPic.BackColor=[System.Drawing.Color]::FromArgb(60,60,64)
-$mapLayout.Controls.Add($mapBar,0,0); $mapLayout.Controls.Add($mapPic,0,1)
+
+$mapBar=New-Object System.Windows.Forms.Panel; $mapBar.Dock='Fill'; $mapBar.BackColor=$panelBg
+$lblIpM=New-Object System.Windows.Forms.Label; $lblIpM.Text='IP:'; $lblIpM.AutoSize=$true; $lblIpM.Location='12,14'; Set-K1Label $lblIpM 'muted'; $mapBar.Controls.Add($lblIpM)
+$ipMap=New-Object System.Windows.Forms.TextBox; $ipMap.Size='120,24'; $ipMap.Location='38,10'; $ipMap.Font=$mono; $ipMap.Text=$(if($script:RobotIP){$script:RobotIP}else{$K1_DEFAULT_IP}); Set-K1Field $ipMap; $mapBar.Controls.Add($ipMap)
+
+$btnMapRefresh=New-Object System.Windows.Forms.Button; $btnMapRefresh.Text='Refresh'; $btnMapRefresh.Size='88,30'; $btnMapRefresh.Location='170,8'; Set-K1PrimaryButton $btnMapRefresh; $mapBar.Controls.Add($btnMapRefresh)
+$btnMapSample=New-Object System.Windows.Forms.Button; $btnMapSample.Text='Load sample'; $btnMapSample.Size='108,30'; $btnMapSample.Location='266,8'; Set-K1GhostButton $btnMapSample; $mapBar.Controls.Add($btnMapSample)
+$btnMapClear=New-Object System.Windows.Forms.Button; $btnMapClear.Text='Clear'; $btnMapClear.Size='72,30'; $btnMapClear.Location='382,8'; Set-K1GhostButton $btnMapClear; $mapBar.Controls.Add($btnMapClear)
+$btnMapReset=New-Object System.Windows.Forms.Button; $btnMapReset.Text='Reset view'; $btnMapReset.Size='96,30'; $btnMapReset.Location='462,8'; Set-K1GhostButton $btnMapReset; $mapBar.Controls.Add($btnMapReset)
+$chkMapPose=New-Object System.Windows.Forms.CheckBox; $chkMapPose.Text='Show robot pose'; $chkMapPose.AutoSize=$true; $chkMapPose.Location='570,14'; Set-K1Check $chkMapPose 'accent'; $chkMapPose.Checked=$true; $chkMapPose.BackColor=$panelBg; $mapBar.Controls.Add($chkMapPose)
+$chkMapFollow=New-Object System.Windows.Forms.CheckBox; $chkMapFollow.Text='Follow pose'; $chkMapFollow.AutoSize=$true; $chkMapFollow.Location='710,14'; Set-K1Check $chkMapFollow; $chkMapFollow.Checked=$true; $chkMapFollow.BackColor=$panelBg; $mapBar.Controls.Add($chkMapFollow)
+$btnMapOpen=New-Object System.Windows.Forms.Button; $btnMapOpen.Text='Open in browser'; $btnMapOpen.Size='120,30'; $btnMapOpen.Location='830,8'; Set-K1GhostButton $btnMapOpen; $mapBar.Controls.Add($btnMapOpen)
+# Advanced: legacy Aurora .stcm static render (kept off the primary chrome)
+$btnMapRender=New-Object System.Windows.Forms.Button; $btnMapRender.Text='Import .stcm'; $btnMapRender.Size='100,26'; $btnMapRender.Location='12,44'; Set-K1GhostButton $btnMapRender; $mapBar.Controls.Add($btnMapRender)
+$mapInfo=New-Object System.Windows.Forms.Label; $mapInfo.AutoSize=$false; $mapInfo.Size='900,26'; $mapInfo.Location='122,44'; $mapInfo.TextAlign='MiddleLeft'
+$mapInfo.Text='Local Map — short-horizon occupancy (depth + odometry). Orbit / pan / zoom in the 3D view.'
+$mapInfo.ForeColor=$muted; $mapInfo.BackColor=$panelBg; $mapBar.Controls.Add($mapInfo)
+
+$mapHost=New-Object System.Windows.Forms.Panel; $mapHost.Dock='Fill'; $mapHost.BackColor=$bg
+# Compat: old PictureBox kept (hidden) so any leftover .stcm render path can still show a PNG.
+$mapPic=New-Object System.Windows.Forms.PictureBox; $mapPic.Dock='Fill'; $mapPic.SizeMode='Zoom'; $mapPic.BackColor=$bg; $mapPic.Visible=$false
+$mapHost.Controls.Add($mapPic)
+
+function Invoke-LocalMapJs([string]$js){
+    try{
+        if($script:MapHostMode -eq 'webview2' -and $script:MapWebView){
+            $script:MapWebView.CoreWebView2.ExecuteScriptAsync($js) | Out-Null
+            return $true
+        }
+        if($script:MapHostMode -eq 'webbrowser' -and $script:MapBrowser -and $script:MapBrowser.Document){
+            $script:MapBrowser.Document.InvokeScript('eval', @($js)) | Out-Null
+            return $true
+        }
+    }catch{}
+    return $false
+}
+
+function Write-LocalMapFeedFromSample{
+    if(Test-Path $script:LocalMapSample){
+        Copy-Item -Force $script:LocalMapSample $script:LocalMapFeed
+        return $true
+    }
+    return $false
+}
+
+function Refresh-LocalMapFromRobot([string]$ip){
+    # Best-effort: pull a JSON dump if the robot exposes one; otherwise reload sample + note.
+    # Real cells stream via feed.json polling once a dump path exists on-robot.
+    $mapInfo.Text = ("Refreshing local map for {0}..." -f $ip)
+    $remoteCandidates = @(
+        '/tmp/k1_localmap.json',
+        '/home/booster/localmap/latest.json',
+        '/tmp/k1_localmap_feed.json'
+    )
+    $pulled = $false
+    foreach($remote in $remoteCandidates){
+        try{
+            $tmp = Join-Path $env:TEMP ('k1_lm_pull_{0}.json' -f ([guid]::NewGuid().ToString('N')))
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = 'scp'; $psi.Arguments = ("-o BatchMode=yes -o ConnectTimeout=4 {0}@{1}:{2} `"{3}`"" -f $K1_SSH_USER,$ip,$remote,$tmp)
+            $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardError = $true; $psi.RedirectStandardOutput = $true
+            $p = [System.Diagnostics.Process]::Start($psi)
+            if(-not $p.WaitForExit(6000)){ try{$p.Kill()}catch{}; continue }
+            if($p.ExitCode -eq 0 -and (Test-Path $tmp) -and ((Get-Item $tmp).Length -gt 8)){
+                Copy-Item -Force $tmp $script:LocalMapFeed
+                $pulled = $true
+                Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+                break
+            }
+            Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+        }catch{}
+    }
+    if($pulled){
+        $mapInfo.Text = ("Loaded occupancy dump from {0}" -f $ip)
+        [void](Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.loadFeed('./feed.json')")
+    } else {
+        Write-LocalMapFeedFromSample | Out-Null
+        $mapInfo.Text = ("No live dump on {0} — showing sample occupancy. Enable Local map on Tracker; dump lands in /tmp/k1_localmap.json when available." -f $ip)
+        [void](Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.loadSample()")
+    }
+}
+
+function Initialize-LocalMapHost{
+    $uri = ([Uri](Join-Path $script:LocalMapViewerDir 'index.html')).AbsoluteUri
+    if(-not (Test-Path $script:LocalMapIndex)){
+        $mapInfo.Text = 'localmap-viewer/index.html missing — open desktop/README-UI.md'
+        return
+    }
+    Write-LocalMapFeedFromSample | Out-Null
+
+    # Prefer WebView2 (Chromium). DLL may sit next to the app or in the NuGet cache.
+    $wvLoaded = $false
+    try{
+        $wvAsm = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq 'Microsoft.Web.WebView2.WinForms' } | Select-Object -First 1
+        if(-not $wvAsm){
+            $searchRoots = @($SCRIPT_DIR, (Join-Path $env:USERPROFILE '.nuget\packages\microsoft.web.webview2'))
+            foreach($root in $searchRoots){
+                if(-not (Test-Path $root)){ continue }
+                $hit = Get-ChildItem -Path $root -Recurse -Filter 'Microsoft.Web.WebView2.WinForms.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
+                if($hit){
+                    Add-Type -Path $hit.FullName
+                    $core = Join-Path $hit.DirectoryName 'Microsoft.Web.WebView2.Core.dll'
+                    if(Test-Path $core){ Add-Type -Path $core }
+                    $wvLoaded = $true
+                    break
+                }
+            }
+        } else { $wvLoaded = $true }
+        if($wvLoaded -or $wvAsm){
+            $wv = New-Object Microsoft.Web.WebView2.WinForms.WebView2
+            $wv.Dock = 'Fill'
+            $mapHost.Controls.Add($wv)
+            $wv.BringToFront()
+            $script:MapWebView = $wv
+            $script:MapHostMode = 'webview2'
+            [void]$wv.EnsureCoreWebView2Async($null)
+            $wv.Add_CoreWebView2InitializationCompleted({
+                param($s,$e)
+                if($e.IsSuccess){
+                    $s.CoreWebView2.Navigate(([Uri]$script:LocalMapIndex).AbsoluteUri)
+                    $mapInfo.Text = 'Local Map 3D (WebView2) — drag orbit · right-drag pan · scroll zoom'
+                } else {
+                    $mapInfo.Text = ('WebView2 init failed: {0} — use Open in browser' -f $e.InitializationException.Message)
+                }
+            })
+            return
+        }
+    }catch{
+        # fall through to WebBrowser
+    }
+
+    try{
+        $wb = New-Object System.Windows.Forms.WebBrowser
+        $wb.Dock = 'Fill'; $wb.ScriptErrorsSuppressed = $true
+        $mapHost.Controls.Add($wb); $wb.BringToFront()
+        $script:MapBrowser = $wb
+        $script:MapHostMode = 'webbrowser'
+        $wb.Navigate(([Uri]$script:LocalMapIndex).AbsoluteUri)
+        $mapInfo.Text = 'Local Map hosted in WebBrowser (IE engine). Prefer WebView2 or Open in browser for full Three.js.'
+        return
+    }catch{}
+
+    $script:MapHostMode = 'external'
+    $fallback = New-Object System.Windows.Forms.Label
+    $fallback.Dock='Fill'; $fallback.TextAlign='MiddleCenter'; $fallback.Font=$fontHero
+    $fallback.ForeColor=$muted; $fallback.BackColor=$bg
+    $fallback.Text = "3D viewer ready`r`nClick  Open in browser  — see desktop/README-UI.md"
+    $mapHost.Controls.Add($fallback)
+    $mapInfo.Text = 'No embedded browser — Open in browser launches the Three.js Local Map viewer.'
+}
+
+$btnMapSample.Add_Click({
+    Write-LocalMapFeedFromSample | Out-Null
+    if(-not (Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.loadSample()")){
+        try{ Start-Process $script:LocalMapIndex }catch{}
+    }
+    $mapInfo.Text = 'Sample occupancy loaded.'
+})
+$btnMapClear.Add_Click({
+    [void](Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.clear()")
+    try{ if(Test-Path $script:LocalMapFeed){ Set-Content -Path $script:LocalMapFeed -Value '{"res_m":0.08,"range_m":3.5,"pose":{"x":0,"y":0,"yaw":0},"cells":[]}' -Encoding UTF8 } }catch{}
+    $mapInfo.Text = 'Cleared.'
+})
+$btnMapReset.Add_Click({
+    [void](Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.resetView()")
+    $mapInfo.Text = 'Camera reset.'
+})
+$chkMapPose.Add_CheckedChanged({
+    $on = if($chkMapPose.Checked){'true'}else{'false'}
+    [void](Invoke-LocalMapJs ("window.k1LocalMap && window.k1LocalMap.setShowRobot({0})" -f $on))
+})
+$chkMapFollow.Add_CheckedChanged({
+    $on = if($chkMapFollow.Checked){'true'}else{'false'}
+    [void](Invoke-LocalMapJs ("window.k1LocalMap && window.k1LocalMap.setFollowPose({0})" -f $on))
+})
+$btnMapRefresh.Add_Click({
+    $ip = $ipMap.Text.Trim(); if(-not $ip){ $mapInfo.Text='Enter robot IP.'; return }
+    $script:RobotIP = $ip
+    Refresh-LocalMapFromRobot $ip
+})
+$btnMapOpen.Add_Click({
+    if(Test-Path $script:LocalMapIndex){ Start-Process $script:LocalMapIndex }
+    else { $mapInfo.Text = 'Viewer HTML missing.' }
+})
+
+$mapLayout.Controls.Add($mapBar,0,0); $mapLayout.Controls.Add($mapHost,0,1)
 $tabMap.Controls.Add($mapLayout)
+Initialize-LocalMapHost
+
+# Advanced: legacy Aurora .stcm / .vslam / .ply static PNG render (not primary UX)
 $btnMapRender.Add_Click({
     $ofd=New-Object System.Windows.Forms.OpenFileDialog
     $ofd.Filter='SLAM maps + clouds (*.stcm;*.vslam;*.ply)|*.stcm;*.vslam;*.ply|All files (*.*)|*.*'
@@ -1073,29 +1397,30 @@ $btnMapRender.Add_Click({
     if($ofd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK){ return }
     $map=$ofd.FileName
     $isPly = ([IO.Path]::GetExtension($map).ToLower() -eq '.ply')
-    # Resolve a REAL python (anaconda first; never the WindowsApps stub, which pops the Store).
     $py=$null
     foreach($cand in @((Join-Path $env:USERPROFILE 'anaconda3\python.exe'),(Join-Path $env:USERPROFILE 'AppData\Local\anaconda3\python.exe'),(Join-Path $env:USERPROFILE 'miniconda3\python.exe'))){ if(Test-Path $cand){ $py=$cand; break } }
     if(-not $py){ try{ $g=(Get-Command python.exe -ErrorAction SilentlyContinue); if($g -and ($g.Source -notmatch 'WindowsApps')){ $py=$g.Source } }catch{} }
-    if(-not $py){ $mapInfo.Text='No Python found. The map renderer needs anaconda (numpy + PIL).'; return }
-    # .stcm/.vslam -> the 2D occupancy grid (stcm_grid.py); .ply -> a 3D point cloud top-down (ply_view.py)
+    if(-not $py){ $mapInfo.Text='No Python found. The legacy .stcm renderer needs anaconda (numpy + PIL).'; return }
     $rel = if($isPly){'eval\ply_view.py'}else{'eval\stcm_grid.py'}
     $tool=Join-Path $REPO_ROOT $rel
     if(-not (Test-Path $tool)){ $mapInfo.Text=("Renderer not found at {0}" -f $tool); return }
     $png=Join-Path $env:TEMP ('k1_map_{0}.png' -f ([guid]::NewGuid().ToString('N')))
-    $mapInfo.Text='Rendering (large maps take a few seconds)...'; $mapInfo.Refresh()
+    $mapInfo.Text='Rendering legacy map (large maps take a few seconds)...'; $mapInfo.Refresh()
     try{
         $out = & $py $tool $map '--png' $png 2>&1 | Out-String
         if(Test-Path $png){
+            $mapPic.Visible = $true
+            if($script:MapWebView){ $script:MapWebView.Visible = $false }
+            if($script:MapBrowser){ $script:MapBrowser.Visible = $false }
+            $mapPic.BringToFront()
             if($mapPic.Image){ $mapPic.Image.Dispose() }
-            $bytes=[IO.File]::ReadAllBytes($png)            # load via bytes so the file isn't locked
+            $bytes=[IO.File]::ReadAllBytes($png)
             $ms=New-Object System.IO.MemoryStream(,$bytes)
             $mapPic.Image=[System.Drawing.Image]::FromStream($ms)
-            # both renderers print a one-line summary ending in metres ("grid ... m" / "cloud ... m")
             $meta=($out -split "`n" | Where-Object { $_ -match '(grid|cloud) .+ m' } | Select-Object -First 1)
             if(-not $meta){ $meta='' }
             $kind = if($isPly){'3D cloud'}else{'2D grid'}
-            $mapInfo.Text=("{0}  [{1}]   |   {2}" -f (Split-Path $map -Leaf), $kind, $meta.Trim())
+            $mapInfo.Text=("{0}  [{1}]   |   {2}   (legacy Import .stcm — use Load sample for interactive Local Map)" -f (Split-Path $map -Leaf), $kind, $meta.Trim())
         } else {
             $mapInfo.Text=("Render failed: {0}" -f ($out.Trim() -replace "`r?`n",'  '))
         }
@@ -1115,7 +1440,7 @@ function Add-LogTrack([string]$m,$c){ Add-LogTo $trackLog $m $c }
 
 function Confidence-Color([string]$label){ switch($label){ 'High'{return $green} 'Medium'{return $amber} default{return [System.Drawing.Color]::Gray} } }
 function Get-SelectedIP { if($list.SelectedItems.Count -gt 0){ return $list.SelectedItems[0].SubItems[1].Text }; return $null }
-function Set-RobotIP([string]$ip){ if(-not $ip){return}; $script:RobotIP=$ip; $ipBox.Text=$ip; $ip2Box.Text=$ip; $ipLive.Text=$ip; $ipCtrl.Text=$ip; if($ipFiles){ $ipFiles.Text=$ip }; if($ipTrack){ $ipTrack.Text=$ip } }
+function Set-RobotIP([string]$ip){ if(-not $ip){return}; $script:RobotIP=$ip; $ipBox.Text=$ip; $ip2Box.Text=$ip; $ipLive.Text=$ip; $ipCtrl.Text=$ip; if($ipFiles){ $ipFiles.Text=$ip }; if($ipTrack){ $ipTrack.Text=$ip }; if($ipMap){ $ipMap.Text=$ip } }
 
 # ============================================================================
 #  Scan control + timer (Discover)
