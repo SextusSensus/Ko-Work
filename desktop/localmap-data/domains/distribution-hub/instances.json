@@ -1,6 +1,6 @@
 {
   "domain_id": "distribution-hub",
-  "updated": "2026-09-11T09:25:00Z",
+  "updated": "2026-09-11T09:59:48Z",
   "notes": "Mock labeling fill-in for distribution hub + east assembly line \u2014 mirrors future YOLO/Batch-Label \u2192 assignAsset loop",
   "instances": [
     {
@@ -93,7 +93,12 @@
       "yaw": 0,
       "confidence": 0.9,
       "run_id": "demo-hub-3",
-      "source": "mock_label"
+      "source": "mock_label",
+      "scale_m": [
+        0.35,
+        0.7,
+        0.35
+      ]
     },
     {
       "id": "hub-jack-1",
@@ -318,6 +323,22 @@
       "h": 14.5,
       "confidence": 0.9,
       "run_id": "demo-asm-3",
+      "source": "mock_label"
+    },
+    {
+      "id": "hub-corner-shelf-1",
+      "label_class": "corner_shelf",
+      "asset_id": "warehouse/steel-shelves",
+      "x": -9.2,
+      "y": 6.5,
+      "yaw": 1.57,
+      "scale_m": [
+        1.1,
+        2.2,
+        0.5
+      ],
+      "confidence": 0.85,
+      "run_id": "demo-hub-1",
       "source": "mock_label"
     }
   ]

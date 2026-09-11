@@ -838,13 +838,14 @@
       "default_asset": "cross-domain/safety-cone",
       "placement": "footprint",
       "scale_m": [
-        0.3,
+        0.35,
         0.7,
-        0.3
+        0.35
       ],
       "domains": [
         "*"
-      ]
+      ],
+      "notes": "Industry traffic cone ~0.45\u20130.75 m tall; real-world metres, not relative to K1"
     },
     {
       "id": "safety_fence",
