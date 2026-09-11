@@ -21,6 +21,13 @@
       "updated": "2026-09-11T09:25:00Z",
       "run_count": 8,
       "cell_count": 202
+    },
+    {
+      "id": "assembly-factory",
+      "name": "Assembly Factory",
+      "updated": "2026-09-11T09:45:00Z",
+      "run_count": 6,
+      "cell_count": 86
     }
   ]
 }
