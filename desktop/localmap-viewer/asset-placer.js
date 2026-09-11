@@ -460,26 +460,90 @@
     });
   }
 
-  function placeNode(node, pose) {
+  function yawFromPoseMap(poseMap) {
+    if (!poseMap) return null;
+    if (poseMap.yaw != null) return poseMap.yaw;
+    var qw = poseMap.qw, qx = poseMap.qx || 0, qy = poseMap.qy || 0, qz = poseMap.qz;
+    if (qw == null || qz == null) return null;
+    return Math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz));
+  }
+
+  function normalizePose(pose) {
     pose = pose || {};
-    node.position.x = pose.x || 0;
-    node.position.z = pose.y != null ? pose.y : (pose.z || 0);
-    if (pose.yaw != null) node.rotation.y = -pose.yaw;
+    var pm = pose.pose_map;
+    var x = pose.x, y = pose.y, z = pose.z, yaw = pose.yaw;
+    if (pm) {
+      if (x == null && pm.x != null) x = pm.x;
+      if (y == null && pm.y != null) y = pm.y;
+      if (z == null && pm.z != null) z = pm.z;
+      if (yaw == null) yaw = yawFromPoseMap(pm);
+    }
+    return {
+      x: x || 0,
+      y: y != null ? y : 0,
+      z: z != null ? z : 0,
+      yaw: yaw || 0,
+      w: pose.w,
+      h: pose.h,
+      pose_map: pm || null,
+      use_measured_z: !!pose.use_measured_z,
+      placement: pose.placement,
+      detection_id: pose.detection_id,
+      run_id: pose.run_id,
+      confidence: pose.confidence
+    };
+  }
+
+  /** Map FLU (x,y) → Three.js (x,z); yaw_three = -yaw_map. Footprint assets sit on floor. */
+  function placeNode(node, pose) {
+    var p = normalizePose(pose);
+    node.position.x = p.x;
+    node.position.z = p.y;
+    var lift = (p.use_measured_z || p.placement === 'free') ? p.z : 0;
+    node.position.y = lift || 0;
+    if (p.yaw != null) node.rotation.y = -p.yaw;
     instanceGroup.add(node);
   }
 
+  function instanceKey(rec) {
+    if (rec.run_id && rec.detection_id) return String(rec.run_id) + '::' + String(rec.detection_id);
+    if (rec.id) return String(rec.id);
+    return null;
+  }
+
+  function removeInstanceAt(idx) {
+    var old = instances[idx];
+    if (old && old._node && old._node.parent) old._node.parent.remove(old._node);
+    instances.splice(idx, 1);
+  }
+
   function recordInstance(rec, node) {
+    var key = instanceKey(rec);
+    if (key) {
+      for (var i = instances.length - 1; i >= 0; i--) {
+        if (instanceKey(instances[i]) === key || instances[i].id === key) {
+          removeInstanceAt(i);
+        }
+      }
+    }
     var entry = {
-      id: rec.id || ('inst-' + Date.now() + '-' + Math.floor(Math.random() * 1e4)),
+      id: rec.id || key || ('inst-' + Date.now() + '-' + Math.floor(Math.random() * 1e4)),
+      detection_id: rec.detection_id,
       label_class: rec.label_class,
       asset_id: rec.asset_id,
       x: rec.x || 0,
       y: rec.y || 0,
+      z: rec.z || 0,
       yaw: rec.yaw || 0,
+      pose_map: rec.pose_map || null,
       w: rec.w,
       h: rec.h,
       confidence: rec.confidence,
+      covariance: rec.covariance,
       run_id: rec.run_id,
+      t_ns: rec.t_ns,
+      T_source: rec.T_source,
+      placement_method: rec.placement_method,
       domain_id: activeDomainId,
       source: rec.source || 'assign'
     };
@@ -504,12 +568,18 @@
         instances: instances.map(function (i) {
           return {
             id: i.id,
+            detection_id: i.detection_id,
             label_class: i.label_class,
             asset_id: i.asset_id,
-            x: i.x, y: i.y, yaw: i.yaw,
+            x: i.x, y: i.y, z: i.z, yaw: i.yaw,
+            pose_map: i.pose_map,
             w: i.w, h: i.h,
             confidence: i.confidence,
+            covariance: i.covariance,
             run_id: i.run_id,
+            t_ns: i.t_ns,
+            T_source: i.T_source,
+            placement_method: i.placement_method,
             source: i.source
           };
         })
@@ -526,7 +596,7 @@
 
   function assignAsset(labelClass, pose, extras) {
     extras = extras || {};
-    pose = pose || {};
+    pose = normalizePose(pose || {});
     var resolved = resolveAsset(labelClass, activeDomainId);
     if (!resolved || !resolved.label) {
       return Promise.reject(new Error('unknown label class: ' + labelClass));
@@ -535,20 +605,31 @@
     if (pose.w && pose.h && resolved.label.placement === 'footprint') {
       scale = [pose.w, (resolved.label.scale_m && resolved.label.scale_m[1]) || 1, pose.h];
     }
+    var placeOpts = Object.assign({}, pose, {
+      placement: extras.placement || (resolved.label && resolved.label.placement) || pose.placement,
+      use_measured_z: extras.use_measured_z || pose.use_measured_z
+    });
     var asset = resolved.asset;
     return instantiateAsset(asset, scale).then(function (node) {
-      placeNode(node, pose);
+      placeNode(node, placeOpts);
       var rec = recordInstance({
         id: extras.id,
+        detection_id: extras.detection_id || pose.detection_id,
         label_class: resolved.label.id,
         asset_id: resolved.assetId,
-        x: pose.x || 0,
-        y: pose.y != null ? pose.y : 0,
-        yaw: pose.yaw || 0,
+        x: pose.x,
+        y: pose.y,
+        z: pose.z,
+        yaw: pose.yaw,
+        pose_map: extras.pose_map || pose.pose_map,
         w: pose.w,
         h: pose.h,
         confidence: extras.confidence != null ? extras.confidence : pose.confidence,
+        covariance: extras.covariance,
         run_id: extras.run_id || pose.run_id,
+        t_ns: extras.t_ns,
+        T_source: extras.T_source,
+        placement_method: extras.placement_method,
         source: extras.source || 'assignAsset'
       }, node);
       if (extras.persist !== false) persistLocal();
@@ -561,12 +642,23 @@
     var chain = Promise.resolve([]);
     dets.forEach(function (d) {
       chain = chain.then(function (acc) {
-        return assignAsset(d.class || d.label_class || d.label || d.cls, {
-          x: d.x, y: d.y, yaw: d.yaw, w: d.w, h: d.h, confidence: d.confidence, run_id: d.run_id
-        }, {
+        var pose = {
+          x: d.x, y: d.y, z: d.z, yaw: d.yaw, w: d.w, h: d.h,
+          pose_map: d.pose_map,
+          confidence: d.confidence, run_id: d.run_id,
+          detection_id: d.detection_id
+        };
+        return assignAsset(d.class || d.label_class || d.label || d.cls, pose, {
+          id: d.id,
+          detection_id: d.detection_id,
           confidence: d.confidence,
+          covariance: d.covariance,
           run_id: d.run_id,
-          source: 'detection',
+          t_ns: d.t_ns,
+          T_source: d.T_source,
+          placement_method: d.placement_method,
+          pose_map: d.pose_map,
+          source: d.source || 'detection',
           persist: false
         }).then(function (rec) {
           acc.push(rec);
@@ -576,6 +668,19 @@
     });
     return chain.then(function (acc) {
       persistLocal();
+      return acc;
+    });
+  }
+
+  function importExactInstances(list, opts) {
+    opts = opts || {};
+    return registerDetections((list || []).map(function (inst) {
+      return Object.assign({}, inst, {
+        class: inst.label_class || inst.label,
+        source: inst.source || 'exact_placer'
+      });
+    })).then(function (acc) {
+      if (opts.persist !== false) persistLocal();
       return acc;
     });
   }
@@ -597,11 +702,18 @@
       list.forEach(function (inst) {
         chain = chain.then(function () {
           return assignAsset(inst.label_class || inst.asset_id, {
-            x: inst.x, y: inst.y, yaw: inst.yaw, w: inst.w, h: inst.h
+            x: inst.x, y: inst.y, z: inst.z, yaw: inst.yaw, w: inst.w, h: inst.h,
+            pose_map: inst.pose_map
           }, {
             id: inst.id,
+            detection_id: inst.detection_id,
             confidence: inst.confidence,
+            covariance: inst.covariance,
             run_id: inst.run_id,
+            t_ns: inst.t_ns,
+            T_source: inst.T_source,
+            placement_method: inst.placement_method,
+            pose_map: inst.pose_map,
             source: inst.source || 'instances.json',
             persist: false,
             scale_m: inst.scale_m
@@ -702,14 +814,20 @@
     getInstances: function () {
       return instances.map(function (i) {
         return {
-          id: i.id, label_class: i.label_class, asset_id: i.asset_id,
-          x: i.x, y: i.y, yaw: i.yaw, w: i.w, h: i.h,
-          confidence: i.confidence, run_id: i.run_id, source: i.source, domain_id: i.domain_id
+          id: i.id, detection_id: i.detection_id,
+          label_class: i.label_class, asset_id: i.asset_id,
+          x: i.x, y: i.y, z: i.z, yaw: i.yaw, pose_map: i.pose_map,
+          w: i.w, h: i.h,
+          confidence: i.confidence, covariance: i.covariance,
+          run_id: i.run_id, t_ns: i.t_ns,
+          T_source: i.T_source, placement_method: i.placement_method,
+          source: i.source, domain_id: i.domain_id
         };
       });
     },
     exportInstances: persistLocal,
     loadInstancesForDomain: loadInstancesForDomain,
+    importExactInstances: importExactInstances,
     runAssetDemo: runDemo,
     demoSeedFor: demoSeedFor,
     instanceGroup: instanceGroup,
@@ -723,6 +841,7 @@
     var k = window.k1LocalMap;
     k.registerDetections = function (dets) { return api.registerDetections(dets); };
     k.assignAsset = function (labelClass, pose, extras) { return api.assignAsset(labelClass, pose, extras); };
+    k.importExactInstances = function (list, opts) { return api.importExactInstances(list, opts); };
     k.clearAssetInstances = function () { api.clearInstances(); persistLocal(); };
     k.getAssetInstances = function () { return api.getInstances(); };
     k.exportAssetInstances = function () { return api.exportInstances(); };
