@@ -70,3 +70,7 @@ Docs: [`docs/localmap-assets.md`](../../docs/localmap-assets.md)
 ## Paid marketplaces (rejected)
 
 No paid CGTrader (or other marketplace) purchase URLs or binaries are kept in this repo. Runtime uses CC0 / procedural / free_link only — see [`FREE-ASSETS.md`](./FREE-ASSETS.md).
+
+## `library/assembly-line/`
+
+Kenney Factory Kit subset (conveyors, hoppers, cranes, fencing structures) + ambientCG / Poly Haven metal & marking textures — **CC0**. See `assembly-line/README.md` and `kenney/LICENSE.txt`.

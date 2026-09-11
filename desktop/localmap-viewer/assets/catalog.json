@@ -1,9 +1,306 @@
 {
   "version": 1,
-  "updated": "2026-09-11T09:13:37Z",
+  "updated": "2026-09-11T09:25:14Z",
   "description": "CC0 / free-only 3D asset catalog for K1 Local Map. Statuses: downloaded | procedural | free_link. NEVER paid/purchase.",
   "license_default": "CC0",
   "assets": [
+    {
+      "id": "assembly-line/assembly-station",
+      "name": "Assembly workstation / bench",
+      "category": "assembly-line",
+      "status": "procedural",
+      "procedural": "assembly_station",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "label_classes": [
+        "assembly_station"
+      ]
+    },
+    {
+      "id": "assembly-line/control-panel",
+      "name": "Control panel / HMI pedestal",
+      "category": "assembly-line",
+      "status": "procedural",
+      "procedural": "control_panel",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "label_classes": [
+        "control_panel"
+      ]
+    },
+    {
+      "id": "assembly-line/conveyor",
+      "name": "Assembly conveyor (Kenney)",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/conveyor-long.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "conveyor"
+    },
+    {
+      "id": "assembly-line/conveyor-curve",
+      "name": "Conveyor corner / curve",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/conveyor-corner.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "conveyor_curve",
+      "label_classes": [
+        "conveyor",
+        "conveyor_curve"
+      ]
+    },
+    {
+      "id": "assembly-line/conveyor-elevated",
+      "name": "Elevated conveyor section",
+      "category": "assembly-line",
+      "status": "procedural",
+      "procedural": "conveyor_elevated",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "label_classes": [
+        "conveyor",
+        "conveyor_elevated"
+      ]
+    },
+    {
+      "id": "assembly-line/conveyor-long",
+      "name": "Conveyor long",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/conveyor-long.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "conveyor",
+      "label_classes": [
+        "conveyor"
+      ]
+    },
+    {
+      "id": "assembly-line/conveyor-stripe",
+      "name": "Conveyor long with stripe",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/conveyor-long-stripe.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "conveyor",
+      "label_classes": [
+        "conveyor"
+      ]
+    },
+    {
+      "id": "assembly-line/crane-lift",
+      "name": "Crane lift carriage",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/crane-lift.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "overhead_gantry",
+      "label_classes": [
+        "overhead_gantry"
+      ]
+    },
+    {
+      "id": "assembly-line/fencing",
+      "name": "Safety fencing (conveyor bars fence)",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/conveyor-bars-fence.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "fence"
+    },
+    {
+      "id": "assembly-line/floor-lane",
+      "name": "Assembly line floor lane marking",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/textures/lane_markings_diff.jpg",
+      "license": "CC0",
+      "source": "K1 Finder authored (CC0)",
+      "fallback_procedural": "floor_tape",
+      "label_classes": [
+        "floor_markings",
+        "floor_tape"
+      ]
+    },
+    {
+      "id": "assembly-line/hopper",
+      "name": "Parts hopper",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/hopper-square.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "parts_bin",
+      "label_classes": [
+        "parts_bin",
+        "hopper"
+      ]
+    },
+    {
+      "id": "assembly-line/overhead-gantry",
+      "name": "Overhead gantry / crane rail",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/crane.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "overhead_gantry",
+      "label_classes": [
+        "overhead_gantry",
+        "gantry"
+      ]
+    },
+    {
+      "id": "assembly-line/parts-bin",
+      "name": "Parts bin / tote",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/industrial_pastic_container/industrial_pastic_container_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/industrial_pastic_container",
+      "fallback_procedural": "parts_bin",
+      "label_classes": [
+        "parts_bin",
+        "tote_bin"
+      ]
+    },
+    {
+      "id": "assembly-line/robot-arm",
+      "name": "Robot arm proxy (Kenney crane)",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/crane.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "robot_arm",
+      "notes": "Low-poly crane stand-in for industrial robot arm"
+    },
+    {
+      "id": "assembly-line/robotic-arm",
+      "name": "Robotic arm proxy",
+      "category": "assembly-line",
+      "status": "procedural",
+      "procedural": "robotic_arm",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in (no free articulated arm mesh shipped)",
+      "label_classes": [
+        "robotic_arm"
+      ]
+    },
+    {
+      "id": "assembly-line/safety-fence",
+      "name": "Safety fencing / light curtain",
+      "category": "assembly-line",
+      "status": "procedural",
+      "procedural": "safety_fence",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "label_classes": [
+        "safety_fence",
+        "light_curtain"
+      ]
+    },
+    {
+      "id": "assembly-line/station",
+      "name": "Work station / hopper",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/hopper-square.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "station"
+    },
+    {
+      "id": "assembly-line/structure-shell",
+      "name": "Modular factory structure",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/structure-yellow-tall.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "wall"
+    },
+    {
+      "id": "assembly-line/structure-yellow",
+      "name": "Yellow industrial structure",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/structure-yellow-tall.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "safety_fence",
+      "label_classes": [
+        "safety_fence"
+      ]
+    },
+    {
+      "id": "assembly-line/tex-brushed-metal",
+      "name": "Brushed metal texture",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/textures/brushed_metal_diff.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/metal_plate"
+    },
+    {
+      "id": "assembly-line/tex-caution",
+      "name": "Caution yellow/black stripes",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/textures/caution_stripes_diff.jpg",
+      "license": "CC0",
+      "source": "K1 Finder authored (CC0)"
+    },
+    {
+      "id": "assembly-line/tex-rubber-belt",
+      "name": "Rubber belt texture",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/textures/rubber_belt_diff.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/rubber_tiles"
+    },
+    {
+      "id": "assembly-line/tex-rubber-mat",
+      "name": "Rubber mat (ambientCG)",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/textures/rubber_mat_diff.jpg",
+      "license": "CC0",
+      "source": "ambientCG",
+      "source_url": "https://ambientcg.com/view?id=Rubber004"
+    },
+    {
+      "id": "assembly-line/tex-scratched-metal",
+      "name": "Scratched / brushed metal (ambientCG)",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/textures/scratched_metal_diff.jpg",
+      "license": "CC0",
+      "source": "ambientCG",
+      "source_url": "https://ambientcg.com/view?id=Metal032"
+    },
     {
       "id": "cross-domain/caged-hanging-light",
       "name": "Caged hanging light",
@@ -34,6 +331,16 @@
       "license": "internal",
       "source": "Booster K1 envelope ~0.95\u00d70.40\u00d70.18 m (not official mesh)",
       "source_url": "https://github.com/BoosterRobotics/booster_assets"
+    },
+    {
+      "id": "cross-domain/metal-fence-quaternius",
+      "name": "Quaternius metal fence twin",
+      "category": "cross-domain",
+      "status": "free_link",
+      "license": "CC0",
+      "source": "Quaternius via Poly Pizza",
+      "source_url": "https://poly.pizza/m/qWKhREFj7H",
+      "fallback_procedural": "fence"
     },
     {
       "id": "cross-domain/person-placeholder",
@@ -346,6 +653,16 @@
       "source_url": "https://polyhaven.com/a/metal_plate"
     },
     {
+      "id": "materials/metal032",
+      "name": "Industrial metal (ambientCG Metal032)",
+      "category": "materials",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/materials/metal032_color.jpg",
+      "license": "CC0",
+      "source": "ambientCG",
+      "source_url": "https://ambientcg.com/view?id=Metal032"
+    },
+    {
       "id": "materials/wall-tiles",
       "name": "Long white tiles",
       "category": "materials",
@@ -409,6 +726,17 @@
       "fallback_procedural": "conveyor"
     },
     {
+      "id": "warehouse/crane-proxy",
+      "name": "Warehouse crane / arm proxy",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/kenney/crane.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "robot_arm"
+    },
+    {
       "id": "warehouse/dock-door",
       "name": "Rollershutter dock door",
       "category": "warehouse",
@@ -418,6 +746,17 @@
       "source": "Poly Haven",
       "source_url": "https://polyhaven.com/a/rollershutter_door",
       "fallback_procedural": "dock_door"
+    },
+    {
+      "id": "warehouse/door-kenney",
+      "name": "Industrial door (Kenney)",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/door-wide-closed.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "door_frame"
     },
     {
       "id": "warehouse/floor-tape",
@@ -480,6 +819,17 @@
       "source": "procedural"
     },
     {
+      "id": "warehouse/modular-shell",
+      "name": "Modular warehouse shell bay",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/kenney/structure-tall.glb",
+      "license": "CC0",
+      "source": "Kenney",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "wall"
+    },
+    {
       "id": "warehouse/pallet",
       "name": "Wood pallet (CC0 authored)",
       "category": "warehouse",
@@ -519,6 +869,26 @@
       "source": "Poly Haven",
       "source_url": "https://polyhaven.com/a/plastic_crate_01",
       "fallback_procedural": "crate"
+    },
+    {
+      "id": "warehouse/safety-fence",
+      "name": "Warehouse safety fence",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/kenney/conveyor-bars-fence.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "fence"
+    },
+    {
+      "id": "warehouse/shrink-wrap-pallet",
+      "name": "Shrink-wrapped pallet load",
+      "category": "warehouse",
+      "status": "procedural",
+      "procedural": "shrink_wrap",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in (pallet + translucent wrap)"
     },
     {
       "id": "warehouse/steel-shelves",

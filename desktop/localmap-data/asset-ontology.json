@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "updated": "2026-09-11T09:21:51Z",
-  "description": "Label class → free Local Map asset (default_asset). Runtime uses CC0/procedural/free_link only — see assets/FREE-ASSETS.md and catalog.json.",
+  "updated": "2026-09-11T09:25:14Z",
+  "description": "Label class \u2192 free Local Map asset (default_asset). Runtime uses CC0/procedural/free_link only \u2014 see assets/FREE-ALTERNATIVES.md and catalog.json.",
   "catalog_ref": "../localmap-viewer/assets/catalog.json",
   "placement_modes": {
     "footprint": "Sit on floor; use w/h as ground footprint metres when present",
@@ -9,6 +9,25 @@
     "wall": "Yaw faces outward from wall; ignore footprint height"
   },
   "label_classes": [
+    {
+      "id": "assembly_station",
+      "aliases": [
+        "workstation",
+        "assembly_bench",
+        "work_bench"
+      ],
+      "default_asset": "assembly-line/assembly-station",
+      "placement": "footprint",
+      "scale_m": [
+        1.4,
+        1.1,
+        0.75
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
     {
       "id": "barrel",
       "aliases": [
@@ -151,11 +170,30 @@
       "tier": "P2"
     },
     {
+      "id": "control_panel",
+      "aliases": [
+        "hmi",
+        "hmi_pedestal",
+        "operator_panel"
+      ],
+      "default_asset": "assembly-line/control-panel",
+      "placement": "footprint",
+      "scale_m": [
+        0.45,
+        1.35,
+        0.4
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
       "id": "conveyor",
       "aliases": [
         "conveyor_belt"
       ],
-      "default_asset": "warehouse/conveyor",
+      "default_asset": "assembly-line/conveyor-long",
       "placement": "footprint",
       "scale_m": [
         2.0,
@@ -165,6 +203,39 @@
       "domains": [
         "distribution-hub",
         "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "conveyor_curve",
+      "aliases": [
+        "conveyor_corner"
+      ],
+      "default_asset": "assembly-line/conveyor-curve",
+      "placement": "footprint",
+      "scale_m": [
+        1.2,
+        0.85,
+        1.2
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "conveyor_elevated",
+      "aliases": [
+        "overhead_conveyor"
+      ],
+      "default_asset": "assembly-line/conveyor-elevated",
+      "placement": "footprint",
+      "scale_m": [
+        2.4,
+        1.8,
+        0.7
+      ],
+      "domains": [
+        "distribution-hub"
       ]
     },
     {
@@ -292,6 +363,26 @@
       ]
     },
     {
+      "id": "fence",
+      "aliases": [
+        "fencing",
+        "safety_fence",
+        "guardrail"
+      ],
+      "default_asset": "assembly-line/fencing",
+      "placement": "footprint",
+      "scale_m": [
+        2.0,
+        1.2,
+        0.15
+      ],
+      "domains": [
+        "assembly-line",
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
       "id": "floor_markings",
       "aliases": [
         "road_lines"
@@ -304,8 +395,8 @@
         2
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub"
+        "distribution-hub",
+        "warehouse-bay-a"
       ]
     },
     {
@@ -358,6 +449,22 @@
       "tier": "P2"
     },
     {
+      "id": "light_curtain",
+      "aliases": [
+        "safety_light_curtain"
+      ],
+      "default_asset": "assembly-line/safety-fence",
+      "placement": "footprint",
+      "scale_m": [
+        0.12,
+        1.6,
+        0.12
+      ],
+      "domains": [
+        "distribution-hub"
+      ]
+    },
+    {
       "id": "microwave",
       "coco_id": 68,
       "aliases": [],
@@ -393,6 +500,25 @@
         "kitchen"
       ],
       "tier": "P2"
+    },
+    {
+      "id": "overhead_gantry",
+      "aliases": [
+        "gantry",
+        "crane_rail",
+        "overhead_crane"
+      ],
+      "default_asset": "assembly-line/overhead-gantry",
+      "placement": "anchor",
+      "scale_m": [
+        4.0,
+        3.0,
+        0.8
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
     },
     {
       "id": "pallet",
@@ -448,6 +574,24 @@
       "domains": [
         "warehouse-bay-a",
         "distribution-hub"
+      ]
+    },
+    {
+      "id": "parts_bin",
+      "aliases": [
+        "parts_tote",
+        "kanban_bin"
+      ],
+      "default_asset": "assembly-line/parts-bin",
+      "placement": "footprint",
+      "scale_m": [
+        0.55,
+        0.35,
+        0.4
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
       ]
     },
     {
@@ -541,6 +685,45 @@
       "tier": "P0"
     },
     {
+      "id": "robot_arm",
+      "aliases": [
+        "arm",
+        "crane",
+        "manipulator"
+      ],
+      "default_asset": "assembly-line/robot-arm",
+      "placement": "footprint",
+      "scale_m": [
+        1.2,
+        2.4,
+        1.2
+      ],
+      "domains": [
+        "assembly-line",
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "robotic_arm",
+      "aliases": [
+        "robot_arm",
+        "manipulator",
+        "pick_place_arm"
+      ],
+      "default_asset": "assembly-line/robotic-arm",
+      "placement": "footprint",
+      "scale_m": [
+        0.7,
+        1.6,
+        0.7
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
       "id": "safety_barrier",
       "aliases": [
         "barrier"
@@ -576,6 +759,43 @@
       ]
     },
     {
+      "id": "safety_fence",
+      "aliases": [
+        "machine_guard",
+        "perimeter_fence"
+      ],
+      "default_asset": "assembly-line/safety-fence",
+      "placement": "footprint",
+      "scale_m": [
+        2.0,
+        1.4,
+        0.08
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "shrink_wrap_pallet",
+      "aliases": [
+        "shrink_wrap",
+        "wrapped_pallet",
+        "stretch_wrap"
+      ],
+      "default_asset": "warehouse/shrink-wrap-pallet",
+      "placement": "footprint",
+      "scale_m": [
+        1.2,
+        1.4,
+        1.0
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ]
+    },
+    {
       "id": "signage",
       "aliases": [
         "sign",
@@ -607,6 +827,25 @@
       ]
     },
     {
+      "id": "station",
+      "aliases": [
+        "workstation",
+        "work_station",
+        "hopper"
+      ],
+      "default_asset": "assembly-line/station",
+      "placement": "footprint",
+      "scale_m": [
+        1.0,
+        1.4,
+        1.0
+      ],
+      "domains": [
+        "assembly-line",
+        "distribution-hub"
+      ]
+    },
+    {
       "id": "toilet",
       "coco_id": 61,
       "aliases": [],
@@ -625,9 +864,10 @@
     {
       "id": "tote_bin",
       "aliases": [
-        "tote",
         "bin",
-        "plastic_container"
+        "parts_bin",
+        "plastic_container",
+        "tote"
       ],
       "default_asset": "warehouse/tote-bin",
       "placement": "footprint",
@@ -696,8 +936,28 @@
       "domains": [
         "*"
       ]
+    },
+    {
+      "id": "warehouse_shell",
+      "aliases": [
+        "modular_shell",
+        "hangar",
+        "bay_shell"
+      ],
+      "default_asset": "warehouse/modular-shell",
+      "placement": "footprint",
+      "scale_m": [
+        4.0,
+        4.0,
+        4.0
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub",
+        "assembly-line"
+      ]
     }
   ],
   "policy": "no_paid_assets",
-  "docs": "../localmap-viewer/assets/FREE-ASSETS.md"
+  "docs": "../localmap-viewer/assets/FREE-ALTERNATIVES.md"
 }
