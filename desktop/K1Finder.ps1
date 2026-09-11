@@ -862,6 +862,10 @@ $trackFence=New-Object System.Windows.Forms.CheckBox; $trackFence.Text='Range fe
 # Only ever REDUCES vx, so it cannot make the forward path less safe. DEFAULT ON: it was built
 # 2026-07-04 but never wired here, so every session before 2026-09-03 drove with NO obstacle braking.
 $trackObstacle=New-Object System.Windows.Forms.CheckBox; $trackObstacle.Text='Obstacle brake'; $trackObstacle.AutoSize=$true; $trackObstacle.Location='416,132'; $trackObstacle.ForeColor=$accent; $trackObstacle.Font=$fontBold; $trackObstacle.Checked=$true; $grpTrackCtl.Controls.Add($trackObstacle)
+# Plan A class-aware brake (--obstacle-class-brake). Geometry still triggers; COCO class may only
+# TIGHTEN the vx cap (never loosen, never class-only without depth). DEFAULT OFF until Batch-Label
+# tally on laptop runs looks sane (docs/PLAN_A_CLASS_AWARE_BRAKE.md). Requires Obstacle brake on.
+$trackClassBrake=New-Object System.Windows.Forms.CheckBox; $trackClassBrake.Text='Class brake'; $trackClassBrake.AutoSize=$true; $trackClassBrake.Location='416,154'; $trackClassBrake.Checked=$false; $grpTrackCtl.Controls.Add($trackClassBrake)
 
 # HEAD PROBE (--head-probe). ONE-SHOT startup calibration for the head, NOT a follow feature.
 # The firmware MODE-GATES RotateHead: it answers 400 (bad request) in kPrepare and is accepted only
@@ -1336,6 +1340,11 @@ function Get-TrackExtraArgs {
         # less). Pair with --vx-max 0.15 indoors; a gait cannot stop instantly inside 0.6 m.
         $a += ('--obstacle-brake --obstacle-band-bot 0.75 --obstacle-corridor-frac 0.55 --obstacle-pctile 12 ' +
                '--obstacle-min-valid 70 --obstacle-aged 5 --obstacle-brake-stop 0.7')
+        # Plan A: only emit when both Obstacle brake and Class brake are checked (node also
+        # requires --obstacle-brake; default Class brake unticked = byte-identical).
+        if($trackClassBrake -and $trackClassBrake.Checked){
+            $a += '--obstacle-class-brake on'
+        }
     }
     # Head probe: one-shot startup head calibration (see the checkbox comment). Independent of
     # every follow feature -- it only measures and logs, then re-centres the head.

@@ -252,6 +252,63 @@ class PersonDetector:
             return out
         return out
 
+    def detect_classes(self, frame, class_ids=None, min_conf=None):
+        """Multi-class detect for Plan A class-aware brake. Returns list of
+        {box, cx, cy, w, h, conf, cls}. Never raises. Independent of detect()
+        (follow stays person-only / byte-identical when class-brake is off)."""
+        if not self.ok or frame is None:
+            return []
+        conf = self.conf if min_conf is None else float(min_conf)
+        try:
+            kw = dict(conf=conf, verbose=False)
+            if class_ids is not None:
+                kw["classes"] = list(class_ids)
+            try:
+                res = self.model.predict(frame, **kw)
+            except TypeError:
+                res = self.model.predict(frame, conf=conf, verbose=False)
+        except Exception:  # noqa: BLE001
+            return []
+        allow = None if class_ids is None else set(int(c) for c in class_ids)
+        out = []
+        try:
+            for r in res:
+                boxes = getattr(r, "boxes", None)
+                if boxes is None:
+                    continue
+                for b in boxes:
+                    try:
+                        cls = int(b.cls[0]) if b.cls is not None else -1
+                    except Exception:  # noqa: BLE001
+                        cls = -1
+                    if allow is not None and cls not in allow:
+                        continue
+                    try:
+                        c = float(b.conf[0]) if b.conf is not None else 0.0
+                    except Exception:  # noqa: BLE001
+                        c = 0.0
+                    if c < conf:
+                        continue
+                    try:
+                        xy = b.xyxy[0].tolist()
+                        x1, y1, x2, y2 = [float(v) for v in xy[:4]]
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if x2 <= x1 or y2 <= y1:
+                        continue
+                    out.append({
+                        "box": (x1, y1, x2, y2),
+                        "cx": (x1 + x2) * 0.5,
+                        "cy": (y1 + y2) * 0.5,
+                        "w": (x2 - x1),
+                        "h": (y2 - y1),
+                        "conf": c,
+                        "cls": cls,
+                    })
+        except Exception:  # noqa: BLE001
+            return out
+        return out
+
 
 def target_point_from_box(person):
     """The single 'skeleton centroid' the controller follows. Currently the

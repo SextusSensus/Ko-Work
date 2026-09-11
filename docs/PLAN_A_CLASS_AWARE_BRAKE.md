@@ -1,12 +1,14 @@
 # Plan A — Class-aware obstacle brake
 
-**Status:** design (2026-09-11). Implements the open Phase-3 TODO in
-`OBSTACLE_LABELING_PLAN.md`: *geometry triggers, semantics modulate*.
-**Default-off. Byte-identical when off. Never authorizes forward velocity.**
+**Status:** implemented (2026-09-11), **default off**. Code path:
+`--obstacle-class-brake on` / K1Finder “Class brake” (unticked). Geometry still
+triggers; class only tightens. Selftest: `eval/class_brake_selftest.py`.
+Field confidence still gated on Batch-Label of laptop runs.
+**Never authorizes forward velocity.**
 
 **Gate before field drive:** Batch-Label quality on Todd’s existing `runs\`
 (`desktop/Batch-Label-Runs.ps1` → `autotune/batch_label_tally.json`). Do not
-ship live class modulation until PASS rate + low `suspect_iddrift` look sane.
+enable live class modulation until PASS rate + low `suspect_iddrift` look sane.
 
 ---
 
@@ -114,14 +116,14 @@ script later `eval/class_brake_replay.py` that scores “would tighten” frames
 
 | Slice | Work | Proof |
 |---|---|---|
-| **A0** | This doc + update `OBSTACLE_LABELING_PLAN` “never steer” note (gap steer exists; Plan A still yaw-untouched) | Review |
-| **A1** | Multi-class detect path + flag plumbing + YAML; **no** cap change yet (log-only “would tighten”) | `replay_eval compare` byte-identical with flag off; log-only on |
-| **A2** | Wire `_obstacle_vx_cap` tighten-only modifier + Rerun scalars | Unit/synth: person box closer than furniture → tighter cap; no box → geom; flag off → identical |
-| **A3** | Operator exclusion tests: person box ≈ target range → no class tighten | Selftest |
-| **A4** | Loop-cost shed + field checklist | On-robot timing pulse |
-| **A5** | App checkbox “Class brake” under Obstacle brake (default unticked) | Manual |
+| **A0** | This doc + update `OBSTACLE_LABELING_PLAN` “never steer” note | Done |
+| **A1** | Multi-class detect + CLI/YAML (`obstacle_class_*`) | Done |
+| **A2** | `_obstacle_vx_cap` tighten-only + Rerun scalars | Done |
+| **A3** | Operator exclusion + tighten contracts | `eval/class_brake_selftest.py` |
+| **A4** | Loop-cost shed + field checklist | Open (on-robot) |
+| **A5** | K1Finder “Class brake” (default unticked) | Done |
 
-**Do not start A2 until** Batch-Label tally on real runs shows acceptable pairing PASS rate and low furniture `suspect_iddrift` (Plan A readiness gate).
+**Enable on the robot only after** Batch-Label tally on real runs shows acceptable pairing PASS rate and low furniture `suspect_iddrift` (readiness gate below). Code may ship default-off before that.
 
 ---
 

@@ -114,6 +114,15 @@ obstacle_band_top: 0.3
 obstacle_brake: false
 obstacle_brake_start: 1.15
 obstacle_brake_stop: 0.7
+# Plan A class-aware brake (docs/PLAN_A_CLASS_AWARE_BRAKE.md). Default off = byte-identical.
+obstacle_class_brake: "off"
+obstacle_class_delta_person: 0.25
+obstacle_class_delta_furniture: 0.0
+obstacle_class_delta_appliance: 0.0
+obstacle_class_min_iou: 0.15
+obstacle_class_min_conf: 0.35
+obstacle_class_every_n: 2
+obstacle_class_operator_iou: 0.30
 ground_reject: "off"
 localmap: "off"
 localmap_res_m: 0.10

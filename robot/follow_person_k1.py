@@ -86,6 +86,7 @@ import common  # noqa: E402  (module handle for the mutable common._STREAM flag,
 import rerun_sink  # noqa: E402  (P3.4: module handle -- rerun_sink._RR is rebound by init_rerun)
 from common import (  # noqa: E402
     HARD_VX_LIMIT, HARD_VYAW_LIMIT, DEPTH_WARMUP_S, DEPTH_FRESH_S, DEPTH_DOWN_S, PERSON_CLS, LL_DARK_THRESH,
+    CLASS_BRAKE_ALL_IDS, CLASS_BRAKE_PERSON_IDS, CLASS_BRAKE_FURNITURE_IDS, CLASS_BRAKE_APPLIANCE_IDS,
     LockHint, KP_L_SHOULDER, KP_R_SHOULDER, KP_L_WRIST, KP_R_WRIST,
     S_SEARCH, S_TRACK, S_REACQUIRE, S_PARKED, S_SEARCHING, TS_LOCKED, TS_COASTING, TS_RELOCALIZING,
     clamp, to_bgr, depth_to_meters, iou_xyxy, log, emit_frame, gdbg, EventLog, PERF,
@@ -294,6 +295,12 @@ class Follower:
         # real values; the control-loop end emits every tick (NaN when unlocked) so
         # rrd_to_lerobot _ffill cannot invent a stale confident lock beside cmd=0.
         self._follow_obs = None
+        # Plan A class-aware brake (default off). Cached multi-class dets + last decision for logs/Rerun.
+        self._class_dets = []
+        self._class_det_i = 0
+        self._class_brake_info = None   # dict or None: {cls, delta, name}
+        self._track_box = None          # latest accepted TRACK box (operator exclusion)
+        self._last_frame_w = 0.0        # image width for corridor cx band in _class_brake_delta
 
         # state machine
         self.state = S_SEARCH
@@ -3145,7 +3152,12 @@ class Follower:
         forward corridor BY DEFINITION, so if the nearest corridor return is at (or beyond) the target
         range minus a margin, that return IS the target and we do NOT brake (else the reflex fights the
         follow's own standoff control). We brake only when something is meaningfully closer -- a chair
-        in the way."""
+        in the way.
+
+        Plan A (--obstacle-class-brake on): COCO class may only TIGHTEN the cap (raise effective
+        start). Geometry still supplies clr; no class-only brake when clr is None. Byte-identical
+        when the flag is off."""
+        self._class_brake_info = None
         if not self.a.obstacle_brake:
             return None, None
         clr = self._obstacle_memory(self._corridor_clearance())
@@ -3154,13 +3166,93 @@ class Follower:
         if target_range is not None and clr > (target_range - self.a.obstacle_target_margin):
             return None, clr                             # nearest return is the followed target -> no cap
         bs, bp = self.a.obstacle_brake_start, self.a.obstacle_brake_stop
-        if clr >= bs:
-            cap = None                                   # corridor clear -> no forward cap
-        elif clr <= bp:
-            cap = 0.0                                    # too close -> no forward drive (turn/back only)
+        cap_g = self._grade_vx_cap(clr, bs, bp)
+        if getattr(self.a, "obstacle_class_brake", "off") != "on":
+            return cap_g, clr
+        delta, cls_id, name = self._class_brake_delta(target_range)
+        if delta <= 0.0:
+            return cap_g, clr
+        self._class_brake_info = {"cls": cls_id, "delta": delta, "name": name}
+        cap_c = self._grade_vx_cap(clr, bs + delta, bp)
+        # Tighten-only: earlier/harder class cap wins; never loosen geometry.
+        if cap_g is None:
+            cap = cap_c
+        elif cap_c is None:
+            cap = cap_g
         else:
-            cap = self.vx_max * (clr - bp) / max(1e-6, bs - bp)
+            cap = min(cap_g, cap_c)
+        if rerun_sink._RR.ok:
+            rerun_sink._RR.scalar("/reflex/vx_cap_geom",
+                                  float(cap_g) if cap_g is not None else self.vx_max)
+            rerun_sink._RR.scalar("/reflex/class_id", float(cls_id) if cls_id is not None else -1.0)
+            rerun_sink._RR.scalar("/reflex/class_delta_m", float(delta))
         return cap, clr
+
+    def _grade_vx_cap(self, clr, start, stop):
+        """Geometry grade helper (None = no forward cap)."""
+        if clr >= start:
+            return None
+        if clr <= stop:
+            return 0.0
+        return self.vx_max * (clr - stop) / max(1e-6, start - stop)
+
+    def _class_brake_delta(self, target_range):
+        """Return (delta_m >= 0, coco_cls_or_None, name) for Plan A. Never raises."""
+        try:
+            dets = list(self._class_dets or [])
+            if not dets:
+                return 0.0, None, None
+            # Need image width for corridor band — use last known from viz/seed/box.
+            w_img = None
+            if self._track_box is not None:
+                # Infer a plausible width from recent frame via seed/box if needed later.
+                pass
+            # Corridor band in normalized x from --obstacle-corridor-frac; need w from a det's
+            # sibling frame. Use max box edge as a lower bound for width estimate from dets.
+            # Better: CamNode last frame shape. Fall back to assuming boxes are in a ~640-wide frame
+            # only if we cannot read node; prefer seed/latest person frame dims via tracker.
+            w_img = float(getattr(self, "_last_frame_w", 0.0) or 0.0)
+            if w_img <= 1.0:
+                # Estimate from detection extents (conservative).
+                w_img = max((d["box"][2] for d in dets), default=640.0)
+                w_img = max(w_img, 320.0)
+            frac = float(getattr(self.a, "obstacle_corridor_frac", 0.35))
+            x0 = w_img * (0.5 - 0.5 * frac)
+            x1 = w_img * (0.5 + 0.5 * frac)
+            min_conf = float(getattr(self.a, "obstacle_class_min_conf", 0.35))
+            op_iou = float(getattr(self.a, "obstacle_class_operator_iou", 0.30))
+            tbox = self._track_box
+            d_person = max(0.0, float(getattr(self.a, "obstacle_class_delta_person", 0.25)))
+            d_furn = max(0.0, float(getattr(self.a, "obstacle_class_delta_furniture", 0.0)))
+            d_app = max(0.0, float(getattr(self.a, "obstacle_class_delta_appliance", 0.0)))
+            best = None  # (delta, cy, cls, name)
+            for d in dets:
+                if float(d.get("conf", 0.0)) < min_conf:
+                    continue
+                cx = float(d["cx"])
+                if cx < x0 or cx > x1:
+                    continue
+                cls = int(d.get("cls", -1))
+                if cls in CLASS_BRAKE_PERSON_IDS:
+                    if tbox is not None and iou_xyxy(d["box"], tbox) >= op_iou:
+                        continue  # followed operator — not an obstacle
+                    delta, name = d_person, "person"
+                elif cls in CLASS_BRAKE_FURNITURE_IDS:
+                    delta, name = d_furn, "furniture"
+                elif cls in CLASS_BRAKE_APPLIANCE_IDS:
+                    delta, name = d_app, "appliance"
+                else:
+                    continue
+                if delta <= 0.0:
+                    continue
+                key = (delta, float(d["cy"]))
+                if best is None or key > (best[0], best[1]):
+                    best = (delta, float(d["cy"]), cls, name)
+            if best is None:
+                return 0.0, None, None
+            return best[0], best[2], best[3]
+        except Exception:  # noqa: BLE001 -- class path must never kill the brake
+            return 0.0, None, None
 
     def _hold(self):
         """Command a halt (hold position). Safe in preview (no-op)."""
@@ -4078,6 +4170,24 @@ class Follower:
         _pt = time.perf_counter()
         persons = self.det.detect(frame)
         PERF.add("detect", (time.perf_counter() - _pt) * 1000.0)
+        try:
+            self._last_frame_w = float(frame.shape[1])
+        except Exception:
+            pass
+        # Plan A: multi-class detect for class-aware brake (decimated; inert when flag off).
+        if (getattr(self.a, "obstacle_class_brake", "off") == "on"
+                and self.a.obstacle_brake and self.det is not None and self.det.ok):
+            self._class_det_i += 1
+            _n = max(1, int(getattr(self.a, "obstacle_class_every_n", 2)))
+            if (self._class_det_i % _n) == 0:
+                _ptc = time.perf_counter()
+                try:
+                    self._class_dets = self.det.detect_classes(
+                        frame, class_ids=list(CLASS_BRAKE_ALL_IDS),
+                        min_conf=float(getattr(self.a, "obstacle_class_min_conf", 0.35)))
+                except Exception:  # noqa: BLE001
+                    self._class_dets = []
+                PERF.add("class_detect", (time.perf_counter() - _ptc) * 1000.0)
         self._frame_idx += 1   # Stage 2: monotonic frame counter (admit spacing)
 
         # Stage 1: stamp a stable track_id + motion prediction on each person.
@@ -5084,6 +5194,7 @@ class Follower:
         # applied before the slew (so the slew ramps toward the cap) and re-applied after (like
         # forbid_forward). Only ever reduces forward vx; yaw untouched. Inert unless --obstacle-brake.
         self._lm_target_range = rng     # so the local map excludes the operator's own pixels
+        self._track_box = best.get("box") if isinstance(best, dict) else None
         _obs_cap, _clr = self._obstacle_vx_cap(rng)
         # Stage-4 gap audit: log where the free space is and which way a steering layer WOULD
         # go. Observation only -- no command, and nothing below reads its result.
@@ -5144,6 +5255,10 @@ class Follower:
                 self._last_clr_log = _nowm
                 log("CLEARANCE %.2fm -> vx-cap %.2f (brake %.1f..%.1f)"
                     % (_clr, _obs_cap, self.a.obstacle_brake_stop, self.a.obstacle_brake_start))
+                _cbi = self._class_brake_info
+                if _cbi:
+                    log("CLASS-BRAKE %s cls=%s delta=+%.2fm"
+                        % (_cbi.get("name"), _cbi.get("cls"), _cbi.get("delta", 0.0)))
             if rerun_sink._RR.ok:
                 rerun_sink._RR.scalar("/reflex/clearance_m", _clr)
                 rerun_sink._RR.scalar("/reflex/vx_cap", _obs_cap if _obs_cap is not None else self.vx_max)
@@ -5854,6 +5969,26 @@ def parse_args(argv):
                         "silently kills the 360 escape sweep (it did exactly that until c43f161).")
     p.add_argument("--obstacle-brake-stop", type=float, default=0.7,
                    help="corridor clearance (m) at/below which forward vx is capped to 0 (turn/back only)")
+    p.add_argument("--obstacle-class-brake", choices=("off", "on"), default="off",
+                   help="Plan A: COCO class may only TIGHTEN the obstacle-brake vx cap "
+                        "(geometry still triggers; never loosens; never class-only without depth). "
+                        "Default off = byte-identical. Requires --obstacle-brake.")
+    p.add_argument("--obstacle-class-delta-person", type=float, default=0.25,
+                   help="metres added to --obstacle-brake-start when a bystander person is in the "
+                        "corridor (followed operator excluded by IoU). >=0 only.")
+    p.add_argument("--obstacle-class-delta-furniture", type=float, default=0.0,
+                   help="metres added to start for chair/couch/bed/table/toilet. >=0 only.")
+    p.add_argument("--obstacle-class-delta-appliance", type=float, default=0.0,
+                   help="metres added to start for tv/laptop/fridge/oven/…. >=0 only.")
+    p.add_argument("--obstacle-class-min-conf", type=float, default=0.35,
+                   help="min YOLO conf for a class-brake detection")
+    p.add_argument("--obstacle-class-min-iou", type=float, default=0.15,
+                   help="reserved: min box↔corridor-column IoU to claim a depth blob (v1 uses "
+                        "corridor cx band; kept for YAML parity / future overlap filter)")
+    p.add_argument("--obstacle-class-every-n", type=int, default=2,
+                   help="run multi-class detect every N control frames (loop budget)")
+    p.add_argument("--obstacle-class-operator-iou", type=float, default=0.30,
+                   help="person boxes overlapping the followed target above this IoU are ignored")
     p.add_argument("--localmap", choices=("off", "on"), default="off",
                    help="short-horizon robot-centred occupancy memory built from depth + odometry. "
                         "NOT a map: cells expire after --localmap-ttl-s, nothing persists across "
