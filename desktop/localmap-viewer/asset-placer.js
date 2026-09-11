@@ -629,18 +629,20 @@
 
   function demoSeedFor(domainId) {
     var id = String(domainId || '').toLowerCase();
-    if (id.indexOf('kitchen') >= 0) {
+    if (id.indexOf('assembly') >= 0 || id.indexOf('factory') >= 0 || id.indexOf('kitchen') >= 0) {
       return [
-        { class: 'refrigerator', x: -2.5, y: 1.6, yaw: 0.1, w: 0.7, h: 0.7, confidence: 0.91, run_id: 'demo-kitchen-1' },
-        { class: 'oven', x: 1.4, y: -2.5, yaw: 0, w: 0.6, h: 0.65, confidence: 0.88, run_id: 'demo-kitchen-1' },
-        { class: 'counter', x: 0, y: 0.5, yaw: 0, w: 1.8, h: 0.9, confidence: 0.8, run_id: 'demo-kitchen-1' },
-        { class: 'cabinet', x: 2.4, y: -0.8, yaw: 1.57, w: 0.7, h: 0.5, confidence: 0.84, run_id: 'demo-kitchen-2' },
-        { class: 'dining_table', x: 0.2, y: -1.1, yaw: 0.2, w: 1.3, h: 0.8, confidence: 0.86, run_id: 'demo-kitchen-2' },
-        { class: 'chair', x: -0.6, y: -1.0, yaw: 0.4, w: 0.45, h: 0.5, confidence: 0.79, run_id: 'demo-kitchen-2' },
-        { class: 'chair', x: 0.9, y: -1.3, yaw: -0.3, w: 0.45, h: 0.5, confidence: 0.77, run_id: 'demo-kitchen-2' },
-        { class: 'trash', x: 2.2, y: 1.4, yaw: 0, w: 0.4, h: 0.4, confidence: 0.7, run_id: 'demo-kitchen-3' },
-        { class: 'microwave', x: -2.3, y: -2.4, yaw: 0, w: 0.5, h: 0.35, confidence: 0.82, run_id: 'demo-kitchen-3' },
-        { class: 'person', x: 0.8, y: 0.2, yaw: -0.8, confidence: 0.93, run_id: 'demo-kitchen-3' }
+        { class: 'conveyor', x: -3.4, y: 0, yaw: 0, w: 0.9, h: 8, confidence: 0.93, run_id: 'demo-factory-1' },
+        { class: 'conveyor', x: 0, y: 0, yaw: 0, w: 0.9, h: 8, confidence: 0.91, run_id: 'demo-factory-1' },
+        { class: 'conveyor', x: 3.4, y: 0, yaw: 0, w: 0.9, h: 8, confidence: 0.92, run_id: 'demo-factory-1' },
+        { class: 'assembly_station', x: -2.2, y: -2.0, yaw: 1.57, confidence: 0.88, run_id: 'demo-factory-2' },
+        { class: 'assembly_station', x: 2.2, y: 2.0, yaw: -1.57, confidence: 0.85, run_id: 'demo-factory-2' },
+        { class: 'robotic_arm', x: -2.15, y: -0.4, yaw: 1.57, confidence: 0.78, run_id: 'demo-factory-2' },
+        { class: 'robotic_arm', x: 2.15, y: 0.5, yaw: -1.57, confidence: 0.76, run_id: 'demo-factory-2' },
+        { class: 'parts_bin', x: -2.4, y: -3.2, yaw: 0.2, confidence: 0.82, run_id: 'demo-factory-3' },
+        { class: 'safety_fence', x: -4.6, y: 0, yaw: 0, confidence: 0.9, run_id: 'demo-factory-3' },
+        { class: 'control_panel', x: -1.0, y: -4.8, yaw: 0.2, confidence: 0.84, run_id: 'demo-factory-3' },
+        { class: 'overhead_gantry', x: 0, y: 0.5, yaw: 0, confidence: 0.75, run_id: 'demo-factory-1' },
+        { class: 'person', x: 0.2, y: -1.5, yaw: 0.3, confidence: 0.9, run_id: 'demo-factory-4' }
       ];
     }
     if (id.indexOf('distribution') >= 0 || id.indexOf('hub') >= 0) {
@@ -664,7 +666,8 @@
     }
     // warehouse-bay-a default
     return [
-      { class: 'pallet_rack', x: -3.15, y: 0, yaw: 0, w: 1.15, h: 6, confidence: 0.9, run_id: 'demo-wh-1' },
+      { class: 'corner_shelf', x: -8.6, y: 2.5, yaw: 1.57, confidence: 0.9, run_id: 'demo-wh-1' },
+        { class: 'pallet_rack', x: -3.15, y: 0, yaw: 0, w: 1.15, h: 6, confidence: 0.9, run_id: 'demo-wh-1' },
       { class: 'pallet_rack', x: 3.15, y: 0, yaw: 0, w: 1.15, h: 6, confidence: 0.9, run_id: 'demo-wh-1' },
       { class: 'pallet', x: -1.6, y: 6.5, yaw: 0, confidence: 0.8, run_id: 'demo-wh-2' },
       { class: 'cardboard_box', x: -1.6, y: 6.5, yaw: 0.2, confidence: 0.82, run_id: 'demo-wh-2' },

@@ -38,6 +38,9 @@ k1LocalMap.exportAssetInstances(); // localStorage + optional k1LocalMapHostSave
 
 // Demo seed for active domain (also ?demo_assets=1):
 k1LocalMap.runAssetDemo();
+
+// Building envelope walls (default ON):
+k1LocalMap.setExteriorVisible(false); // hide shell to inspect from outside
 ```
 
 Lower-level: `window.k1LocalMapAssets` (catalog/ontology accessors, procedural builders).
@@ -48,7 +51,7 @@ Lower-level: `window.k1LocalMapAssets` (catalog/ontology accessors, procedural b
 cd desktop
 python3 -m http.server 8765
 # Kitchen with seed instances:
-# http://127.0.0.1:8765/localmap-viewer/index.html?domain=kitchen
+# http://127.0.0.1:8765/localmap-viewer/index.html?domain=assembly-factory
 # Distribution hub + force mock detections:
 # http://127.0.0.1:8765/localmap-viewer/index.html?domain=distribution-hub&demo_assets=1
 ```
@@ -72,7 +75,8 @@ Plan A / COCO classes in `robot/common.py` (`CLASS_BRAKE_*`) are first-class ont
 
 ## Domains covered
 
-- **kitchen** — stove, cabinets, table/chairs, fridge (procedural), microwave, trash, doorway, person
+- **assembly-factory** — dense assembly line (conveyors, stations, arms, fencing, HMI, Poly Haven industrial); legacy `kitchen` id maps here
+- **kitchen (removed as seed)** — stove, cabinets, table/chairs, fridge (procedural), microwave, trash, doorway, person
 - **warehouse-bay-a** — racks, pallets, boxes, cones, bollards, dock
 - **distribution-hub** — multi-aisle racks, conveyors, dock doors, totes, forklift proxy, barriers (replaces outdoor-patio)
 - **generic / future** — sofa, plant, pillar, wall, stairs, elevator, signage

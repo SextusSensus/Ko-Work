@@ -38,7 +38,13 @@
   var liveStateEl = document.getElementById('live-state');
   var liveDetailEl = document.getElementById('live-detail');
 
-  var layers = { env: true, occ: true, robot: true, trail: true, follow: true };
+  // exterior: building shell / perimeter walls (default ON — hide to inspect interior)
+  var layers = { env: true, occ: true, robot: true, trail: true, follow: true, exterior: true };
+  try {
+    var _exStored = localStorage.getItem('k1LocalMap.exteriorVisible');
+    if (_exStored === '0' || _exStored === 'false') layers.exterior = false;
+    else if (_exStored === '1' || _exStored === 'true') layers.exterior = true;
+  } catch (e) {}
 
   var scene = new THREE.Scene();
   scene.background = new THREE.Color(BG);
@@ -87,6 +93,9 @@
   scene.add(fill);
 
   var envGroup = new THREE.Group();
+  var exteriorGroup = new THREE.Group();
+  exteriorGroup.name = 'exteriorShell';
+  exteriorGroup.visible = !!layers.exterior;
   var cellGroup = new THREE.Group();
   var robotGroup = new THREE.Group();
   var trailGroup = new THREE.Group();
@@ -94,6 +103,30 @@
   scene.add(cellGroup);
   scene.add(robotGroup);
   scene.add(trailGroup);
+
+  /** Reset env + attach a fresh exterior shell group (walls stay togglable). */
+  function beginEnvBuild() {
+    clearGroup(envGroup);
+    exteriorGroup = new THREE.Group();
+    exteriorGroup.name = 'exteriorShell';
+    exteriorGroup.visible = !!layers.exterior && !!layers.env;
+    envGroup.add(exteriorGroup);
+  }
+
+  function applyExteriorVisibility() {
+    if (exteriorGroup) exteriorGroup.visible = !!layers.exterior && !!layers.env;
+    try {
+      localStorage.setItem('k1LocalMap.exteriorVisible', layers.exterior ? '1' : '0');
+    } catch (e) {}
+    var btn = document.querySelector('#layers .layer[data-layer="exterior"]');
+    if (btn) btn.classList.toggle('on', !!layers.exterior);
+  }
+
+  function setExteriorVisible(on) {
+    layers.exterior = !!on;
+    applyExteriorVisibility();
+    return layers.exterior;
+  }
 
   var trailPoints = [];
   // Default elevated 3/4 framing (OrbitControls owns target + spherical state)
@@ -585,7 +618,7 @@
     var shelf = stdMat(0x3a4048, { metalness: 0.35, roughness: 0.52 });
     var beam = stdMat(SAFETY, { metalness: 0.4, roughness: 0.42, emissive: SAFETY, emissiveIntensity: 0.06 });
     var brace = stdMat(0x2e343c, { metalness: 0.5, roughness: 0.4 });
-    var h = 2.75;
+    var h = 3.0; // pallet-rack bay ~2.7–4.5 m; low-bay default 3.0 m
     var corners = [
       [-depth / 2, -len / 2], [-depth / 2, len / 2],
       [depth / 2, -len / 2], [depth / 2, len / 2]
@@ -615,7 +648,7 @@
   }
 
   function buildWarehouse() {
-    clearGroup(envGroup);
+    beginEnvBuild();
     var stripe = addFloor(32, 12);
     // center aisle safety lanes
     stripe(0, 0, 0.14, 18);
@@ -648,9 +681,9 @@
           roughnessMap: concreteRough || null
         })
       : stdMat(0x14171b, { metalness: 0.08, roughness: 0.92 });
-    envGroup.add(makeBox(20, 4.4, 0.22, wall, 0, 2.2, -9.5));
-    envGroup.add(makeBox(0.22, 4.4, 22, wall, -9.5, 2.2, 0));
-    envGroup.add(makeBox(0.22, 4.4, 22, wall, 9.5, 2.2, 0));
+    exteriorGroup.add(makeBox(20, 4.4, 0.22, wall, 0, 2.2, -9.5));
+    exteriorGroup.add(makeBox(0.22, 4.4, 22, wall, -9.5, 2.2, 0));
+    exteriorGroup.add(makeBox(0.22, 4.4, 22, wall, 9.5, 2.2, 0));
 
     // dock door
     var door = stdMat(0x1a222a, { metalness: 0.35, roughness: 0.45 });
@@ -672,7 +705,7 @@
     // bollards
     var bollard = stdMat(SAFETY, { metalness: 0.3, roughness: 0.4, emissive: SAFETY, emissiveIntensity: 0.05 });
     [[-1.8, -8.0], [1.8, -8.0], [-2.2, 4.2], [2.2, 4.2]].forEach(function (p) {
-      envGroup.add(makeBox(0.15, 0.70, 0.15, bollard, p[0], 0.35, p[1]));
+      envGroup.add(makeBox(0.16, 0.75, 0.16, bollard, p[0], 0.38, p[1]));
     });
 
     // Free library props (Poly Haven / Kenney / authored pallet)
@@ -681,17 +714,17 @@
     placeGltfClone('lib-pallet', 1.7, 0, 6.2, 1.0, -0.15);
     placeGltfClone('ph-crate', 1.7, 0.12, 6.2, 1.0, -0.1);
     placeGltfClone('lib-pallet', -1.5, 0, -6.0, 1.0, 0.1);
-    placeGltfClone('ph-box', -1.45, 0.12, -5.95, 0.95, 0.35);
-    placeGltfClone('lib-cone', 0.5, 0, -7.5, 1.1, 0);
+    placeGltfClone('ph-box', -1.45, 0.12, -5.95, null, 0.35);
+    placeGltfClone('lib-cone', 0.5, 0, -7.5, null, 0); // 0.35×0.70×0.35 m
     placeGltfClone('lib-barrier', -7.2, 0, -8.4, 1.0, Math.PI / 2);
     placeGltfClone('lib-barrier', 7.2, 0, -8.4, 1.0, -Math.PI / 2);
     placeGltfClone('lib-handtruck', 2.0, 0, -4.0, 1.0, 0.5);
     placeGltfClone('ph-plastic', 2.4, 0, -3.5, 1.0, 0.2);
-    placeGltfClone('lib-shelves', -8.6, 0, 2.5, 1.0, Math.PI / 2);
+    placeGltfClone('lib-shelves', -8.6, 0, 2.5, null, Math.PI / 2); // corner 1.10×2.20×0.50 m
     placeGltfClone('ph-rack', 8.6, 0, -1.5, 1.0, -Math.PI / 2);
     placeGltfClone('lib-barrel', -6.8, 0, 5.5, 1.0, 0.2);
     placeGltfClone('lib-barrel', -6.2, 0, 5.8, 1.0, -0.3);
-    placeGltfClone('lib-shutter', 0, 0, -9.55, 1.05, 0);
+    placeGltfClone('lib-shutter', 0, 0, -9.55, null, 0);
     placeGltfClone('lib-light', -3.5, 4.0, 0, 1.0, 0);
     placeGltfClone('lib-light', 3.5, 4.0, 0, 1.0, 0);
     placeGltfClone('lib-wet', 1.2, 0, -7.2, 1.0, 0.15);
@@ -700,7 +733,7 @@
   }
 
   function buildKitchen() {
-    clearGroup(envGroup);
+    beginEnvBuild();
     // Prefer wood floor when available
     var floorMap = texRepeat(woodTex || floorTex, 8, 8);
     if (floorMap) {
@@ -780,7 +813,7 @@
     var load = wrapped
       ? stdMat(0xc8d0d8, { metalness: 0.15, roughness: 0.35, transparent: true, opacity: 0.92 })
       : cardboardMat(0xc4a06a);
-    envGroup.add(makeBox(1.05, 0.12, 1.05, wood, x, 0.06, z));
+    envGroup.add(makeBox(1.20, 0.14, 1.00, wood, x, 0.07, z));
     var y = 0.12;
     for (var i = 0; i < layers; i++) {
       var h = 0.28 + (i % 3) * 0.06;
@@ -1049,15 +1082,15 @@
     var body = stdMat(0xe0a820, { metalness: 0.35, roughness: 0.42 });
     var dark = stdMat(0x1c1c1e, { metalness: 0.4, roughness: 0.35 });
     var g = new THREE.Group();
-    g.add(makeBox(1.05, 0.50, 1.70, body, 0, 0.52, -0.05));
-    g.add(makeBox(0.90, 0.38, 0.55, dark, 0, 0.98, -0.45));
-    g.add(makeBox(0.07, 1.55, 0.07, metalMat(0x9aa7b5), -0.30, 1.15, 0.85));
-    g.add(makeBox(0.07, 1.55, 0.07, metalMat(0x9aa7b5), 0.30, 1.15, 0.85));
-    g.add(makeBox(0.65, 0.05, 0.85, metalMat(0xb0bac4), 0, 0.32, 1.15));
-    g.add(makeBox(0.20, 0.20, 0.12, dark, -0.42, 0.20, 0.45));
-    g.add(makeBox(0.20, 0.20, 0.12, dark, 0.42, 0.20, 0.45));
-    g.add(makeBox(0.20, 0.20, 0.12, dark, -0.42, 0.20, -0.55));
-    g.add(makeBox(0.20, 0.20, 0.12, dark, 0.42, 0.20, -0.55));
+    g.add(makeBox(0.95, 0.55, 1.55, body, 0, 0.55, 0));
+    g.add(makeBox(0.85, 0.35, 0.55, dark, 0, 1.0, -0.35));
+    g.add(makeBox(0.08, 1.4, 0.08, metalMat(0x9aa7b5), -0.28, 1.1, 0.85));
+    g.add(makeBox(0.08, 1.4, 0.08, metalMat(0x9aa7b5), 0.28, 1.1, 0.85));
+    g.add(makeBox(0.7, 0.05, 0.9, metalMat(0xb0bac4), 0, 0.35, 1.15));
+    g.add(makeBox(0.22, 0.22, 0.12, dark, -0.4, 0.22, 0.4));
+    g.add(makeBox(0.22, 0.22, 0.12, dark, 0.4, 0.22, 0.4));
+    g.add(makeBox(0.22, 0.22, 0.12, dark, -0.4, 0.22, -0.5));
+    g.add(makeBox(0.22, 0.22, 0.12, dark, 0.4, 0.22, -0.5));
     g.position.set(x, 0, z);
     g.rotation.y = yaw || 0;
     envGroup.add(g);
@@ -1070,29 +1103,28 @@
     }), x, y, z + 0.04));
   }
 
-  // Real-world-ish metre targets for free meshes that ship non-metre / cartoon-huge.
-  // Aligns with asset-ontology scale_m. K1 proxy stays ~0.95×0.40×0.18 m.
+  // Industry-standard real-world sizes in metres (NOT relative to K1).
+  // K1 keeps its own envelope (~0.95×0.40×0.18 m). Aligns with asset-ontology scale_m.
   var PROP_SCALE_M = {
-    "lib-cone": [0.35, 0.72, 0.35],
-    "cone": [0.30, 0.70, 0.30],
-    "lib-shelves": [1.10, 2.20, 0.50],
-    "ph-rack": [0.90, 1.90, 0.55],
-    "lib-crush": [2.20, 1.10, 0.45],
-    "lib-block": [1.60, 0.85, 0.55],
-    "lib-barrier": [1.55, 0.82, 0.55],
-    "lib-handtruck": [0.55, 1.20, 0.70],
-    "lib-hand-truck": [0.55, 1.20, 0.70],
-    "box-large": [0.55, 0.50, 0.50],
-    "box-wide": [0.50, 0.45, 0.70],
-    "ph-box": [0.40, 0.35, 0.45],
-    "ph-crate": [0.60, 0.45, 0.45],
-    "ph-plastic": [0.45, 0.35, 0.45],
-    "ph-tote": [0.55, 0.35, 0.40],
-    "lib-barrel": [0.60, 0.90, 0.60],
-    "lib-pallet": [1.10, 0.12, 1.10],
-    "lib-shutter": [3.20, 3.20, 0.25],
-    "lib-wet": [0.30, 0.65, 0.35],
-    "door-wide-open": [3.40, 3.20, 0.20]
+    'lib-cone': [0.35, 0.70, 0.35],       // traffic cone ~0.45–0.75 m tall
+    'cone': [0.30, 0.70, 0.30],
+    'lib-shelves': [1.10, 2.20, 0.50],    // corner steel shelf (~1.8–2.4 H, ~0.4–0.6 D)
+    'ph-rack': [1.20, 3.00, 0.60],        // pallet-rack bay section (~2.7–4.5 H)
+    'lib-crush': [2.20, 1.10, 0.45],
+    'lib-block': [1.60, 0.85, 0.55],
+    'lib-barrier': [1.55, 0.82, 0.55],    // concrete road barrier
+    'lib-handtruck': [0.55, 1.20, 0.70],
+    'lib-hand-truck': [0.55, 1.20, 0.70],
+    'box-large': [0.55, 0.50, 0.50],      // cardboard, not Kenney toy cubes
+    'box-wide': [0.55, 0.45, 0.70],
+    'ph-box': [0.45, 0.40, 0.45],
+    'ph-crate': [0.60, 0.45, 0.45],
+    'ph-plastic': [0.45, 0.40, 0.55],
+    'ph-tote': [0.55, 0.35, 0.40],
+    'lib-barrel': [0.60, 0.90, 0.60],
+    'lib-pallet': [1.20, 0.14, 1.00],     // Euro/GMA-ish pallet
+    'lib-shutter': [3.20, 3.20, 0.25],    // dock door ~3–4 × 3–4 m
+    'lib-wet': [0.35, 0.90, 0.20]
   };
 
   function fitRootToScaleM(root, scaleM) {
@@ -1104,16 +1136,18 @@
     var sx = scaleM[0] / size.x;
     var sy = scaleM[1] / size.y;
     var sz = scaleM[2] / size.z;
+    // Uniform footprint XZ; independent Y (same as asset-placer.fitObjectToScale)
     var s = Math.min(sx, sz);
     root.scale.set(s, sy, s);
   }
 
-  function placeGltfClone(name, x, y, z, scale, rotY, parent) {
+  function placeGltfClone(name, x, y, z, scale, rotY) {
     var src = gltfCache[name];
     if (!src) return;
     var root = new THREE.Group();
     var clone = src.clone(true);
     root.add(clone);
+    // Prefer explicit scale_m [X,Y,Z] metres, then PROP_SCALE_M, else legacy scalar
     if (Array.isArray(scale)) {
       fitRootToScaleM(root, scale);
     } else if (PROP_SCALE_M[name]) {
@@ -1126,15 +1160,16 @@
     root.traverse(function (o) {
       if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
     });
+    // Ground to floor unless caller passed an explicit elevated Y (e.g. microwave on counter)
     if (y == null || y === 0) {
       var box3 = new THREE.Box3().setFromObject(root);
       if (isFinite(box3.min.y)) root.position.y -= box3.min.y;
     }
-    (parent || envGroup).add(root);
+    envGroup.add(root);
   }
 
-  function buildDistributionHub  function buildDistributionHub() {
-    clearGroup(envGroup);
+  function buildDistributionHub() {
+    beginEnvBuild();
     var floorMap = texRepeat(antiSlipTex || floorTex, 14, 14);
     var floorMat = floorMap
       ? new THREE.MeshStandardMaterial({ map: floorMap, color: 0xc8c8c8, metalness: 0.04, roughness: 0.9 })
@@ -1182,10 +1217,10 @@
           map: wallMap, color: 0x9aa0a6, metalness: 0.18, roughness: 0.72
         })
       : stdMat(0x14171b, { metalness: 0.08, roughness: 0.92 });
-    envGroup.add(makeBox(28, 5.0, 0.28, wall, 0, 2.5, -10.4));
-    envGroup.add(makeBox(0.28, 5.0, 28, wall, -11.5, 2.5, 0));
-    envGroup.add(makeBox(0.28, 5.0, 28, wall, 11.5, 2.5, 0));
-    envGroup.add(makeBox(28, 5.0, 0.28, wall, 0, 2.5, 11.5));
+    exteriorGroup.add(makeBox(28, 5.0, 0.28, wall, 0, 2.5, -10.4));
+    exteriorGroup.add(makeBox(0.28, 5.0, 28, wall, -11.5, 2.5, 0));
+    exteriorGroup.add(makeBox(0.28, 5.0, 28, wall, 11.5, 2.5, 0));
+    exteriorGroup.add(makeBox(28, 5.0, 0.28, wall, 0, 2.5, 11.5));
 
     // Loading dock — three roll-up doors
     dockDoor(-5.2, -10.2, 3.2, true);
@@ -1232,7 +1267,7 @@
     // Safety bollards + barriers at dock
     var bollard = stdMat(SAFETY, { metalness: 0.3, roughness: 0.4, emissive: SAFETY, emissiveIntensity: 0.08 });
     [[-7.2, -8.6], [-3.2, -8.6], [3.2, -8.6], [7.2, -8.6], [-1.0, 4.8], [1.0, 4.8], [-4.6, -2], [4.6, -2]].forEach(function (p) {
-      envGroup.add(makeBox(0.15, 0.75, 0.15, bollard, p[0], 0.375, p[1]));
+      envGroup.add(makeBox(0.18, 0.80, 0.18, bollard, p[0], 0.40, p[1]));
     });
     // low barrier rails
     var rail = stdMat(SAFETY, { metalness: 0.35, roughness: 0.4 });
@@ -1242,8 +1277,8 @@
     // Safety cones (procedural + Kenney if loaded)
     var coneMat = stdMat(0xe07020, { metalness: 0.15, roughness: 0.55, emissive: 0xe07020, emissiveIntensity: 0.12 });
     [[-2.4, -8.2], [2.4, -8.2], [6.5, 1.0], [-6.5, 7.5]].forEach(function (p) {
-      var cone = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.70, 10), coneMat);
-      cone.position.set(p[0], 0.35, p[1]);
+      var cone = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.45, 10), coneMat);
+      cone.position.set(p[0], 0.22, p[1]);
       cone.castShadow = true;
       envGroup.add(cone);
     });
@@ -1262,20 +1297,20 @@
     // Hand-truck / pallet-jack proxies
     var jack = metalMat(0x4a5560);
     [[-0.8, -6.8], [2.2, 6.5]].forEach(function (p) {
-      envGroup.add(makeBox(0.50, 0.08, 1.0, jack, p[0], 0.10, p[1]));
-      envGroup.add(makeBox(0.07, 0.85, 0.07, jack, p[0] - 0.18, 0.50, p[1] - 0.40));
-      envGroup.add(makeBox(0.40, 0.04, 0.04, jack, p[0], 0.95, p[1] - 0.40));
+      envGroup.add(makeBox(0.55, 0.08, 1.1, jack, p[0], 0.12, p[1]));
+      envGroup.add(makeBox(0.08, 0.55, 0.08, jack, p[0] - 0.2, 0.4, p[1] - 0.45));
+      envGroup.add(makeBox(0.45, 0.05, 0.05, jack, p[0], 0.7, p[1] - 0.45));
     });
 
     // Free CC0 Kenney / Poly Haven props — dock + center aisle (orbit-readable)
     placeGltfClone('conveyor-long', 0, 0, -4.2, 1.0, 0);
-    placeGltfClone('box-large', -1.1, 0, -4.0, 1.15, 0.15);
+    placeGltfClone('box-large', -1.1, 0, -4.0, null, 0.15);
     placeGltfClone('box-wide', 1.3, 0, -3.7, 1.1, -0.2);
-    placeGltfClone('box-large', -6.8, 0, -5.5, 1.1, 0.2);
+    placeGltfClone('box-large', -6.8, 0, -5.5, null, 0.2);
     placeGltfClone('box-wide', 6.8, 0, 4.2, 1.05, -0.4);
     placeGltfClone('cone', -2.4, 0, -8.2, 1.15, 0);
-    placeGltfClone('lib-cone', 2.4, 0, -8.2, 1.1, 0);
-    placeGltfClone('ph-box', -2.8, 0, -6.8, 1.2, 0.3);
+    placeGltfClone('lib-cone', 2.4, 0, -8.2, null, 0);
+    placeGltfClone('ph-box', -2.8, 0, -6.8, null, 0.3);
     placeGltfClone('ph-crate', 2.8, 0, -6.6, 1.15, -0.2);
     placeGltfClone('ph-box', 0.15, 0, -5.9, 1.1, -0.1);
     placeGltfClone('lib-pallet', -3.2, 0, -7.4, 1.05, 0.15);
@@ -1292,14 +1327,14 @@
     placeGltfClone('lib-crush', -8.8, 0, -4.0, 1.0, Math.PI / 2);
     placeGltfClone('lib-block', 8.8, 0, -6.5, 1.0, 0);
     placeGltfClone('lib-handtruck', -0.9, 0, -6.5, 1.05, 0.4);
-    placeGltfClone('lib-shelves', -9.2, 0, 6.5, 1.05, Math.PI / 2);
+    placeGltfClone('lib-shelves', -9.2, 0, 6.5, null, Math.PI / 2); // corner 1.10×2.20×0.50 m
     placeGltfClone('lib-barrel', -7.4, 0, 5.2, 1.05, 0.2);
     placeGltfClone('lib-barrel', -6.8, 0, 5.5, 1.05, -0.3);
-    placeGltfClone('lib-shutter', 0, 0, -10.15, 1.15, 0);
+    placeGltfClone('lib-shutter', 0, 0, -10.15, null, 0);
     placeGltfClone('door-wide-open', -5.2, 0, -10.05, 1.15, 0);
     placeGltfClone('lib-light', -3.8, 3.8, 0, 1.0, 0);
     placeGltfClone('lib-light', 3.8, 3.8, 0, 1.0, 0);
-    placeGltfClone('lib-wet', 1.2, 0, -7.5, 1.05, 0.15);
+    placeGltfClone('lib-wet', 1.2, 0, -7.5, null, 0.15);
 
     envGroup.visible = layers.env;
   }
@@ -1630,7 +1665,11 @@
       var id = btn.getAttribute('data-layer');
       layers[id] = !layers[id];
       btn.classList.toggle('on', layers[id]);
-      if (id === 'env') envGroup.visible = layers.env;
+      if (id === 'env') {
+        envGroup.visible = layers.env;
+        applyExteriorVisibility();
+      }
+      if (id === 'exterior') applyExteriorVisibility();
       if (id === 'occ') cellGroup.visible = layers.occ;
       if (id === 'robot') robotGroup.visible = layers.robot;
       if (id === 'trail') trailGroup.visible = layers.trail;
@@ -1688,6 +1727,8 @@
     getControls: function () { return controls; },
     setFollowPose: function (on) { layers.follow = !!on; },
     setShowRobot: function (on) { layers.robot = !!on; robotGroup.visible = layers.robot; },
+    setExteriorVisible: setExteriorVisible,
+    getExteriorVisible: function () { return !!layers.exterior; },
     setPose: function (pose) { pushTrail(pose); setPose(pose); },
     loadSample: function () {
       return loadJson('./sample.json').then(setMap).catch(function (e) { showErr(String(e)); });

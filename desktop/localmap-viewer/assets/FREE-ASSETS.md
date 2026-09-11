@@ -45,3 +45,8 @@ Never `paid` / `purchase` / `link_only` / marketplace purchase targets.
 - Purchase wishlists / `link_only` shopping lists of paid URLs
 
 If a paid marketplace listing looks useful, scrape **free** CC0 sources (Poly Haven, Kenney, ambientCG, OpenGameArt) for an equivalent — do not keep the paid URL in-repo.
+
+
+### Domains
+- **assembly-factory** — dense factory line (Kenney + Poly Haven industrial + procedural)
+- **warehouse-bay-a** / **distribution-hub** — warehouse / hub (exterior shell toggle)

@@ -264,14 +264,14 @@ ready.</div>
 
   <script>
     var domains = [
-      { id: 'kitchen', name: 'Kitchen', runs: 4, cells: 37, updated: '2026-09-11 08:20Z' },
+      { id: 'assembly-factory', name: 'Assembly Factory', runs: 6, cells: 86, updated: '2026-09-11 09:45Z' },
       { id: 'warehouse-bay-a', name: 'Warehouse Bay A', runs: 9, cells: 149, updated: '2026-09-11 08:55Z' },
       { id: 'distribution-hub', name: 'Distribution Hub', runs: 6, cells: 202, updated: '2026-09-11 09:05Z' }
     ];
     var activeDomain = 'warehouse-bay-a';
 
     var domainMaps = {
-      kitchen: [
+      'assembly-factory': [
         [0.64,-0.16,4],[0.72,-0.08,6],[0.80,0,8],[0.72,0.08,5],[0.64,0.16,3],
         [1.20,-0.48,3],[1.28,-0.40,5],[1.36,-0.32,7],[1.36,-0.24,6],[1.28,-0.16,4],
         [1.60,0.72,4],[1.68,0.80,6],[1.76,0.88,5],[1.84,0.80,3],
@@ -333,7 +333,7 @@ ready.</div>
 
     function loadDomainCells(id) {
       cells = [];
-      var pts = domainMaps[id] || domainMaps.kitchen;
+      var pts = domainMaps[id] || domainMaps['assembly-factory'];
       pts.forEach(function (p) { cells.push({ x: p[0], y: p[1], hits: p[2] }); });
       if (id === 'warehouse-bay-a') pose = { x: 0.12, y: 2.45, yaw: 0.08 };
       else if (id === 'distribution-hub') pose = { x: 0.05, y: 1.2, yaw: 0.02 };
@@ -374,7 +374,7 @@ ready.</div>
       neu.className = 'chip new';
       neu.textContent = '+ New domain';
       neu.addEventListener('click', function () {
-        var name = window.prompt('Name this environment (kitchen, bay, distribution hub…)', 'Lab hallway');
+        var name = window.prompt('Name this environment (assembly factory, bay, distribution hub…)', 'Lab hallway');
         if (!name) return;
         var id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || ('domain-' + Date.now());
         domains.push({ id: id, name: name.trim(), runs: 0, cells: 0, updated: 'just now' });

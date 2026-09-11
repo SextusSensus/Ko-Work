@@ -1200,7 +1200,7 @@ $script:LocalMapDomainsIndex = Join-Path $script:LocalMapDataDir 'domains.json'
 $script:MapHostMode       = 'none'   # webview2 | webbrowser | external
 $script:MapWebView        = $null
 $script:MapBrowser        = $null
-$script:ActiveDomainId    = 'kitchen'
+$script:ActiveDomainId    = 'warehouse-bay-a'
 
 $mapLayout=New-Object System.Windows.Forms.TableLayoutPanel
 $mapLayout.Dock='Fill'; $mapLayout.ColumnCount=1; $mapLayout.RowCount=2; $mapLayout.Padding='12,8,12,8'; $mapLayout.BackColor=$bg
@@ -1310,7 +1310,7 @@ function Ensure-LocalMapDomains{
     # Seed three demo domains if the data pack is missing
     $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     $seeds = @(
-        @{ id='kitchen'; name='Kitchen'; runs=4 },
+        @{ id='assembly-factory'; name='Assembly Factory'; runs=6 },
         @{ id='warehouse-bay-a'; name='Warehouse Bay A'; runs=7 },
         @{ id='distribution-hub'; name='Distribution Hub'; runs=6 }
     )
@@ -1328,10 +1328,10 @@ function Ensure-LocalMapDomains{
         ($man | ConvertTo-Json -Depth 4) | Set-Content -Path (Join-Path $dir 'manifest.json') -Encoding UTF8
         $domains += @{ id=$s.id; name=$s.name; updated=$now; run_count=$s.runs; cell_count=$cells }
     }
-    $idx = @{ active='kitchen'; domains=$domains }
+    $idx = @{ active='warehouse-bay-a'; domains=$domains }
     Write-LocalMapDomainsIndex $idx
-    $script:ActiveDomainId = 'kitchen'
-    Sync-LocalMapFeedFromDomain 'kitchen' | Out-Null
+    $script:ActiveDomainId = 'warehouse-bay-a'
+    Sync-LocalMapFeedFromDomain 'warehouse-bay-a' | Out-Null
     Update-LocalMapDomainCombo
 }
 
@@ -1625,7 +1625,7 @@ $cmbDomain.Add_SelectedIndexChanged({
 })
 $btnDomainNew.Add_Click({
     $name = [Microsoft.VisualBasic.Interaction]::InputBox(
-        "Name this environment (kitchen, warehouse bay, distribution hub…).`r`nFollow/capture runs will accumulate into this domain.",
+        "Name this environment (assembly factory, warehouse bay, distribution hub…).`r`nFollow/capture runs will accumulate into this domain.",
         'New Local Map domain',
         'New area'
     )

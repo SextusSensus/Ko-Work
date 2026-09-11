@@ -20,6 +20,10 @@ Ontology (label → asset): [`../../localmap-data/asset-ontology.json`](../../lo
 | `library/materials/wooden_planks_diff.jpg` | [Poly Haven — Wooden Planks](https://polyhaven.com/a/wooden_planks) | CC0 |
 | `library/materials/long_white_tiles_diff.jpg` | [Poly Haven — Long White Tiles](https://polyhaven.com/a/long_white_tiles) | CC0 |
 
+## Kitchen library (`library/kitchen/`) — optional props only
+
+> Primary Kitchen **domain** removed; seed domain is **assembly-factory**. Kitchen meshes remain for Plan A COCO labels.
+
 ## Kitchen (`library/kitchen/`)
 
 | Asset | Source | License |
@@ -62,6 +66,21 @@ Robotic arm, assembly stations, safety fencing / light curtains, HMI pedestals, 
 See `library/assembly-line/README.md` and `kenney/LICENSE.txt`.
 
 Paid CGTrader twins → free map: [`FREE-ALTERNATIVES.md`](./FREE-ALTERNATIVES.md).
+
+
+## Assembly Factory Poly Haven (`library/assembly-line/polyhaven/`)
+
+| Asset | Source | License |
+|-------|--------|---------|
+| `metal_tool_chest` | [Poly Haven](https://polyhaven.com/a/metal_tool_chest) | CC0 |
+| `industrial_storage_cart` | [Poly Haven](https://polyhaven.com/a/industrial_storage_cart) | CC0 |
+| `drill_press_01` | [Poly Haven](https://polyhaven.com/a/drill_press_01) | CC0 |
+| `korean_fire_extinguisher_01` | [Poly Haven](https://polyhaven.com/a/korean_fire_extinguisher_01) | CC0 |
+| `ladder_sectioned_01` | [Poly Haven](https://polyhaven.com/a/ladder_sectioned_01) | CC0 |
+| `industrial_pipe_lamp` | [Poly Haven](https://polyhaven.com/a/industrial_pipe_lamp) | CC0 |
+
+Extra Kenney Factory Kit meshes: `hopper-round`, `structure-wall`, `catwalk-straight`, `conveyor-bars-fence*`, `box-small/large` — CC0.
+
 
 ## Cross-domain / generic
 

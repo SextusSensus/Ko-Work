@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-09-11T09:25:14Z",
+  "updated": "2026-09-11T09:50:00Z",
   "description": "CC0 / free-only 3D asset catalog for K1 Local Map. Statuses: downloaded | procedural | free_link. NEVER paid/purchase.",
   "license_default": "CC0",
   "assets": [
@@ -14,6 +14,19 @@
       "source": "procedural Three.js stand-in",
       "label_classes": [
         "assembly_station"
+      ]
+    },
+    {
+      "id": "assembly-line/catwalk",
+      "name": "Catwalk straight",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/catwalk-straight.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "label_classes": [
+        "catwalk"
       ]
     },
     {
@@ -110,6 +123,19 @@
       ]
     },
     {
+      "id": "assembly-line/drill-press",
+      "name": "Drill press",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/drill_press_01/drill_press_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/drill_press_01",
+      "label_classes": [
+        "drill_press"
+      ]
+    },
+    {
       "id": "assembly-line/fencing",
       "name": "Safety fencing (conveyor bars fence)",
       "category": "assembly-line",
@@ -119,6 +145,19 @@
       "source": "Kenney Factory Kit",
       "source_url": "https://kenney.nl/assets/factory-kit",
       "fallback_procedural": "fence"
+    },
+    {
+      "id": "assembly-line/fire-extinguisher",
+      "name": "Fire extinguisher",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/korean_fire_extinguisher_01/korean_fire_extinguisher_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/korean_fire_extinguisher_01",
+      "label_classes": [
+        "fire_extinguisher"
+      ]
     },
     {
       "id": "assembly-line/floor-lane",
@@ -147,6 +186,73 @@
       "label_classes": [
         "parts_bin",
         "hopper"
+      ]
+    },
+    {
+      "id": "assembly-line/hopper-round",
+      "name": "Round hopper",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/hopper-round.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "label_classes": [
+        "parts_bin",
+        "hopper"
+      ]
+    },
+    {
+      "id": "assembly-line/industrial-pipe-lamp",
+      "name": "Industrial pipe lamp",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/industrial_pipe_lamp/industrial_pipe_lamp_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/industrial_pipe_lamp",
+      "label_classes": [
+        "overhead_light",
+        "pipe_lamp"
+      ]
+    },
+    {
+      "id": "assembly-line/industrial-storage-cart",
+      "name": "Industrial storage cart",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/industrial_storage_cart/industrial_storage_cart_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/industrial_storage_cart",
+      "label_classes": [
+        "storage_cart"
+      ]
+    },
+    {
+      "id": "assembly-line/ladder-sectioned",
+      "name": "Sectioned ladder",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/ladder_sectioned_01/ladder_sectioned_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/ladder_sectioned_01",
+      "label_classes": [
+        "ladder"
+      ]
+    },
+    {
+      "id": "assembly-line/metal-tool-chest",
+      "name": "Metal tool chest",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/metal_tool_chest/metal_tool_chest_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/metal_tool_chest",
+      "label_classes": [
+        "tool_chest"
       ]
     },
     {
@@ -239,6 +345,19 @@
       "fallback_procedural": "wall"
     },
     {
+      "id": "assembly-line/structure-wall",
+      "name": "Factory structure wall",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/structure-wall.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "label_classes": [
+        "wall"
+      ]
+    },
+    {
       "id": "assembly-line/structure-yellow",
       "name": "Yellow industrial structure",
       "category": "assembly-line",
@@ -321,23 +440,6 @@
       "license": "CC0",
       "source": "OpenGameArt Traffic Road Assets",
       "source_url": "https://opengameart.org/content/traffic-road-assets"
-    },
-    {
-      "id": "robot/k1",
-      "name": "Booster K1 (official URDF mesh)",
-      "category": "robot",
-      "status": "downloaded",
-      "path": "assets/library/robot/k1/k1_22dof.glb",
-      "license": "BSD-3-Clause",
-      "source": "BoosterRobotics/booster_assets K1_22dof",
-      "source_url": "https://github.com/BoosterRobotics/booster_assets",
-      "scale_m": [
-        0.5,
-        0.95,
-        0.22
-      ],
-      "fallback_procedural": "k1_robot",
-      "notes": "Assembled from official STL visuals; rebuild via scripts/fetch-k1-mesh.sh"
     },
     {
       "id": "cross-domain/k1-robot-proxy",
@@ -689,6 +791,23 @@
       "license": "CC0",
       "source": "Poly Haven",
       "source_url": "https://polyhaven.com/a/long_white_tiles"
+    },
+    {
+      "id": "robot/k1",
+      "name": "Booster K1 (official URDF mesh)",
+      "category": "robot",
+      "status": "downloaded",
+      "path": "assets/library/robot/k1/k1_22dof.glb",
+      "license": "BSD-3-Clause",
+      "source": "BoosterRobotics/booster_assets K1_22dof",
+      "source_url": "https://github.com/BoosterRobotics/booster_assets",
+      "scale_m": [
+        0.5,
+        0.95,
+        0.22
+      ],
+      "fallback_procedural": "k1_robot",
+      "notes": "Assembled from official STL visuals; rebuild via scripts/fetch-k1-mesh.sh"
     },
     {
       "id": "warehouse/barrel",

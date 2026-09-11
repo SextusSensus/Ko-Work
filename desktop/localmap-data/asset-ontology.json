@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-09-11T09:25:14Z",
+  "updated": "2026-09-11T09:59:48Z",
   "description": "Label class \u2192 free Local Map asset (default_asset). Runtime uses CC0/procedural/free_link only \u2014 see assets/FREE-ALTERNATIVES.md and catalog.json.",
   "catalog_ref": "../localmap-viewer/assets/catalog.json",
   "placement_modes": {
@@ -70,9 +70,9 @@
       "default_asset": "warehouse/bollard",
       "placement": "footprint",
       "scale_m": [
-        0.15,
-        0.7,
-        0.15
+        0.18,
+        0.75,
+        0.18
       ],
       "domains": [
         "warehouse-bay-a",
@@ -109,7 +109,7 @@
         0.5
       ],
       "domains": [
-        "kitchen"
+        "assembly-factory"
       ]
     },
     {
@@ -133,6 +133,22 @@
       ]
     },
     {
+      "id": "catwalk",
+      "aliases": [
+        "walkway"
+      ],
+      "default_asset": "assembly-line/catwalk",
+      "placement": "footprint",
+      "scale_m": [
+        1.0,
+        0.3,
+        2.0
+      ],
+      "domains": [
+        "assembly-factory"
+      ]
+    },
+    {
       "id": "chair",
       "coco_id": 56,
       "aliases": [
@@ -147,7 +163,7 @@
         0.5
       ],
       "domains": [
-        "kitchen",
+        "assembly-factory",
         "generic",
         "*"
       ],
@@ -239,6 +255,27 @@
       ]
     },
     {
+      "id": "corner_shelf",
+      "aliases": [
+        "steel_shelf",
+        "shelf",
+        "shelving",
+        "steel_frame_shelves"
+      ],
+      "default_asset": "warehouse/steel-shelves",
+      "placement": "footprint",
+      "scale_m": [
+        1.1,
+        2.2,
+        0.5
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ],
+      "notes": "Corner steel shelf unit (~1.8\u20132.4 m H, ~0.4\u20130.6 m D) \u2014 not room-sized; not relative to K1"
+    },
+    {
       "id": "couch",
       "coco_id": 57,
       "aliases": [
@@ -270,7 +307,7 @@
         0.65
       ],
       "domains": [
-        "kitchen"
+        "assembly-factory"
       ]
     },
     {
@@ -305,7 +342,7 @@
         0.85
       ],
       "domains": [
-        "kitchen",
+        "assembly-factory",
         "*"
       ],
       "tier": "P1"
@@ -320,7 +357,7 @@
       "default_asset": "warehouse/dock-door",
       "placement": "wall",
       "scale_m": [
-        3.0,
+        3.2,
         3.2,
         0.25
       ],
@@ -344,6 +381,23 @@
       ],
       "domains": [
         "*"
+      ]
+    },
+    {
+      "id": "drill_press",
+      "aliases": [
+        "drillpress",
+        "machine_tool"
+      ],
+      "default_asset": "assembly-line/drill-press",
+      "placement": "footprint",
+      "scale_m": [
+        0.6,
+        1.6,
+        0.7
+      ],
+      "domains": [
+        "assembly-factory"
       ]
     },
     {
@@ -380,6 +434,24 @@
         "assembly-line",
         "distribution-hub",
         "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "fire_extinguisher",
+      "aliases": [
+        "extinguisher"
+      ],
+      "default_asset": "assembly-line/fire-extinguisher",
+      "placement": "footprint",
+      "scale_m": [
+        0.2,
+        0.7,
+        0.2
+      ],
+      "domains": [
+        "assembly-factory",
+        "warehouse-bay-a",
+        "distribution-hub"
       ]
     },
     {
@@ -433,6 +505,23 @@
       ]
     },
     {
+      "id": "ladder",
+      "aliases": [
+        "sectioned_ladder"
+      ],
+      "default_asset": "assembly-line/ladder-sectioned",
+      "placement": "footprint",
+      "scale_m": [
+        0.5,
+        2.5,
+        0.3
+      ],
+      "domains": [
+        "assembly-factory",
+        "warehouse-bay-a"
+      ]
+    },
+    {
       "id": "laptop",
       "coco_id": 63,
       "aliases": [],
@@ -476,7 +565,7 @@
         0.4
       ],
       "domains": [
-        "kitchen",
+        "assembly-factory",
         "*"
       ],
       "tier": "P2"
@@ -497,7 +586,7 @@
         0.65
       ],
       "domains": [
-        "kitchen"
+        "assembly-factory"
       ],
       "tier": "P2"
     },
@@ -560,21 +649,20 @@
       "id": "pallet_rack",
       "aliases": [
         "rack",
-        "shelving",
-        "shelf",
         "worn_metal_rack"
       ],
       "default_asset": "warehouse/pallet-rack",
       "placement": "footprint",
       "scale_m": [
         1.2,
-        2.4,
-        0.6
+        3.0,
+        0.9
       ],
       "domains": [
         "warehouse-bay-a",
         "distribution-hub"
-      ]
+      ],
+      "notes": "Pallet rack bay ~2.7\u20134.5 m tall; procedural rackBay uses 3.0 m. Corner steel shelves use corner_shelf."
     },
     {
       "id": "parts_bin",
@@ -662,7 +750,7 @@
         0.7
       ],
       "domains": [
-        "kitchen"
+        "assembly-factory"
       ],
       "tier": "P2"
     },
@@ -846,6 +934,25 @@
       ]
     },
     {
+      "id": "storage_cart",
+      "aliases": [
+        "cart",
+        "industrial_cart"
+      ],
+      "default_asset": "assembly-line/industrial-storage-cart",
+      "placement": "footprint",
+      "scale_m": [
+        0.8,
+        1.0,
+        1.2
+      ],
+      "domains": [
+        "assembly-factory",
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
       "id": "toilet",
       "coco_id": 61,
       "aliases": [],
@@ -860,6 +967,24 @@
         "*"
       ],
       "tier": "P1"
+    },
+    {
+      "id": "tool_chest",
+      "aliases": [
+        "toolchest",
+        "toolbox"
+      ],
+      "default_asset": "assembly-line/metal-tool-chest",
+      "placement": "footprint",
+      "scale_m": [
+        0.7,
+        1.0,
+        0.45
+      ],
+      "domains": [
+        "assembly-factory",
+        "distribution-hub"
+      ]
     },
     {
       "id": "tote_bin",
@@ -896,7 +1021,7 @@
         0.4
       ],
       "domains": [
-        "kitchen",
+        "assembly-factory",
         "warehouse-bay-a",
         "distribution-hub",
         "*"

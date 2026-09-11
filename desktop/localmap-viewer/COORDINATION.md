@@ -4,7 +4,7 @@ Updated: 2026-09-11T09:26:00Z
 ## User bar
 - Map must use real FREE 3D assets (no paid CGTrader).
 - Must support 360° mouse-drag orbit (azimuth + polar), scroll zoom, pan — NOT a locked top-down / below-map view.
-- Patio domain replaced by Distribution Hub.
+- Patio domain replaced by Distribution Hub. Kitchen seed replaced by Assembly Factory (`assembly-factory`). Exterior shell toggle on warehouse/hub/factory.
 
 ## Ownership (do not steal lanes)
 | Owner | Agent | Owns |

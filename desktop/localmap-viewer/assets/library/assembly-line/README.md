@@ -1,9 +1,10 @@
 # Assembly-line free assets
 
-CC0 / redistributable props for Local Map distribution-hub assembly zones.
+CC0 / redistributable props for Local Map Assembly Factory domain + distribution-hub east zone.
 
 | Path | Role |
 |------|------|
+| `polyhaven/` | Industrial props (tool chest, cart, drill press, extinguisher, ladder, pipe lamp) — Poly Haven CC0 |
 | `kenney/` | Factory Kit conveyors, crane/gantry, hopper, yellow structures (Kenney, CC0) |
 | `textures/rubber_belt_diff.jpg` | Belt surface (Poly Haven rubber_tiles) |
 | `textures/rubber_mat_*.jpg` | Belt/mat PBR (ambientCG Rubber004) |
