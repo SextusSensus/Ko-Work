@@ -688,6 +688,7 @@
     exteriorGroup.add(makeBox(20, 4.4, 0.22, wall, 0, 2.2, -9.5));
     exteriorGroup.add(makeBox(0.22, 4.4, 22, wall, -9.5, 2.2, 0));
     exteriorGroup.add(makeBox(0.22, 4.4, 22, wall, 9.5, 2.2, 0));
+    exteriorGroup.add(makeBox(20, 4.4, 0.22, wall, 0, 2.2, 9.5));
 
     // dock door
     var door = stdMat(0x1a222a, { metalness: 0.35, roughness: 0.45 });
@@ -738,60 +739,139 @@
     envGroup.visible = layers.env;
   }
 
-  function buildKitchen() {
-    beginEnvBuild();
-    // Prefer wood floor when available
-    var floorMap = texRepeat(woodTex || floorTex, 8, 8);
-    if (floorMap) {
-      var floor = new THREE.Mesh(
-        new THREE.PlaneGeometry(16, 16),
-        new THREE.MeshStandardMaterial({ map: floorMap, color: 0xc8b8a0, metalness: 0.04, roughness: 0.85 })
-      );
-      floor.rotation.x = -Math.PI / 2;
-      floor.receiveShadow = true;
-      envGroup.add(floor);
-      var grid = new THREE.GridHelper(16, 16, 0x2a2a2e, 0x1a1a1c);
-      grid.position.y = 0.002;
-      envGroup.add(grid);
-    } else {
-      addFloor(16, 6);
-    }
-    var cab = stdMat(0x2a2a2e, { metalness: 0.22, roughness: 0.52 });
-    var counter = stdMat(0xd8d4cc, { metalness: 0.12, roughness: 0.42 });
-    // Island counter + back run (architecture); free GLTF props drop in on top
-    envGroup.add(makeBox(1.8, 0.9, 0.9, cab, 0, 0.45, 0.5));
-    envGroup.add(makeBox(1.9, 0.04, 1.0, counter, 0, 0.92, 0.5));
-    envGroup.add(makeBox(4.5, 0.9, 0.6, cab, 0, 0.45, -2.8));
-    envGroup.add(makeBox(4.6, 0.04, 0.68, counter, 0, 0.92, -2.8));
-    envGroup.add(makeBox(0.6, 0.9, 3.2, cab, -2.6, 0.45, -0.8));
-    envGroup.add(makeBox(0.6, 0.9, 3.2, cab, 2.6, 0.45, -0.8));
-    // Procedural fridge (no free CC0 fridge mesh in catalog)
-    envGroup.add(makeBox(0.7, 1.8, 0.7, stdMat(0xe8e8ea, { metalness: 0.55, roughness: 0.28 }), -2.5, 0.9, 1.6));
-    envGroup.add(makeBox(0.02, 0.7, 0.55, stdMat(0x8a96a4, { metalness: 0.7, roughness: 0.3 }), -2.14, 1.35, 1.6));
-    envGroup.add(makeBox(0.02, 0.65, 0.55, stdMat(0x8a96a4, { metalness: 0.7, roughness: 0.3 }), -2.14, 0.55, 1.6));
-    // Doorway
-    envGroup.add(makeBox(0.08, 2.1, 0.08, cab, 2.8, 1.05, 2.4));
-    envGroup.add(makeBox(0.08, 2.1, 0.08, cab, 3.8, 1.05, 2.4));
-    envGroup.add(makeBox(1.1, 0.08, 0.08, cab, 3.3, 2.1, 2.4));
-    // Soft ceiling wash
-    var wash = stdMat(0xf2f2f7, { emissive: 0xe8e4dc, emissiveIntensity: 0.28, roughness: 1, metalness: 0 });
-    envGroup.add(makeBox(1.2, 0.05, 1.2, wash, 0, 2.6, 0));
-    envGroup.add(makeBox(1.2, 0.05, 1.2, wash, -2, 2.6, -1.5));
-    envGroup.add(makeBox(1.2, 0.05, 1.2, wash, 2, 2.6, -1.2));
 
-    // Free Poly Haven kitchen props (catalog library/)
-    placeGltfClone('kit-stove', 1.35, 0, -2.45, 1.0, 0);
-    placeGltfClone('kit-cabinet', 2.35, 0, -0.7, 1.0, Math.PI / 2);
-    placeGltfClone('kit-table', 0.15, 0, -1.05, 1.0, 0.15);
-    placeGltfClone('kit-chair', -0.55, 0, -0.95, 1.0, 0.4);
-    placeGltfClone('kit-chair', 0.85, 0, -1.25, 1.0, -0.35);
-    placeGltfClone('kit-stool', -1.1, 0, 0.35, 1.0, 0.2);
-    placeGltfClone('kit-microwave', -2.2, 0.95, -2.55, 1.0, 0);
-    placeGltfClone('kit-trash', 2.15, 0, 1.35, 1.0, 0.2);
-    placeGltfClone('lib-wet', 3.1, 0, 1.8, 1.0, -0.4);
-    placeGltfClone('lib-light', 0, 2.45, 0.2, 1.0, 0);
+  /** Dense Assembly Factory / factory line (replaces Kitchen seed domain). */
+  function buildAssemblyFactory() {
+    beginEnvBuild();
+    var floorMap = texRepeat(antiSlipTex || floorTex, 12, 12);
+    var floorMat = floorMap
+      ? new THREE.MeshStandardMaterial({ map: floorMap, color: 0xc4c4c4, metalness: 0.05, roughness: 0.88 })
+      : stdMat(0x1a1a1c, { metalness: 0.05, roughness: 0.9 });
+    var floor = new THREE.Mesh(new THREE.PlaneGeometry(28, 24), floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    envGroup.add(floor);
+
+    var lineMat = new THREE.MeshBasicMaterial({ color: SAFETY });
+    function stripe(x, z, w, d) {
+      var s = new THREE.Mesh(new THREE.PlaneGeometry(w, d), lineMat);
+      s.rotation.x = -Math.PI / 2;
+      s.position.set(x, 0.012, z);
+      envGroup.add(s);
+    }
+    [-3.4, 0, 3.4].forEach(function (ax) {
+      stripe(ax, 0, 1.2, 14);
+      stripe(ax - 0.55, 0, 0.06, 14);
+      stripe(ax + 0.55, 0, 0.06, 14);
+    });
+    stripe(0, -4.8, 16, 1.1);
+    stripe(0, 4.6, 16, 1.1);
+    stripe(0, 0, 18, 0.08);
+
+    conveyorSection(-3.4, -2.8, 3.4, 0);
+    conveyorSection(-3.4, 0.6, 3.4, 0);
+    conveyorSection(-3.4, 3.4, 2.4, 0);
+    conveyorSection(0, -2.8, 3.4, 0);
+    conveyorSection(0, 0.6, 3.4, 0);
+    conveyorSection(0, 3.4, 2.4, 0);
+    conveyorSection(3.4, -2.8, 3.4, 0);
+    conveyorSection(3.4, 0.6, 3.4, 0);
+    conveyorSection(3.4, 3.4, 2.4, 0);
+    conveyorSection(0, -4.8, 4.5, Math.PI / 2);
+    conveyorElevated(0, 4.6, 5.5, 1.3, Math.PI / 2);
+
+    assemblyStation(-2.2, -2.0, Math.PI / 2);
+    assemblyStation(-2.2, 1.5, Math.PI / 2);
+    assemblyStation(2.2, -1.0, -Math.PI / 2);
+    assemblyStation(2.2, 2.0, -Math.PI / 2);
+    assemblyStation(-1.2, -4.2, 0);
+    assemblyStation(1.2, 4.0, Math.PI);
+    roboticArmProxy(-2.15, -0.4, Math.PI / 2);
+    roboticArmProxy(2.15, 0.5, -Math.PI / 2);
+    roboticArmProxy(-2.2, 3.0, Math.PI / 2);
+    roboticArmProxy(2.2, -2.6, -Math.PI / 2);
+
+    var tote = stdMat(0x2a6a8a, { metalness: 0.15, roughness: 0.55 });
+    [[-2.5, -3.2], [-2.4, 0.4], [-2.5, 2.4], [2.5, -2.8], [2.4, 0.0], [2.5, 3.0],
+     [-4.2, -1.5], [4.2, 1.2], [-0.8, -3.6], [0.9, 3.4]].forEach(function (p) {
+      envGroup.add(makeBox(0.48, 0.3, 0.36, tote, p[0], 0.15, p[1]));
+    });
+
+    safetyFenceRun(-4.65, 0.0, 10.5, 0);
+    safetyFenceRun(4.65, 0.0, 10.5, 0);
+    safetyFenceRun(-1.7, -5.4, 4.5, Math.PI / 2);
+    safetyFenceRun(1.7, 5.2, 4.5, Math.PI / 2);
+    lightCurtain(-3.4, -4.55, 0);
+    lightCurtain(3.4, -4.55, 0);
+    lightCurtain(0, 5.35, Math.PI / 2);
+
+    controlPanelHmi(-1.0, -5.0, 0.25);
+    controlPanelHmi(1.3, 4.9, Math.PI);
+    controlPanelHmi(-4.3, 4.2, 0.6);
+
+    var gantry = brushFrameMat(0x9098a2);
+    [-3.4, 0, 3.4].forEach(function (x) {
+      envGroup.add(makeBox(0.1, 0.1, 12.5, gantry, x, 3.55, 0));
+      envGroup.add(makeBox(1.6, 0.08, 0.08, gantry, x, 3.55, -3));
+      envGroup.add(makeBox(1.6, 0.08, 0.08, gantry, x, 3.55, 2));
+    });
+    envGroup.add(makeBox(14, 0.1, 0.1, gantry, 0, 3.55, 4.6));
+    var wash = stdMat(0xf2f2f7, { emissive: 0xd8e8f8, emissiveIntensity: 0.4, roughness: 1, metalness: 0 });
+    [[-3.4, -2], [-3.4, 2], [0, -2], [0, 2], [3.4, -2], [3.4, 2], [0, -4.5], [0, 4.2]].forEach(function (p) {
+      envGroup.add(makeBox(1.1, 0.05, 0.55, wash, p[0], 3.7, p[1]));
+    });
+
+    var col = metalMat(0x6d7784);
+    [[-6, -6], [-6, 6], [6, -6], [6, 6], [0, -6.5], [0, 6.5]].forEach(function (p) {
+      envGroup.add(makeBox(0.36, 4.6, 0.36, col, p[0], 2.3, p[1]));
+    });
+
+    var wallMapF = texRepeat(concreteTex || plasterTex, 5, 1.3);
+    var wallF = wallMapF
+      ? new THREE.MeshStandardMaterial({ map: wallMapF, color: 0x9aa0a6, metalness: 0.16, roughness: 0.7 })
+      : stdMat(0x14171b, { metalness: 0.08, roughness: 0.92 });
+    exteriorGroup.add(makeBox(22, 4.8, 0.26, wallF, 0, 2.4, -7.2));
+    exteriorGroup.add(makeBox(22, 4.8, 0.26, wallF, 0, 2.4, 7.2));
+    exteriorGroup.add(makeBox(0.26, 4.8, 16, wallF, -7.2, 2.4, 0));
+    exteriorGroup.add(makeBox(0.26, 4.8, 16, wallF, 7.2, 2.4, 0));
+    exteriorGroup.add(makeBox(2.2, 2.6, 0.14, stdMat(0x1a222a, { metalness: 0.4, roughness: 0.4 }), -4.5, 1.3, -7.05));
+    exteriorGroup.add(makeBox(3.4, 3.0, 0.14, stdMat(0x1a222a, { metalness: 0.4, roughness: 0.4 }), 3.5, 1.5, -7.05));
+    baySign(0, 3.9, -7.0, 2.4);
+
+    placeGltfClone('asm-conveyor-long', -3.4, 0, -2.8, 1.0, 0);
+    placeGltfClone('asm-conveyor-stripe', 0, 0, 0.6, 1.0, 0);
+    placeGltfClone('asm-conveyor-long', 3.4, 0, 2.0, 1.0, 0);
+    placeGltfClone('asm-conveyor-curve', 0, 0, -4.8, 1.0, Math.PI);
+    placeGltfClone('asm-crane', 0, 0, 0.5, 1.2, 0);
+    placeGltfClone('asm-crane-lift', 0, 2.7, 0.5, 1.0, 0);
+    placeGltfClone('asm-hopper', -4.0, 0, -0.5, 1.0, 0.3);
+    placeGltfClone('asm-hopper-round', 4.0, 0, 1.5, 1.0, -0.4);
+    placeGltfClone('asm-fence', -4.6, 0, -2.0, 1.0, 0);
+    placeGltfClone('asm-fence-stripe', 4.6, 0, 2.0, 1.0, Math.PI);
+    placeGltfClone('asm-structure', -5.5, 0, 4.5, 1.0, Math.PI / 2);
+    placeGltfClone('asm-structure-wall', 5.5, 0, -4.5, 1.0, -Math.PI / 2, exteriorGroup);
+    placeGltfClone('asm-catwalk', 0, 0, 5.5, 1.0, 0);
+    placeGltfClone('asm-box-small', -3.3, 0.55, -1.5, 1.0, 0.2);
+    placeGltfClone('asm-box-large', 3.3, 0.55, 1.0, 1.0, -0.15);
+    placeGltfClone('ph-tote', -2.4, 0, -3.1, 1.0, 0.2);
+    placeGltfClone('ph-plastic', 2.5, 0, -2.7, 1.0, -0.3);
+    placeGltfClone('ph-toolchest', -4.2, 0, -3.5, 1.0, 0.4);
+    placeGltfClone('ph-cart', 4.0, 0, 3.2, 1.0, -0.5);
+    placeGltfClone('ph-drill', -4.0, 0, 2.8, 1.0, 0.2);
+    placeGltfClone('ph-extinguisher', 4.4, 0, -4.8, 1.0, 0);
+    placeGltfClone('ph-ladder', -5.8, 0, 0.5, 1.0, 0.1);
+    placeGltfClone('ph-pipe-lamp', -3.4, 3.2, -1.0, 1.0, 0);
+    placeGltfClone('ph-pipe-lamp', 3.4, 3.2, 1.5, 1.0, Math.PI);
+    placeGltfClone('lib-barrel', -5.6, 0, -2.2, 1.0, 0.2);
+    placeGltfClone('lib-barrel', -5.2, 0, -1.7, 1.0, -0.3);
+    placeGltfClone('lib-light', -2, 3.6, 0, 1.0, 0);
+    placeGltfClone('lib-light', 2, 3.6, 0, 1.0, 0);
+    placeGltfClone('lib-cone', 0.6, 0, -5.6, 1.1, 0);
+    placeGltfClone('asm-arrow', -3.4, 0.02, -4.2, 1.2, 0);
+    placeGltfClone('asm-arrow', 3.4, 0.02, 4.0, 1.2, Math.PI);
 
     envGroup.visible = layers.env;
+    applyExteriorVisibility();
   }
 
   function woodMat(tint) {
@@ -1351,10 +1431,17 @@
 
   function buildEnvironmentFor(domainId) {
     var id = String(domainId || '').toLowerCase();
-    if (id.indexOf('kitchen') >= 0) buildKitchen();
-    else if (id.indexOf('distribution') >= 0 || id.indexOf('hub') >= 0) buildDistributionHub();
-    else if (id.indexOf('patio') >= 0 || id.indexOf('outdoor') >= 0) buildDistributionHub(); // legacy ids
-    else buildWarehouse();
+    if (id.indexOf('assembly') >= 0 || id.indexOf('factory') >= 0 || id.indexOf('kitchen') >= 0) {
+      buildAssemblyFactory(); // kitchen id legacy → factory
+    } else if (id.indexOf('distribution') >= 0 || id.indexOf('hub') >= 0) {
+      buildDistributionHub();
+    } else if (id.indexOf('patio') >= 0 || id.indexOf('outdoor') >= 0) {
+      buildDistributionHub(); // legacy ids
+    } else if (id.indexOf('office') >= 0) {
+      buildWarehouse(); // office uses warehouse shell until dedicated builder ships
+    } else {
+      buildWarehouse();
+    }
   }
 
   function preloadHubGltf() {
@@ -1391,13 +1478,19 @@
       ['lib-light', './assets/library/cross-domain/caged_hanging_light/caged_hanging_light_1k.gltf'],
       ['lib-wet', './assets/library/cross-domain/WetFloorSign_01/WetFloorSign_01_1k.gltf'],
       ['lib-pallet', './assets/library/warehouse/wooden_pallet_cc0/wooden_pallet_cc0.gltf'],
-      ['kit-stove', './assets/library/kitchen/electric_stove/electric_stove_1k.gltf'],
-      ['kit-cabinet', './assets/library/kitchen/drawer_cabinet/drawer_cabinet_1k.gltf'],
-      ['kit-table', './assets/library/kitchen/dining_table/dining_table_1k.gltf'],
-      ['kit-chair', './assets/library/kitchen/dining_chair_02/dining_chair_02_1k.gltf'],
-      ['kit-stool', './assets/library/kitchen/wooden_stool_01/wooden_stool_01_1k.gltf'],
-      ['kit-microwave', './assets/library/kitchen/vintage_microwave/vintage_microwave_1k.gltf'],
-      ['kit-trash', './assets/library/kitchen/trashbag/trashbag_1k.gltf'],
+      ['asm-hopper-round', './assets/library/assembly-line/kenney/hopper-round.glb'],
+      ['asm-structure-wall', './assets/library/assembly-line/kenney/structure-wall.glb'],
+      ['asm-fence', './assets/library/assembly-line/kenney/conveyor-bars-fence.glb'],
+      ['asm-fence-stripe', './assets/library/assembly-line/kenney/conveyor-bars-stripe-fence.glb'],
+      ['asm-catwalk', './assets/library/assembly-line/kenney/catwalk-straight.glb'],
+      ['asm-box-small', './assets/library/assembly-line/kenney/box-small.glb'],
+      ['asm-box-large', './assets/library/assembly-line/kenney/box-large.glb'],
+      ['ph-toolchest', './assets/library/assembly-line/polyhaven/metal_tool_chest/metal_tool_chest_1k.gltf'],
+      ['ph-cart', './assets/library/assembly-line/polyhaven/industrial_storage_cart/industrial_storage_cart_1k.gltf'],
+      ['ph-drill', './assets/library/assembly-line/polyhaven/drill_press_01/drill_press_01_1k.gltf'],
+      ['ph-extinguisher', './assets/library/assembly-line/polyhaven/korean_fire_extinguisher_01/korean_fire_extinguisher_01_1k.gltf'],
+      ['ph-ladder', './assets/library/assembly-line/polyhaven/ladder_sectioned_01/ladder_sectioned_01_1k.gltf'],
+      ['ph-pipe-lamp', './assets/library/assembly-line/polyhaven/industrial_pipe_lamp/industrial_pipe_lamp_1k.gltf']
       ['k1-robot', './assets/library/robot/k1/k1_22dof.glb']
     ];
     return Promise.all(jobs.map(function (pair) {

@@ -2,11 +2,11 @@
   "active": "warehouse-bay-a",
   "domains": [
     {
-      "id": "kitchen",
-      "name": "Kitchen",
-      "updated": "2026-09-11T08:20:00Z",
-      "run_count": 4,
-      "cell_count": 37
+      "id": "assembly-factory",
+      "name": "Assembly Factory",
+      "updated": "2026-09-11T09:45:00Z",
+      "run_count": 6,
+      "cell_count": 86
     },
     {
       "id": "warehouse-bay-a",
@@ -21,13 +21,6 @@
       "updated": "2026-09-11T09:25:00Z",
       "run_count": 8,
       "cell_count": 202
-    },
-    {
-      "id": "assembly-factory",
-      "name": "Assembly Factory",
-      "updated": "2026-09-11T09:45:00Z",
-      "run_count": 6,
-      "cell_count": 86
     }
   ]
 }
