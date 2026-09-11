@@ -323,14 +323,32 @@
       "source_url": "https://opengameart.org/content/traffic-road-assets"
     },
     {
+      "id": "robot/k1",
+      "name": "Booster K1 (official URDF mesh)",
+      "category": "robot",
+      "status": "downloaded",
+      "path": "assets/library/robot/k1/k1_22dof.glb",
+      "license": "BSD-3-Clause",
+      "source": "BoosterRobotics/booster_assets K1_22dof",
+      "source_url": "https://github.com/BoosterRobotics/booster_assets",
+      "scale_m": [
+        0.5,
+        0.95,
+        0.22
+      ],
+      "fallback_procedural": "k1_robot",
+      "notes": "Assembled from official STL visuals; rebuild via scripts/fetch-k1-mesh.sh"
+    },
+    {
       "id": "cross-domain/k1-robot-proxy",
       "name": "Booster K1 dimension proxy",
       "category": "cross-domain",
       "status": "procedural",
       "procedural": "k1_robot",
       "license": "internal",
-      "source": "Booster K1 envelope ~0.95\u00d70.40\u00d70.18 m (not official mesh)",
-      "source_url": "https://github.com/BoosterRobotics/booster_assets"
+      "source": "URDF-accurate fallback (~0.95\u00d70.40\u00d70.18 m) when robot/k1 GLB missing",
+      "source_url": "https://github.com/BoosterRobotics/booster_assets",
+      "fallback_of": "robot/k1"
     },
     {
       "id": "cross-domain/metal-fence-quaternius",

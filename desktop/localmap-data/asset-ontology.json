@@ -672,7 +672,7 @@
         "k1",
         "booster_k1"
       ],
-      "default_asset": "cross-domain/k1-robot-proxy",
+      "default_asset": "robot/k1",
       "placement": "footprint",
       "scale_m": [
         0.4,

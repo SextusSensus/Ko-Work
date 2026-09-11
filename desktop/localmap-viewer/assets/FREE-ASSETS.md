@@ -17,7 +17,8 @@ Never `paid` / `purchase` / `link_only` / marketplace purchase targets.
 - [Kenney](https://kenney.nl/) — Factory Kit CC0 ([OpenGameArt mirror](https://opengameart.org/content/factory-kit))
 - [OpenGameArt — Traffic Road Assets](https://opengameart.org/content/traffic-road-assets) (MilkAndBanana, CC0)
 - Authored CC0 stand-ins (e.g. `wooden_pallet_cc0`, caution/lane markings under `library/assembly-line/textures/`)
-- Procedural recipes in `viewer.js` / `asset-placer.js` when no free mesh exists (forklift, bollard, fridge, K1 proxy, robotic arm, assembly station, safety fence, HMI)
+- [BoosterRobotics/booster_assets](https://github.com/BoosterRobotics/booster_assets) — K1 URDF/STL (**BSD-3-Clause**), converted GLB under `library/robot/k1/`
+- Procedural recipes in `viewer.js` / `asset-placer.js` when no free mesh exists (forklift, bollard, fridge, K1 fallback, robotic arm, assembly station, safety fence, HMI)
 
 ## Catalog + ontology
 
@@ -35,7 +36,7 @@ Never `paid` / `purchase` / `link_only` / marketplace purchase targets.
 | Distribution Hub | Kenney conveyors/doors + Poly Haven props + procedural forklifts/dock |
 | Assembly line (hub east zone) | Kenney Factory Kit conveyors/crane/hopper + procedural stations/arms/fence/HMI + rubber/metal/caution textures |
 | Generic indoor | Sofa, plant, procedural walls/pillars/doors |
-| Robot proxy | Procedural K1 envelope (not Booster mesh); URDF ref only |
+| Robot | Official Booster K1 URDF mesh (BSD-3) in `library/robot/k1/`; procedural fallback |
 
 ## Explicitly rejected
 

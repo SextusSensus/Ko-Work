@@ -1,6 +1,7 @@
 /* K1 Local Map — warehouse-grade Three.js viewer
  * Aesthetic: Tesla × SpaceX × Apple (near-black, white type, cyan #32D4FF).
- * Booster K1 proxy envelope: ~0.95 m H × 0.40 m W × 0.18 m D.
+ * Booster K1: official URDF mesh (BSD-3) at assets/library/robot/k1/k1_22dof.glb
+ * (~0.95 m H × ~0.40–0.50 m W × ~0.18 m D). Procedural fallback if load fails.
  * Textures: Poly Haven CC0 (assets/ATTRIBUTION.md).
  */
 (function () {
@@ -458,14 +459,12 @@
     setPose(pose, msg);
   }
 
-  // ---- Booster K1 proxy (~95×40×18 cm) ------------------------------------
-  function buildK1() {
-    clearGroup(robotGroup);
-    var white = stdMat(K1_WHITE, { metalness: 0.28, roughness: 0.38 });
-    var dark = stdMat(K1_DARK, { metalness: 0.45, roughness: 0.32 });
-    var led = stdMat(ACCENT, { metalness: 0.1, roughness: 0.28, emissive: ACCENT, emissiveIntensity: 0.9 });
-    led.userData.pulse = true;
+  // ---- Booster K1 (official GLB + URDF-accurate procedural fallback) ------
+  // Spec / URDF: ~95 cm H, body ~40×18 cm, leg length ~46 cm, arm span ~39 cm
+  var K1_MESH_URL = './assets/library/robot/k1/k1_22dof.glb';
+  var k1MeshLoaded = false;
 
+  function addK1FootRing() {
     var foot = new THREE.Mesh(
       new THREE.RingGeometry(K1_W * 0.52, K1_W * 0.72, 64),
       new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.5, side: THREE.DoubleSide })
@@ -474,28 +473,79 @@
     foot.position.y = 0.01;
     foot.userData.pulseRing = true;
     robotGroup.add(foot);
+  }
 
-    // pelvis / torso stack sized to envelope
-    robotGroup.add(makeBox(K1_W * 0.70, 0.09, K1_D * 0.92, dark, 0, 0.46, 0));
-    robotGroup.add(makeBox(K1_W * 0.62, 0.30, K1_D * 0.82, white, 0, 0.66, 0));
-    robotGroup.add(makeBox(K1_W * 0.38, 0.018, 0.012, led, 0, 0.72, K1_D * 0.42));
-    robotGroup.add(makeBox(0.11, 0.10, 0.10, white, 0, 0.88, 0.01));
+  function buildK1Procedural() {
+    clearGroup(robotGroup);
+    var white = stdMat(K1_WHITE, { metalness: 0.28, roughness: 0.38 });
+    var dark = stdMat(K1_DARK, { metalness: 0.45, roughness: 0.32 });
+    var led = stdMat(ACCENT, { metalness: 0.1, roughness: 0.28, emissive: ACCENT, emissiveIntensity: 0.9 });
+    led.userData.pulse = true;
+    addK1FootRing();
+
+    // URDF-ish proportions: trunk ~0.18 W × 0.12 D; hips ±0.096; shoulders ±0.077
+    // Legs ~0.46 m (public spec); torso stack to overall 0.95 m
+    var hipY = 0.46;
+    var trunkH = 0.28;
+    var trunkW = 0.18;
+    var trunkD = 0.14;
+    robotGroup.add(makeBox(trunkW * 1.15, 0.08, trunkD * 1.1, dark, 0, hipY, 0));
+    robotGroup.add(makeBox(trunkW, trunkH, trunkD, white, 0, hipY + 0.08 + trunkH / 2, 0));
+    robotGroup.add(makeBox(trunkW * 0.85, 0.016, 0.012, led, 0, hipY + 0.18, trunkD * 0.55));
+    robotGroup.add(makeBox(0.10, 0.09, 0.10, white, 0, 0.88, 0.01));
     robotGroup.add(makeBox(0.07, 0.028, 0.018, led, 0, 0.90, 0.065));
-    robotGroup.add(makeBox(K1_W * 0.92, 0.045, 0.055, dark, 0, 0.78, 0));
-
+    robotGroup.add(makeBox(0.36, 0.04, 0.05, dark, 0, hipY + 0.28, 0));
     [-1, 1].forEach(function (s) {
-      robotGroup.add(makeBox(0.048, 0.24, 0.048, white, s * K1_W * 0.40, 0.62, 0));
-      robotGroup.add(makeBox(0.042, 0.20, 0.042, dark, s * K1_W * 0.40, 0.42, 0.015));
-      robotGroup.add(makeBox(0.078, 0.24, 0.085, white, s * 0.085, 0.30, 0));
-      robotGroup.add(makeBox(0.068, 0.22, 0.075, dark, s * 0.085, 0.11, 0.01));
-      robotGroup.add(makeBox(0.09, 0.035, 0.14, dark, s * 0.085, 0.02, 0.02));
+      robotGroup.add(makeBox(0.045, 0.20, 0.045, white, s * 0.155, hipY + 0.16, 0));
+      robotGroup.add(makeBox(0.04, 0.18, 0.04, dark, s * 0.155, hipY - 0.02, 0.01));
+      robotGroup.add(makeBox(0.07, 0.22, 0.08, white, s * 0.085, 0.30, 0));
+      robotGroup.add(makeBox(0.06, 0.20, 0.07, dark, s * 0.085, 0.10, 0.01));
+      robotGroup.add(makeBox(0.09, 0.03, 0.14, dark, s * 0.085, 0.02, 0.02));
     });
 
-    var nose = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.11, 3), led);
+    var nose = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.10, 3), led);
     nose.rotation.x = Math.PI / 2;
-    nose.position.set(0, 0.58, K1_D * 0.55);
+    nose.position.set(0, hipY + 0.12, trunkD * 0.7);
     robotGroup.add(nose);
     robotGroup.visible = layers.robot;
+  }
+
+  function attachK1Mesh(sceneRoot) {
+    clearGroup(robotGroup);
+    addK1FootRing();
+    var root = sceneRoot.clone(true);
+    root.traverse(function (obj) {
+      if (obj.isMesh) {
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+        if (obj.material) {
+          var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+          mats.forEach(function (mat) {
+            if (!mat) return;
+            mat.metalness = mat.metalness != null ? mat.metalness : 0.35;
+            mat.roughness = mat.roughness != null ? mat.roughness : 0.45;
+          });
+        }
+      }
+    });
+    robotGroup.add(root);
+    robotGroup.visible = layers.robot;
+    k1MeshLoaded = true;
+  }
+
+  function buildK1() {
+    buildK1Procedural();
+    if (gltfCache['k1-robot']) {
+      attachK1Mesh(gltfCache['k1-robot']);
+      return;
+    }
+    if (!gltfLoader) return;
+    gltfLoader.load(K1_MESH_URL, function (gltf) {
+      gltfCache['k1-robot'] = gltf.scene;
+      attachK1Mesh(gltf.scene);
+    }, undefined, function () {
+      k1MeshLoaded = false;
+    });
   }
 
   // ---- Environments -------------------------------------------------------
@@ -1259,7 +1309,8 @@
       ['kit-chair', './assets/library/kitchen/dining_chair_02/dining_chair_02_1k.gltf'],
       ['kit-stool', './assets/library/kitchen/wooden_stool_01/wooden_stool_01_1k.gltf'],
       ['kit-microwave', './assets/library/kitchen/vintage_microwave/vintage_microwave_1k.gltf'],
-      ['kit-trash', './assets/library/kitchen/trashbag/trashbag_1k.gltf']
+      ['kit-trash', './assets/library/kitchen/trashbag/trashbag_1k.gltf'],
+      ['k1-robot', './assets/library/robot/k1/k1_22dof.glb']
     ];
     return Promise.all(jobs.map(function (pair) {
       return new Promise(function (resolve) {
@@ -1271,6 +1322,7 @@
     })).then(function () {
       // Rebuild active domain so free meshes appear after async load
       if (activeDomainId) buildEnvironmentFor(activeDomainId);
+      if (gltfCache['k1-robot'] && !k1MeshLoaded) attachK1Mesh(gltfCache['k1-robot']);
     });
   }
 

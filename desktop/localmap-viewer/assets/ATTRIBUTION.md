@@ -72,10 +72,14 @@ Paid CGTrader twins → free map: [`FREE-ALTERNATIVES.md`](./FREE-ALTERNATIVES.m
 | `traffic/Traffic_Cone.glb`, `Crush_Barrier.glb`, `Road_Block.glb` | [Quaternius](https://quaternius.com/) | CC0 |
 | Person placeholder, bollard, floor tape, pillar, stairs, elevator | procedural | CC0 |
 
-## Robot
+## Robot (`library/robot/k1/`)
 
-K1 silhouette is a **dimension proxy** (~95×40×18 cm) — not an official Booster mesh.  
-Official URDF: https://github.com/BoosterRobotics/booster_assets
+| Asset | Source | License |
+|-------|--------|---------|
+| `k1_22dof.glb` | [BoosterRobotics/booster_assets](https://github.com/BoosterRobotics/booster_assets) `robots/K1` (URDF + STL) | **BSD 3-Clause** (see `library/robot/k1/LICENSE`) |
+
+Assembled at real-world meters (≈0.95 m tall). Rebuild: `scripts/fetch-k1-mesh.sh`.  
+Procedural `k1_robot` remains as fallback if the GLB fails to load.
 
 ## Skipped / deferred
 

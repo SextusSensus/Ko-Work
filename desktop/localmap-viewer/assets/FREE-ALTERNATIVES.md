@@ -48,8 +48,8 @@ Statuses in [`catalog.json`](./catalog.json): `downloaded` | `procedural` | `fre
 | Scandi island | Scandinavian Kitchen with Island | https://polyhaven.com/a/drawer_cabinet | CC0 | cabinet + procedural `counter` |
 | Apartment interior props | Apartment — Interior and Props | Poly Haven + procedural | CC0 | kitchen props + `Sofa_01` + `potted_plant_01` + doorway procedural |
 | Mini fridge (CGT free RF) | Mini Fridge — Compact High Poly | procedural | CC0 | procedural `fridge` (RF not redistributable) |
-| Digit robot (animated) | Digit Robot For Blender — Animated Set | https://github.com/BoosterRobotics/booster_assets | internal proxy | procedural `k1_robot` dimension proxy (not Digit mesh) |
-| Digit walking / loader / $199 | Agility Robotics Digit variants | same | internal proxy | `cross-domain/k1-robot-proxy` |
+| Digit robot (animated) | Digit Robot For Blender — Animated Set | https://github.com/BoosterRobotics/booster_assets | BSD-3-Clause | `library/robot/k1/k1_22dof.glb` (official K1) |
+| Digit walking / loader / $199 | Agility Robotics Digit variants | same | BSD-3-Clause | `robot/k1` + procedural `k1_robot` fallback |
 | Doors / pillars / signage | Modular warehouse + prop packs | Kenney + Poly Haven + procedural | CC0 | `door-wide-closed.glb`; procedural `pillar` / `signage`; `WetFloorSign_01` |
 | Assembly conveyors | (hub conveyor kits + ASRS) | https://kenney.nl/assets/factory-kit | CC0 | `library/assembly-line/kenney/conveyor*.glb` |
 | Assembly stations | (ASRS / automation kits) | https://kenney.nl/assets/factory-kit | CC0 | `library/assembly-line/kenney/hopper-square.glb` |
