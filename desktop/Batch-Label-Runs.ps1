@@ -63,14 +63,60 @@ $OutTally    = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFrom
 # Keep in step with Autotune-Stage.ps1 $GateVersion / eval/rrd_label.py gate_version.
 $GateVersion = 3
 
-function Get-ValidationStatus([string]$adir) {
+function Get-ValidationReport([string]$adir) {
   $vf = Join-Path $adir 'label_validation.json'
   if (-not (Test-Path -LiteralPath $vf)) { return $null }
   try {
     $j = Get-Content -LiteralPath $vf -Raw | ConvertFrom-Json
     $gv = [int]$j.gate_version
     if ($gv -lt $GateVersion) { return $null }   # stale gate -> treat as unlabelled
-    return [string]$j.status
+    return $j
+  } catch { return $null }
+}
+
+function Get-ValidationStatus([string]$adir) {
+  $j = Get-ValidationReport $adir
+  if ($null -eq $j) { return $null }
+  return [string]$j.status
+}
+
+function Get-DepthPairingStats([string]$adir) {
+  $j = Get-ValidationReport $adir
+  if ($null -eq $j -or -not $j.checks -or -not $j.checks.depth_pairing) { return $null }
+  $dp = $j.checks.depth_pairing
+  return [ordered]@{
+    status      = [string]$dp.status
+    frac_paired = $(if ($null -ne $dp.frac_paired) { [double]$dp.frac_paired } else { $null })
+    paired      = $(if ($null -ne $dp.paired) { [int]$dp.paired } else { $null })
+    labelled_frames = $(if ($null -ne $dp.labelled_frames) { [int]$dp.labelled_frames } else { $null })
+    why         = $(if ($dp.why) { [string]$dp.why } else { $null })
+  }
+}
+
+function Get-IdDriftStats([string]$adir, [string]$py) {
+  # suspect_iddrift lives in eval/rrd_obstacles.py (Phase 2), not obstacle_summary.json.
+  $jsonl = Join-Path $adir 'obstacles.jsonl'
+  $outJs = Join-Path $adir 'obstacle_set.json'
+  if (-not (Test-Path -LiteralPath $jsonl)) { return $null }
+  $obstaclesPy = Join-Path (Split-Path $here -Parent) 'eval\rrd_obstacles.py'
+  if (-not (Test-Path -LiteralPath $obstaclesPy)) { return $null }
+  if (-not (Test-Path -LiteralPath $py)) { return $null }
+  $ErrorActionPreference = 'Continue'
+  & $py $obstaclesPy $jsonl --json $outJs 2>$null | Out-Null
+  $rc = $LASTEXITCODE
+  $ErrorActionPreference = 'Stop'
+  if ($rc -ne 0 -or -not (Test-Path -LiteralPath $outJs)) { return $null }
+  try {
+    $set = Get-Content -LiteralPath $outJs -Raw | ConvertFrom-Json
+    $obs = @($set.obstacles)
+    $nsus = @($obs | Where-Object { $_.suspect_iddrift }).Count
+    return [ordered]@{
+      n_obstacles = $obs.Count
+      n_suspect_iddrift = [int]$nsus
+      suspects = @($obs | Where-Object { $_.suspect_iddrift } | ForEach-Object {
+        [ordered]@{ id = $_.id; cls = $_.cls; spread_m = $_.spread_m; range_m = $_.range_m }
+      })
+    }
   } catch { return $null }
 }
 
