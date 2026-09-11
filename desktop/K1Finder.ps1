@@ -1312,7 +1312,7 @@ function Ensure-LocalMapDomains{
     $seeds = @(
         @{ id='kitchen'; name='Kitchen'; runs=4 },
         @{ id='warehouse-bay-a'; name='Warehouse Bay A'; runs=7 },
-        @{ id='outdoor-patio'; name='Outdoor Patio'; runs=2 }
+        @{ id='distribution-hub'; name='Distribution Hub'; runs=6 }
     )
     $domains = @()
     foreach($s in $seeds){
@@ -1625,7 +1625,7 @@ $cmbDomain.Add_SelectedIndexChanged({
 })
 $btnDomainNew.Add_Click({
     $name = [Microsoft.VisualBasic.Interaction]::InputBox(
-        "Name this environment (kitchen, warehouse bay, patio…).`r`nFollow/capture runs will accumulate into this domain.",
+        "Name this environment (kitchen, warehouse bay, distribution hub…).`r`nFollow/capture runs will accumulate into this domain.",
         'New Local Map domain',
         'New area'
     )

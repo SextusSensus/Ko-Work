@@ -4,7 +4,7 @@ Near-black UI (`#000` / `#0A0A0A`), surfaces `#141414` / `#1C1C1E`, text `#F5F5F
 
 ## Local Map = domains
 
-Domains are **separate environments** (kitchen, warehouse bay, patio). Each follow/capture run **merges** occupancy into the **active** domain — accumulate over time, do not blindly replace.
+Domains are **separate environments** (kitchen, warehouse bay, distribution hub). Each follow/capture run **merges** occupancy into the **active** domain — accumulate over time, do not blindly replace.
 
 ### Persistence
 
@@ -22,7 +22,7 @@ Domains are **separate environments** (kitchen, warehouse bay, patio). Each foll
 - **Domain chips** in the 3D viewer (+ Domain combo on the WinForms toolbar): click to switch; scene reloads that domain’s map.
 - **+ New domain**: create when bringing the robot to a new environment.
 - **Import last run** / **Refresh**: pull robot dump (or sample) and **merge** into the active domain.
-- Seed data: Kitchen, Warehouse Bay A, Outdoor Patio.
+- Seed data: Kitchen, Warehouse Bay A, Distribution Hub.
 - **Live telemetry**: green HUD pill when WebSocket `/ws/telemetry` is connected; last pose + `vx/vy/wz` stay on screen across reconnects.
 
 ### Hosting
