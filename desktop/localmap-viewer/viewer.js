@@ -503,12 +503,13 @@
   var k1MeshLoaded = false;
 
   function addK1FootRing() {
+    // High-segment ring (telemetry chrome only) — avoid blocky low-poly look
     var foot = new THREE.Mesh(
-      new THREE.RingGeometry(K1_W * 0.52, K1_W * 0.72, 64),
-      new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.5, side: THREE.DoubleSide })
+      new THREE.RingGeometry(K1_W * 0.52, K1_W * 0.72, 96),
+      new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.42, side: THREE.DoubleSide })
     );
     foot.rotation.x = -Math.PI / 2;
-    foot.position.y = 0.01;
+    foot.position.y = 0.012;
     foot.userData.pulseRing = true;
     robotGroup.add(foot);
   }
@@ -618,12 +619,63 @@
     return stdMat(tint != null ? tint : RACK, { metalness: 0.62, roughness: 0.34 });
   }
 
+  /** Place real-world cartons ON a shelf board (no giant untextured BoxGeometry slabs). */
+  function placeRackCartons(x, z, len, depth, shelfTop, levelIdx) {
+    // Prefer textured GLBs; cardboardMat fallback stays ~0.4–0.55 m (never len×depth slabs)
+    var names = ['ph-box', 'box-large', 'ph-crate', 'ph-box', 'box-wide'];
+    var slotCount = Math.max(2, Math.min(5, Math.round(len / 2.4)));
+    for (var k = 0; k < slotCount; k++) {
+      if ((levelIdx + k) % 3 === 0) continue; // leave empty slots
+      var t = slotCount === 1 ? 0.5 : k / (slotCount - 1);
+      var along = (t - 0.5) * len * 0.72;
+      var lateral = ((k + levelIdx) % 2 === 0 ? -0.12 : 0.12) * Math.min(depth, 1.2);
+      var yaw = ((k * 0.41 + levelIdx * 0.17) % 1.2) - 0.6;
+      var name = names[(levelIdx + k) % names.length];
+      if (!gltfCache[name]) name = gltfCache['ph-box'] ? 'ph-box' : (gltfCache['box-large'] ? 'box-large' : null);
+      if (name) {
+        placeOnSurface(name, x + lateral, shelfTop, z + along, null, yaw);
+      } else {
+        var bw = 0.42 + (k % 3) * 0.05;
+        var bh = 0.34 + (levelIdx % 2) * 0.06;
+        var bd = 0.40 + ((k + 1) % 3) * 0.06;
+        envGroup.add(makeBox(bw, bh, bd, cardboardMat(0xc4a06a), x + lateral, shelfTop + bh / 2 + 0.002, z + along));
+      }
+    }
+  }
+
+  /** Clone a cached GLB so its AABB bottom sits on surfaceY (metres). */
+  function placeOnSurface(name, x, surfaceY, z, scale, rotY) {
+    var src = gltfCache[name];
+    if (!src) return false;
+    var root = new THREE.Group();
+    var clone = src.clone(true);
+    root.add(clone);
+    if (Array.isArray(scale)) {
+      fitRootToScaleM(root, scale);
+    } else if (PROP_SCALE_M[name]) {
+      fitRootToScaleM(root, PROP_SCALE_M[name]);
+    } else if (scale != null) {
+      root.scale.setScalar(scale);
+    }
+    if (rotY) root.rotation.y = rotY;
+    root.position.set(x, 0, z);
+    root.traverse(function (o) {
+      if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
+    });
+    var box3 = new THREE.Box3().setFromObject(root);
+    if (isFinite(box3.min.y)) root.position.y = surfaceY - box3.min.y;
+    else root.position.y = surfaceY;
+    envGroup.add(root);
+    return true;
+  }
+
   function rackBay(x, z, len, depth, levels) {
     var upright = metalMat(0x8a96a4);
     var shelf = stdMat(0x3a4048, { metalness: 0.35, roughness: 0.52 });
     var beam = stdMat(SAFETY, { metalness: 0.4, roughness: 0.42, emissive: SAFETY, emissiveIntensity: 0.06 });
     var brace = stdMat(0x2e343c, { metalness: 0.5, roughness: 0.4 });
     var h = 3.0; // pallet-rack bay ~2.7–4.5 m; low-bay default 3.0 m
+    var shelfThick = 0.045;
     var corners = [
       [-depth / 2, -len / 2], [-depth / 2, len / 2],
       [depth / 2, -len / 2], [depth / 2, len / 2]
@@ -631,7 +683,7 @@
     corners.forEach(function (p) {
       envGroup.add(makeBox(0.07, h, 0.07, upright, x + p[0], h / 2, z + p[1]));
     });
-    // X-bracing on outer faces
+    // X-bracing on outer faces (structural only — not bay-ID chrome)
     for (var b = 0; b < 3; b++) {
       var bz = z - len / 2 + (b + 0.5) * (len / 3);
       envGroup.add(makeBox(0.03, h * 0.85, 0.03, brace, x - depth / 2, h * 0.48, bz));
@@ -639,16 +691,11 @@
     }
     for (var i = 0; i < levels; i++) {
       var y = 0.32 + i * (h - 0.45) / Math.max(levels - 1, 1);
-      envGroup.add(makeBox(depth, 0.045, len, shelf, x, y, z));
+      envGroup.add(makeBox(depth, shelfThick, len, shelf, x, y, z));
       envGroup.add(makeBox(0.04, 0.05, len, beam, x - depth / 2 - 0.02, y, z));
       envGroup.add(makeBox(0.04, 0.05, len, beam, x + depth / 2 + 0.02, y, z));
-      var cartons = [0x6e5b45, 0x5a4e40, 0x7a6550, 0x4a5560, 0x8a7358];
-      for (var k = -2; k <= 2; k++) {
-        if ((i + k + 5) % 2 === 0) continue;
-        var carton = stdMat(cartons[(i + k + 5) % cartons.length], { metalness: 0.02, roughness: 0.82 });
-        var ch = 0.28 + (Math.abs(k) % 3) * 0.07;
-        envGroup.add(makeBox(depth * 0.72, ch, len * 0.16, carton, x, y + ch / 2 + 0.02, z + k * len * 0.18));
-      }
+      // Board is centered at y → top face at y + half thickness
+      placeRackCartons(x, z, len, depth, y + shelfThick * 0.5 + 0.002, i);
     }
   }
 
