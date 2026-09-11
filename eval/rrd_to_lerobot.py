@@ -335,16 +335,29 @@ def assemble_episode(scalars, images, allow_no_track=False):
         pre-lock SEARCH frame (range 0.0 m reads as "AT the robot") and pollute stats.json. Pass
         allow_no_track=True to export a TRACK-less .rrd anyway (health/FSM QA only).
       * An image is only paired with a frame it precedes-or-equals -- pre-first-image frames get
-        None, never a FUTURE image (temporal causality for anything training-shaped)."""
+        None, never a FUTURE image (temporal causality for anything training-shaped).
+    Council 2026-09-11 #2:
+      * Robot now emits /follow/range EVERY tick (finite when locked, NaN when unlocked). Keep
+        only finite-range frames so unlocked NaNs cannot enter training via _ffill, while old
+        TRACK-only recordings (all range samples finite) stay byte-compatible."""
+    import math
     import numpy as np
     frames = sorted({fi for e in scalars for fi in scalars[e]})
     if not frames:
         raise SystemExit("no scalar frames in the .rrd -- was it recorded with --rerun on a real run?")
 
+    def _finite(v):
+        try:
+            return v is not None and math.isfinite(float(v))
+        except (TypeError, ValueError):
+            return False
+
     rng_fis = scalars.get("/follow/range", {})
-    if rng_fis:
-        anchor = min(rng_fis)
-        frames = [fi for fi in frames if fi >= anchor]
+    finite_rng = {fi: v for fi, v in rng_fis.items() if _finite(v)}
+    if finite_rng:
+        anchor = min(finite_rng)
+        # Drop pre-lock AND unlocked (NaN) ticks -- train only on real lock observations.
+        frames = [fi for fi in frames if fi >= anchor and fi in finite_rng]
     elif not allow_no_track:
         raise SystemExit("no TRACK frames (/follow/range) in the .rrd -- nothing to export as an "
                          "episode. Re-run with a locked follow, or pass --allow-no-track for a "

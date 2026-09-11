@@ -21,6 +21,16 @@ from common import (
     log, to_bgr, depth_to_meters,
 )
 
+def _stamp_wall(msg):
+    """ROS `header.stamp` as epoch seconds. Falls back to wall clock if absent/malformed
+    (council 2026-09-11 #3 -- never pair RGB/depth on arrival latency)."""
+    try:
+        st = msg.header.stamp
+        return float(st.sec) + 1e-9 * float(st.nanosec)
+    except Exception:  # noqa: BLE001 -- defensive: a bad stamp must not kill cam-spin
+        return time.time()
+
+
 def focal_px(w_img, hfov_deg):
     return (w_img / 2.0) / math.tan(math.radians(hfov_deg) / 2.0)
 
@@ -395,7 +405,7 @@ class CamNode(Node):
         # take_if_new never waits on the batcher. sink.image() COPIES (BGR->RGB) + decimates 1/N, so
         # it never aliases self._latest. Inert unless --rerun (rerun_sink._RR.ok False -> single branch skip).
         if rerun_sink._RR.ok:
-            rerun_sink._RR.frame(_seq_now, time.time())
+            rerun_sink._RR.frame(_seq_now, _stamp_wall(msg))
             rerun_sink._RR.image("/camera/rgb", bgr, seq=_seq_now)
 
     def _depth_cb(self, msg):
@@ -417,7 +427,7 @@ class CamNode(Node):
         # decimates by depth count, never aliasing self._depth (which the control loop reads under
         # _depth_lock). frame_idx keyed best-effort to the current RGB seq (atomic int read).
         if rerun_sink._RR.ok:
-            rerun_sink._RR.frame(self._seq, time.time())
+            rerun_sink._RR.frame(self._seq, _stamp_wall(msg))
             rerun_sink._RR.depth("/camera/depth", d, seq=_dcount)
 
     def _odom_cb(self, msg):

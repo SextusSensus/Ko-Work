@@ -290,6 +290,10 @@ class Follower:
         self._cleaned = False
         self._cleanup_lock = threading.Lock()
         self.t_start = time.monotonic()
+        # Per-tick follow/reid/track obs stash (council 2026-09-11 #2). TRACK/COAST note
+        # real values; the control-loop end emits every tick (NaN when unlocked) so
+        # rrd_to_lerobot _ffill cannot invent a stale confident lock beside cmd=0.
+        self._follow_obs = None
 
         # state machine
         self.state = S_SEARCH
@@ -739,6 +743,53 @@ class Follower:
             # not actually moving (preview / stood / not yet walking) -> baseline rests at 0
             self._prev_vx = 0.0
             self._prev_vyaw = 0.0
+
+    def _note_follow_obs(self, range_m, bearing_deg, range_src, sim, conf, cost, forbid_forward):
+        """Stash this tick's follow/reid/track obs for the every-tick emit at loop end."""
+        _nan = float("nan")
+        self._follow_obs = {
+            "range": _nan if range_m is None else float(range_m),
+            "bearing": _nan if bearing_deg is None else float(bearing_deg),
+            "range_src": range_src,
+            "sim": _nan if sim is None else float(sim),
+            "conf": _nan if conf is None else float(conf),
+            "cost": _nan if cost is None else float(cost),
+            "forbid": 1.0 if forbid_forward else 0.0,
+        }
+
+    def _emit_follow_obs(self):
+        """Emit follow/reid/track obs EVERY control tick (council 2026-09-11 #2).
+
+        TRACK/COAST call `_note_follow_obs` with real values. Unlocked ticks emit NaN so a
+        consumer `_ffill` cannot copy a stale confident lock into SEARCH/REACQUIRE/stand
+        rows beside a truthful `/cmd/vx=0`. Clears the stash for the next tick.
+        """
+        if not rerun_sink._RR.ok:
+            self._follow_obs = None
+            return
+        obs = self._follow_obs
+        _nan = float("nan")
+        if obs is None:
+            rerun_sink._RR.scalar("/follow/locked", 0.0)
+            rerun_sink._RR.scalar("/follow/range", _nan)
+            rerun_sink._RR.scalar("/follow/range_source", 0.0)
+            rerun_sink._RR.scalar("/follow/bearing", _nan)
+            rerun_sink._RR.scalar("/cmd/forbid_forward", 0.0)
+            rerun_sink._RR.scalar("/reid/sim", _nan)
+            rerun_sink._RR.scalar("/track/conf", _nan)
+            rerun_sink._RR.scalar("/track/cost", _nan)
+        else:
+            src = obs.get("range_src")
+            src_code = 2.0 if src == "depth" else (1.0 if src == "bboxH" else 0.0)
+            rerun_sink._RR.scalar("/follow/locked", 1.0)
+            rerun_sink._RR.scalar("/follow/range", obs["range"])
+            rerun_sink._RR.scalar("/follow/range_source", src_code)
+            rerun_sink._RR.scalar("/follow/bearing", obs["bearing"])
+            rerun_sink._RR.scalar("/cmd/forbid_forward", obs["forbid"])
+            rerun_sink._RR.scalar("/reid/sim", obs["sim"])
+            rerun_sink._RR.scalar("/track/conf", obs["conf"])
+            rerun_sink._RR.scalar("/track/cost", obs["cost"])
+        self._follow_obs = None
 
     # ---- OBSTACLE-BRAKE reflex (Phase 3 of OBSTACLE_LABELING_PLAN.md) ---------------------------
     # Geometry TRIGGERS, semantics modulate: a cheap depth forward-clearance reduction grades vx down
@@ -3768,6 +3819,8 @@ class Follower:
                 # SEARCHING/REACQUIRE show on the scrubber -- the reacquire-spin lives in those states.
                 if rerun_sink._RR.ok:
                     rerun_sink._RR.state("/fsm/state", self.state)
+                # Follow/reid/track obs every tick (NaN when unlocked) -- council 2026-09-11 #2.
+                self._emit_follow_obs()
 
                 if self.drive and self.walking and not self.bridge.alive():
                     log("BRIDGE died -> exiting (loco safed by bridge)")
@@ -5104,25 +5157,12 @@ class Follower:
                sim, best["conf"],
                "" if (self.drive and self.walking) else " [preview]"))
 
-        # Rerun follow scalars (Phase 2): control-loop, CHEAP signals only -- NO images here. Uses the
-        # SAME truthful post-clamp vx/vyaw the robot was just commanded (self._drive_vel above) and the
-        # REAL forbid_forward boolean (not the Phase-1 derivation). frame_idx/state are set once per
-        # iteration in run(); this only adds the follow-specific series + the target box. Self-timed to
-        # /diag/rr_track_ms so the on-Orin loop-cost gate can read p99 straight from the .rrd. Inert
-        # unless --rerun (single-branch skip when rerun_sink._RR.ok is False -> byte-identical).
+        # Follow/reid/track obs: NOTE for the every-tick emit at loop end (council 2026-09-11 #2).
+        # Emitting only on the accepted-match path left SEARCH/REACQUIRE/coast gaps that _ffill
+        # filled with a stale confident lock beside cmd=0. Boxes stay here (TRACK-only geometry).
+        self._note_follow_obs(rng, bearing_deg, rsrc, sim, best["conf"], cost, forbid_forward)
         if rerun_sink._RR.ok:
             _rr_t0 = time.monotonic()
-            rerun_sink._RR.scalar("/follow/range", rng)
-            rerun_sink._RR.scalar("/follow/range_source", 2.0 if rsrc == "depth" else (1.0 if rsrc == "bboxH" else 0.0))
-            rerun_sink._RR.scalar("/follow/bearing", bearing_deg)
-            # /cmd/vx and /cmd/vyaw are emitted in _drive_vel (the chokepoint every velocity
-            # path passes through), NOT here -- emitting on the accepted-match path only is what
-            # produced the phantom multi-second gaps. forbid_forward stays: it is a follow-path
-            # decision, meaningful only where a target range exists.
-            rerun_sink._RR.scalar("/cmd/forbid_forward", 1.0 if forbid_forward else 0.0)
-            rerun_sink._RR.scalar("/reid/sim", sim)
-            rerun_sink._RR.scalar("/track/conf", best["conf"])
-            rerun_sink._RR.scalar("/track/cost", cost)
             rerun_sink._RR.boxes("/camera/rgb/target", best["box"], best.get("track_id"))
             rerun_sink._RR.scalar("/diag/rr_track_ms", (time.monotonic() - _rr_t0) * 1000.0)
 
@@ -5205,6 +5245,8 @@ class Follower:
                ("%.2f" % rng) if rng is not None else "n/a", rsrc,
                bearing_deg, vx, vyaw, self.seed.confidence,
                "" if (self.drive and self.walking) else " [preview]"))
+        # Coast has a real (possibly predicted) range -- note it so unlocked ticks stay NaN-only.
+        self._note_follow_obs(rng, bearing_deg, rsrc, None, self.seed.confidence, None, forbid_forward)
         return True
 
     # -- RELOCALIZING: passive markerless re-acquire (Stage 3) ---------------
