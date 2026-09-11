@@ -95,9 +95,11 @@
   scene.add(trailGroup);
 
   var trailPoints = [];
-  var target = new THREE.Vector3(0, 0.4, 0);
-  var spherical = { radius: 11, theta: 0.85, phi: 0.92 };
-  var dragging = false, panning = false, lastX = 0, lastY = 0;
+  // Default elevated 3/4 framing (OrbitControls owns target + spherical state)
+  var DEFAULT_RADIUS = 11;
+  var DEFAULT_THETA = 0.85;   // azimuth
+  var DEFAULT_PHI = 1.05;     // polar ~60° from zenith → 3/4 view
+  var orbitTarget = new THREE.Vector3(0, 0.4, 0);
 
   var registry = { active: null, domains: [] };
   var currentMap = null;
@@ -150,15 +152,47 @@
     return t;
   }
 
-  function applyCamera() {
-    camera.position.set(
-      target.x + spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta),
-      target.y + spherical.radius * Math.cos(spherical.phi),
-      target.z + spherical.radius * Math.sin(spherical.phi) * Math.cos(spherical.theta)
-    );
-    camera.lookAt(target);
+  // OrbitControls: full azimuth + polar orbit, zoom, pan (WebView2/iframe safe)
+  var controls = null;
+  if (typeof THREE.OrbitControls === 'function') {
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.enablePan = true;
+    controls.enableZoom = true;
+    controls.enableRotate = true;
+    controls.screenSpacePanning = true;
+    controls.minDistance = 2.4;
+    controls.maxDistance = 36;
+    // Full polar orbit (near zenith ↔ near nadir); azimuth unrestricted = 360°
+    controls.minPolarAngle = 0.05;
+    controls.maxPolarAngle = Math.PI - 0.05;
+    controls.minAzimuthAngle = -Infinity;
+    controls.maxAzimuthAngle = Infinity;
+    controls.rotateSpeed = 0.9;
+    controls.zoomSpeed = 1.0;
+    controls.panSpeed = 0.85;
+    controls.target.copy(orbitTarget);
   }
-  applyCamera();
+
+  function frameCamera(radius, theta, phi, lookAt) {
+    var r = radius != null ? radius : DEFAULT_RADIUS;
+    var th = theta != null ? theta : DEFAULT_THETA;
+    var ph = phi != null ? phi : DEFAULT_PHI;
+    if (lookAt) orbitTarget.copy(lookAt);
+    camera.position.set(
+      orbitTarget.x + r * Math.sin(ph) * Math.sin(th),
+      orbitTarget.y + r * Math.cos(ph),
+      orbitTarget.z + r * Math.sin(ph) * Math.cos(th)
+    );
+    if (controls) {
+      controls.target.copy(orbitTarget);
+      controls.update();
+    } else {
+      camera.lookAt(orbitTarget);
+    }
+  }
+  frameCamera(DEFAULT_RADIUS, DEFAULT_THETA, DEFAULT_PHI);
 
   function onResize() {
     var w = viewport.clientWidth || window.innerWidth;
@@ -170,41 +204,31 @@
   window.addEventListener('resize', onResize);
   onResize();
 
-  renderer.domElement.addEventListener('pointerdown', function (e) {
-    dragging = e.button === 0;
-    panning = e.button === 2 || e.button === 1;
-    lastX = e.clientX; lastY = e.clientY;
-    renderer.domElement.setPointerCapture(e.pointerId);
-  });
-  renderer.domElement.addEventListener('pointerup', function (e) {
-    dragging = false; panning = false;
-    try { renderer.domElement.releasePointerCapture(e.pointerId); } catch (err) {}
-  });
-  renderer.domElement.addEventListener('pointermove', function (e) {
-    var dx = e.clientX - lastX, dy = e.clientY - lastY;
-    lastX = e.clientX; lastY = e.clientY;
-    if (dragging) {
-      spherical.theta -= dx * 0.005;
-      spherical.phi = Math.max(0.18, Math.min(Math.PI - 0.18, spherical.phi + dy * 0.005));
-      applyCamera();
-    } else if (panning) {
-      var right = new THREE.Vector3();
-      var up = new THREE.Vector3(0, 1, 0);
-      camera.getWorldDirection(right);
-      right.cross(up).normalize();
-      var forward = new THREE.Vector3().crossVectors(up, right).normalize();
-      var scale = spherical.radius * 0.0014;
-      target.addScaledVector(right, -dx * scale);
-      target.addScaledVector(forward, dy * scale);
-      applyCamera();
+  // Prevent parent scroll / gesture stealing inside WebView2 / iframe embeds
+  var canvasEl = renderer.domElement;
+  canvasEl.style.touchAction = 'none';
+  canvasEl.style.userSelect = 'none';
+  canvasEl.style.webkitUserSelect = 'none';
+  canvasEl.tabIndex = 0; // allow focus so wheel stays local
+  function hardenPointer(e) {
+    e.stopPropagation();
+    if (e.cancelable && (e.type === 'wheel' || e.type === 'touchmove')) e.preventDefault();
+  }
+  canvasEl.addEventListener('wheel', hardenPointer, { passive: false, capture: true });
+  canvasEl.addEventListener('touchmove', hardenPointer, { passive: false, capture: true });
+  canvasEl.addEventListener('pointerdown', function (e) {
+    e.stopPropagation();
+    try { canvasEl.setPointerCapture(e.pointerId); } catch (err) {}
+    try { canvasEl.focus({ preventScroll: true }); } catch (err2) { try { canvasEl.focus(); } catch (err3) {} }
+  }, true);
+  canvasEl.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); });
+  // Block page-level overscroll when pointer is over the map
+  document.addEventListener('wheel', function (e) {
+    if (e.target === canvasEl || canvasEl.contains(e.target)) {
+      e.preventDefault();
+      e.stopPropagation();
     }
-  });
-  renderer.domElement.addEventListener('wheel', function (e) {
-    e.preventDefault();
-    spherical.radius = Math.max(2.4, Math.min(36, spherical.radius * (e.deltaY > 0 ? 1.07 : 0.93)));
-    applyCamera();
-  }, { passive: false });
-  renderer.domElement.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  }, { passive: false, capture: true });
 
   function stdMat(color, opts) {
     opts = opts || {};
@@ -613,7 +637,22 @@
 
   function buildKitchen() {
     clearGroup(envGroup);
-    addFloor(16, 6);
+    // Prefer wood floor when available
+    var floorMap = texRepeat(woodTex || floorTex, 8, 8);
+    if (floorMap) {
+      var floor = new THREE.Mesh(
+        new THREE.PlaneGeometry(16, 16),
+        new THREE.MeshStandardMaterial({ map: floorMap, color: 0xc8b8a0, metalness: 0.04, roughness: 0.85 })
+      );
+      floor.rotation.x = -Math.PI / 2;
+      floor.receiveShadow = true;
+      envGroup.add(floor);
+      var grid = new THREE.GridHelper(16, 16, 0x2a2a2e, 0x1a1a1c);
+      grid.position.y = 0.002;
+      envGroup.add(grid);
+    } else {
+      addFloor(16, 6);
+    }
     var cab = stdMat(0x2a2a2e, { metalness: 0.22, roughness: 0.52 });
     var counter = stdMat(0xd8d4cc, { metalness: 0.12, roughness: 0.42 });
     envGroup.add(makeBox(1.8, 0.9, 0.9, cab, 0, 0.45, 0.5));
@@ -621,7 +660,16 @@
     envGroup.add(makeBox(4.5, 0.9, 0.6, cab, 0, 0.45, -2.8));
     envGroup.add(makeBox(0.6, 0.9, 3.2, cab, -2.6, 0.45, -0.8));
     envGroup.add(makeBox(0.6, 0.9, 3.2, cab, 2.6, 0.45, -0.8));
+    // Fridge (procedural shell — catalog fridge also placed via instances)
     envGroup.add(makeBox(0.7, 1.8, 0.7, stdMat(0xe8e8ea, { metalness: 0.55, roughness: 0.28 }), -2.5, 0.9, 1.6));
+    // Doorway
+    envGroup.add(makeBox(0.08, 2.1, 0.08, cab, 2.8, 1.05, 2.4));
+    envGroup.add(makeBox(0.08, 2.1, 0.08, cab, 3.8, 1.05, 2.4));
+    envGroup.add(makeBox(1.1, 0.08, 0.08, cab, 3.3, 2.1, 2.4));
+    // Soft ceiling wash
+    var wash = stdMat(0xf2f2f7, { emissive: 0xd8e8f8, emissiveIntensity: 0.35, roughness: 1, metalness: 0 });
+    envGroup.add(makeBox(1.2, 0.05, 1.2, wash, 0, 2.6, 0));
+    envGroup.add(makeBox(1.2, 0.05, 1.2, wash, -2, 2.6, -1.5));
     envGroup.visible = layers.env;
   }
 
@@ -897,6 +945,11 @@
     placeGltfClone('conveyor-long', 8.4, 0, -4.5, 1.0, 0);
     placeGltfClone('ph-box', -2.8, 0, -6.8, 1.0, 0.3);
     placeGltfClone('ph-crate', 2.8, 0, -6.6, 1.0, -0.2);
+    placeGltfClone('lib-pallet', -3.2, 0, -7.4, 1.0, 0.15);
+    placeGltfClone('lib-pallet', 3.4, 0, -7.2, 1.0, -0.2);
+    placeGltfClone('lib-barrier', -8.2, 0, -8.8, 1.0, Math.PI / 2);
+    placeGltfClone('lib-crush', 8.2, 0, -8.5, 1.0, -Math.PI / 2);
+    placeGltfClone('lib-hand-truck', -0.8, 0, -6.8, 1.0, 0.4);
     placeGltfClone('ph-plastic', 7.4, 0, -0.8, 1.0, 0.5);
     placeGltfClone('ph-tote', 7.5, 0, 2.2, 1.0, 0);
     placeGltfClone('ph-rack', -8.6, 0, 2.0, 1.0, Math.PI / 2);
@@ -947,7 +1000,8 @@
       ['lib-barrel', './assets/library/warehouse/Barrel_01/Barrel_01_1k.gltf'],
       ['lib-shutter', './assets/library/warehouse/rollershutter_door/rollershutter_door_1k.gltf'],
       ['lib-light', './assets/library/cross-domain/caged_hanging_light/caged_hanging_light_1k.gltf'],
-      ['lib-wet', './assets/library/cross-domain/WetFloorSign_01/WetFloorSign_01_1k.gltf']
+      ['lib-wet', './assets/library/cross-domain/WetFloorSign_01/WetFloorSign_01_1k.gltf'],
+      ['lib-pallet', './assets/library/warehouse/wooden_pallet_cc0/wooden_pallet_cc0.gltf']
     ];
     return Promise.all(jobs.map(function (pair) {
       return new Promise(function (resolve) {
@@ -1133,6 +1187,19 @@
     if (typeof window.k1LocalMapOnDomainChange === 'function') {
       try { window.k1LocalMapOnDomainChange(id); } catch (e) {}
     }
+    // Label→asset fill-in: load persisted instances for this domain (reruns accumulate)
+    if (window.k1LocalMapAssets && window.k1LocalMapAssets.isReady()) {
+      try {
+        window.k1LocalMapAssets.attachToScene(scene);
+        var qAssets = new URLSearchParams(window.location.search);
+        var wantDemo = qAssets.get('demo_assets') === '1' || qAssets.get('assets') === 'demo';
+        if (wantDemo) {
+          window.k1LocalMapAssets.runDemo(id).catch(function () {});
+        } else {
+          window.k1LocalMapAssets.loadInstancesForDomain(id).catch(function () {});
+        }
+      } catch (e) {}
+    }
     return loadJson(occupancyUrl(id)).then(function (d) {
       showErr('');
       if (!d.domain_id) d.domain_id = id;
@@ -1247,6 +1314,7 @@
   }
 
   window.k1LocalMap = {
+    _scene: scene,
     setMap: setMap,
     clear: function () {
       clearCells();
@@ -1332,7 +1400,7 @@
     loadTexFallback('./assets/distribution-hub/painted_concrete_diff.jpg', './assets/plaster_diff.jpg').then(function (t) { plasterTex = t; }),
     loadTexFallback('./assets/distribution-hub/corrugated_diff.jpg', './assets/concrete_color.jpg').then(function (t) { concreteTex = t; }),
     loadTex('./assets/concrete_rough.jpg').then(function (t) { concreteRough = t; }),
-    loadTexFallback('./assets/distribution-hub/wood_pallet_diff.jpg', './assets/distribution-hub/wood_plank_diff.jpg').then(function (t) { woodTex = t; }),
+    loadTexFallback('./assets/library/materials/wood_floor_diff.jpg', './assets/distribution-hub/wood_pallet_diff.jpg').then(function (t) { woodTex = t; }),
     loadTex('./assets/distribution-hub/cardboard_diff.jpg').then(function (t) { cardboardTex = t; }),
     loadTex('./assets/distribution-hub/shutter_diff.jpg').then(function (t) { shutterTex = t; }),
     loadTexFallback('./assets/distribution-hub/floor_anti_slip_diff.jpg', './assets/distribution-hub/floor_warehouse_diff.jpg').then(function (t) { antiSlipTex = t; })
