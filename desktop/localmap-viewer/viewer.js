@@ -96,10 +96,10 @@
 
   var trailPoints = [];
   // Default elevated 3/4 framing (OrbitControls owns target + spherical state)
-  var DEFAULT_RADIUS = 11;
-  var DEFAULT_THETA = 0.85;   // azimuth
-  var DEFAULT_PHI = 1.05;     // polar ~60° from zenith → 3/4 view
-  var orbitTarget = new THREE.Vector3(0, 0.4, 0);
+  var DEFAULT_RADIUS = 16;
+  var DEFAULT_THETA = 0.72;  // azimuth
+  var DEFAULT_PHI = 1.18;    // ~68° from zenith → classic elevated 3/4 (clear of joists)
+  var orbitTarget = new THREE.Vector3(0, 0.45, 0);
 
   var registry = { active: null, domains: [] };
   var currentMap = null;
