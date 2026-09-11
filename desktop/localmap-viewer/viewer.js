@@ -7,12 +7,15 @@
 (function () {
   'use strict';
 
-  var ACCENT = 0x32d4ff;
-  var DANGER = 0xe31937;
+  var ACCENT = 0x32d4ff; // HUD / robot telemetry only — never env prop fill
+  var DANGER = 0xe31937; // STOP / e-stop chrome only — never occupancy blobs
   var BG = 0x000000;
   var RACK = 0x3a424c;
   var SAFETY = 0xc9a227;
-  var OCC_BASE = 0x6a737d;
+  var OCC_GRAPHITE = 0x2a2e34;
+  var OCC_EDGE = 0xd8dce2;
+  var SIGN_FACE = 0xc8cdd2;
+  var PLASTIC_GRAY = 0x5a626c;
   var K1_WHITE = 0xf2f2f7;
   var K1_DARK = 0x1c1c1e;
   var K1_H = 0.95, K1_W = 0.40, K1_D = 0.18;
@@ -39,7 +42,8 @@
   var liveDetailEl = document.getElementById('live-detail');
 
   // exterior: building shell / perimeter walls (default ON — hide to inspect interior)
-  var layers = { env: true, occ: true, robot: true, trail: true, follow: true, exterior: true };
+  // Occupancy defaults off when free GLB props are present (see syncOccLayerDefault)
+  var layers = { env: true, occ: false, robot: true, trail: true, follow: true, exterior: true };
   try {
     var _exStored = localStorage.getItem('k1LocalMap.exteriorVisible');
     if (_exStored === '0' || _exStored === 'false') layers.exterior = false;
@@ -689,10 +693,12 @@
     var door = stdMat(0x1a222a, { metalness: 0.35, roughness: 0.45 });
     envGroup.add(makeBox(3.4, 3.2, 0.12, door, 0, 1.6, -9.35));
     envGroup.add(makeBox(3.6, 0.12, 0.18, metalMat(0x8899aa), 0, 3.25, -9.32));
-    envGroup.add(makeBox(2.6, 0.28, 0.06, stdMat(ACCENT, { emissive: ACCENT, emissiveIntensity: 0.35 }), 0, 3.55, -9.2));
+    // Dock ID plate — brushed metal + soft white face (not HUD cyan)
+    envGroup.add(makeBox(2.6, 0.28, 0.06, stdMat(0x1a1c20, { metalness: 0.45, roughness: 0.4 }), 0, 3.55, -9.2));
+    envGroup.add(makeBox(2.1, 0.12, 0.04, stdMat(SIGN_FACE, { metalness: 0.15, roughness: 0.45, emissive: SIGN_FACE, emissiveIntensity: 0.08 }), 0, 3.55, -9.16));
 
     // skylights + soft light panes
-    var sky = stdMat(0xb7d0ea, { metalness: 0, roughness: 1, emissive: 0x88aacc, emissiveIntensity: 0.42 });
+    var sky = stdMat(0x9aa3ab, { metalness: 0.05, roughness: 0.55, emissive: 0x6a737d, emissiveIntensity: 0.18 });
     [-4, -1.3, 1.3, 4].forEach(function (x) {
       envGroup.add(makeBox(1.35, 0.06, 16, sky, x, 4.35, 0));
     });
@@ -768,7 +774,7 @@
     envGroup.add(makeBox(0.08, 2.1, 0.08, cab, 3.8, 1.05, 2.4));
     envGroup.add(makeBox(1.1, 0.08, 0.08, cab, 3.3, 2.1, 2.4));
     // Soft ceiling wash
-    var wash = stdMat(0xf2f2f7, { emissive: 0xd8e8f8, emissiveIntensity: 0.35, roughness: 1, metalness: 0 });
+    var wash = stdMat(0xf2f2f7, { emissive: 0xe8e4dc, emissiveIntensity: 0.28, roughness: 1, metalness: 0 });
     envGroup.add(makeBox(1.2, 0.05, 1.2, wash, 0, 2.6, 0));
     envGroup.add(makeBox(1.2, 0.05, 1.2, wash, -2, 2.6, -1.5));
     envGroup.add(makeBox(1.2, 0.05, 1.2, wash, 2, 2.6, -1.2));
@@ -825,8 +831,9 @@
       }
     }
     if (wrapped) {
-      envGroup.add(makeBox(0.96, Math.max(0.02, y - 0.12), 0.02, stdMat(ACCENT, {
-        emissive: ACCENT, emissiveIntensity: 0.2, transparent: true, opacity: 0.55
+      // Shrink-wrap face — frosted plastic, not cyan strip
+      envGroup.add(makeBox(0.96, Math.max(0.02, y - 0.12), 0.02, stdMat(0xc8d0d8, {
+        metalness: 0.08, roughness: 0.28, transparent: true, opacity: 0.35
       }), x, 0.12 + (y - 0.12) / 2, z + 0.47));
     }
   }
@@ -959,7 +966,8 @@
 
   function lightCurtain(x, z, rotY) {
     var post = brushFrameMat(0x555a62);
-    var beam = stdMat(DANGER, { metalness: 0.2, roughness: 0.3, emissive: DANGER, emissiveIntensity: 0.55, transparent: true, opacity: 0.45 });
+    // IR-style beams — muted amber, not saturated danger-red plastic
+    var beam = stdMat(0x8a6a28, { metalness: 0.25, roughness: 0.4, emissive: 0x6a5018, emissiveIntensity: 0.22, transparent: true, opacity: 0.4 });
     var g = new THREE.Group();
     g.add(makeBox(0.08, 1.55, 0.08, post, -0.55, 0.78, 0));
     g.add(makeBox(0.08, 1.55, 0.08, post, 0.55, 0.78, 0));
@@ -975,7 +983,8 @@
   function controlPanelHmi(x, z, rotY) {
     var ped = brushFrameMat(0x6a7380);
     var panel = stdMat(0x1a1c20, { metalness: 0.4, roughness: 0.35 });
-    var screen = stdMat(ACCENT, { metalness: 0.2, roughness: 0.25, emissive: ACCENT, emissiveIntensity: 0.35 });
+    // Dark industrial LCD — not HUD cyan fill
+    var screen = stdMat(0x1a2820, { metalness: 0.15, roughness: 0.35, emissive: 0x243830, emissiveIntensity: 0.25 });
     var g = new THREE.Group();
     g.add(makeBox(0.35, 1.05, 0.28, ped, 0, 0.52, 0));
     g.add(makeBox(0.48, 0.42, 0.08, panel, 0, 1.25, 0.05));
@@ -1020,7 +1029,7 @@
     roboticArmProxy(7.2, 1.8, Math.PI / 2);
 
     // Parts bins / totes
-    var tote = stdMat(0x2a6a8a, { metalness: 0.15, roughness: 0.55 });
+    var tote = stdMat(PLASTIC_GRAY, { metalness: 0.18, roughness: 0.55 });
     [[7.55, -4.2], [7.55, -2.5], [7.55, 0.9], [7.55, 2.8], [7.55, 4.8], [9.2, -0.5], [9.2, 2.2]].forEach(function (p) {
       envGroup.add(makeBox(0.5, 0.32, 0.38, tote, p[0], 0.16, p[1]));
     });
@@ -1072,10 +1081,11 @@
     var doorH = open ? 1.1 : 3.05;
     var doorY = open ? 2.7 : 1.55;
     envGroup.add(makeBox(w, doorH, 0.1, panel, x, doorY, z + 0.02));
-    // cyan bay label
-    envGroup.add(makeBox(w * 0.55, 0.22, 0.05, stdMat(ACCENT, {
-      emissive: ACCENT, emissiveIntensity: 0.45
-    }), x, 3.55, z + 0.12));
+    // Bay ID plate — soft white on dark metal (not HUD cyan)
+    envGroup.add(makeBox(w * 0.55, 0.22, 0.05, stdMat(0x1a1c20, { metalness: 0.4, roughness: 0.4 }), x, 3.55, z + 0.12));
+    envGroup.add(makeBox(w * 0.42, 0.1, 0.03, stdMat(SIGN_FACE, {
+      metalness: 0.12, roughness: 0.45, emissive: SIGN_FACE, emissiveIntensity: 0.1
+    }), x, 3.55, z + 0.15));
   }
 
   function forkliftProxy(x, z, yaw) {
@@ -1098,8 +1108,8 @@
 
   function baySign(x, y, z, labelW) {
     envGroup.add(makeBox(labelW || 1.4, 0.32, 0.06, stdMat(0x0a0a0c, { metalness: 0.2, roughness: 0.5 }), x, y, z));
-    envGroup.add(makeBox((labelW || 1.4) * 0.72, 0.14, 0.04, stdMat(ACCENT, {
-      emissive: ACCENT, emissiveIntensity: 0.55
+    envGroup.add(makeBox((labelW || 1.4) * 0.72, 0.14, 0.04, stdMat(SIGN_FACE, {
+      metalness: 0.12, roughness: 0.45, emissive: SIGN_FACE, emissiveIntensity: 0.12
     }), x, y, z + 0.04));
   }
 
@@ -1234,7 +1244,7 @@
     });
 
     // Skylights + industrial light bars (narrower — free floor props stay readable in orbit)
-    var sky = stdMat(0xb7d0ea, { metalness: 0, roughness: 1, emissive: 0x88aacc, emissiveIntensity: 0.35 });
+    var sky = stdMat(0x9aa3ab, { metalness: 0.05, roughness: 0.55, emissive: 0x6a737d, emissiveIntensity: 0.16 });
     [-5.5, 5.5].forEach(function (x) {
       envGroup.add(makeBox(0.9, 0.05, 14, sky, x, 4.95, 0));
     });
@@ -1244,8 +1254,8 @@
       // pendant light housings
       [-6, 0, 6].forEach(function (lx) {
         envGroup.add(makeBox(0.55, 0.08, 0.55, stdMat(0x222428, { metalness: 0.5, roughness: 0.35 }), lx, 4.55, jz));
-        envGroup.add(makeBox(0.45, 0.04, 0.45, stdMat(0xe8f4ff, {
-          emissive: 0xa8d4ff, emissiveIntensity: 0.7
+        envGroup.add(makeBox(0.45, 0.04, 0.45, stdMat(0xf2eee6, {
+          emissive: 0xe8e0d0, emissiveIntensity: 0.45
         }), lx, 4.5, jz));
       });
     }
@@ -1399,13 +1409,24 @@
       });
     })).then(function () {
       // Rebuild active domain so free meshes appear after async load
+      var loaded = 0;
+      Object.keys(gltfCache).forEach(function (k) { if (gltfCache[k]) loaded++; });
+      syncOccLayerDefault(loaded > 0);
       if (activeDomainId) buildEnvironmentFor(activeDomainId);
       if (gltfCache['k1-robot'] && !k1MeshLoaded) attachK1Mesh(gltfCache['k1-robot']);
     });
   }
 
-  // ---- Occupancy (subtle structural hits — not toy cyan pillars) ----------
+  // ---- Occupancy (graphite cells + soft white edges — not toy cyan/red) ---
   function clearCells() { clearGroup(cellGroup); }
+
+  function syncOccLayerDefault(hasGltfProps) {
+    var want = !hasGltfProps;
+    layers.occ = want;
+    cellGroup.visible = want;
+    var btn = document.querySelector('#layers .layer[data-layer="occ"]');
+    if (btn) btn.classList.toggle('on', want);
+  }
 
   function setOccupancy(data) {
     clearCells();
@@ -1414,27 +1435,41 @@
     var cells = data.cells || [];
     var maxHits = 1;
     for (var i = 0; i < cells.length; i++) maxHits = Math.max(maxHits, cells[i].hits || 1);
-    var geo = new THREE.BoxGeometry(res * 0.92, 1, res * 0.92);
+    var geo = new THREE.BoxGeometry(res * 0.88, 1, res * 0.88);
+    var edgeGeo = new THREE.BoxGeometry(res * 0.94, 1, res * 0.94);
     for (var j = 0; j < cells.length; j++) {
       var cell = cells[j];
       var hits = cell.hits || 1;
       var t = hits / maxHits;
-      var h = 0.06 + 0.55 * Math.pow(t, 0.9);
-      var warm = t > 0.75;
-      var m = new THREE.MeshStandardMaterial({
-        color: warm ? DANGER : OCC_BASE,
-        emissive: warm ? DANGER : ACCENT,
-        emissiveIntensity: warm ? 0.18 : 0.04 + 0.1 * t,
-        metalness: 0.08,
+      var h = 0.04 + 0.28 * Math.pow(t, 0.9);
+      var fill = new THREE.MeshStandardMaterial({
+        color: OCC_GRAPHITE,
+        emissive: 0x000000,
+        emissiveIntensity: 0,
+        metalness: 0.12,
+        roughness: 0.82,
+        transparent: true,
+        opacity: 0.28 + 0.35 * t,
+        depthWrite: false
+      });
+      var edge = new THREE.MeshStandardMaterial({
+        color: OCC_EDGE,
+        emissive: OCC_EDGE,
+        emissiveIntensity: 0.04 + 0.06 * t,
+        metalness: 0.05,
         roughness: 0.55,
         transparent: true,
-        opacity: 0.35 + 0.4 * t,
-        depthWrite: t > 0.6
+        opacity: 0.18 + 0.22 * t,
+        depthWrite: false
       });
-      var mesh = new THREE.Mesh(geo, m);
+      var mesh = new THREE.Mesh(geo, fill);
       mesh.position.set(cell.x || 0, h / 2, cell.y || 0);
       mesh.scale.y = h;
-      mesh.castShadow = t > 0.5;
+      var rim = new THREE.Mesh(edgeGeo, edge);
+      rim.position.set(cell.x || 0, h / 2, cell.y || 0);
+      rim.scale.y = Math.max(0.02, h * 0.08);
+      rim.position.y = h + 0.005;
+      cellGroup.add(rim);
       cellGroup.add(mesh);
     }
     cellGroup.visible = layers.occ;

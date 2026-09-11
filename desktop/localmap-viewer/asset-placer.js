@@ -78,7 +78,9 @@
     var light = stdMat(0xe8e8ea, { metalness: 0.45, roughness: 0.3 });
     var safety = stdMat(0xc9a227, { metalness: 0.3, roughness: 0.4, emissive: 0xc9a227, emissiveIntensity: 0.05 });
     var carton = stdMat(0x6e5b45, { roughness: 0.85 });
-    var accent = stdMat(0x32d4ff, { emissive: 0x32d4ff, emissiveIntensity: 0.2, metalness: 0.2, roughness: 0.4 });
+    // Procedural stand-ins use metal / soft white — never HUD cyan plastic
+    var accent = stdMat(0xc8cdd2, { metalness: 0.2, roughness: 0.45, emissive: 0xc8cdd2, emissiveIntensity: 0.06 });
+    var plastic = stdMat(0x5a626c, { roughness: 0.5, metalness: 0.18 });
 
     function add(mesh, x, y, z) {
       mesh.position.set(x || 0, y || 0, z || 0);
@@ -177,7 +179,8 @@
         add(box(sx * 0.4, sy * 0.85, 0.02, accent), sx * 0.22, sy / 2, sz * 0.55);
         break;
       case 'signage':
-        add(box(sx, sy, sz, accent), 0, sy / 2, 0);
+        add(box(sx, sy, sz, dark), 0, sy / 2, 0);
+        add(box(sx * 0.85, sy * 0.55, 0.02, accent), 0, sy / 2, sz * 0.52);
         break;
       case 'pallet_rack':
         [[-1, -1], [-1, 1], [1, -1], [1, 1]].forEach(function (c) {
@@ -202,7 +205,7 @@
         add(box(sx * 0.9, sy * 0.05, sz * 0.9, dark), 0, sy * 0.95, 0);
         break;
       case 'tote':
-        add(box(sx, sy, sz, stdMat(0x2a6a9a, { roughness: 0.45 })), 0, sy / 2, 0);
+        add(box(sx, sy, sz, plastic), 0, sy / 2, 0);
         break;
       case 'barrel':
         add(cyl(sx * 0.45, sx * 0.45, sy, stdMat(0x3a6a3a, { metalness: 0.4 })), 0, sy / 2, 0);
@@ -253,7 +256,7 @@
         add(box(sx * 0.25, 0.05, 0.08, metal), 0, sy * 0.5, sz * 0.7);
         break;
       case 'parts_bin':
-        add(box(sx, sy, sz, stdMat(0x2a6a9a, { roughness: 0.45 })), 0, sy / 2, 0);
+        add(box(sx, sy, sz, plastic), 0, sy / 2, 0);
         add(box(sx * 0.9, 0.04, sz * 0.9, dark), 0, sy * 0.95, 0);
         break;
       case 'safety_fence':
@@ -351,7 +354,7 @@
         })), 0, sy * 0.52, 0);
         break;
       default:
-        add(box(sx, sy, sz, accent), 0, sy / 2, 0);
+        add(box(sx, sy, sz, metal), 0, sy / 2, 0);
         break;
     }
     return g;
