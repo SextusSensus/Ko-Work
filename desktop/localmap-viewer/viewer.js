@@ -1473,9 +1473,10 @@
     return Promise.resolve();
   }
 
-  function refreshRegistry() {
+  function refreshRegistry(opts) {
+    opts = opts || {};
     return loadJson(DOMAINS_INDEX).then(function (reg) {
-      return setRegistry(reg, { forceId: reg.active });
+      return setRegistry(reg, { forceId: opts.forceId || reg.active });
     });
   }
 
@@ -1626,11 +1627,10 @@
   setLiveHud('offline', 'poll');
 
   // Domains must boot even if texture decode hangs (headless / slow GPU).
+  // Prefer ?domain= over domains.json active so deep-links / screenshots stick.
   var q0 = new URLSearchParams(window.location.search);
   var deepDomain = q0.get('domain');
-  refreshRegistry().then(function () {
-    if (deepDomain) return switchDomain(deepDomain);
-  }).catch(function () {
+  refreshRegistry({ forceId: deepDomain || undefined }).catch(function () {
     domainTitle.textContent = 'sample';
     buildWarehouse();
     window.k1LocalMap.loadSample();
