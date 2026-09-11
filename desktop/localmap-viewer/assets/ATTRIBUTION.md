@@ -127,3 +127,18 @@ No paid CGTrader (or other marketplace) purchase URLs or binaries are kept in th
 ## `library/assembly-line/`
 
 Kenney Factory Kit subset (conveyors, crane/gantry, hopper, yellow structures) + Poly Haven / ambientCG rubber & metal textures + authored caution/lane markings — **CC0**. Ontology labels: `conveyor`, `conveyor_curve`, `conveyor_elevated`, `assembly_station`, `robotic_arm`, `parts_bin`, `safety_fence`, `light_curtain`, `control_panel`, `overhead_gantry`. Wired into Distribution Hub east zone via `buildAssemblyLineZone()` (OrbitControls untouched).
+
+
+## Quality pass 2026-09-11 (Poly Haven 1k)
+
+| Asset | Source | License |
+|------|--------|---------|
+| `plastic_crate_03`, `metal_trash_can`, `propane_tank`, `Barrel_02` | Poly Haven | CC0 |
+| `mounted_fluorescent_lights`, `security_camera_01` | Poly Haven | CC0 |
+| `modular_chainlink_fence` | Poly Haven | CC0 |
+| `modern_arm_chair_01`, `modern_coffee_table_01`, `wooden_bookshelf_worn`, `modern_wooden_cabinet`, `painted_wooden_cabinet`, `CoffeeTable_01` | Poly Haven | CC0 |
+| `textures/carpet_ph_*` (dirty_carpet), `textures/ceiling_ph_*` (ceiling_interior) | Poly Haven | CC0 |
+| `materials/concrete_floor_painted_*`, `painted_plaster_wall_*`, `metal_plate_*` | Poly Haven | CC0 |
+| `assembly-line/textures/rubber_tiles_ph_*` | Poly Haven rubber_tiles | CC0 |
+
+Prefer these over flat Kenney / procedural when both exist. Quaternius traffic props remain for cones/barriers only.

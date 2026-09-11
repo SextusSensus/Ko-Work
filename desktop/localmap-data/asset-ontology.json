@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-09-11T10:15:00Z",
+  "updated": "2026-09-11T10:43:09Z",
   "description": "Label class \u2192 free Local Map asset (default_asset). Global catalog (scope:global) supports cross-domain autofill from detections.",
   "catalog_ref": "../localmap-viewer/assets/catalog.json",
   "placement_modes": {
@@ -9,6 +9,23 @@
     "wall": "Yaw faces outward from wall; ignore footprint height"
   },
   "label_classes": [
+    {
+      "id": "armchair",
+      "aliases": [
+        "lounge_chair"
+      ],
+      "default_asset": "office/modern-armchair",
+      "placement": "footprint",
+      "scale_m": [
+        0.75,
+        0.9,
+        0.75
+      ],
+      "domains": [
+        "office",
+        "*"
+      ]
+    },
     {
       "id": "assembly_station",
       "aliases": [
@@ -101,7 +118,7 @@
         "bookshelf",
         "book_case"
       ],
-      "default_asset": "office/bookcase",
+      "default_asset": "office/wooden-bookshelf",
       "placement": "footprint",
       "scale_m": [
         0.9,
@@ -120,7 +137,7 @@
         "cupboard",
         "drawer_cabinet"
       ],
-      "default_asset": "kitchen/drawer-cabinet",
+      "default_asset": "office/modern-cabinet",
       "placement": "footprint",
       "scale_m": [
         0.8,
@@ -195,7 +212,7 @@
         "seat",
         "task_chair"
       ],
-      "default_asset": "kitchen/dining-chair",
+      "default_asset": "office/office-chair",
       "placement": "footprint",
       "scale_m": [
         0.45,
@@ -229,6 +246,21 @@
         "*"
       ],
       "tier": "P2"
+    },
+    {
+      "id": "coffee_table",
+      "aliases": [],
+      "default_asset": "office/coffee-table",
+      "placement": "footprint",
+      "scale_m": [
+        1.1,
+        0.4,
+        0.6
+      ],
+      "domains": [
+        "office",
+        "*"
+      ]
     },
     {
       "id": "control_panel",
@@ -365,7 +397,7 @@
         "wooden_crate",
         "plastic_crate"
       ],
-      "default_asset": "warehouse/wooden-crate",
+      "default_asset": "warehouse/plastic-crate-03",
       "placement": "footprint",
       "scale_m": [
         0.6,
@@ -641,7 +673,7 @@
         "runner",
         "carpet_runner"
       ],
-      "default_asset": "office/hallway-carpet",
+      "default_asset": "office/carpet-pbr",
       "placement": "footprint",
       "scale_m": [
         10.0,
@@ -876,7 +908,7 @@
       "aliases": [
         "plant"
       ],
-      "default_asset": "generic/potted-plant",
+      "default_asset": "office/potted-plant",
       "placement": "footprint",
       "scale_m": [
         0.35,
@@ -1011,7 +1043,7 @@
         "machine_guard",
         "perimeter_fence"
       ],
-      "default_asset": "assembly-line/safety-fence",
+      "default_asset": "assembly-line/chainlink-fence",
       "placement": "footprint",
       "scale_m": [
         2.0,
@@ -1021,6 +1053,22 @@
       "domains": [
         "distribution-hub",
         "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "security_camera",
+      "aliases": [
+        "camera"
+      ],
+      "default_asset": "cross-domain/security-camera",
+      "placement": "anchor",
+      "scale_m": [
+        0.25,
+        0.2,
+        0.3
+      ],
+      "domains": [
+        "*"
       ]
     },
     {
@@ -1210,6 +1258,23 @@
         "assembly-factory",
         "warehouse-bay-a",
         "distribution-hub",
+        "*"
+      ]
+    },
+    {
+      "id": "trash_can",
+      "aliases": [
+        "bin",
+        "garbage"
+      ],
+      "default_asset": "warehouse/metal-trash-can",
+      "placement": "footprint",
+      "scale_m": [
+        0.5,
+        0.95,
+        0.5
+      ],
+      "domains": [
         "*"
       ]
     },

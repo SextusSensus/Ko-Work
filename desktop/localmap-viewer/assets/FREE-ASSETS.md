@@ -51,3 +51,7 @@ If a paid marketplace listing looks useful, scrape **free** CC0 sources (Poly Ha
 ### Domains
 - **assembly-factory** — dense factory line (Kenney + Poly Haven industrial + procedural)
 - **warehouse-bay-a** / **distribution-hub** — warehouse / hub (exterior shell toggle)
+
+## Quality bar
+
+Prefer Poly Haven glTF + 1k/2k PBR textures over flat Kenney when both exist. Quaternius only if quality holds. Procedural last resort. No paid CGTrader.

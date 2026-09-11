@@ -52,7 +52,7 @@
 
   var scene = new THREE.Scene();
   scene.background = new THREE.Color(BG);
-  scene.fog = new THREE.FogExp2(BG, 0.022);
+  scene.fog = new THREE.FogExp2(BG, 0.016);
 
   var camera = new THREE.PerspectiveCamera(42, 1, 0.05, 160);
   var renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -73,9 +73,10 @@
   }
   viewport.appendChild(renderer.domElement);
 
-  scene.add(new THREE.HemisphereLight(0xc5d4e8, 0x121214, 0.42));
-  scene.add(new THREE.AmbientLight(0xffffff, 0.16));
-  var key = new THREE.DirectionalLight(0xfff4e8, 0.95);
+  // Soft industrial / office GI-ish: cool sky hemisphere + warm key + floor bounce
+  scene.add(new THREE.HemisphereLight(0xd8e4f2, 0x1a1814, 0.55));
+  scene.add(new THREE.AmbientLight(0xf2f0ea, 0.20));
+  var key = new THREE.DirectionalLight(0xfff2e0, 1.05);
   key.position.set(7, 14, 5);
   key.castShadow = true;
   if (key.shadow) {
@@ -86,16 +87,20 @@
     key.shadow.camera.right = 16;
     key.shadow.camera.top = 16;
     key.shadow.camera.bottom = -16;
-    key.shadow.bias = -0.0002;
+    key.shadow.bias = -0.00025;
+    key.shadow.radius = 2.5;
   }
   scene.add(key);
   // Neutral fill rim — do not paint env meshes with HUD cyan
-  var rim = new THREE.DirectionalLight(0xe8eef4, 0.16);
+  var rim = new THREE.DirectionalLight(0xe8eef4, 0.22);
   rim.position.set(-5, 4, -7);
   scene.add(rim);
-  var fill = new THREE.DirectionalLight(0xffffff, 0.22);
+  var fill = new THREE.DirectionalLight(0xffffff, 0.28);
   fill.position.set(-8, 6, 3);
   scene.add(fill);
+  var bounce = new THREE.DirectionalLight(0xffe8d0, 0.12);
+  bounce.position.set(2, 1.5, -6);
+  scene.add(bounce);
 
   var envGroup = new THREE.Group();
   var exteriorGroup = new THREE.Group();
@@ -146,6 +151,7 @@
   var floorTex = null, metalTex = null, plasterTex = null, concreteTex = null, concreteRough = null;
   var woodTex = null, cardboardTex = null, shutterTex = null, antiSlipTex = null, carpetTex = null;
   var beltTex = null, cautionTex = null, brushMetalTex = null;
+  var floorNorTex = null, floorArmTex = null, plasterNorTex = null, carpetNorTex = null, ceilingTileTex = null;
   var gltfCache = {};
   var texLoader = new THREE.TextureLoader();
   var gltfLoader = (typeof THREE !== 'undefined' && THREE.GLTFLoader) ? new THREE.GLTFLoader() : null;
@@ -588,14 +594,39 @@
   }
 
   // ---- Environments -------------------------------------------------------
-  function addFloor(size, repeat) {
-    var map = texRepeat(floorTex, repeat, repeat);
-    var m = map
-      ? new THREE.MeshStandardMaterial({ map: map, color: 0xd8d8d8, metalness: 0.04, roughness: 0.88 })
+  function pbrFloorMat(diffTex, norTex, armTex, repeat, tint) {
+    var map = texRepeat(diffTex, repeat, repeat);
+    var opts = {
+      color: tint != null ? tint : 0xd0d0d0,
+      metalness: 0.04,
+      roughness: 0.88
+    };
+    if (map) opts.map = map;
+    if (norTex) {
+      opts.normalMap = texRepeat(norTex, repeat, repeat) || norTex;
+      opts.normalScale = new THREE.Vector2(0.7, 0.7);
+    }
+    if (armTex) {
+      var arm = texRepeat(armTex, repeat, repeat) || armTex;
+      opts.roughnessMap = arm;
+      opts.aoMap = arm;
+      opts.aoMapIntensity = 0.65;
+    } else if (concreteRough) {
+      opts.roughnessMap = concreteRough;
+    }
+    return (map || norTex)
+      ? new THREE.MeshStandardMaterial(opts)
       : stdMat(0x1a1a1c, { metalness: 0.05, roughness: 0.9 });
+  }
+
+  function addFloor(size, repeat) {
+    var m = pbrFloorMat(floorTex || antiSlipTex, floorNorTex, floorArmTex, repeat, 0xd4d4d4);
     var floor = new THREE.Mesh(new THREE.PlaneGeometry(size, size), m);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
+    if (floor.geometry.attributes && !floor.geometry.attributes.uv2 && floor.geometry.attributes.uv) {
+      floor.geometry.setAttribute('uv2', floor.geometry.attributes.uv);
+    }
     envGroup.add(floor);
 
     var lineMat = new THREE.MeshBasicMaterial({ color: SAFETY });
@@ -622,7 +653,7 @@
   /** Place real-world cartons ON a shelf board (no giant untextured BoxGeometry slabs). */
   function placeRackCartons(x, z, len, depth, shelfTop, levelIdx) {
     // Prefer textured GLBs; cardboardMat fallback stays ~0.4–0.55 m (never len×depth slabs)
-    var names = ['ph-box', 'box-large', 'ph-crate', 'ph-box', 'box-wide'];
+    var names = ['ph-box', 'lib-crate03', 'ph-crate', 'ph-box', 'box-wide', 'ph-plastic', 'ph-tote'];
     var slotCount = Math.max(2, Math.min(5, Math.round(len / 2.4)));
     for (var k = 0; k < slotCount; k++) {
       if ((levelIdx + k) % 3 === 0) continue; // leave empty slots
@@ -694,7 +725,7 @@
       envGroup.add(makeBox(depth, shelfThick, len, shelf, x, y, z));
       envGroup.add(makeBox(0.04, 0.05, len, beam, x - depth / 2 - 0.02, y, z));
       envGroup.add(makeBox(0.04, 0.05, len, beam, x + depth / 2 + 0.02, y, z));
-      // Board is centered at y → top face at y + half thickness
+      // Board is centered at y → top face at y + half thickness — Poly Haven/Kenney GLBs
       placeRackCartons(x, z, len, depth, y + shelfThick * 0.5 + 0.002, i);
     }
   }
@@ -783,6 +814,16 @@
     placeGltfClone('lib-light', -3.5, 4.0, 0, 1.0, 0);
     placeGltfClone('lib-light', 3.5, 4.0, 0, 1.0, 0);
     placeGltfClone('lib-wet', 1.2, 0, -7.2, 1.0, 0.15);
+    placeGltfClone('lib-fluorescent', -2.0, 4.1, 2.5, null, 0);
+    placeGltfClone('lib-fluorescent', 2.0, 4.1, -2.5, null, 0);
+    placeGltfClone('lib-crate03', -2.2, 0, 5.8, null, 0.4);
+    placeGltfClone('lib-crate03', 2.0, 0, 5.5, null, -0.2);
+    placeGltfClone('lib-trash', 7.8, 0, -6.5, null, 0.3);
+    placeGltfClone('lib-propane', -7.5, 0, 4.2, null, 0.1);
+    placeGltfClone('lib-barrel2', -5.8, 0, 6.2, null, -0.4);
+    placeGltfClone('lib-cam', -8.8, 3.6, -8.8, null, 0.7);
+    placeGltfClone('lib-cam', 8.8, 3.6, 8.8, null, -2.2);
+    forkliftProxy(-2.4, -7.2, 0.4);
 
     envGroup.visible = layers.env;
   }
@@ -791,13 +832,13 @@
   /** Dense Assembly Factory / factory line (replaces Kitchen seed domain). */
   function buildAssemblyFactory() {
     beginEnvBuild();
-    var floorMap = texRepeat(antiSlipTex || floorTex, 12, 12);
-    var floorMat = floorMap
-      ? new THREE.MeshStandardMaterial({ map: floorMap, color: 0xc4c4c4, metalness: 0.05, roughness: 0.88 })
-      : stdMat(0x1a1a1c, { metalness: 0.05, roughness: 0.9 });
+    var floorMat = pbrFloorMat(antiSlipTex || floorTex || beltTex, floorNorTex, floorArmTex, 12, 0xc8c8c8);
     var floor = new THREE.Mesh(new THREE.PlaneGeometry(28, 24), floorMat);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
+    if (floor.geometry.attributes && !floor.geometry.attributes.uv2 && floor.geometry.attributes.uv) {
+      floor.geometry.setAttribute('uv2', floor.geometry.attributes.uv);
+    }
     envGroup.add(floor);
 
     var lineMat = new THREE.MeshBasicMaterial({ color: SAFETY });
@@ -839,10 +880,12 @@
     roboticArmProxy(-2.2, 3.0, Math.PI / 2);
     roboticArmProxy(2.2, -2.6, -Math.PI / 2);
 
-    var tote = stdMat(PLASTIC_GRAY, { metalness: 0.18, roughness: 0.55 });
-    [[-2.5, -3.2], [-2.4, 0.4], [-2.5, 2.4], [2.5, -2.8], [2.4, 0.0], [2.5, 3.0],
-     [-4.2, -1.5], [4.2, 1.2], [-0.8, -3.6], [0.9, 3.4]].forEach(function (p) {
-      envGroup.add(makeBox(0.48, 0.3, 0.36, tote, p[0], 0.15, p[1]));
+    // Poly Haven plastic crates / totes instead of flat gray plastic blobs
+    [[-2.5, -3.2], [-2.4, 0.4], [-2.5, 2.4], [2.5, -2.8], [2.4, 0.0], [2.5, 3.0]].forEach(function (p, i) {
+      placeGltfClone(i % 2 ? 'lib-crate03' : 'ph-tote', p[0], 0, p[1], null, i * 0.35);
+    });
+    [[-4.2, -1.5], [4.2, 1.2], [-0.8, -3.6], [0.9, 3.4]].forEach(function (p, i) {
+      placeGltfClone(i % 2 ? 'ph-plastic' : 'lib-crate03', p[0], 0, p[1], null, -i * 0.25);
     });
 
     safetyFenceRun(-4.65, 0.0, 10.5, 0);
@@ -1269,7 +1312,19 @@
     'off-table': [1.20, 0.75, 0.70],
     'off-tv': [0.70, 0.45, 0.10],
     'off-plant': [0.40, 1.00, 0.40],
-    'off-sofa': [1.80, 0.85, 0.85]
+    'off-sofa': [1.80, 0.85, 0.85],
+    'off-armchair': [0.75, 0.90, 0.75],
+    'off-coffee': [1.10, 0.40, 0.60],
+    'off-bookcase': [0.95, 2.00, 0.40],
+    'off-cabinet': [1.00, 0.85, 0.45],
+    'off-cabinet2': [0.90, 1.60, 0.45],
+    'lib-crate03': [0.50, 0.35, 0.60],
+    'lib-trash': [0.50, 0.95, 0.50],
+    'lib-propane': [0.40, 1.20, 0.40],
+    'lib-barrel2': [0.60, 0.90, 0.60],
+    'lib-fluorescent': [1.20, 0.12, 0.25],
+    'lib-cam': [0.25, 0.20, 0.30],
+    'ph-fence': [2.00, 2.00, 0.15]
   };
 
   function fitRootToScaleM(root, scaleM) {
@@ -1315,13 +1370,13 @@
 
   function buildDistributionHub() {
     beginEnvBuild();
-    var floorMap = texRepeat(antiSlipTex || floorTex, 14, 14);
-    var floorMat = floorMap
-      ? new THREE.MeshStandardMaterial({ map: floorMap, color: 0xc8c8c8, metalness: 0.04, roughness: 0.9 })
-      : stdMat(0x1a1a1c, { metalness: 0.05, roughness: 0.9 });
+    var floorMat = pbrFloorMat(antiSlipTex || floorTex, floorNorTex, floorArmTex, 14, 0xc8c8c8);
     var floor = new THREE.Mesh(new THREE.PlaneGeometry(36, 36), floorMat);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
+    if (floor.geometry.attributes && !floor.geometry.attributes.uv2 && floor.geometry.attributes.uv) {
+      floor.geometry.setAttribute('uv2', floor.geometry.attributes.uv);
+    }
     envGroup.add(floor);
 
     var lineMat = new THREE.MeshBasicMaterial({ color: SAFETY });
@@ -1480,6 +1535,15 @@
     placeGltfClone('lib-light', -3.8, 3.8, 0, 1.0, 0);
     placeGltfClone('lib-light', 3.8, 3.8, 0, 1.0, 0);
     placeGltfClone('lib-wet', 1.2, 0, -7.5, null, 0.15);
+    placeGltfClone('lib-fluorescent', -5.5, 4.6, 2.0, null, 0);
+    placeGltfClone('lib-fluorescent', 5.5, 4.6, -2.0, null, 0);
+    placeGltfClone('lib-crate03', -1.5, 0, 6.0, null, 0.3);
+    placeGltfClone('lib-crate03', 1.8, 0, 6.2, null, -0.4);
+    placeGltfClone('lib-trash', 9.5, 0, -7.5, null, 0.2);
+    placeGltfClone('lib-propane', -9.2, 0, 3.5, null, 0.5);
+    placeGltfClone('lib-barrel2', 7.6, 0, 5.8, null, -0.2);
+    placeGltfClone('lib-cam', -10.5, 4.2, -9.5, null, 0.8);
+    placeGltfClone('ph-fence', 9.8, 0, 0.5, null, Math.PI / 2);
 
     envGroup.visible = layers.env;
   }
@@ -1487,71 +1551,96 @@
 
   function buildOffice() {
     beginEnvBuild();
-    var carpetMap = texRepeat(carpetTex || woodTex || floorTex, 6, 6);
-    var floorMat = carpetMap
-      ? new THREE.MeshStandardMaterial({ map: carpetMap, color: 0xb8a898, metalness: 0.02, roughness: 0.92 })
-      : stdMat(0x8a7a6a, { metalness: 0.03, roughness: 0.9 });
-    var floor = new THREE.Mesh(new THREE.PlaneGeometry(14, 12), floorMat);
+    // Poly Haven dirty_carpet PBR (diff + nor + arm) — warm office carpet
+    var carpetMat = pbrFloorMat(carpetTex || woodTex || floorTex, carpetNorTex, floorArmTex, 5, 0xb8a898);
+    var floor = new THREE.Mesh(new THREE.PlaneGeometry(16, 14), carpetMat);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
+    if (floor.geometry.attributes && !floor.geometry.attributes.uv2 && floor.geometry.attributes.uv) {
+      floor.geometry.setAttribute('uv2', floor.geometry.attributes.uv);
+    }
     envGroup.add(floor);
-    var grid = new THREE.GridHelper(14, 14, 0x3a3a3e, 0x2a2a2e);
-    grid.position.y = 0.002;
-    envGroup.add(grid);
 
-    var wallMap = texRepeat(plasterTex || concreteTex, 3, 1.2);
-    var wall = wallMap
-      ? new THREE.MeshStandardMaterial({
-          map: wallMap, color: 0xd8dce0, metalness: 0.04, roughness: 0.88,
-          roughnessMap: concreteRough || null
-        })
+    var wallMap = texRepeat(plasterTex || concreteTex, 3.2, 1.2);
+    var wallOpts = {
+      color: 0xe4e6e8, metalness: 0.03, roughness: 0.9
+    };
+    if (wallMap) wallOpts.map = wallMap;
+    if (plasterNorTex) {
+      wallOpts.normalMap = texRepeat(plasterNorTex, 3.2, 1.2) || plasterNorTex;
+      wallOpts.normalScale = new THREE.Vector2(0.45, 0.45);
+    }
+    if (concreteRough) wallOpts.roughnessMap = concreteRough;
+    var wall = wallMap || plasterNorTex
+      ? new THREE.MeshStandardMaterial(wallOpts)
       : stdMat(0xd0d4d8, { metalness: 0.05, roughness: 0.9 });
-    exteriorGroup.add(makeBox(14, 3.0, 0.18, wall, 0, 1.5, -5.5));
-    exteriorGroup.add(makeBox(14, 3.0, 0.18, wall, 0, 1.5, 5.5));
-    exteriorGroup.add(makeBox(0.18, 3.0, 12, wall, -6.5, 1.5, 0));
-    exteriorGroup.add(makeBox(0.18, 3.0, 12, wall, 6.5, 1.5, 0));
+    exteriorGroup.add(makeBox(16, 3.1, 0.18, wall, 0, 1.55, -6.2));
+    exteriorGroup.add(makeBox(16, 3.1, 0.18, wall, 0, 1.55, 6.2));
+    exteriorGroup.add(makeBox(0.18, 3.1, 14, wall, -7.4, 1.55, 0));
+    exteriorGroup.add(makeBox(0.18, 3.1, 14, wall, 7.4, 1.55, 0));
 
-    var part = stdMat(0xc8ccd0, { metalness: 0.05, roughness: 0.8 });
-    [[-2, 0], [2, 0]].forEach(function (p) {
-      envGroup.add(makeBox(1.5, 1.35, 0.06, part, p[0], 0.68, -0.75));
-      envGroup.add(makeBox(0.06, 1.35, 1.5, part, p[0] - 0.75, 0.68, 0));
-      envGroup.add(makeBox(0.06, 1.35, 1.5, part, p[0] + 0.75, 0.68, 0));
+    // Cubicle partitions — drywall tone (not floating white slabs)
+    var part = wallMap
+      ? new THREE.MeshStandardMaterial({ map: texRepeat(plasterTex, 1.2, 1.0) || plasterTex, color: 0xd8dce0, metalness: 0.04, roughness: 0.86 })
+      : stdMat(0xc8ccd0, { metalness: 0.05, roughness: 0.8 });
+    var partBase = metalMat(0x6a7380);
+    [[-3.2, -0.4], [-0.4, -0.4], [2.4, -0.4]].forEach(function (p) {
+      envGroup.add(makeBox(1.7, 0.06, 1.7, partBase, p[0], 0.03, p[1]));
+      envGroup.add(makeBox(1.7, 1.2, 0.05, part, p[0], 0.66, p[1] - 0.82));
+      envGroup.add(makeBox(0.05, 1.2, 1.7, part, p[0] - 0.82, 0.66, p[1]));
     });
 
-    var ceil = stdMat(0xe8e8ea, { metalness: 0.02, roughness: 0.95, emissive: 0xdde4ea, emissiveIntensity: 0.22 });
-    for (var cx = -4; cx <= 4; cx += 2) {
-      for (var cz = -3; cz <= 3; cz += 2) {
-        envGroup.add(makeBox(1.7, 0.04, 1.7, ceil, cx, 2.85, cz));
+    // Acoustic ceiling tiles
+    var ceilMap = texRepeat(ceilingTileTex || plasterTex, 1.0, 1.0);
+    var ceil = ceilMap
+      ? new THREE.MeshStandardMaterial({ map: ceilMap, color: 0xf0f0f2, metalness: 0.02, roughness: 0.92, emissive: 0xdde4ea, emissiveIntensity: 0.12 })
+      : stdMat(0xe8e8ea, { metalness: 0.02, roughness: 0.95, emissive: 0xdde4ea, emissiveIntensity: 0.22 });
+    for (var cx = -5; cx <= 5; cx += 2) {
+      for (var cz = -4; cz <= 4; cz += 2) {
+        envGroup.add(makeBox(1.85, 0.04, 1.85, ceil, cx, 2.95, cz));
       }
     }
 
-    var glass = stdMat(0xa8c8e8, { metalness: 0.1, roughness: 0.15, transparent: true, opacity: 0.4 });
-    envGroup.add(makeBox(1.5, 1.2, 0.06, glass, -2.5, 1.6, -5.35));
-    envGroup.add(makeBox(1.5, 1.2, 0.06, glass, 2.5, 1.6, -5.35));
+    var glass = stdMat(0xa8c8e8, { metalness: 0.1, roughness: 0.12, transparent: true, opacity: 0.38 });
+    envGroup.add(makeBox(1.6, 1.3, 0.06, glass, -3.0, 1.7, -6.05));
+    envGroup.add(makeBox(1.6, 1.3, 0.06, glass, 0, 1.7, -6.05));
+    envGroup.add(makeBox(1.6, 1.3, 0.06, glass, 3.0, 1.7, -6.05));
 
     var elev = metalMat(0x8a96a4);
-    envGroup.add(makeBox(1.15, 2.2, 0.12, elev, -5.4, 1.1, 5.25));
-    envGroup.add(makeBox(1.15, 2.2, 0.12, elev, -3.8, 1.1, 5.25));
+    envGroup.add(makeBox(1.15, 2.2, 0.12, elev, -5.8, 1.1, 5.95));
+    envGroup.add(makeBox(1.15, 2.2, 0.12, elev, -4.2, 1.1, 5.95));
 
-    placeGltfClone('off-desk', -3.0, 0, -1.2, null, 0);
-    placeGltfClone('off-desk', -1.0, 0, -1.2, null, 0);
-    placeGltfClone('off-desk', 1.0, 0, -1.2, null, 0);
-    placeGltfClone('off-desk', 3.0, 0, -1.2, null, 0);
-    placeGltfClone('off-chair', -3.0, 0, -0.45, null, Math.PI);
-    placeGltfClone('off-chair', -1.0, 0, -0.45, null, Math.PI);
-    placeGltfClone('off-chair', 1.0, 0, -0.45, null, Math.PI);
-    placeGltfClone('off-chair', 3.0, 0, -0.45, null, Math.PI);
-    placeGltfClone('off-shelf', 5.2, 0, 2.5, null, Math.PI / 2);
-    placeGltfClone('off-shelf', 5.2, 0, -2.8, null, Math.PI / 2);
-    placeGltfClone('off-table', -3.5, 0, 2.8, null, 0.2);
-    placeGltfClone('off-tv', -3.0, 0.75, -1.45, null, 0);
-    placeGltfClone('off-tv', 1.0, 0.75, -1.45, null, 0);
-    placeGltfClone('off-plant', 4.6, 0, 4.2, null, 0);
-    placeGltfClone('off-plant', -5.2, 0, -4.2, null, 0.3);
-    placeGltfClone('off-sofa', 3.2, 0, 3.2, null, -0.4);
-    placeGltfClone('lib-light', 0, 2.6, 0, 1.0, 0);
-    placeGltfClone('lib-light', -3, 2.6, -2, 1.0, 0);
-    placeGltfClone('lib-light', 3, 2.6, 2, 1.0, 0);
+    // Desk row — Poly Haven metal desks + chairs
+    [-3.2, -0.4, 2.4].forEach(function (x) {
+      placeGltfClone('off-desk', x, 0, -0.55, null, 0);
+      placeGltfClone('off-chair', x, 0, 0.25, null, Math.PI);
+      placeGltfClone('off-tv', x, 0.75, -0.85, null, 0);
+    });
+    // Second bank along north
+    placeGltfClone('off-desk', -3.2, 0, 2.4, null, Math.PI);
+    placeGltfClone('off-chair', -3.2, 0, 1.6, null, 0);
+    placeGltfClone('off-desk', -0.4, 0, 2.4, null, Math.PI);
+    placeGltfClone('off-chair', -0.4, 0, 1.6, null, 0);
+
+    placeGltfClone('off-shelf', 6.2, 0, 2.8, null, -Math.PI / 2);
+    placeGltfClone('off-shelf', 6.2, 0, -2.2, null, -Math.PI / 2);
+    placeGltfClone('off-bookcase', -6.4, 0, -2.5, null, Math.PI / 2);
+    placeGltfClone('off-cabinet', -6.4, 0, 1.5, null, Math.PI / 2);
+    placeGltfClone('off-cabinet2', 5.8, 0, 5.0, null, Math.PI);
+    placeGltfClone('off-coffee', 2.8, 0, 4.2, null, 0.2);
+    placeGltfClone('off-armchair', 1.6, 0, 4.4, null, -0.6);
+    placeGltfClone('off-armchair', 4.0, 0, 4.0, null, 0.8);
+    placeGltfClone('off-sofa', 3.0, 0, 5.2, null, Math.PI);
+    placeGltfClone('off-table', -4.5, 0, 3.5, null, 0.15);
+    placeGltfClone('off-plant', 5.8, 0, -5.0, null, 0);
+    placeGltfClone('off-plant', -6.2, 0, -5.0, null, 0.4);
+    placeGltfClone('off-plant', 0.5, 0, 5.4, null, -0.2);
+    placeGltfClone('lib-fluorescent', -2, 2.85, -1, null, 0);
+    placeGltfClone('lib-fluorescent', 2, 2.85, 2, null, 0);
+    placeGltfClone('lib-fluorescent', -2, 2.85, 3.5, null, 0);
+    placeGltfClone('lib-light', 0, 2.7, 0, 1.0, 0);
+    placeGltfClone('lib-cam', -6.8, 2.7, -5.8, null, 0.5);
+    placeGltfClone('lib-trash', 6.5, 0, -4.5, null, 0.2);
 
     envGroup.visible = layers.env;
   }
@@ -1625,6 +1714,18 @@
       ['off-tv', './assets/library/office/Television_01/Television_01_1k.gltf'],
       ['off-plant', './assets/library/office/potted_plant_02/potted_plant_02_1k.gltf'],
       ['off-sofa', './assets/library/generic/Sofa_01/Sofa_01_1k.gltf'],
+      ['off-armchair', './assets/library/office/modern_arm_chair_01/modern_arm_chair_01_1k.gltf'],
+      ['off-coffee', './assets/library/office/modern_coffee_table_01/modern_coffee_table_01_1k.gltf'],
+      ['off-bookcase', './assets/library/office/wooden_bookshelf_worn/wooden_bookshelf_worn_1k.gltf'],
+      ['off-cabinet', './assets/library/office/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf'],
+      ['off-cabinet2', './assets/library/office/painted_wooden_cabinet/painted_wooden_cabinet_1k.gltf'],
+      ['lib-crate03', './assets/library/warehouse/plastic_crate_03/plastic_crate_03_1k.gltf'],
+      ['lib-trash', './assets/library/warehouse/metal_trash_can/metal_trash_can_1k.gltf'],
+      ['lib-propane', './assets/library/warehouse/propane_tank/propane_tank_1k.gltf'],
+      ['lib-barrel2', './assets/library/warehouse/Barrel_02/Barrel_02_1k.gltf'],
+      ['lib-fluorescent', './assets/library/cross-domain/mounted_fluorescent_lights/mounted_fluorescent_lights_1k.gltf'],
+      ['lib-cam', './assets/library/cross-domain/security_camera_01/security_camera_01_1k.gltf'],
+      ['ph-fence', './assets/library/assembly-line/polyhaven/modular_chainlink_fence/modular_chainlink_fence_1k.gltf'],
       ['k1-robot', './assets/library/robot/k1/k1_22dof.glb']
     ];
     return Promise.all(jobs.map(function (pair) {
@@ -2067,7 +2168,15 @@
     loadTexFallback('./assets/library/assembly-line/textures/rubber_belt_diff.jpg', './assets/library/assembly-line/textures/rubber_mat_diff.jpg').then(function (t) { beltTex = t; }),
     loadTex('./assets/library/assembly-line/textures/caution_stripes_diff.jpg').then(function (t) { cautionTex = t; }),
     loadTexFallback('./assets/library/assembly-line/textures/brushed_metal_diff.jpg', './assets/library/assembly-line/textures/scratched_metal_diff.jpg').then(function (t) { brushMetalTex = t; }),
-    loadTex('./assets/library/office/textures/carpet_diff.jpg').then(function (t) { carpetTex = t; })
+    loadTexFallback('./assets/library/office/textures/carpet_ph_diff_1k.jpg', './assets/library/office/textures/carpet_diff.jpg').then(function (t) { carpetTex = t; }),
+    loadTex('./assets/library/office/textures/carpet_ph_nor_gl_1k.jpg').then(function (t) { carpetNorTex = t; }),
+    loadTexFallback('./assets/library/materials/concrete_floor_painted_diff_1k.jpg', './assets/distribution-hub/floor_warehouse_diff.jpg').then(function (t) { if (t) floorTex = t; }),
+    loadTex('./assets/library/materials/concrete_floor_painted_nor_gl_1k.jpg').then(function (t) { floorNorTex = t; }),
+    loadTex('./assets/library/materials/concrete_floor_painted_arm_1k.jpg').then(function (t) { floorArmTex = t; }),
+    loadTexFallback('./assets/library/materials/painted_plaster_wall_diff_1k.jpg', './assets/plaster_diff.jpg').then(function (t) { if (t) plasterTex = t; }),
+    loadTex('./assets/library/materials/painted_plaster_wall_nor_gl_1k.jpg').then(function (t) { plasterNorTex = t; }),
+    loadTexFallback('./assets/library/office/textures/ceiling_ph_diff_1k.jpg', './assets/library/office/textures/ceiling_tile_diff.jpg').then(function (t) { ceilingTileTex = t; }),
+    loadTexFallback('./assets/library/assembly-line/textures/rubber_tiles_ph_diff_1k.jpg', './assets/library/assembly-line/textures/rubber_belt_diff.jpg').then(function (t) { if (t) beltTex = t; })
   ]).then(function () {
     if (activeDomainId) buildEnvironmentFor(activeDomainId);
     return preloadHubGltf();

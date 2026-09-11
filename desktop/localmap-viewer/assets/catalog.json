@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-09-11T10:15:00Z",
+  "updated": "2026-09-11T10:43:09Z",
   "description": "CC0 / free-only 3D asset catalog for K1 Local Map. Statuses: downloaded | procedural | free_link. NEVER paid/purchase.",
   "license_default": "CC0",
   "assets": [
@@ -27,6 +27,27 @@
       "source_url": "https://kenney.nl/assets/factory-kit",
       "label_classes": [
         "catwalk"
+      ]
+    },
+    {
+      "id": "assembly-line/chainlink-fence",
+      "name": "Modular chainlink fence",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/modular_chainlink_fence/modular_chainlink_fence_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/modular_chainlink_fence",
+      "fallback_procedural": "safety_fence",
+      "label_classes": [
+        "safety_fence",
+        "fence",
+        "chainlink"
+      ],
+      "real_world_m": [
+        2.0,
+        2.0,
+        0.15
       ]
     },
     {
@@ -313,14 +334,16 @@
       "id": "assembly-line/safety-fence",
       "name": "Safety fencing / light curtain",
       "category": "assembly-line",
-      "status": "procedural",
-      "procedural": "safety_fence",
+      "status": "downloaded",
       "license": "CC0",
-      "source": "procedural Three.js stand-in",
+      "source": "Poly Haven",
       "label_classes": [
         "safety_fence",
         "light_curtain"
-      ]
+      ],
+      "path": "assets/library/assembly-line/polyhaven/modular_chainlink_fence/modular_chainlink_fence_1k.gltf",
+      "source_url": "https://polyhaven.com/a/modular_chainlink_fence",
+      "fallback_procedural": "safety_fence"
     },
     {
       "id": "assembly-line/station",
@@ -444,6 +467,25 @@
       "scope": "global"
     },
     {
+      "id": "cross-domain/fluorescent-lights",
+      "name": "Mounted fluorescent lights",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/mounted_fluorescent_lights/mounted_fluorescent_lights_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/mounted_fluorescent_lights",
+      "label_classes": [
+        "light_fixture",
+        "fluorescent"
+      ],
+      "real_world_m": [
+        1.2,
+        0.12,
+        0.25
+      ]
+    },
+    {
       "id": "cross-domain/k1-robot-proxy",
       "name": "Booster K1 dimension proxy",
       "category": "cross-domain",
@@ -498,6 +540,25 @@
       "source_url": "https://kenney.nl/",
       "fallback_procedural": "cone",
       "scope": "global"
+    },
+    {
+      "id": "cross-domain/security-camera",
+      "name": "Security camera",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/security_camera_01/security_camera_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/security_camera_01",
+      "label_classes": [
+        "security_camera",
+        "camera"
+      ],
+      "real_world_m": [
+        0.25,
+        0.2,
+        0.3
+      ]
     },
     {
       "id": "cross-domain/traffic-cone-oga",
@@ -754,6 +815,16 @@
       "fallback_procedural": "trash"
     },
     {
+      "id": "materials/concrete-floor-painted",
+      "name": "Painted concrete floor (PBR)",
+      "category": "materials",
+      "status": "downloaded",
+      "path": "assets/library/materials/concrete_floor_painted_diff_1k.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/concrete_floor_painted"
+    },
+    {
       "id": "materials/floor-concrete",
       "name": "Concrete floor painted",
       "category": "materials",
@@ -804,6 +875,16 @@
       "source_url": "https://ambientcg.com/view?id=Metal032"
     },
     {
+      "id": "materials/painted-plaster-wall",
+      "name": "Painted plaster wall (PBR)",
+      "category": "materials",
+      "status": "downloaded",
+      "path": "assets/library/materials/painted_plaster_wall_diff_1k.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/painted_plaster_wall"
+    },
+    {
       "id": "materials/wall-tiles",
       "name": "Long white tiles",
       "category": "materials",
@@ -815,13 +896,13 @@
     },
     {
       "id": "office/bookcase",
-      "name": "Bookcase",
+      "name": "Worn wooden bookshelf",
       "category": "office",
       "status": "downloaded",
-      "path": "assets/library/office/Shelf_01/Shelf_01_1k.gltf",
+      "path": "assets/library/office/wooden_bookshelf_worn/wooden_bookshelf_worn_1k.gltf",
       "license": "CC0",
       "source": "Poly Haven",
-      "source_url": "https://polyhaven.com/a/Shelf_01",
+      "source_url": "https://polyhaven.com/a/wooden_bookshelf_worn",
       "fallback_procedural": "bookcase",
       "scope": "global",
       "label_classes": [
@@ -834,14 +915,27 @@
       ]
     },
     {
+      "id": "office/carpet-pbr",
+      "name": "Dirty carpet PBR (Poly Haven)",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/textures/carpet_ph_diff_1k.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/dirty_carpet",
+      "label_classes": [
+        "hallway_carpet",
+        "carpet"
+      ]
+    },
+    {
       "id": "office/ceiling-tile",
       "name": "Ceiling tile",
       "category": "office",
-      "status": "procedural",
-      "procedural": "ceiling_tile",
+      "status": "downloaded",
       "license": "CC0",
-      "source": "procedural + ambientCG Tiles074",
-      "source_url": "https://ambientcg.com/view?id=Tiles074",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/ceiling_interior",
       "scope": "global",
       "label_classes": [
         "ceiling_tile"
@@ -851,7 +945,27 @@
         0.02,
         0.6
       ],
-      "texture": "assets/library/office/textures/ceiling_tile_diff.jpg"
+      "texture": "assets/library/office/textures/ceiling_tile_diff.jpg",
+      "path": "assets/library/office/textures/ceiling_ph_diff_1k.jpg"
+    },
+    {
+      "id": "office/coffee-table",
+      "name": "Modern coffee table",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/modern_coffee_table_01/modern_coffee_table_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/modern_coffee_table_01",
+      "scope": "global",
+      "label_classes": [
+        "coffee_table"
+      ],
+      "real_world_m": [
+        1.1,
+        0.4,
+        0.6
+      ]
     },
     {
       "id": "office/couch",
@@ -954,11 +1068,10 @@
       "id": "office/hallway-carpet",
       "name": "Hallway carpet",
       "category": "office",
-      "status": "procedural",
-      "procedural": "hallway_carpet",
+      "status": "downloaded",
       "license": "CC0",
-      "source": "procedural + ambientCG Carpet010",
-      "source_url": "https://ambientcg.com/view?id=Carpet010",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/dirty_carpet",
       "scope": "global",
       "label_classes": [
         "hallway_carpet",
@@ -969,7 +1082,8 @@
         0.02,
         1.4
       ],
-      "texture": "assets/library/office/textures/carpet_diff.jpg"
+      "texture": "assets/library/office/textures/carpet_diff.jpg",
+      "path": "assets/library/office/textures/carpet_ph_diff_1k.jpg"
     },
     {
       "id": "office/meeting-table",
@@ -1015,6 +1129,46 @@
       ]
     },
     {
+      "id": "office/modern-armchair",
+      "name": "Modern armchair",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/modern_arm_chair_01/modern_arm_chair_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/modern_arm_chair_01",
+      "scope": "global",
+      "label_classes": [
+        "armchair",
+        "lounge_chair"
+      ],
+      "real_world_m": [
+        0.75,
+        0.9,
+        0.75
+      ]
+    },
+    {
+      "id": "office/modern-cabinet",
+      "name": "Modern wooden cabinet",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/modern_wooden_cabinet",
+      "scope": "global",
+      "label_classes": [
+        "cabinet",
+        "sideboard"
+      ],
+      "real_world_m": [
+        1.0,
+        0.85,
+        0.45
+      ]
+    },
+    {
       "id": "office/office-chair",
       "name": "Office chair",
       "category": "office",
@@ -1033,6 +1187,26 @@
         0.5,
         0.9,
         0.5
+      ]
+    },
+    {
+      "id": "office/painted-cabinet",
+      "name": "Painted wooden cabinet",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/painted_wooden_cabinet/painted_wooden_cabinet_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/painted_wooden_cabinet",
+      "scope": "global",
+      "label_classes": [
+        "cabinet",
+        "storage_cabinet"
+      ],
+      "real_world_m": [
+        0.9,
+        1.6,
+        0.45
       ]
     },
     {
@@ -1155,6 +1329,26 @@
       ]
     },
     {
+      "id": "office/wooden-bookshelf",
+      "name": "Worn wooden bookshelf",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/wooden_bookshelf_worn/wooden_bookshelf_worn_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/wooden_bookshelf_worn",
+      "scope": "global",
+      "label_classes": [
+        "bookcase",
+        "bookshelf"
+      ],
+      "real_world_m": [
+        0.95,
+        2.0,
+        0.4
+      ]
+    },
+    {
       "id": "robot/k1",
       "name": "Booster K1 (official URDF mesh)",
       "category": "robot",
@@ -1181,6 +1375,25 @@
       "source": "Poly Haven",
       "source_url": "https://polyhaven.com/a/Barrel_01",
       "fallback_procedural": "barrel"
+    },
+    {
+      "id": "warehouse/barrel-02",
+      "name": "Barrel 02",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/Barrel_02/Barrel_02_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Barrel_02",
+      "label_classes": [
+        "barrel",
+        "drum"
+      ],
+      "real_world_m": [
+        0.6,
+        0.9,
+        0.6
+      ]
     },
     {
       "id": "warehouse/bollard",
@@ -1318,6 +1531,25 @@
       "source": "procedural"
     },
     {
+      "id": "warehouse/metal-trash-can",
+      "name": "Metal trash can",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/metal_trash_can/metal_trash_can_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/metal_trash_can",
+      "label_classes": [
+        "trash_can",
+        "bin"
+      ],
+      "real_world_m": [
+        0.5,
+        0.95,
+        0.5
+      ]
+    },
+    {
       "id": "warehouse/modular-shell",
       "name": "Modular warehouse shell bay",
       "category": "warehouse",
@@ -1360,14 +1592,54 @@
     },
     {
       "id": "warehouse/plastic-crate",
-      "name": "Plastic crate",
+      "name": "Plastic crate (Poly Haven 03)",
       "category": "warehouse",
       "status": "downloaded",
-      "path": "assets/library/warehouse/plastic_crate_01/plastic_crate_01_1k.gltf",
+      "path": "assets/library/warehouse/plastic_crate_03/plastic_crate_03_1k.gltf",
       "license": "CC0",
       "source": "Poly Haven",
-      "source_url": "https://polyhaven.com/a/plastic_crate_01",
-      "fallback_procedural": "crate"
+      "source_url": "https://polyhaven.com/a/plastic_crate_03",
+      "fallback_procedural": "crate",
+      "notes": "Preferred sharp Poly Haven twin over plastic_crate_01"
+    },
+    {
+      "id": "warehouse/plastic-crate-03",
+      "name": "Plastic crate 03 (Poly Haven)",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/plastic_crate_03/plastic_crate_03_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/plastic_crate_03",
+      "label_classes": [
+        "crate",
+        "plastic_crate",
+        "tote"
+      ],
+      "real_world_m": [
+        0.5,
+        0.35,
+        0.6
+      ]
+    },
+    {
+      "id": "warehouse/propane-tank",
+      "name": "Propane tank",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/propane_tank/propane_tank_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/propane_tank",
+      "label_classes": [
+        "propane_tank",
+        "gas_cylinder"
+      ],
+      "real_world_m": [
+        0.4,
+        1.2,
+        0.4
+      ]
     },
     {
       "id": "warehouse/safety-fence",
