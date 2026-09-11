@@ -2,7 +2,9 @@
 target point, adaptive low-light boost, and the BEST_EFFORT camera ROS node (CamNode). Extracted
 verbatim (pure move). CamNode logs frames/depth to the shared rerun sink (rerun_sink._RR).
 """
+import glob
 import math
+import os
 import threading
 import time
 
@@ -27,13 +29,18 @@ def bearing_from_x(cx, w_img, hfov_deg):
     return math.atan2((cx - w_img / 2.0), focal_px(w_img, hfov_deg))
 
 
-def range_from_bbox_height(box_h_px, h_img, hfov_deg, person_h_m):
-    """Fallback range from apparent person height. The camera's vertical FOV
-    isn't published here, so we reuse the horizontal focal length (a fine
-    monocular proxy): range ~= person_h_m * focal_px / box_h_px."""
+def range_from_bbox_height(box_h_px, h_img, vfov_deg, person_h_m):
+    """Fallback range from apparent person height:
+    range ~= person_h_m * focal_px(h_img, vfov_deg) / box_h_px.
+
+    Pass the VERTICAL fov. This used to be handed the horizontal one against the vertical
+    pixel count, described as "a fine monocular proxy" -- it is not: that only holds when
+    hfov/w == vfov/h, and on this camera (105.8 deg / 544 px vs 94.9 deg / 448 px) reusing
+    hfov here understated the focal by ~1.21x on top of whatever hfov itself was wrong by.
+    Both FOVs resolve to the same 205.8 px focal, which is the calibrated fx = fy."""
     if box_h_px <= 1:
         return None
-    f = focal_px(h_img, hfov_deg)
+    f = focal_px(h_img, vfov_deg)
     return (person_h_m * f) / box_h_px
 
 
@@ -65,11 +72,12 @@ YOLO_WARMUP_N = 3   # dummy predicts at construction (mirror ReidEngine's 3) -- 
 
 
 class PersonDetector:
-    def __init__(self, model_path, conf):
+    def __init__(self, model_path, conf, trt="off", trt_cache=""):
         self.model_path = model_path
         self.conf = conf
         self.model = None
         self.ok = False
+        self.ep_active = ""
         try:
             from ultralytics import YOLO
             self.model = YOLO(model_path, task="detect")
@@ -86,9 +94,99 @@ class PersonDetector:
             except Exception:  # noqa: BLE001
                 pass
             self.ok = True
+            self._try_trt(model_path, trt, trt_cache)
         except Exception as e:  # noqa: BLE001
             log("YOLO-LOAD-FAIL %s (%s) -- person detection disabled" % (model_path, e))
             self.ok = False
+
+    def _try_trt(self, model_path, trt, trt_cache):
+        """Swap ultralytics' ONNX session for one on the TensorRT EP at FP16.
+
+        WHY A SWAP. ultralytics hardcodes its provider list (nn/autobackend.py ~L249: CPU, with
+        CUDA inserted when available) and offers no hook for TensorrtExecutionProvider. Its ONNX
+        branch only ever calls self.session.run(output_names, {input_name: im}), so a session
+        built from the SAME file with the same I/O names is a drop-in. Measured on this robot
+        2026-09-10, this also beats a hand-rolled raw-ORT detector, because ultralytics' letterbox
+        is faster than an equivalent numpy one (raw-ORT total 34.7 ms vs ultralytics 33.4 ms) --
+        reimplementing pre/post would have made it SLOWER, so we keep ultralytics and change only
+        the execution provider.
+
+        MEASURED WIN (real camera frames, 448x544): predict p50 25.4 -> 14.6 ms (1.73x). The raw
+        forward alone goes 20.1 -> 7.35 ms (2.51x). Cutting GPU time also frees contention for
+        depth and re-ID, so the whole loop benefits, not just this stage.
+
+        NUMERICALLY VERIFIED before shipping, IoU-matched at the follow's operating conf 0.35:
+        7/7 detections matched at IoU>=0.5 with none unmatched either way; worst corner delta
+        0.29 px (p50 0.19); min matched IoU 0.992; worst confidence delta 0.0039; person-class
+        counts identical (3/3). At a harsher conf 0.10 (43 detections) worst delta is 0.92 px.
+
+        WARM CACHE IS A HARD PRECONDITION. A cold engine build measured 574.5 s on this Orin vs
+        4.8 s warm. Ten minutes of silence at startup would look like a hang, and a build must
+        never contend with a live control loop -- so this REFUSES to build inline and engages only
+        when the cache already holds an engine. Populate it as a deploy step. Engines are keyed by
+        graph hash + precision + SM arch (..._fp16_sm87.engine), so a changed model, JetPack or GPU
+        simply misses the cache and falls back rather than loading a stale engine.
+
+        FAIL-SAFE THROUGHOUT: a missing provider, cold cache, I/O-name mismatch, a session that
+        did not actually activate TRT, or any exception leaves ultralytics' own CUDA session in
+        place. Detection never degrades to CPU or to nothing because of this path."""
+        self.ep_active = "CUDAExecutionProvider(ultralytics-default)"
+        if trt != "on":
+            return
+        try:
+            import onnxruntime as ort
+            if "TensorrtExecutionProvider" not in ort.get_available_providers():
+                log("YOLO-TRT skip: TensorrtExecutionProvider unavailable -> staying on the "
+                    "ultralytics CUDA session")
+                return
+            cache = trt_cache or ""
+            if not cache or not os.path.isdir(cache) or not glob.glob(os.path.join(cache, "*.engine")):
+                log("YOLO-TRT skip: no cached engine in %r -- refusing to build inline (a cold "
+                    "build measured 574s; it must be a deploy step, never a startup stall). "
+                    "Staying on the CUDA session." % cache)
+                return
+            _pred = getattr(self.model, "predictor", None)
+            _mdl = getattr(_pred, "model", None) if _pred is not None else None
+            old = getattr(_mdl, "session", None) if _mdl is not None else None
+            if old is None:
+                log("YOLO-TRT skip: ultralytics exposed no .session (warmup may have failed) -> "
+                    "staying on the default session")
+                return
+            so = ort.SessionOptions()
+            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            so.log_severity_level = 3
+            opts = {"trt_fp16_enable": True, "trt_engine_cache_enable": True,
+                    "trt_engine_cache_path": cache}
+            t0 = time.monotonic()
+            new = ort.InferenceSession(
+                model_path, sess_options=so,
+                providers=[("TensorrtExecutionProvider", opts),
+                           "CUDAExecutionProvider", "CPUExecutionProvider"])
+            load_s = time.monotonic() - t0
+            # The swap is only sound if ultralytics' cached I/O names still address this session.
+            if ([i.name for i in new.get_inputs()] != [i.name for i in old.get_inputs()]
+                    or [o.name for o in new.get_outputs()] != [o.name for o in old.get_outputs()]):
+                log("YOLO-TRT ABORT: I/O names differ between sessions -> keeping the CUDA "
+                    "session (a mismatched swap would feed the wrong tensor)")
+                return
+            act = list(new.get_providers())
+            if not act or act[0] != "TensorrtExecutionProvider":
+                log("YOLO-TRT ABORT: session did not activate TRT (active=%s) -> keeping the CUDA "
+                    "session" % ",".join(act))
+                return
+            _mdl.session = new
+            self.ep_active = ",".join(act)
+            log("YOLO-TRT active fp16 providers=%s cache=%s load=%.1fs (measured 1.73x on real "
+                "frames, 25.4->14.6ms predict; boxes agree to 0.29px at conf 0.35)"
+                % (self.ep_active, cache, load_s))
+            try:                                   # re-warm THROUGH ultralytics on the new session
+                _d = np.zeros((448, 544, 3), dtype=np.uint8)
+                for _ in range(YOLO_WARMUP_N):
+                    self.model.predict(_d, verbose=False)
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception as e:  # noqa: BLE001 -- an optimisation must never break detection
+            log("YOLO-TRT ERR %s -> staying on the ultralytics CUDA session" % e)
 
     def detect(self, frame):
         """Return list of dicts: {box:(x1,y1,x2,y2), cx, cy, conf, w, h}.
@@ -206,7 +304,7 @@ def low_light_boost(bgr, on=True, thresh=LL_DARK_THRESH):
 # ROS node -- BEST_EFFORT camera (both head topics, deduped) + depth.
 # ---------------------------------------------------------------------------
 class CamNode(Node):
-    def __init__(self, topics, depth_topic, odom_topic=""):
+    def __init__(self, topics, depth_topic, odom_topic="", head_pose_topic=""):
         super().__init__("k1_follow_person")
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -226,6 +324,23 @@ class CamNode(Node):
         # plain ssh may not have sourced -- a failed import or subscribe just disables odom recording
         # (latest_odom() stays None) and NEVER stops the follow. Default odom_topic '' = no subscription
         # (byte-identical). The capture profile turns it on for P8 map stitching.
+        # HEAD POSE (head-tracking stage 2): OPTIONAL, read-only, and guarded exactly like odom.
+        # WHY it matters beyond tracking: the follow derives target bearing from PIXEL offset and
+        # assumes image-centre == body-forward. That is only true while the head is centred. Once
+        # anything pans the head, every bearing is wrong by the pan angle -- so the pan angle must
+        # be OBSERVED, never assumed. Absent topic / failed import -> head_yaw() returns None and
+        # the caller fails closed. Default  = no subscription at all (byte-identical).
+        self._head_lock = threading.Lock()
+        self._head_yaw = None      # radians, +ve = panned toward image-right
+        self._head_pitch = None
+        self._head_stamp = 0.0
+        if head_pose_topic:
+            try:
+                from geometry_msgs.msg import Pose as _HeadPose
+                self.create_subscription(_HeadPose, head_pose_topic, self._head_cb, qos)
+            except Exception as e:  # noqa: BLE001 -- absent topic/type -> head pose stays None
+                print("HEAD-POSE subscribe failed (%s) -> head yaw unknown (head tracking will refuse)" % e)
+
         self._odom_lock = threading.Lock()
         self._odom = None          # (x, y, theta) planar pose, or None until first message
         self._odom_stamp = 0.0
@@ -324,6 +439,41 @@ class CamNode(Node):
             rerun_sink._RR.scalar("/odom/x", x)
             rerun_sink._RR.scalar("/odom/y", y)
             rerun_sink._RR.scalar("/odom/theta", th)
+
+    def _head_cb(self, msg):
+        """Stash head yaw/pitch from the quaternion. Never raises: a malformed message must not
+        kill the cam-spin thread (same contract as _odom_cb)."""
+        try:
+            q = msg.orientation
+            yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+            _s = max(-1.0, min(1.0, 2.0 * (q.w * q.y - q.z * q.x)))
+            pitch = math.asin(_s)
+        except Exception:  # noqa: BLE001
+            return
+        with self._head_lock:
+            self._head_yaw = float(yaw)
+            self._head_pitch = float(pitch)
+            self._head_stamp = time.monotonic()
+
+    def head_yaw(self, max_age=0.5):
+        """Head yaw in radians if FRESH within max_age, else None. None means UNKNOWN, and the
+        caller must fail closed -- an assumed-zero yaw is exactly the silent-corruption case.
+        Same freshness window as depth: a pose older than that cannot be trusted mid-stride."""
+        with self._head_lock:
+            if self._head_yaw is None:
+                return None
+            if (time.monotonic() - self._head_stamp) > max_age:
+                return None
+            return self._head_yaw
+
+    def head_pitch(self, max_age=0.5):
+        """Head pitch in radians if fresh, else None (see head_yaw)."""
+        with self._head_lock:
+            if self._head_pitch is None:
+                return None
+            if (time.monotonic() - self._head_stamp) > max_age:
+                return None
+            return self._head_pitch
 
     def latest_odom(self, max_age=1.0):
         """Latest (x, y, theta) planar pose if fresh within max_age, else None. Odometry publishes

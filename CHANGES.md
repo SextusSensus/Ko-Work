@@ -373,6 +373,722 @@ Open: one ceremonial `Submit-Job.ps1` run from the laptop; cross-pyarrow content
   noise-texture fixtures; real quality gate awaits a real garage bundle — P8.3-gated). Image deps:
   +rerun-sdk; Dockerfile ships eval/rrd_to_lerobot.py.
 
+## Bridge build fix — `Move` (not `MoveCommand`) + probed SDK root (ROBOT-VERIFIED, 2026-09-02)
+
+Symptom: every `--drive` launch died with `Follow process exited 3 = COMPILE FAILED`;
+`k1_compile.err` showed `'class booster::robot::b1::B1LocoClient' has no member named 'MoveCommand'`
+at `loco_follow_bridge.cpp:165` and `:181`. Two independent breakages, both from the robot's SDK
+having moved out from under the hard-coded assumptions:
+
+1. **Wrong API name.** The installed SDK (`b1_loco_client.hpp`, identical md5 at
+   `~/Workspace/sdk_release/include/` and `/usr/local/include/`) declares
+   `int32_t Move(float vx, float vy, float vyaw)`. There is no `MoveCommand` anywhere in the headers.
+   Renamed both call sites (`loco_move`, `safe_shutdown`) + the protocol comments; added a note at
+   `loco_move` so the name isn't "corrected" back. **No semantic change** — same fire-and-forget
+   velocity call, same clamps, same watchdog tiers, same shutdown order (`Move(0,0,0)` → `kPrepare`).
+2. **Wrong SDK root.** `/home/booster/Workspace/booster_robotics_sdk` no longer exists on the robot
+   (the drop is now `~/Workspace/sdk_release`, and `install.sh` also puts it in `/usr/local`, whose
+   `lib/` is flat with no arch subdir). Headers still resolved via the default `/usr/local/include`
+   search path — which is why the failure surfaced as a *member* error and hid the second half; with
+   the rename alone the link then failed `ld: cannot find .../lib/aarch64/libbooster_robotics_sdk.a`.
+   `run_follow.sh`, `run_follow_demo.sh`, `run_follow_capture.sh` and `bridge_cpp/CMakeLists.txt` now
+   **probe** `$BOOSTER_SDK` → `~/Workspace/booster_robotics_sdk` → `~/Workspace/sdk_release` →
+   `/usr/local` for a root with both the header and the static lib (arch subdir or flat), and
+   fail-closed with the reason in `k1_compile.err` + the `BRIDGE`-prefixed stderr marker (exit 3,
+   the contract the app already tails) when none is found.
+
+Verified on the robot (192.168.9.75, aarch64, g++ 11.4.0) in `/tmp` — probe resolves to
+`~/Workspace/sdk_release`, `g++ -std=c++17 ... -o` exits 0, and `cmake -B build && cmake --build build`
+(3.22.1) links `loco_follow_bridge` clean. The bridge binary was **not** run: `quit`/EOF ends in
+`ChangeMode(kPrepare)`, which is robot motion. `VERIFY ON ROBOT`: deploy from the app, then one drive
+session — expect `[run_follow] compiled OK.` and no exit 3.
+
+Not touched (same stale-path root cause, does not block the follow): `run_loco.sh` (cds into
+`~/Workspace/booster_robotics_sdk/build` for the SDK's own example client — that build dir doesn't
+exist in the new drop), `tree_manifest.py`'s `SDK` root and `K1Finder.ps1`'s SDK tree-node/hint
+(file-tree UI only).
+
+## OSNet ReID staged on the robot — export, verify, TRT pre-build (ROBOT-VERIFIED, 2026-09-02)
+
+`/home/booster/reid/` did not exist, so every `--appearance osnet` follow fell back to the colour
+histogram and the node auto-refused armed re-lock (`ARM-REFUSED`, `_osnet_ok=False`). `models/` had
+no OSNet blob either (README: "supplied out-of-band"), so nothing could be staged.
+
+**Exported from official sources rather than grabbing a prebuilt ONNX.** `models/export_osnet.py`
+(new) takes the official torchreid architecture (`KaiyangZhou/deep-person-reid`, self-contained,
+torch-only — no pip install on the robot) and the official `osnet_x0_25` MSMT17 checkpoint
+(`huggingface.co/kaiyangzhou/osnet`, the OSNet author's own repo), drops the dataset-specific 4101-id
+classifier head (the follow reads the 512-d feature, never the logits), and exports with a **dynamic
+batch axis** — a fixed-batch ONNX would silently collapse the node's pre-warmed `(1,2,4)` TRT set to
+batch 1 (P4.5). It refuses to write the file unless the ONNX matches PyTorch at batches 1/2/4 and the
+embedding is non-degenerate. Sizes + sha256s are in the script header; measured:
+`max|torch-onnx|` 4.8e-05 / 5.3e-05 / 9.9e-05, `cos` 0.99999988 / 1.0 / 1.0, distinct-input cos 0.9733.
+
+**Pre-built the TensorRT engines through the node's own `identity.ReidEngine`** (`robot/stage_reid.py`,
+new — same options, same `trt_engine_cache_path` = the model dir, so the node reuses the cache rather
+than building mid-follow). On the robot (Orin, sm87, ORT 1.22, GPU clocks UNPINNED at 306 MHz):
+
+- `REID-ENGINE ok providers=TensorrtExecutionProvider,... in=256x128`, `dyn_batch=True`,
+  `cpu_ep_degraded=False` → the arm gate's `_osnet_ok` and `_ep_ok` both pass.
+- build+warm **355.4 s ONE TIME** (cached to `/home/booster/reid/*_fp16_sm87.engine`, 1.6 MB); this is
+  exactly the stall that would otherwise land in the first field follow.
+- embeddings behave: same-crop cos 1.000000, shifted 0.9213, recoloured 0.5796.
+- `embed_batch(5)` 33.6 ms chunked `[4,1]` (no on-the-fly build), steady-state `embed_batch(2)`
+  p50 10.6 ms / p90 21.1 ms / p99 31.4 ms — measured at the 306 MHz clock floor, so pin
+  `jetson_clocks` before judging it.
+
+Also staged a copy at `models/osnet_x0_25_msmt17.onnx` (gitignored) so `K1Finder.ps1`'s
+`Ensure-ReidModel` re-stages it offline to a re-imaged robot. `models/fetch_models.sh` grew an
+`osnet` branch and `models/README.md` documents the recipe + the two robot-side steps.
+
+Note: the TRT cache is keyed to the ORT/TRT/driver versions, the GPU arch and the ONNX itself — after
+an SDK/JetPack upgrade or a model change, re-run `robot/stage_reid.py` or the first follow eats the
+~6-minute rebuild.
+
+## P8.1 landed half-deployed — `calibration.py` + the `calibration` config key (FIELD-FOUND, 2026-09-02)
+
+Two launch-blocking gaps from the P8.1 commit, both found the hard way in a field session (the P8.1
+`VERIFY ON ROBOT` was never done). They surfaced one after the other, each masking the next:
+
+1. **`ModuleNotFoundError: No module named 'calibration'`** — `follow_person_k1.py:103` imports
+   `from calibration import load_calibration`, but `calibration.py` was never added to the app's
+   `Deploy-FollowFiles` hard-required list, so every deploy shipped a node that cannot import. Added
+   it to the list (the list's own comment is the contract: "the follow node imports every one of
+   these"), so a missing local copy now fail-closes the launch instead of crashing on the robot.
+2. **`CONFIG-ERROR: defaults.yaml key set mismatch -- missing=['calibration']`** — P8.1 added
+   `--calibration` to argparse but not the matching key to `robot/config/defaults.yaml`, and the node
+   fail-closes when the YAML key set doesn't exactly match the argparse surface (correctly — §2). Added
+   `calibration: null`, which is exactly the argparse default, so no behavior changes.
+
+Verified on the robot with the app's real drive argv (ROS sourced, `parse_args` only — no node, no
+motion): `CONFIG-OK` for both `--preview` and the full `--drive --appearance osnet --arm-reacquire …`
+line, `calibration=None`. Also evaluated the armed-relock ladder from the osnet-resolved floors:
+`bank 0.4 >= anchor 0.35`, `reloc 0.55 > 0.35`, `view 0.55 >= 0.4`, `0 < backstop 0.28 < 0.35`,
+`iso 0.55 > 0.35`, `arm_streak 8 >= streak 5`, `arm_margin 0.3 >= margin 0.2` → **LADDER-OK**.
+
+Consequence worth stating plainly: with the OSNet engine now present and on the TRT EP, all three
+arm-gate conditions (`_osnet_ok`, `_ep_ok`, `_ladder_ok`) pass for the first time, so `--arm-reacquire`
+is no longer inert — the next `--drive` with that flag ARMS markerless re-lock. `follow_person_k1.py`'s
+own help text says to arm only after validating audit-only. Treat the first post-OSNet session as the
+audit-only validation run, not a demo.
+
+## FIELD SESSION 2026-09-02 — first full follow: gesture lock → walk → armed re-lock → graceful stop
+
+The follow ran end to end on the robot for the first time since the re-image. Five blockers
+were found and fixed in one session, each masking the next:
+
+1. **Bridge would not compile** — `B1LocoClient` has no `MoveCommand` (it is `Move`), and the
+   hard-coded SDK root no longer exists (`booster_robotics_sdk` → `sdk_release`). See the
+   "Bridge build fix" entry.
+2. **Node could not import** — `calibration.py` was missing from the app's deploy list (P8.1
+   landed half-deployed). See the "P8.1 landed half-deployed" entry.
+3. **Node fail-closed on config** — `defaults.yaml` was missing the `calibration` key (same
+   half-landed P8.1).
+4. **Every drive aborted `ping 100`** — the 2026-05 firmware answers loco RPC ONLY via the ROS2
+   service `/booster_rpc_service`; the raw SDK channel times out. See the "ROS-transport loco
+   bridge" entry. This one cost the most time; the two red herrings are recorded there because
+   they are extremely easy to fall for again:
+   - `ss -ulpn` as `booster` cannot show pid info for the ROOT-owned `loco_rpc_bridge`, so it
+     reads as "0 DDS sockets" when it actually holds 19. This produced a confident-but-wrong
+     "boot race" diagnosis that cost a reboot and a daemon restart.
+   - `ros2 topic hz/echo` never wakes the lazy camera publishers, so out-of-band probes read
+     ~0 fps while a live session sees 30+. Only the node's own `DRIVE-WAIT` trace is truthful.
+5. **Drive gate `depth=STALE`** — NOT a depth fault. Arrival-gap measurement during a live
+   session: `depth median 0.055s p90 0.068s max 0.144s, gaps>0.5s: 0` vs
+   `rgb median 0.032s p90 0.044s max 8.934s, gaps>0.5s: 1`. RGB stalls (worst 8.9s) starve the
+   stereo depth downstream; the node reports the symptom as depth. Cleared by aiming at a lit,
+   textured scene — `rgb_fps` went 8.7 → 35.7. The fps EMA never decays, so a frozen
+   `depth_fps=7.4` alongside `depth=DOWN` means "stopped", not "slow": read the health state,
+   not the fps.
+
+**Verified in the 300s session** (`--standoff-m 0.9 --vx-max 0.1 --appearance osnet
+--arm-reacquire --lock-trigger gesture --require-heartbeat`):
+
+| signal | result |
+|---|---|
+| bridge (ROS transport) | `ping 0` / `prep 0` / `walk 0` |
+| gesture seed | `LOCKED conf=0.92 -- gesture handoff complete` (repeatable: 2/2 sessions) |
+| follow control law | closed 3.5m → **0.79m** vs 0.9m standoff, then `vx=+0.00` holding station |
+| OSNet identity | `sim=0.89–0.93` frame-to-frame, `cost=0.01/2nd=0.86` under a bystander |
+| armed re-lock | `AUTO-RELOCK id=44 via=anchor g=0.77 k=2 -> TRACK (anchor kept)` after 1 loss |
+| **P4.4 tier retune** | **`WATCHDOG stale` == 0** for the whole run → **the P4.4 VERIFY ON ROBOT criterion PASSES** |
+| graceful stop | `GRACEFUL STOP: decelerate in-gait -> settle -> kPrepare`; robot ended in mode 1 (standing) → **the 06000dc fall-fix VERIFY ON ROBOT PASSES** |
+| operator deadman | `HB-LOST -> velocity gated to zero` then `HB-OK restored` (WiFi hiccup, self-recovered) |
+| depth safety gate | `DEPTH-STARVED -> TURN-ONLY (forward vx suppressed)` then cleared — forward drive correctly suppressed during a hiccup |
+
+**Open, in priority order:**
+- **Loop cost.** `dt=137–237ms` against a 100ms target; `RERUN-DISABLED-SLOW` shed the recording
+  in every session, so there is **no .rrd from any of them**. P4.4's margin assumed p99≈122ms;
+  it held at 400ms, but a recorded run needs the loop cost back first (drop `--rerun`, or cut
+  per-frame neural cost — P4.3's one-model idea is now more attractive).
+- **`jetson-clocks.service` did not survive the re-image** (`Unit could not be found`). Clocks
+  reset to 306MHz on every boot; pin manually until the boot unit is reinstalled.
+- **Deadman auto-resumes on link return** — per runtime-safety doctrine a deadman should latch
+  and require a deliberate operator clear. `UNTETHERED_FOLLOW.md` blocker 3, now observed live.
+- `robot/ops/k1-loco-rpc-heal.service` was drafted against the WRONG (boot-race) diagnosis —
+  it is not needed and should be deleted rather than installed.
+
+## Obstacle brake wired to the app — the reflex existed but was OFF in every session (2026-09-03)
+
+`--obstacle-brake` (OBSTACLE_LABELING_PLAN.md Phase 3, built 2026-07-04) was enabled in
+`demo.yaml`/`field.yaml`/`capture.yaml` — but `K1Finder.ps1` passes **no `--profile` and never passed
+`--obstacle-brake`**, so `defaults.yaml`'s `obstacle_brake: false` won every launch. Every drive to
+date, including the first full follow on 2026-09-02, ran with **no obstacle braking at all**.
+
+Added a `Obstacle brake` checkbox on the Tracker safety row (next to Range fence / Arm re-lock),
+**default ON**, appending `--obstacle-brake`. No node changes: the reflex is unmodified.
+
+Pre-flighted headlessly on the robot (`parse_args` only — no node, no motion):
+- all 11 `obstacle_*` attributes the reflex reads are present — this is the exact failure class the
+  code comments record (a missing argparse attr once raised AttributeError on every tracked frame and
+  bricked the follow), so it is worth re-proving whenever the flag is turned on;
+- grading verified against `_obstacle_vx_cap`: no cap ≥1.5 m, 0.062 m/s @1.2 m, 0.038 @1.0, 0.013 @0.8,
+  **0.00 ≤0.7 m**;
+- operator-ignore verified both ways: target 0.9 m + nearest return 0.9 m → no brake (that return IS
+  the operator); obstacle 0.6 m + target 2.0 m → cap 0.00.
+
+**STILL VERIFY ON ROBOT** — the live drive validation the plan lists as outstanding ("blocked so far
+by gesture-lock flakiness = no TRACK to observe"). That blocker is gone: gesture lock seeded 2/2 on
+2026-09-02. Procedure: follow at walking pace, step past a chair/box so it sits between robot and
+operator, and expect throttled `CLEARANCE <m> -> vx-cap <v>` lines with vx grading to 0.00 before
+contact, then recovery when the corridor clears. Do it at `--vx-max 0.1` with a hand on STOP first.
+
+Scope note: this is **braking, not steering around**. The plan's safety spine forbids steer-around on
+this hardware (one ~70° forward cone, no side sensing, no odometry — turning away loses the lock).
+Class-aware braking (COCO modulates, geometry still triggers) remains Phase 3's other open TODO.
+
+## Robot hit a chair with the brake ON — the band was blind below 0.53 m (FIELD, 2026-09-03)
+
+First live drive with `--obstacle-brake` (standoff 0.7, vx-max 0.23). The reflex engaged and held
+`vx-cap 0.00` — but only AFTER contact. The brake logic is correct; the SENSING was blind.
+
+Evidence, from the session log:
+```
+CLEARANCE 1.38m -> vx-cap 0.20      <- corridor "clear", full authority
+CLEARANCE 0.59m -> vx-cap 0.00      <- next sample: already inside the 0.7 m stop band
+```
+The obstacle did not approach through the grading zone; it MATERIALISED inside it. No graded braking
+was possible, and a walking gait at 0.23 m/s cannot stop in the remaining 0.59 m.
+
+Root cause, measured not assumed. A live per-row depth profile of the corridor (captured mid-session)
+gives floor returns that fit `floor_range = cam_h / sin(theta_row)` with **cam_h = 0.86 m and a
+horizontal optical axis, model vs measured within +/-0.05 m over four rows** (row 0.75: 1.98 vs 1.94;
+0.80: 1.69 vs 1.74; 0.85: 1.50 vs 1.54; 0.90: 1.37 vs 1.32). With `obstacle_band_bot` at its 0.68
+default the band therefore sees only ABOVE:
+
+| range | 0.68 (was) | 0.75 (now) |
+|---|---|---|
+| 1.5 m | +0.37 m | +0.14 m |
+| 1.0 m | **+0.53 m** | +0.38 m |
+| 0.7 m | +0.63 m | +0.52 m |
+
+A chair seat is ~0.45 m. At the old band it was invisible from ~1.2 m inward — visible far away, then
+dropping BELOW the band exactly as the robot closed on it, reappearing only when the backrest filled
+enough pixels at ~0.6 m. That is the 1.38 -> 0.59 jump.
+
+Fix (app-side, visible in the echoed launch line): the Obstacle brake checkbox now emits
+`--obstacle-brake --obstacle-band-bot 0.75`. At 0.75 the band sees above 0.38 m at 1 m range while the
+FLOOR does not appear until 1.98 m — a 0.48 m margin before the 1.5 m trigger, so no ground
+false-braking. Only ADDS obstacle sensitivity; the failure direction is a spurious stop (fail-safe).
+
+**Explicitly rejected:** raising `--obstacle-brake-start` to 2.0 m (as `field.yaml` does). At any band
+low enough to see a chair, the floor first returns at 1.79-1.98 m, which a 2.0 m trigger would put
+inside the braking zone -> continuous braking on the ground. Band and trigger are coupled; tune the
+band, keep the trigger at 1.5.
+
+Still open:
+- **Very low objects up close remain invisible** (coffee table ~0.40 m at 0.7 m range needs the band
+  to see below 0.52 m). Inherent to a forward camera at 0.86 m with a fixed pixel band. The real fix
+  is floor-plane REJECTION — extend the band far lower and discard returns consistent with the fitted
+  ground plane, which the +/-0.05 m fit now makes practical. New logic in a safety reflex: audit-only
+  first.
+- **Speed vs stopping distance.** 0.8 m of grading zone is 3.5 s at vx 0.23 but 5.3 s at 0.15. For
+  indoor clutter run `--vx-max 0.15`.
+- `LOOP-MS n=600 p50=116 p90=146 p99=179 max=241 budget=100 rerun=off` — the loop is 79% over budget
+  at p99 even without Rerun; 2.2x margin to the 400 ms watchdog tier (P4.4 holds).
+
+## Compute manager Phase 1 — per-stage cost attribution (measurement only, 2026-09-03)
+
+The loop runs `p50 116 / p90 146 / p99 179 ms` against a 100 ms budget (measured with Rerun OFF),
+and the stack already carries THREE independent ad-hoc shed mechanisms — `_rr_overrun_streak`
+(Rerun auto-disable), `_gesture_overrun_streak` (gesture auto-disable) and the ReID watchdog — each
+with its own counter and threshold. What was missing is **attribution**: the loop reported a TOTAL
+only, so there was no way to know which stage to shed first. A shed ladder built on that would be
+guesswork (shedding an 8 ms Rerun to fix a 45 ms overrun is theatre).
+
+`common.PERF` (`_StageTimer`) is a bounded rolling per-stage millisecond accountant. Five cost
+centres in the control loop are instrumented: `detect` (YOLO), `pose` (gesture/lock trigger),
+`reid` (OSNet `embed_batch`), `emit` (JPEG encode + stdout for `--stream`), `track` (tracker
+update). `LOOP-MS` now carries `| stage p50/p90: ...` **ordered by p90 DESCENDING**, so it reads
+left-to-right as "what is actually expensive" — the shed-priority question. Stats reset per 10 s
+window, matching the existing LOOP-MS cadence.
+
+**MEASUREMENT ONLY — nothing sheds, gates, or degrades on these numbers.** The diff is timing calls
+plus one log line; no decision path is touched (verified: the only non-timing/non-log line in the
+whole diff is the `common` import). Cost is one `perf_counter` pair + a list append per stage
+(~1 us, ~0.005% of a 116 ms frame). Unit-checked on the robot: ordering and reset behave.
+
+### The design Phase 2 will implement (NOT built yet — awaiting the measured breakdown)
+A single accountant replacing the three counters, shedding in tiers, escalate-fast/restore-slow:
+
+| tier | contents | shed order |
+|---|---|---|
+| **Safety — NEVER shed** | depth read, obstacle brake, control law, velocity clamps, bridge write, staleness watchdog, heartbeat | never |
+| Comfort | Rerun logging, JPEG `--stream`, odometry recording | first |
+| Trigger | pose/gesture model — only while LOCKED, never during SEARCH | second |
+| Identity | ReID embed rate (`--reid-every-n`), detection input size | last |
+
+The governing principle: **obstacle and wall avoidance are what the budget BUYS, never what gets
+cut.** The manager may only DISABLE optional work — it can never enable anything and never touches
+the safety path, the same discipline as the obstacle brake only ever REDUCING vx.
+
+## Obstacle brake desensitised + the loop's real cost found to be CONTENTION (2026-09-03)
+
+**Brake tuning (operator request: "less sensitive, more sentient").** In a cluttered room the reflex
+held `vx-cap 0.00` continuously. It triggered on the **8th percentile** of corridor depth with only
+**40 valid pixels**, so a handful of close returns (a glancing table edge, a depth speckle) could latch
+a full stop. It now has to see a real object. App emits, alongside the band fix:
+
+| knob | was | now | why |
+|---|---|---|---|
+| `--obstacle-pctile` | 8 | **20** | ignore the closest few % -- noise/thin edges stop dominating |
+| `--obstacle-min-valid` | 40 | **150** | require a genuine footprint, not a speckle |
+| `--obstacle-aged` | 3 | **5** | longer median; a transient cannot latch a stop |
+| `--obstacle-brake-stop` | 0.7 | **0.6** | ~10 cm closer before forward is refused |
+| `--obstacle-brake-start` | 1.5 | 1.5 | UNCHANGED -- coupled to the band (floor returns at 1.98 m) |
+
+Verified on the robot via `parse_args` (no node, no motion): grading at `--vx-max 0.15` is full speed
+>=1.5 m, 0.067 @1.0 m, 0.033 @0.8 m, **0.000 <=0.6 m**.
+
+**This trades margin in the fail-DANGEROUS direction** (brakes later and less) -- recorded plainly
+because it is the first change in this stack that does so. Pair with `--vx-max 0.15` indoors; a gait
+cannot stop instantly inside 0.6 m. "More sentient" proper (mask YOLO person boxes out of the depth
+corridor so bystanders do not read as furniture -- geometry triggers, class modulates) is Phase 3's
+open TODO and deliberately still unbuilt.
+
+### The compute finding that changes the manager's target
+Both YOLO models were measured standalone on the robot:
+```
+detect  providers=['CUDAExecutionProvider','CPUExecutionProvider']  input=[1,3,640,640]  p50=19ms
+pose    providers=['CUDAExecutionProvider','CPUExecutionProvider']  input=[1,3,640,640]  p50=19ms
+```
+**19 ms each in isolation, but 60 ms (detect) and 111 ms (pose) inside the control loop.** The models
+are not slow -- they are 3-6x slower *in situ*. Neither is on TensorRT, but moving them there would
+optimise the 19 ms while the 40-90 ms of CONTENTION is the actual cost: OSNet TRT, the camera pipeline
+(`nv12_jpeg` ~24% CPU), `motion` ~28%, and `polkitd` at **55% CPU** driven by the robot's own
+`service_status.log` loop running `sudo systemctl status` on a tight cadence -- on a box already at
+load 9-12 with 6 cores.
+
+Consequence for the compute manager: a shed ladder over the optional tier (Rerun ~0, `emit` 5 ms,
+odom) recovers ~15 ms of a 118 ms loop. **The lever is contention, not features.** Reducing background
+load (that 55% polkitd is a logging loop, not work) plausibly returns more than shedding everything
+the follow owns. Phase 2 should target scheduling/contention, not feature shedding.
+
+## Band fix VALIDATED + the loop came in UNDER budget (FIELD, 2026-09-03 10:17)
+
+**Obstacle band (0.68 -> 0.75) validated on the robot.** The clearance sequence no longer cliffs:
+```
+band 0.75 (this session): 0.61 0.93 0.80 1.07 0.76 0.77 0.81 0.83 1.09 1.43 1.32
+band 0.68 (yesterday):    1.38 -> 0.59        <- 0.79 m in ONE step, straight past the grading zone
+```
+Clearance now moves in smooth increments instead of materialising inside the stop band, and the
+session produced exactly ONE `vx-cap 0.00` versus the continuous pinning before. Combined with the
+desensitising (pctile 20 / min-valid 150 / aged 5 / stop 0.6), the reflex grades instead of slamming.
+`WATCHDOG stale = 0` again, this time at `--vx-max 0.3`.
+
+**The loop is under budget for the first time.**
+```
+BEFORE  p50=118 p90=189 p99=329 | detect=60/79 reid=19/31 track=14/30 emit=5/12
+AFTER   p50=79  p90=119 p99=152 | detect=33/43 reid=10/20 track=10/16 emit=2/6  pose=40/65
+```
+detect 60->33 ms, pose 111->40 ms, reid 19->10 ms -- **every stage ~45% cheaper at once**, with NO
+code, model or flag change between the two measurements. What changed was contention: GPU clocks
+pinned (`jetson_clocks`, which does not survive a reboot) and the wedged camera daemon restarted.
+Simultaneous across-the-board improvement is the signature of resource starvation lifting, not of any
+single optimisation.
+
+**This settles the compute-manager design.** A shed ladder over the optional tier (Rerun, `emit`
+2-5 ms, odom) was worth ~15 ms; clock state plus a healthy camera daemon were worth ~40 ms. Phase 2
+must manage CONTENTION and detect starvation, not shed features. Concretely it should:
+1. detect and report the starvation signature (all stages inflating together) rather than blaming one;
+2. assert clock state at startup (pinned or warn loudly -- the boot service the re-image deleted);
+3. treat the `polkitd` 55% CPU (the robot's own `systemctl status` logging loop) as the largest single
+   recoverable cost, ahead of anything the follow itself owns.
+
+**Also observed:** `ARM-DISOWNED` x13 in one session -- with two people overlapping at iou 0.94-0.97
+the gesture owner-guard refuses repeatedly (correctly; it will not risk seeding the wrong person), and
+the same overlap produced a `LOST target (ambiguous)`. Single-person runs give far cleaner data.
+
+## Head tracking stages 1-2: bridge `head` command + observed head yaw (DEFAULT OFF, 2026-09-03)
+
+Goal (operator): head tracks the operator so the body can steer around obstacles without swinging the
+person out of frame -- the prerequisite for automatic re-routing.
+
+**The coupling that dictates the whole design.** `bearing_from_x()` derives target bearing purely from
+PIXEL offset, so image-centre == body-forward is an ASSUMPTION, and nothing had ever commanded the
+head, so it always held. Pan the head and three things break at once: (1) yaw control steers by the
+pan angle, (2) the obstacle corridor watches head-forward instead of body-forward -- a safety
+INVERSION, since it would report clear while the robot walks into something, and (3) range/target-point
+inherit the same error. Therefore head yaw must be **observed, never assumed**.
+
+Measured first: `/head_pose` reports `yaw +0.3 deg, pitch +1.0 deg` -- the head IS centred today, so
+there is no latent steering offset, and the ~1 deg pitch independently corroborates the near-horizontal
+optical axis the obstacle-band floor fit assumed.
+
+**Stage 1 -- bridge (`loco_follow_bridge_ros.cpp`).** New `head <pitch_rad> <yaw_rad>` command ->
+`RotateHead` api **2004**, body `{"pitch","yaw"}` (read from the SDK's own `RotateHeadParameter::ToJson`,
+not guessed). Fire-and-forget like Move because it is streamed at tracking rate, clamped in
+`loco_head()` as the last line of defence exactly like velocity: **yaw +/-0.60 rad (34 deg)**, chosen so
+body-forward stays inside the 105.8 deg camera FOV with ~19 deg to spare; pitch +/-0.35 rad. NOT covered
+by the velocity staleness watchdog -- a stale head command cannot run the robot away, and zeroing head
+yaw mid-stride would be worse than leaving it. `safe_shutdown()` re-centres the head, deliberately
+placed AFTER the stop+PREP sequence so the safety ordering is untouched. Compiles on the robot.
+
+**Stage 2 -- observed head yaw (`perception.CamNode`).** Optional `/head_pose`
+(`geometry_msgs/Pose`) subscription, guarded exactly like odom: absent topic or failed import ->
+`head_yaw()` returns **None**, meaning UNKNOWN, and callers must fail closed. Freshness window 0.5 s
+(same contract as depth): a pose older than that cannot be trusted mid-stride.
+
+**Flags: `--head-track off|audit|on`, DEFAULT off.**
+- `off` -- head never commanded, no `/head_pose` subscription at all, head yaw forced 0.0, every
+  bearing/corridor expression literally the one that shipped (byte-identical; provable via
+  `replay_eval compare`).
+- `audit` -- compute and LOG what would be commanded and what the corrections would be; send nothing,
+  apply nothing. This is how the numbers get checked before the head ever moves.
+- `on` -- pan to keep the operator centred, correct bearing by the OBSERVED yaw, shift the obstacle
+  corridor to keep watching body-forward. Fails closed: head pose stale/absent -> recentre + forward
+  suppressed.
+
+Verified on the robot: `preview/default` and `drive/default` both give `head_track=off` with
+`pose_topic_subscribed=(none)`, and the node did not fail-closed -> `defaults.yaml` key set still
+matches argparse.
+
+**NOT YET DONE / NOT SAFE TO ENABLE:** the head command is built but **UNTESTED on hardware** (the
+motion test was deliberately deferred), and the stage-3 tracking logic (bearing correction, corridor
+shift, head command loop) is not written. `--head-track on` must not be used until api 2004 is proven
+to actually move the head.
+
+### Corrected premise worth recording
+`OBSTACLE_LABELING_PLAN.md` forbids steering around because it "swings the operator out of the ~70 deg
+FOV". The camera is **105.8 deg** (measured from `camera_info`), and head tracking removes the rest of
+the objection. The reactive gap-following that becomes possible is still NOT route planning -- with one
+forward cone and no SLAM it can steer around a chair, not route around a wall into another room.
+
+## Stricter armed re-lock + clocks boot unit + a CORRECTED contention claim (2026-09-03)
+
+**1. Armed re-lock gated harder (operator: "must not find another person on re-lock").** Armed
+re-lock has DRIVE authority -- a wrong re-lock walks the robot at a stranger -- so the app now emits,
+alongside `--arm-reacquire`:
+
+| knob | was | now | why |
+|---|---|---|---|
+| `--reloc-arm-margin` | 0.30 | **0.35** | winner must beat the RUNNER-UP by this; the real anti-wrong-person guard |
+| `--reloc-arm-streak` | 8 | **12** | consecutive confirming frames before re-lock is permitted |
+| `--reloc-floor` | 0.55 (osnet-resolved) | **0.68** | raises the absolute bar; field relocks were seen at g=0.63/0.72/0.77 |
+
+Verified on the robot (`parse_args`, no motion) that the floor ladder still holds -- **LADDER-OK**, so
+armed re-lock stays ARMED rather than silently dropping to audit-only (which would LOOK like it
+worked). Effect on realistic cases:
+```
+g=0.63 runner-up=0.10  weak field relock          -> refused: below floor
+g=0.72 / 0.77          mid + strong field relocks -> re-locks
+g=0.85 runner-up=0.50  decisive win (gap 0.35)    -> re-locks
+g=0.90 runner-up=0.62  LOOK-ALIKE close (gap 0.28)-> REFUSED   <- the case that was asked for
+```
+`arm-margin` was first set to 0.45 and **corrected down to 0.35 after verification showed 0.45 also
+refuses a decisive win** (g=0.85 vs 0.50). Too strict is not free: it converts every loss into manual
+re-seeding, which is how a safety knob becomes an annoyance that gets switched off.
+
+**2. `robot/ops/jetson-clocks.service` -- installed and enabled.** `jetson_clocks` does not survive a
+reboot; the GPU drops to its 306 MHz floor every boot. That cost two debugging sessions -- once as a
+loop-p99 regression, once as a `no camera frame within 25s` DRIVE-ABORT that looked like a dead camera
+and was partly a starved one. The 2026-07-14 unit did not survive the re-image. Unit ordered
+`After=nvpmodel.service` (clocks pinned BEFORE the power mode get re-scaled underneath them) with a
+20 s settle -- the devfreq nodes are not reliably writable the instant multi-user is reached and
+`jetson_clocks` silently no-ops if it runs too early. Verified `enabled` + `active`, clocks
+`1173000000/1173000000`. Costs idle power/heat, which is why `run_follow.sh` still only WARNS and
+never escalates privilege itself.
+
+**3. CORRECTION: `polkitd` is NOT a 55% CPU runaway.** An earlier entry claimed it was "the largest
+single recoverable cost", based on a single `top` snapshot taken during a busy moment. Measured
+properly (mean of 5 samples over 20 s):
+```
+35.9% nv12_jpeg   28.7% motion   11.3% device_gateway   11.0% default   3.5% polkitd
+```
+polkitd averages **3.5%**. There is no runaway; the background load is legitimate services. The
+largest is `nv12_jpeg` (the Auki camera NV12->JPEG converter, ~36%), which may be sheddable if nothing
+consumes the video stream -- but that is a Booster/Auki service and wants understanding before being
+touched. The compute-manager conclusion is unchanged (contention, not features) but the specific
+target named earlier was wrong.
+
+## Gap steering — the robot can now route AROUND an obstacle (stages 4-5, DEFAULT OFF, 2026-09-03)
+
+Field report: "it runs into obstacles instead of finding an alternative route -- its head stays
+straight and it runs into everything." Correct diagnosis of the shipped behaviour: **nothing in the
+stack had steering authority over an obstacle.** The brake can only slow and stop.
+
+**The sequencing was wrong and the field report exposed it.** Head tracking was treated as a
+prerequisite for steering. It is not: the camera is **105.8 deg** wide and the obstacle reflex looks
+at only the central 35% (49.7 deg), DISCARDING the rest of every frame. The free space beside an
+obstacle is already visible -- it was simply never consulted. Gap steering therefore works on a FIXED
+head; head tracking becomes the upgrade that allows LARGE detours without losing the operator.
+```
+ left sector [-53..-25 deg]   centre [-25..+25]   right sector [+25..+53]
+                               ^ the only part the brake ever looked at
+```
+
+**Stage 4 -- `_sector_clearances()` + `--sector-audit`.** Per-sector (L/C/R) clearance over the full
+frame, same robustness rules as the brake (percentile not min, min-valid footprint). A sector that
+cannot be MEASURED returns None and every caller treats None as BLOCKED: "I cannot see" and "nothing
+is there" must never be the same answer for a moving robot.
+
+**Stage 5 -- `_gap_steer_bias()` + `--gap-steer off|audit|on`.** When the centre corridor is blocked
+and a side is measurably clear, bias the yaw TARGET toward it (pre-slew, so the existing slew limiter
+still bounds how fast yaw may change, and the hard vyaw clamp still applies).
+
+INVARIANTS (deliberate):
+- **Yaw only.** It never authorises forward vx. Speed stays under the brake + the `forbid_forward`
+  keystone, so a steer can never authorise driving at something unseen.
+- **Unmeasurable == blocked.**
+- **Boxed in -> 0.0**, let the brake stop; never guess a direction.
+- **Stops biasing once the operator nears the frame edge** (`--gap-steer-max-bearing-deg 35`): a
+  detour that loses the lock has failed even if it misses the chair.
+
+**How it drives.** The brake reads only the CENTRE corridor, so: centre blocked -> vx capped, robot
+rotates toward the gap -> after ~1-2 s the gap has rotated INTO the centre corridor -> centre
+clearance rises above brake-start -> the brake releases by itself -> forward resumes, now aimed down
+the gap. It turns, then drives. It will never drive forward while the centre is blocked, because that
+is driving at the obstacle.
+
+Decision table verified on the robot (pure function of sectors + bearing, no motion):
+```
+centre blocked, LEFT open      -> +0.20 (LEFT)      BOXED IN               -> 0.00
+centre blocked, RIGHT open     -> -0.20 (RIGHT)     side unmeasurable      -> 0.00
+both open, operator LEFT/RIGHT -> toward operator   centre clear           -> 0.00
+                                                    operator at -40deg     -> 0.00
+```
+Defaults verified `gap_steer=off`, `sector_audit=off`, and the config key set still matches argparse.
+
+**NOT YET RUN ON THE ROBOT.** Enable `--sector-audit audit --gap-steer audit` FIRST: that logs
+`SECTOR L=.. C=.. R=.. -> would-steer=..` and `GAP-AUDIT would-bias ..` while commanding nothing, so
+the decisions can be read against the real room before anything steers.
+
+## Gap steering FIELD FIX -- it oscillated and cancelled itself (2026-09-03, first live run)
+
+First live `--gap-steer on` run. The BRAKE worked exactly as designed:
+```
+CLEARANCE 1.49 -> vx-cap 0.18   1.33 -> 0.15   0.99 -> 0.08   0.61 -> 0.00
+TRACK ... range=1.99[depth] vx=+0.00        <- forward genuinely cut to zero
+```
+The STEERING did not. It flipped direction frame to frame on near-identical bearings, so the biases
+cancelled and the robot wobbled straight on:
+```
+GAP-STEER bias -0.20 (bearing +3deg)   GAP-STEER bias +0.20 (bearing +8deg)
+GAP-STEER bias +0.20 (bearing -5deg)   GAP-STEER bias -0.20 (bearing -8deg)
+GAP-STEER bias +0.20 (bearing -6deg)   GAP-STEER bias -0.20 (bearing -7deg)
+```
+Two defects, both mine:
+
+1. **No hysteresis.** The side was re-decided every frame and the per-sector clearances flicker, so
+   the choice flipped. `_gap_dir` now COMMITS to a side and holds it while that side stays clear,
+   releasing only when the centre is clear again or the robot is boxed in. A detour has to be
+   committed to in order to be a detour.
+2. **Trigger far too early.** It engaged whenever clearance fell below `--obstacle-brake-start`
+   (1.5 m) -- the instant the brake merely began grading, with the path still essentially clear
+   (`GAP-STEER` appears alongside `CLEARANCE 1.49m` above). New `--gap-steer-trigger-frac` (0.35)
+   engages a fraction INTO the braking zone instead: with a 0.6..1.5 zone that is below ~0.92 m,
+   i.e. when actually blocked rather than merely approaching.
+
+This is precisely the class of defect the audit pass exists to catch, and it was found in one live
+run instead of by reasoning -- worth remembering next time the temptation is to skip audit.
+
+## Obstacle brake RE-sensitised -- min-valid 150 was hiding thin objects until close (2026-09-03)
+
+Field: the robot still met obstacles late. The clearance trace shows why, and it is not a grading
+problem:
+```
+CLEARANCE 1.41m -> 0.43m -> 0.35m     (1 Hz samples, travelling ~0.18 m/s)
+```
+0.98 m of clearance vanished between two samples while the robot covered ~0.18 m -- the obstacle
+APPEARED rather than approached, the same cliff signature as the pre-band-fix chair.
+
+Cause: `--obstacle-min-valid 150`, raised from 40 earlier the same day when the brake was
+desensitised on request. A chair leg or table edge subtends very few depth pixels at 1.5 m and
+plenty at 0.4 m, so demanding 150 valid pixels made thin/distant objects invisible until they were
+close. That is precisely the "brakes later and less" trade recorded at the time, now observed.
+
+Walked back toward the middle:
+
+| knob | was | now | why |
+|---|---|---|---|
+| `--obstacle-min-valid` | 150 | **70** | thin/distant objects register again |
+| `--obstacle-pctile` | 20 | **12** | react to nearer returns sooner, still robust vs a raw min |
+| `--obstacle-brake-stop` | 0.6 | **0.7** | stop ~10 cm further out |
+| `--obstacle-aged` | 5 | 5 | KEEP -- anti-glitch guard, not a sensitivity knob |
+| `--obstacle-brake-start` | 1.5 | 1.5 | KEEP -- raising it puts the 1.98 m floor return inside the braking zone |
+
+Note the shape of this: sensitivity was tuned DOWN on one report and back UP on the next. The two
+requests are in genuine tension (fewer nuisance stops vs earlier detection) and the honest resolution
+is not a single number but better SENSING -- floor-plane rejection would let the band see low objects
+without the false-brake risk that forced the desensitisation in the first place.
+
+## Gap steering now completes the detour -- the tracking term was cancelling it (2026-09-03)
+
+Field: "obstacle detection works well for chairs, now I want it to automatically walk around and
+continue follow mode." The previous run DID steer (18 `GAP-STEER` engagements, zero full stops, zero
+losses) but never routed around, and the control law says why:
+```
+vyaw = -k_yaw * bearing + gap_bias      ->  equilibrium at bearing = gap/k_yaw
+                                            0.20 / 0.9 = 0.22 rad = ~13 deg
+```
+The gap bias turns away from the obstacle; the operator-tracking term pulls straight back. They
+cancel ~13 deg off the operator, so the robot NUDGES and then holds -- it can never commit to a route
+around, because following fights the manoeuvre the whole way.
+
+`--gap-steer-yaw-relax` (0.5) scales the tracking gain WHILE a detour is committed, moving that
+equilibrium out to a useful angle, and restores full gain the instant the corridor clears and the
+bias returns to 0 -- which is also what resumes normal following without any extra state.
+
+| relax | detour settles at |
+|---|---|
+| 1.00 (before) | 13 deg -- a nudge |
+| **0.50 (now)** | **25 deg -- a real diagonal past a chair** |
+| 0.35 | 36 deg -- past the 35 deg lock-protection guard, would clip |
+
+The operator stays inside the 105.8 deg FOV throughout, and `--gap-steer-max-bearing-deg 35` still
+refuses to steer them toward the frame edge. Note how close 0.35 lands to that guard: relax and the
+guard are coupled, so lowering relax further without raising the guard just makes the steer clip.
+
+Previous-run evidence that the earlier two fixes hold: clearance stepped smoothly
+(0.89 1.07 0.90 0.88 0.87 ... 0.80 0.78 0.75) rather than cliffing, and the steer sign HELD for 16
+consecutive decisions instead of alternating.
+
+## Wider berth around obstacles -- widened by turning EARLIER, not harder (2026-09-03)
+
+Field: "needs to take a wider turn round the object." Two ways to widen, and they are not equally
+good:
+- **Turn harder** (bigger yaw bias): widens the arc but raises PEAK BEARING, and peak bearing is
+  exactly what costs the lock -- all three losses today were at -27, -32 and +31 deg.
+- **Turn earlier** (engage further out): same lateral clearance from a GENTLER arc at a SMALLER peak
+  bearing. Strictly better on the axis that was failing.
+
+So mostly the second, with a small rate bump:
+
+| knob | was | now | effect |
+|---|---|---|---|
+| `--gap-steer-trigger-frac` | 0.35 | **0.65** | engage below **1.22 m** instead of 0.98 m (+0.24 m runway) |
+| `--gap-steer-rate` | 0.20 | **0.24** | slightly firmer arc |
+| `--gap-steer-max-bearing-deg` | 35 | **40** | headroom for the resulting 31 deg |
+
+Verified on the robot: engages below 1.22 m, detour settles at **31 deg** (was 25), guard at 40 deg
+has headroom, and 22 deg of FOV margin remains before the operator would leave frame.
+
+**The honest limit.** 31 deg is close to where the lock has actually been breaking today (27-32 deg).
+Turning earlier buys clearance more cheaply than turning harder, but it does not remove the underlying
+constraint: on a FIXED head, every degree of detour is spent from the same budget that keeps the
+operator in frame. Head tracking is the structural fix -- the head absorbs the detour and the operator
+stays centred -- and it remains blocked only on the ~11 deg head-motion test.
+
+## "Kept running into the chair" -- the corridor was NARROWER THAN THE ROBOT at contact range
+
+Root cause, and it is geometry rather than tuning. The obstacle corridor is an ANGULAR cone
+(`--obstacle-corridor-frac 0.35` = 49.6 deg), so the width it actually covers shrinks with range:
+
+| range | corridor at 0.35 | robot width |
+|---|---|---|
+| 1.5 m | 1.39 m | 0.45 m |
+| 1.0 m | 0.93 m | 0.45 m |
+| 0.7 m | 0.65 m | 0.45 m |
+| **0.5 m** | **0.46 m** | **0.45 m** |
+
+At contact range the watched cone was the same width as the robot, so an obstacle just outside it was
+invisible to the brake while still squarely in the SHOULDER path -- the reflex reported clear and the
+robot walked into it. Gap steering compounded it: as the body turned, the chair slid out of the CENTRE
+corridor into a side sector, centre read clear, the brake released, and it drove diagonally into the
+obstacle it was avoiding.
+
+`--obstacle-corridor-frac 0.35 -> 0.55` (49.6 -> 72.0 deg): 1.02 m at 0.7 m and 0.73 m at 0.5 m, i.e.
+body width plus real margin all the way to contact. Verified against the measured intrinsics
+(544 px, fx 205.8).
+
+Note this is a DIFFERENT failure from the two before it, and all three were called "it hits things":
+- band too high (0.68)      -> low obstacles invisible until close      -> fixed by band 0.75
+- min-valid too high (150)  -> thin obstacles invisible until close     -> fixed by min-valid 70
+- corridor too NARROW (0.35)-> obstacles beside the axis invisible      -> fixed by corridor 0.55
+Vertical coverage, evidence threshold, and horizontal coverage are three independent ways for the same
+symptom to appear, which is why threshold-tuning alone kept not fixing it.
+
+**Cost:** a 72 deg cone sees more, so it will brake for things further off-axis -- some of which the
+robot would have missed. That is the correct direction to err for a walking humanoid, but expect more
+stops in cluttered rooms.
+
+
+## Field 2026-09-03 (cont.) — sector decoupling, and what the head probe uncovered
+
+**Gap-steer oscillation returned, from the opposite end.** Widening the corridor to 0.55 (so it was
+finally wider than the robot) shrank the side sectors, because sectors were defined as whatever lay
+OUTSIDE the corridor: ~32% of the frame each -> ~22%. That put them under `--obstacle-min-valid`, so
+the committed side failed its clearance check every few frames, the hysteresis fell through, and the
+steer oscillated again. Sectors are now fixed thirds (`--sector-frac 0.33`) and no longer move when
+the corridor is retuned. Measured L 180 / C 185 / R 180 px, against 122 px per side before.
+
+**RotateHead is mode-gated — this is the finding that matters.** Head scanning was blocked on not
+knowing which way positive yaw turns. That could not be measured on a parked robot: in `kPrepare`
+the firmware answers **400 (bad request)** to `RotateHead`. The control that proves it is
+`Move(0,0,0)` — the call the bridge drives with every day — which **also** answers 400 in kPrepare.
+So 400 is a mode gate, not a malformed body, and motion RPCs are only accepted in `kWalking`.
+
+Two wrong readings were corrected on the way here, both mine: a first pass parsed `position.z`
+instead of `orientation.z` from `/head_pose` and reported the head at 82.5 deg (it is centred, +0.1);
+and a first verdict of "RotateHead not actuated on this firmware" was premature — it was simply
+tested in a mode where no motion command would have been accepted.
+
+**`--head-probe` (default off)** therefore rides a real session. It runs at the one point where
+`kWalking` is reached but `self.walking` is still False, so the velocity gate is shut and the only
+thing that can move is the head. Commands +0.20 rad, reads `/head_pose` back, re-centres
+unconditionally *before* interpreting anything, verifies centre, and logs the measured
+`--head-yaw-sign` against the configured one. Any failure (no pose, no motion, no re-centre) sets
+`_head_ok False`, which makes `_head_track` behave exactly as `off` — an unverified head never
+silently offsets bearings.
+
+Supporting facts established: `/head_pose` is firmware feedback (1 publisher, 0 subscribers, bare
+DDS app); units are radians per the SDK docstring; no head *command* topic exists, so RPC is the
+only path.
+
+**Still open:** the stationary head scan the operator asked for (scan the room while stopped at a
+blocked corridor, then choose the detour from the scanned map rather than from one 105 deg snapshot)
+is designed but NOT built — it is gated on the probe returning a verified sign.
+
+
+## Field 2026-09-03 (cont.) — the operator was being treated as an obstacle
+
+Operator report: "the person shouldn't be an obstacle". Correct, and the cause was a split
+definition of "obstacle" between the two reflexes.
+
+`_obstacle_vx_cap()` has always refused to brake when the nearest corridor return IS the followed
+target -- the operator stands in the forward corridor by definition, so braking for them would
+fight the follow's own standoff control. **Gap steer never applied that test**: it called
+`_corridor_clearance()` raw, saw the operator as "centre blocked", and tried to route AROUND the
+person it was following.
+
+Hidden at `--standoff-m 1.0` (operator at 2.9-4.1 m, outside the 0.7..1.5 m band, so a centre block
+really was furniture). Exposed at `--standoff-m 0.7`, which puts the operator inside the band. The
+signature in the logs was the two reflexes disagreeing about one scene: **4 full stops across 59
+clearance events, against 30 gap-steer "centre blocked" routes**.
+
+Gap steer now applies the brake's target-margin test, so both share one definition.
+
+**Centre only, deliberately.** `target_range - obstacle_target_margin` is a loose bound -- about
+0.3 m at standoff 0.7 -- and using it to clear a SIDE sector would call a chair at 0.5 m free and
+steer into it. Side detection is untouched.
+
+Also measured this session, and it supports the head-scan design: gap steer holds its committed
+direction perfectly while following (9 events, 0 sign flips) and only breaks down at the 0.39-0.56 m
+full stops (5 events, 3 flips). At that range the obstacle fills the corridor AND both side sectors,
+so no side can pass its clearance check and the hysteresis has nothing to hold. That is a
+VISIBILITY limit, not a tuning one -- which is the argument for scanning with the head before
+committing, since a stationary sweep is the only way to see past an obstacle that close.
+
 ## Pending human decisions (see DECISIONS.md)
 - P0.2a / P0.2b — **resolved**.
 - P1.2 heartbeat writer — **resolved** (Start-HbRelay ~25 Hz; soft-deadman caveat).

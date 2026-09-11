@@ -117,10 +117,15 @@ _MAGIC = b"K1F1"
 
 def log(msg):
     """One flushed status line. In --stream mode it goes to STDERR so stdout
-    carries only the binary annotated-frame protocol the Tracker page reads."""
+    carries only the binary annotated-frame protocol the Tracker page reads.
+    NEVER raises: a dead stderr (the app dropped the ssh link and the launcher's tee died) must not
+    abort whatever called log() -- above all the SIGTERM path's _graceful_stop (2026-09-10)."""
     f = sys.stderr if _STREAM else sys.stdout
-    f.write(msg + "\n")
-    f.flush()
+    try:
+        f.write(msg + "\n")
+        f.flush()
+    except (OSError, ValueError):   # BrokenPipeError / write to a closed file
+        pass
 
 
 def emit_frame(status, bgr, quality=70):
@@ -183,3 +188,47 @@ class EventLog:
         except Exception:  # noqa: BLE001
             pass
         self.f = None
+
+
+# ---- PERF: per-stage cost accounting for the control loop (compute-manager Phase 1) ----------
+# MEASUREMENT ONLY. Nothing gates, sheds or degrades on these numbers -- they exist so the shed
+# ladder can later be built on measured cost instead of guesswork. The loop already reports a
+# TOTAL (LOOP-MS p50/p90/p99); what was missing is ATTRIBUTION: with p50 116 / p99 179 ms against
+# a 100 ms budget and three separate ad-hoc auto-disables (Rerun, gesture, ReID watchdog), there
+# was no way to know which stage to shed first. Cost per sample is one perf_counter pair plus a
+# list append (~1 us), i.e. ~0.005% of a 116 ms frame.
+class _StageTimer:
+    """Rolling per-stage millisecond costs. Bounded ring per stage; percentiles on demand."""
+
+    __slots__ = ("_ms", "_cap")
+
+    def __init__(self, cap=600):
+        self._ms = {}
+        self._cap = int(cap)
+
+    def add(self, stage, ms):
+        b = self._ms.get(stage)
+        if b is None:
+            b = self._ms[stage] = []
+        b.append(float(ms))
+        if len(b) > self._cap:                      # bounded: cannot grow across a long session
+            del b[: len(b) - self._cap]
+
+    def summary(self):
+        """'stage=p50/p90' for every stage, ORDERED BY p90 DESCENDING -- i.e. read left to right
+        as 'what is actually expensive', which is the shed-priority question."""
+        rows = []
+        for k, b in self._ms.items():
+            if not b:
+                continue
+            s = sorted(b)
+            n = len(s)
+            rows.append((s[min(n - 1, int(0.9 * n))], k, s[n // 2]))
+        rows.sort(reverse=True)
+        return " ".join("%s=%.0f/%.0f" % (k, p50, p90) for p90, k, p50 in rows)
+
+    def reset(self):
+        self._ms.clear()
+
+
+PERF = _StageTimer()

@@ -88,7 +88,7 @@ from common import (  # noqa: E402
     HARD_VX_LIMIT, HARD_VYAW_LIMIT, DEPTH_WARMUP_S, DEPTH_FRESH_S, DEPTH_DOWN_S, PERSON_CLS, LL_DARK_THRESH,
     LockHint, KP_L_SHOULDER, KP_R_SHOULDER, KP_L_WRIST, KP_R_WRIST,
     S_SEARCH, S_TRACK, S_REACQUIRE, S_PARKED, S_SEARCHING, TS_LOCKED, TS_COASTING, TS_RELOCALIZING,
-    clamp, to_bgr, depth_to_meters, iou_xyxy, log, emit_frame, gdbg, EventLog,
+    clamp, to_bgr, depth_to_meters, iou_xyxy, log, emit_frame, gdbg, EventLog, PERF,
 )
 from bridge import Bridge  # noqa: E402  (P3.1: loco_follow_bridge process wrapper)
 from tracking import MultiTracker, max_iou_other, _point_box_dist  # noqa: E402  (P3.2)
@@ -97,7 +97,7 @@ from identity import (  # noqa: E402  (P3.3)
 )
 from perception import (  # noqa: E402  (P3.5)
     PersonDetector, CamNode, bearing_from_x, range_from_bbox_height, target_point_from_box, low_light_boost,
-    pinhole_intrinsics,
+    pinhole_intrinsics, focal_px,
 )
 from triggers import ArucoTrigger, GestureTrigger, CompositeTrigger, marker_center  # noqa: E402  (P3.6)
 from calibration import load_calibration  # noqa: E402  (P8.1 -- calibrated intrinsic over the hfov seed)
@@ -108,9 +108,13 @@ from calibration import load_calibration  # noqa: E402  (P8.1 -- calibrated intr
 # ---------------------------------------------------------------------------
 DEF_STANDOFF_M    = 1.2       # how far behind the target the robot holds
 DEF_DEADBAND_M    = 0.20      # don't fidget within +/- this of standoff
-DEF_HFOV_DEG      = 70.0      # K1 head camera horizontal FOV
+DEF_HFOV_DEG      = 105.8     # K1 head camera horizontal FOV, from calibration (fx=205.8 @ 544 px)
+DEF_VFOV_DEG      = 94.9      # vertical FOV, same calibration (fy=205.8 @ 448 px)
 
-DEF_K_YAW = 0.9               # turn gain  (rad/s per rad of bearing error)
+DEF_K_YAW = 0.477             # turn gain (rad/s per rad of bearing error). Re-scaled from 0.9 when
+                              # the FOV was corrected 70 -> 105.8: bearings got 1.888x larger, so the
+                              # gain drops by the same factor and the YAW RESPONSE IS UNCHANGED.
+                              # The measurement is now truthful; tune this deliberately from here.
 DEF_K_VX  = 0.35              # speed gain (m/s per m of range error)
 
 # HARD clamps -- intentionally smaller than the bridge's own ceilings.
@@ -224,7 +228,9 @@ class CommandChannel:
                 if ln.split()[0] == word:        # priority on the command word, not the ARM token
                     return ln
             return None
-        return _first("STOP") or _first("HOLD") or lines[0]
+        # STOP > HOLD > PARK (every de-escalation outranks motion), else the NEWEST line: the app now
+        # APPENDS (2026-09-10), so a queue holds several lines and the last is the operator's latest intent.
+        return _first("STOP") or _first("HOLD") or _first("PARK") or lines[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +273,20 @@ class Follower:
         self.det = None             # PersonDetector
         self.walking = False        # True only after a successful prep+walk
         self.standing = False       # True after a fail-safe kPrepare stand (blocks velocity)
+        self._head_ok = None        # None=unprobed, True=verified by --head-probe, False=probe FAILED
+                                    # (False disables the head features: an unverified head silently
+                                    #  offsets every bearing, so it fails closed rather than guessing)
         self._stop_requested = False
+        # STAGE 6 stationary head scan (see _head_scan_step). All inert while --head-scan off.
+        self._scan_state = "idle"   # idle | pan | recentre
+        self._scan_pos = []         # commanded sweep positions (rad)
+        self._scan_i = 0
+        self._scan_map = []         # [(observed_yaw_rad, clearance_m|None, cx_px|None)]
+        self._scan_t0 = 0.0         # scan start, for the hard timeout
+        self._scan_cmd_t = 0.0      # when the current position was commanded
+        self._scan_last_t = 0.0     # end of the last scan, for the cooldown
+        self._scan_hint = 0         # +1 steer LEFT, -1 steer RIGHT, 0 none/unknown
+        self._scan_hint_t = 0.0     # when the hint was produced (it ages out)
         self._cleaned = False
         self._cleanup_lock = threading.Lock()
         self.t_start = time.monotonic()
@@ -382,7 +401,8 @@ class Follower:
         else:
             _gest = GestureTrigger(
                 args.gesture_model, args,
-                every_n=(args.gesture_every_n if args.lock_trigger == "both" else 1))
+                every_n=(args.gesture_every_n if args.gesture_every_n > 0
+                         else (3 if args.lock_trigger == "both" else 1)))
             if args.lock_trigger == "gesture":
                 self._lock_trigger = _gest if _gest.ok else _aruco
                 if not _gest.ok:
@@ -440,6 +460,14 @@ class Follower:
         # P1.2: record when drive is running via the unsafe override (the parse_args gate let it
         # through only because --allow-untethered-unsafe was passed) so the log/.rrd captures that
         # the operator deadman was deliberately bypassed.
+        # Record an unbounded DRIVING session in the log/.rrd so post-incident it is never a
+        # question whether the session watchdog was in play.
+        if self.drive and getattr(args, "max_seconds", 1.0) <= 0:
+            log("UNBOUNDED-DRIVE active: NO session watchdog (--max-seconds 0). Bound is the "
+                "operator deadman%s -- the robot stops when the heartbeat goes stale, not on a "
+                "clock. Obstacle brake, geofence and the C++ staleness floor unchanged."
+                % (" (require_heartbeat ARMED)" if self.require_hb
+                   else " ... which is NOT armed -- keep a hand on the gamepad e-stop"))
         if self.drive and getattr(args, "allow_untethered_unsafe", False) and not self.require_hb:
             log("WARN UNTETHERED-UNSAFE override active: driving with NO operator deadman "
                 "(--allow-untethered-unsafe). Keep a hand on the gamepad e-stop.")
@@ -472,7 +500,92 @@ class Follower:
         self._reacq_range_streak = 0
         self._idsw_pending = None    # Phase 2.4 ID-stability debounce: track_id of an unconfirmed id-switch
         self._idsw_frames = 0        # Phase 2.4: consecutive frames the pending new track_id has persisted
+        self._scan_blocked_since = None   # when the CURRENT continuous block began (head-scan dwell)
+        self._scan_barren = None          # odom (x,y) where a scan found NO clear heading, else None
+        self._lm = {}                     # LOCALMAP: sparse cell key -> [first_t, last_t, hits]
+        self._lm_target_range = None      # followed operator's range, so their pixels aren't mapped
+        self._lm_swept = 0.0              # last TTL sweep (amortised, not every frame)
+        self._lm_last_th = None           # yaw at last update; big yaw delta -> wipe memory (2026-09-09)
+        self._corr_valid_hist = []        # DEPTH-HOLE: rolling window of recent corridor valid-pixel counts
+        self._hole_log_t = 0.0            # rate-limit hole log to 1/s
+        self._hole_streak = 0             # DARK-OBSTACLE: consecutive frames with depth-hole (couch signature)
+        self._dark_obstacle_log_t = 0.0   # rate-limit dark-obstacle log to 1/s
+        self._ma = None                   # MAP-ASSIST prebuilt obstacle points (map-frame x,y), or None
+        _ma_path = getattr(self.a, "map_assist", "") or ""
+        if _ma_path:
+            try:
+                self._ma = self._load_map_assist(_ma_path)
+                log("MAP-ASSIST %d obstacle points from %s (reinforces confirmed live obstacles only)"
+                    % (len(self._ma), _ma_path))
+            except Exception as e:  # noqa: BLE001
+                self._ma = None
+                log("MAP-ASSIST load failed (%s) -> off; live avoidance unchanged" % e)
+        # MAP-CHANGE MANAGER (docs/MAP_CHANGE_PLAN.md). Pure OBSERVATION SINK: it records where the
+        # live view stops matching the prebuilt map and NEVER returns a clearance. Map-assist stays
+        # primary -- _map_assist_confirm's min()-only reinforcement is untouched, and nothing in the
+        # control path reads this object. Default OFF, so the decision stream is byte-identical
+        # unless --map-change on is passed. Needs the map prior AND a map-frame pose to mean
+        # anything, so it stays None otherwise rather than silently comparing across frames.
+        self._mc = None
+        self._mc_n = 0               # frames seen (for --map-change-stride decimation)
+        self._mc_report_t = 0.0
+        if getattr(self.a, "map_change", "off") == "on":
+            _ot = (getattr(self.a, "odom_topic", "") or "").strip().lower()
+            if self._ma is None or len(self._ma) == 0:
+                log("MAP-CHANGE on but no --map-assist map loaded -> inert (nothing to compare to)")
+            elif _ot in ("", "none", "/odometer_state", "odometer_state"):
+                # Same frame assertion the drive gate makes: /odometer_state is the ROBOT frame with
+                # a per-run origin, so comparing it against a map-frame prior is meaningless. Inert
+                # rather than wrong -- this is an observer, so it declines instead of aborting.
+                log("MAP-CHANGE on but --odom-topic is the robot frame (%s) -> inert; needs the "
+                    "MAP-frame pose (/aurora_odom) for the prior and the live view to share a frame"
+                    % (_ot or "unset"))
+            else:
+                try:
+                    from map_change import MapChangeManager
+                    self._mc = MapChangeManager(
+                        self._ma, map_id=os.path.basename(_ma_path).rsplit(".", 1)[0],
+                        res_m=self.a.localmap_res_m, range_m=self.a.localmap_range_m,
+                        min_votes=self.a.map_change_min_votes,
+                        min_parallax_deg=self.a.map_change_min_parallax_deg,
+                        min_prior_support=self.a.map_change_min_prior_support)
+                    log("MAP-CHANGE armed on %s (observation only -- changes no decision)"
+                        % self._mc.map_id)
+                except Exception as e:  # noqa: BLE001 -- an observer must never block startup
+                    self._mc = None
+                    log("MAP-CHANGE init failed (%s) -> off; nothing else is affected" % e)
         self._clr_hist = []          # OBSTACLE-BRAKE: recent forward-corridor clearances (aged-median)
+        # One corridor evaluation per depth frame (see _corridor_clearance). Keyed on the frame
+        # OBJECT: a new frame is a new array, so this needs no frame counter and no loop cooperation.
+        self._clr_cache_d = None
+        self._clr_cache_hs = None
+        self._clr_cache = None
+        # SELF-MASK: which depth pixels are the ROBOT (built by selfmask.py, see _self_mask_ok).
+        # Default off -> inert, so the shipped behaviour is unchanged until a mask is captured.
+        self._self_mask = None
+        self._self_mask_warned = False
+        if getattr(args, "self_mask", ""):
+            try:
+                _m = np.load(args.self_mask).astype(bool)
+            except Exception as e:  # noqa: BLE001
+                # FAIL CLOSED. Asking for a self-mask and silently continuing without one drops
+                # straight back to the range cut that pinned vx at 0.00 for a whole session.
+                raise SystemExit("SELF-MASK-ERROR cannot load %s (%s) -- refusing to start. "
+                                 "Capture one with selfmask.py, or drop --self-mask."
+                                 % (args.self_mask, e))
+            self._self_mask = _m
+            log("SELF-MASK %s loaded: %dx%d, %d px (%.1f%%) are the robot"
+                % (args.self_mask, _m.shape[1], _m.shape[0], int(_m.sum()),
+                   100.0 * float(_m.sum()) / max(1, _m.size)))
+        self._obs_mem = None         # (range, odom_x, odom_y, theta, t) of the last SEEN obstacle
+        self._rev_state = None       # (x0, y0, t0, budget_m) while backing off, else None
+        self._bs = None              # body-scan state while sweeping a full turn, else None
+        self._clear_pose = None      # last odom pose where the way ahead was CLEAR (retrace anchor)
+        self._gap_mag = 0.0          # |yaw| the commit hold replays; 0 -> fall back to the rail
+        self._gap_dir = 0            # GAP-STEER committed side (+1 left, -1 right, 0 none):
+        self._gap_dir_t = 0.0        # when the current committed side started (for --gap-steer-commit-s hold)
+                                     # hysteresis, so a detour is committed to instead of
+                                     # re-decided every frame (the first field run oscillated)
         self._last_clr_log = 0.0     # 1Hz throttle for the CLEARANCE observability line
         self._reacq_range_id = None
         self._postrelock_noforward = False
@@ -533,6 +646,54 @@ class Follower:
             return prev - rate
         return target
 
+    def _yaw_cross_dwell(self, vyaw):
+        """Hold yaw at exactly 0.0 for a few ticks when its SIGN wants to flip. Returns vyaw
+        unchanged when the knob is 0 (default) -- diff-empty.
+
+        THE FAULT THIS FIXES (operator: "one leg seems to be doing the stanky leg"). Each velocity
+        command is held for a whole tick, and the measured tick is 170-200 ms -- roughly one step
+        cycle. The bridge forwards MoveCommand raw, so the step that straddles a yaw sign change is
+        told to turn OPPOSITE its planned foot placement. A walking gait cannot absorb that; one
+        leg takes it, and that is the hitch.
+
+        It is not the operator moving. The 2026-09-09 rerun measured 40 vyaw sign reversals in 789
+        ticks with 34 of them showing NO matching reversal in /follow/bearing -- i.e. the flips came
+        from the steering layers re-deciding, not from the person changing sides.
+
+        WHY A DWELL AND NOT MORE SLEW LIMITING. vyaw_slew already ramps magnitude; the gait's
+        problem is the ZERO CROSSING itself, not the rate. Passing exactly 0.0 for a couple of ticks
+        lets the stance foot land under a straight-ahead command before the turn reverses, and it
+        parks _prev_vyaw at 0 (see the baseline assignment below) so the release ramps up under the
+        normal slew rather than jumping.
+
+        SAFETY -- this only ever REDUCES |vyaw|, and yaw is the one axis it touches:
+          * every forward-vx gate is upstream and untouched; the brake still governs speed,
+          * vyaw == 0.0 passes through instantly, so _hold / _stand / a heartbeat zero are never
+            delayed by a dwell,
+          * a near-rail command BYPASSES the dwell entirely. A railed yaw means the operator is far
+            off-axis and the turn is what keeps the lock -- withholding it to protect the gait would
+            trade a wobble for a lost person, which is the worse failure.
+        """
+        n = int(getattr(self.a, "yaw_cross_dwell_ticks", 0) or 0)
+        if n <= 0:
+            return vyaw
+        prev = getattr(self, "_prev_vyaw", 0.0)
+        # Urgent turn (near the vyaw rail) -> never withhold; clear any pending dwell.
+        if abs(vyaw) >= 0.9 * max(1e-6, self.vyaw_max):
+            self._yaw_dwell_left = 0
+            return vyaw
+        if getattr(self, "_yaw_dwell_left", 0) > 0:
+            self._yaw_dwell_left -= 1
+            return 0.0
+        if prev * vyaw < 0.0:                     # sign wants to cross
+            self._yaw_dwell_left = n - 1
+            if (time.monotonic() - getattr(self, "_yaw_dwell_log_t", 0.0)) >= 2.0:
+                self._yaw_dwell_log_t = time.monotonic()
+                log("YAW-DWELL sign flip %+.2f -> %+.2f held at 0.0 for %d tick(s) "
+                    "(gait cannot absorb a mid-stride yaw reversal)" % (prev, vyaw, n))
+            return 0.0
+        return vyaw
+
     def _drive_vel(self, vx, vy, vyaw):
         # OPERATOR-HEARTBEAT precondition (untethered): NO velocity may leave this process
         # without a fresh operator heartbeat. Defense-in-depth WITH the bridge's own hb
@@ -545,7 +706,27 @@ class Follower:
         elif self.require_hb and self._hb_lost_logged:
             log("HB-OK operator heartbeat restored")
             self._hb_lost_logged = False
+        vyaw = self._yaw_cross_dwell(vyaw)
         self._ev_cmd = (vx, vy, vyaw)   # P5.3: post-deadman commanded velocity, for the event log
+        # COMMANDED-VELOCITY TELEMETRY LIVES HERE, NOT ON THE TRACK PATH (2026-09-10).
+        # These scalars used to be emitted only in _track's accepted-match tail, which is ONE of
+        # many velocity paths: NO-PERSON grace, ID-DEBOUNCE hold, LOST/SEARCH, coast, stand and
+        # the scans all reach _drive_vel and sent velocity to the bridge while emitting NOTHING.
+        # A recording therefore showed multi-second "gaps" in /cmd/vx wherever the follow left the
+        # accepted-match path -- and a rerun scrubber interpolates across them, which reads as a
+        # frozen control loop. That artifact cost a full adversarial investigation on 2026-09-09
+        # (7 hypotheses) before the log proved the loop had been ticking the whole time: the two
+        # apparent 5984 ms / 4771 ms freezes were just grace -> LOST -> SEARCH -> relock, with
+        # camera-fps lines logged INSIDE both "gaps" and no stop+kPrepare tier ever tripping.
+        # Emitting from the single chokepoint every velocity passes through makes the series mean
+        # "what was commanded", so a flat spot is now real. /diag/v_seq increments per send so a
+        # true stall is visible as a stalled counter rather than inferred from absence.
+        if rerun_sink._RR.ok:
+            self._v_seq = getattr(self, "_v_seq", 0) + 1
+            rerun_sink._RR.scalar("/cmd/vx", vx)
+            rerun_sink._RR.scalar("/cmd/vy", vy)
+            rerun_sink._RR.scalar("/cmd/vyaw", vyaw)
+            rerun_sink._RR.scalar("/diag/v_seq", float(self._v_seq))
         if self.drive and self.walking and self.bridge is not None:
             self.bridge.send_velocity(vx, vy, vyaw)
             # FIX C: baseline = what we ACTUALLY sent (post-deadman, post-clamp). On any
@@ -564,11 +745,983 @@ class Follower:
     # as an obstacle enters the forward corridor. It ONLY ever REDUCES forward vx (never authorizes
     # it), yaw is untouched, and it composes with the forbid_forward keystone -- so it cannot make the
     # forward path less safe, only more cautious. Default-off (--obstacle-brake); byte-identical off.
-    def _corridor_clearance(self):
+    def _body_scan_step(self, active, clr):
+        """Rotate in place through a full revolution, sampling free space per heading, then face
+        the best one. Returns a vyaw to command while scanning, or None when not scanning.
+
+        WHY THE BODY AND NOT THE HEAD. From 0.35 m off a wide obstacle the escape sits ~68 deg
+        off-centre -- beyond the head sweep (+/-23 deg) AND beyond the camera half-field (52.9),
+        so no head scan can reach it. The body can. Measured in the field as every head-scan
+        direction returning 0.33-0.41 m while the robot shuffled and never committed.
+
+        WHY THIS IS SAFER THAN REVERSING. Rotating in place is NOT blind -- the robot sweeps its
+        eyes and depth sensor across everything it turns past, gaining information the whole way.
+        Backing up is dead reckoning into a region with no sensor at all.
+
+        NO MAP. Samples live only for this sweep and are thrown away after the decision, exactly
+        like the head-scan hint. The robot uses the sensors it has to choose a heading NOW; it does
+        not build or keep a model of the room.
+
+        Re-acquiring the operator is NOT handled here. If the tracker re-locks mid-sweep the normal
+        control path takes over and the scan is abandoned -- the existing relock machinery is
+        better at that than anything this could add, and rotating is exactly what gives it new
+        views to work with.
+
+        Fails closed: no odometry (rotation would be unmeasurable) -> never runs. Bounded by a
+        revolution cap, a timeout, and a cooldown."""
+        if self.a.body_scan == "off":
+            return None
+        now = time.monotonic()
+        od = self.node.latest_odom() if self.node is not None else None
+        if od is None:
+            self._bs = None
+            return None
+        th = od[2]
+
+        if self._bs is None:
+            if not active:
+                return None
+            if (now - getattr(self, "_bs_last_t", -1e9)) < self.a.body_scan_cooldown_s:
+                return None
+            self._bs = {"phase": "sweep", "t0": now, "th0": th, "prev": th, "turned": 0.0,
+                        "runs": [], "cur": None, "best_clr": -1.0, "best_off": 0.0, "n": 0}
+            log("BODY-SCAN start: no heading within reach of the head -- sweeping a full turn "
+                "(rotating is not blind; it sees everything it turns past)")
+            return self.a.body_scan_yaw
+
+        b = self._bs
+        d = (th - b["prev"] + math.pi) % (2.0 * math.pi) - math.pi   # shortest signed step
+        b["turned"] += abs(d)
+        b["prev"] = th
+        off = (th - b["th0"] + math.pi) % (2.0 * math.pi) - math.pi  # heading vs where we began
+        if (now - b["t0"]) > self.a.body_scan_timeout_s:
+            self._bs = None
+            self._bs_last_t = now
+            log("BODY-SCAN abort: timeout")
+            return None
+
+        if b["phase"] == "sweep":
+            # WIDEST GAP, NOT BEST SAMPLE. Taking the first heading that hits maximum clearance
+            # aims at the NEAR EDGE of a gap -- measured: a gap centred at +100 deg was entered at
+            # +58, which is where the robot would clip the obstacle on the way through. Track
+            # contiguous runs of clear headings and aim at the MIDDLE of the widest one.
+            ok = clr is not None and clr >= self.a.body_scan_clear_m
+            if ok:
+                b["n"] += 1
+                if b["cur"] is None:
+                    b["cur"] = b["turned"]
+                if clr > b["best_clr"]:
+                    b["best_clr"] = clr
+            elif b["cur"] is not None:
+                b["runs"].append((b["cur"], b["turned"]))
+                b["cur"] = None
+            if b["turned"] < (2.0 * math.pi * self.a.body_scan_max_rev):
+                return self.a.body_scan_yaw
+            if b["cur"] is not None:
+                b["runs"].append((b["cur"], b["turned"]))
+                b["cur"] = None
+            if not b["runs"]:
+                self._bs = None
+                self._bs_last_t = now
+                log("BODY-SCAN no heading reached %.2fm anywhere in a full turn -- genuinely "
+                    "enclosed; leaving it to the brake" % self.a.body_scan_clear_m)
+                return None
+            s, e = max(b["runs"], key=lambda r: r[1] - r[0])
+            mid = 0.5 * (s + e)
+            b["best_off"] = (mid + math.pi) % (2.0 * math.pi) - math.pi
+            b["phase"] = "align"
+            log("BODY-SCAN swept %.0f deg: widest gap %.0f deg wide, aiming at its middle "
+                "%+.0f deg (best %.2fm)"
+                % (math.degrees(b["turned"]), math.degrees(e - s),
+                   math.degrees(b["best_off"]), b["best_clr"]))
+            return self.a.body_scan_yaw
+        err = (b["best_off"] - off + math.pi) % (2.0 * math.pi) - math.pi
+        if abs(err) <= math.radians(8.0):
+            self._bs = None
+            self._bs_last_t = now
+            log("BODY-SCAN aligned to the freest heading (%.2fm) -- resuming" % b["best_clr"])
+            return None
+        return math.copysign(self.a.body_scan_yaw, err)
+
+    def _reverse_step(self, stuck, clr):
+        """Back off when stopped with no visible way around. Returns a reverse vx, or None.
+
+        WHY IT IS NEEDED, and it is geometry rather than tuning. At 0.35 m from a ~2 m couch,
+        seeing past its edge needs a look angle of about 68 deg. The head reaches +/-23 deg and
+        even the full camera half-field is 52.9 deg, so NO amount of head or body scanning can
+        reveal the gap from there -- the field measurement was every scan direction returning
+        0.33-0.41 m. The robot was searching for a gap from the one position where a gap is
+        unobservable, which is exactly the reported "shifts head and body but will not commit".
+        Back off to ~1 m and the same edge sits near 45 deg, inside the field of view.
+
+        REVERSING IS BLIND -- there is no rear sensor at all. So the only defensible version is a
+        RETRACE: never reverse further than the robot has recently advanced, so it backs over floor
+        it just walked forward through and found clear. That bound, not the distance cap, is what
+        makes this safe; the cap is only a second belt.
+
+        Every other guard is fail-closed: needs odometry (no odom, no reverse -- distance would be
+        unmeasurable), a full stop with no clear heading, a hard distance cap, a timeout, and a
+        cooldown so it cannot oscillate. Any of them failing stops the reverse."""
+        if self.a.reverse_when_stuck == "off":
+            return None
+        now = time.monotonic()
+        od = self.node.latest_odom() if self.node is not None else None
+        if od is None:                                   # blind AND unmeasurable -> never
+            self._rev_state = None
+            return None
+        x, y, _th = od
+
+        if self._rev_state is not None:                  # ---- already reversing
+            x0, y0, t0, budget = self._rev_state
+            back = math.hypot(x - x0, y - y0)
+            opened = clr is not None and clr >= self.a.obstacle_brake_start
+            done = (back >= budget or (now - t0) > self.a.reverse_timeout_s or opened)
+            if done:
+                self._rev_state = None
+                self._rev_last_t = now
+                log("REVERSE end after %.2fm in %.1fs -> %s"
+                    % (back, now - t0,
+                       "a heading opened" if opened else
+                       "budget reached" if back >= budget else "timeout"))
+                return None
+            return -abs(self.a.reverse_speed)
+        if not stuck:                                    # ---- track clear ground while moving
+            if clr is None or clr >= self.a.obstacle_brake_start:
+                self._clear_pose = (x, y, now)
+            return None
+        if (now - getattr(self, "_rev_last_t", -1e9)) < self.a.reverse_cooldown_s:
+            return None
+        # RETRACE BUDGET: only as far back as the last position where the way ahead was clear.
+        cp = getattr(self, "_clear_pose", None)
+        if cp is None:
+            return None                                  # never seen clear ground -> nothing known
+        budget = min(self.a.reverse_max_m, math.hypot(x - cp[0], y - cp[1]))
+        if budget < 0.05:
+            return None                                  # nothing to retrace
+        self._rev_state = (x, y, now, budget)
+        log("REVERSE start: stopped at %.2fm with no clear heading -> retracing %.2fm "
+            "(blind rearward; only over ground just walked)"
+            % (clr if clr is not None else float("nan"), budget))
+        return -abs(self.a.reverse_speed)
+
+    # LOCALMAP cell-key packing. Each axis is biased by +LM_BIAS before packing so both halves are
+    # ALWAYS non-negative -- the earlier scheme added a signed gy directly, and a negative gy
+    # borrowed from gx, displacing every negative-world-y cell by one cell in x (audit 2026-09-05).
+    LM_BIAS = 1 << 19        # 524288 cells; +/-52 km at 0.10 m -- far beyond any real run
+    LM_MASK = (1 << 20) - 1
+
+    def _lm_key(self, gx, gy):
+        return ((gx.astype(np.int64) + self.LM_BIAS) << 20) + (gy.astype(np.int64) + self.LM_BIAS)
+
+    def _lm_unkey(self, k):
+        return ((k >> 20) - self.LM_BIAS, (k & self.LM_MASK) - self.LM_BIAS)
+
+    def _localmap_update(self, d, hgt, lat_signed, target_range=None):
+        """Fold this depth frame into a short-horizon, robot-centred occupancy buffer.
+
+        WHAT THIS IS NOT. Not a map, not SLAM: no loop closure, no relocalization, nothing kept
+        across runs, and no global frame. Cells expire after --localmap-ttl-s seconds, which is also
+        what makes odometry drift a non-problem -- nothing lives long enough to drift meaningfully.
+        A cross-run map would be actively harmful here: the furniture moves between sessions and
+        there is no relocalization to notice.
+
+        WHY IT EXISTS. The obstacle layer has almost no state. _obstacle_memory holds exactly ONE
+        obstacle and wipes it on any turn beyond --obstacle-memory-max-turn-deg (25), so the moment
+        the robot turns away from something it forgets it completely; the 360 body scan builds a
+        full picture of the room and then throws all of it away except one heading. Odometry is
+        already published and was simply unused, and it is exactly what lets one frame's observation
+        be placed relative to the next.
+
+        THE SAFETY PROPERTY, and the reason this can ship at all: the buffer may only ever REDUCE
+        clearance, never raise it (see _localmap_clearance). It can report an obstacle the live view
+        has lost; it can never clear one the live view can see. A bug in here therefore degrades to
+        over-braking, not to a collision.
+
+        Cells are sparse (a dict keyed by integer grid coords) so there are no bounds to re-anchor
+        and no array to shift as the robot moves -- only the cells actually observed exist, and the
+        TTL sweep keeps the count bounded."""
+        if self.a.localmap != "on":
+            return
+        od = self._odom_xy()
+        th = None
+        try:
+            _o = self.node.latest_odom() if self.node is not None else None
+            th = float(_o[2]) if _o else None
+        except Exception:  # noqa: BLE001
+            th = None
+        if od is None or th is None:
+            return                                   # no pose -> no memory. Fail closed: contribute
+                                                     # nothing rather than place points wrongly.
+        now = time.monotonic()
+        try:
+            step = max(2, int(self.a.localmap_stride))
+            sub_d = d[::step, ::step]
+            sub_h = hgt[::step, ::step]
+            sub_l = lat_signed[::step, ::step]
+            sel = (np.isfinite(sub_d) & (sub_d > max(0.15, self.a.obstacle_self_range_m))
+                   & (sub_d < self.a.localmap_range_m)
+                   & (sub_h >= self.a.floor_margin_m) & (sub_h <= max(0.2, self.a.robot_height_m)))
+            # EXCLUDE THE OPERATOR. The followed person sits in the forward corridor by definition,
+            # so their pixels would be written as obstacles and the robot would brake on their own
+            # WAKE (audit 2026-09-05). Drop returns within a margin of the target's range -- the
+            # same exclusion the brake already applies (obstacle_target_margin). Done per frame, so
+            # the operator's trail is never written in the first place.
+            if target_range is not None:
+                m = self.a.obstacle_target_margin
+                sel = sel & ~(sub_d > (target_range - m))
+            # GROUND-REJECT INTO MEMORY (2026-09-09 field-run fix). _nearest_blob rejects
+            # oblique-floor blobs from the LIVE brake via _is_ground (10 deg camera tilt lifts
+            # the floor into the height gate, and per-pixel floor_margin cannot see it as a
+            # plane). But _localmap_update runs BEFORE _nearest_blob and never sees blob labels,
+            # so those same floor pixels get MEMORIZED at 0.4-0.7m. Result seen in the field:
+            # "GROUND-REJECT 52k px at 0.49m corr=-0.73 -> floor" followed by "LOCALMAP 0.38m
+            # from memory beats live 1.15m (280 cells)" -- live view is clear, memory pins the
+            # brake at 0.38m from the floor pixels it stored a moment ago. Applies the same
+            # _is_ground criterion here on the SUBSAMPLED grid, so ground-labeled blobs never
+            # enter the memory. min-px is scaled by step**2 to match the subsampling. When
+            # --ground-reject is off the localmap path also skips this (preserves parity).
+            if self.a.ground_reject == "on":
+                try:
+                    from scipy import ndimage
+                    lab, n = ndimage.label(sel)
+                    if n > 0:
+                        min_px_sub = max(20, int(self.a.ground_min_px // max(1, step * step)))
+                        for li in range(1, n + 1):
+                            bm = (lab == li)
+                            bpx = int(bm.sum())
+                            if bpx < min_px_sub:
+                                continue                    # too small to classify safely
+                            # Same signature as _nearest_blob's ground reject: (z, h, npx).
+                            # Pass ORIGINAL-scale bpx so the log's "GROUND-REJECT Npx" matches
+                            # the operator's mental scale, not the subsampled count.
+                            if self._is_ground(sub_d[bm], sub_h[bm], bpx * step * step):
+                                sel = sel & ~bm             # drop this blob from memory input
+                except Exception:  # noqa: BLE001 -- a filter must never break the loop
+                    pass
+            # TURN-INVALIDATION (2026-09-09 field-run fix). A big yaw slews world-fixed cells out
+            # of the corridor faster than odom can track them under drift, so a cell placed by the
+            # last frame becomes a phantom in front of the robot after a spin. Match _obstacle_memory:
+            # any yaw beyond --localmap-max-turn-deg since the last update wipes memory. Placed
+            # BEFORE the write so this frame's own hits survive.
+            if self._lm_last_th is not None:
+                dth = abs(math.atan2(math.sin(th - self._lm_last_th), math.cos(th - self._lm_last_th)))
+                if dth > math.radians(max(0.0, self.a.localmap_max_turn_deg)):
+                    self._lm.clear()
+            self._lm_last_th = th
+            if not sel.any():
+                return
+            fwd = sub_d[sel].astype(np.float64)
+            # lat_signed is +right in the image; robot frame is +LEFT (REP-103), hence the negation.
+            left = -sub_l[sel].astype(np.float64)
+            c, s = math.cos(th), math.sin(th)
+            wx = od[0] + fwd * c - left * s
+            wy = od[1] + fwd * s + left * c
+            res = max(0.02, self.a.localmap_res_m)
+            keys = self._lm_key(np.round(wx / res), np.round(wy / res))
+            # CONFIRMATION COUNTING (2026-09-09). Store [first_t, last_t, hits] per cell so
+            # _localmap_clearance can require --localmap-min-hits before a cell brakes. Single-frame
+            # flashes (arm swing, depth speckle) never accumulate the count and get swept out at TTL.
+            for k in np.unique(keys):
+                k = int(k)
+                e = self._lm.get(k)
+                if e is None:
+                    self._lm[k] = [now, now, 1]
+                else:
+                    e[1] = now
+                    e[2] += 1
+            # TTL sweep, amortised: only every so often, and only when the dict has grown.
+            if len(self._lm) > self.a.localmap_max_cells or (now - self._lm_swept) > 1.0:
+                self._lm_swept = now
+                ttl = max(0.5, self.a.localmap_ttl_s)
+                self._lm = {k: e for k, e in self._lm.items() if (now - e[1]) <= ttl}
+        except Exception as e:  # noqa: BLE001 -- memory must never break the loop
+            if (now - getattr(self, "_lm_err_t", 0.0)) > 10.0:
+                self._lm_err_t = now
+                log("LOCALMAP-ERR %s (memory skipped this frame)" % e)
+
+    def _localmap_clearance(self, half):
+        """Nearest REMEMBERED obstacle in the forward corridor (m), or None.
+
+        Only ever used to take a MINIMUM against the live reading, so it can tighten the brake and
+        never loosen it. Returns None whenever the pose is unknown, which is the same fail-closed
+        posture as the update side: without a pose the cells cannot be placed relative to the robot,
+        and a wrong placement would be worse than no memory at all."""
+        if self.a.localmap != "on" or not self._lm:
+            return None
+        od = self._odom_xy()
+        try:
+            _o = self.node.latest_odom() if self.node is not None else None
+            th = float(_o[2]) if _o else None
+        except Exception:  # noqa: BLE001
+            th = None
+        if od is None or th is None:
+            return None
+        now = time.monotonic()
+        ttl = max(0.5, self.a.localmap_ttl_s)
+        min_hits = max(1, int(self.a.localmap_min_hits))
+        res = max(0.02, self.a.localmap_res_m)
+        c, s = math.cos(th), math.sin(th)
+        best = None
+        self_r = max(0.15, self.a.obstacle_self_range_m)
+        for k, e in self._lm.items():
+            # e is [first_t, last_t, hits]. Skip unconfirmed cells (single-frame flashes) so the
+            # arm swing and depth speckle can't brake the follow.
+            if (now - e[1]) > ttl:
+                continue
+            if e[2] < min_hits:
+                continue
+            gx, gy = self._lm_unkey(k)
+            dx = gx * res - od[0]
+            dy = gy * res - od[1]
+            fwd = dx * c + dy * s
+            # SYMMETRIC SELF-RANGE GATE (2026-09-09 field-run fix). Write already refuses cells
+            # closer than self_r, but cells are stored in WORLD frame -- as the robot walks forward
+            # (or odom drifts) a cell placed at 0.65m migrates INTO the body region at ~0.02-0.35m
+            # and then brakes the follow at nonsense distances. Symmetric on read: cells that have
+            # slid inside self_r since being written are stale, not real obstacles. Field-observed:
+            # "LOCALMAP 0.02m refines live 0.68m (465 cells)" -- entire clusters at sub-body range.
+            if fwd < self_r:
+                continue
+            if fwd <= 0.0 or fwd >= self.a.localmap_range_m:
+                continue
+            left = -dx * s + dy * c
+            if abs(left) > half:
+                continue
+            if best is None or fwd < best:
+                best = fwd
+        return best
+
+    def _load_map_assist(self, path):
+        """Prebuilt 3D map .ply -> (N,2) obstacle points in the MAP frame (x,y), filtered to the hit
+        box's height window (the map is z-up). A static prior, read once; never edited at runtime."""
+        pts = []
+        with open(path) as f:
+            body = False
+            for line in f:
+                if not body:
+                    if line.strip() == "end_header":
+                        body = True
+                    continue
+                c = line.split()
+                if len(c) < 3:
+                    continue
+                z = float(c[2])
+                if self.a.floor_margin_m <= z <= max(0.2, self.a.robot_height_m):
+                    pts.append((float(c[0]), float(c[1])))
+        return np.array(pts, dtype=np.float64) if pts else np.empty((0, 2))
+
+    def _map_assist_confirm(self, half, eff, nodata_clear=False):
+        """ASSIST: let the prebuilt map REINFORCE a live obstacle it agrees with, nothing more.
+        The map can only return a SMALLER clearance, and only when the live view independently sees an
+        obstacle at ~the same range (--map-assist-confirm-m). An unconfirmed map obstacle is discarded;
+        a blind (0.0) or clear (None) frame is returned untouched -- the map never brakes alone and
+        never releases. Pose is the robot's OWN odometry, so a wrong map/anchor just fails to confirm
+        and the live avoidance is unchanged.
+
+        nodata_clear: when True the caller is telling us `eff` came from _nodata's window-empty
+        vote (not a real blob detection). The live view saw no near returns because there were no
+        returns AT ALL in the near range -- exactly the couch signature. In that case, a map
+        obstacle NEARER than eff is trusted rather than discarded: the confirm window's symmetric
+        gate is what has been throwing away the map's warning about a couch (measured across the
+        archive as map-nearer-discarded, 2026-09-08 audit P0 #2). Reduce-only still holds: map may
+        only ever LOWER the clearance, never raise it, never release the brake."""
+        if self._ma is None or len(self._ma) == 0:
+            self._ma_dbg("map-empty")                  # no map loaded -> nothing to do
+            return eff
+        if eff is None:
+            self._ma_dbg("eff-none-clear")             # corridor CLEAR (no live obstacle) -> nothing to reinforce
+            return eff
+        if eff == 0.0:
+            self._ma_dbg("eff-blind")                  # live sensor-blind -> fail-closed; map never releases
+            return eff
+        # SECONDARY POSTURE (2026-09-09): map-assist may only REFINE a live brake, never CREATE one.
+        # Without this, a live "vote-clear" from _nodata (eff = obstacle_brake_start = 1.15m) flows
+        # through and any close map point tightens it into a brake -- which is exactly the pattern
+        # that pinned vx=0 in the field run. Primary posture also assumes a fresh live map-frame pose;
+        # in unplugged-Aurora operation the anchor drifts as /odometer_state accumulates error, so
+        # projected .ply points slide off the real obstacles they were captured against, and a
+        # primary map-assist would brake on phantoms. Secondary makes the .ply a spatial HINT that
+        # can only sharpen an already-braking live decision. Tradeoff: the couch-fail-open case is
+        # no longer rescued by the map -- that needs a separate depth-hole detector (see
+        # eval/hole_stats.py for the measurement instrument), unrelated to Aurora.
+        if eff >= self.a.obstacle_brake_start:
+            self._ma_dbg("eff-clear-secondary")        # live is not braking -> map stays out
+            return eff
+        try:
+            od = self.node.latest_odom() if self.node is not None else None
+        except Exception:  # noqa: BLE001
+            od = None
+        if od is None:
+            self._ma_dbg("no-odom")            # OBSERVABILITY (decision unchanged)
+            return eff
+        c, s = math.cos(od[2]), math.sin(od[2])
+        dx = self._ma[:, 0] - od[0]
+        dy = self._ma[:, 1] - od[1]
+        fwd = dx * c + dy * s
+        left = -dx * s + dy * c
+        # SELF-RANGE GATE (2026-09-09 forensics MUST-FIX 1): filter map points inside the robot's
+        # own footprint the SAME way the live obstacle paths do (see _corridor_clearance_uncached
+        # at :1525 and _nearest_blob at :1200 which both use obstacle_self_range_m). Without this,
+        # any .ply point that lands within 0.45 m of the robot's map-frame pose -- whether it is a
+        # real close obstacle, the robot's own body mapped in during the capture drive, or a
+        # mapping-time artifact -- wins the min() and forces map=0.15-0.24m FIRE, pinning
+        # CLEARANCE at 0 and vx-cap at 0. Field run 2026-09-09 pose (-2.1,-3.7) had exactly one
+        # such point at (-2.260,-3.891,+0.357m) that fired 59 times across ~180 deg of yaw and
+        # kept the robot spinning in place while the operator walked off-frame. All other obstacle
+        # paths in this file gate the same way; this is a code-symmetry defect, not a policy change.
+        m = ((fwd >= self.a.obstacle_self_range_m) & (fwd < self.a.localmap_range_m)
+             & (np.abs(left) <= half))
+        if not m.any():
+            self._ma_dbg("no-map-pts-in-corridor")
+            return eff
+        map_rng = float(fwd[m].min())
+        if abs(map_rng - eff) <= self.a.map_assist_confirm_m:
+            if map_rng < eff:
+                self._ma_dbg("FIRE eff=%.2f map=%.2f (od=%.1f,%.1f,%.0fdeg)"
+                             % (eff, map_rng, od[0], od[1], math.degrees(od[2])))
+            else:
+                self._ma_dbg("agree-noeffect eff=%.2f map=%.2f" % (eff, map_rng))
+            return min(eff, map_rng)
+        # DISCARDED -- but the two directions of disagreement are NOT equivalent, and lumping them
+        # into one "map-too-far" counter hides the only number that matters here.
+        #   map FARTHER than live: harmless. The live view already sees something nearer and is
+        #     already braking on it; the map adds nothing.
+        #   map NEARER than live:  the couch signature. The map says an obstacle is closer than the
+        #     live view believes, the confirm window is symmetric, so the warning is thrown away
+        #     for being too alarming -- i.e. map-assist discards the map exactly when the live
+        #     reading is most likely to be wrong (DECISIONS.md couch collision; the depth-hole
+        #     class returns NO pixels, so it reads as clear at ~brake_start).
+        if map_rng < eff:
+            if nodata_clear:
+                # NODATA REINFORCE (2026-09-09, audit P0 #2 couch fail-open). The live "clear" is
+                # a low-confidence vote from _nodata's window-empty path -- the corridor held no
+                # NEAR returns, which is exactly what a couch produces and also what open space
+                # produces. When the map has an obstacle inside that same corridor at the same
+                # pose, trust the map. Reduce-only still holds (map_rng < eff). Only fires when
+                # --map-assist is on; on a wrong map/anchor the live 'eff' is what stands anyway
+                # if the map has no point in the corridor, so the failure mode is unchanged.
+                self._ma_dbg("nodata-reinforced map=%.2f vs eff=%.2f (window-empty, trusting map)"
+                             % (map_rng, eff))
+                return min(eff, map_rng)
+            self._ma_dbg("map-nearer-discarded map=%.2f vs eff=%.2f gap=%.2f"
+                         % (map_rng, eff, eff - map_rng))
+        else:
+            self._ma_dbg("map-farther-discarded map=%.2f vs eff=%.2f" % (map_rng, eff))
+        return eff
+
+    def _map_assist_confirm_sectors(self, sectors):
+        """Per-sector reduce-only map confirmation for L/C/R sector clearances (gap-steer + escape).
+
+        The corridor version above watches only a narrow forward wedge; sectors span the whole
+        image. Without this, gap-steer and the escape selector can pick a side that the map knows
+        is blocked -- exactly the "map assist needs to be wired into obstacle" ask (2026-09-09).
+
+        Reduce-only, same posture as the corridor path: a sector's live range may be LOWERED to
+        the nearest map obstacle in that sector's angular wedge, never raised. A None sector
+        (unknown -> BLOCKED by the sector contract) stays None -- map alone must never unblock,
+        and it must never introduce a brake harder than "unknown" either. Fails soft on missing
+        map / odom -- returns `sectors` unchanged. Byte-identical when --map-assist off."""
+        if self._ma is None or len(self._ma) == 0:
+            return sectors
+        try:
+            od = self.node.latest_odom() if self.node is not None else None
+        except Exception:  # noqa: BLE001
+            od = None
+        if od is None:
+            return sectors
+        # Sector angular wedges match _sector_clearances geometry exactly: left third is bearing
+        # in (-HFOV/2, -a_edge), centre is (-a_edge, +a_edge), right is (+a_edge, +HFOV/2), where
+        # a_edge is the angle at column w*sector_frac. Uses the same head-yaw sign convention as
+        # the corridor -- unknown /head_pose gives 0.0 head shift (body-forward = image-centre),
+        # which is the same fail-safe the corridor uses.
+        sf = max(0.15, min(0.45, self.a.sector_frac))
+        hfov = math.radians(self.a.hfov_deg)
+        # Column w*sf is (sf - 0.5) of the frame off centre; its bearing is atan((sf-0.5)*2*tan(HFOV/2)).
+        a_edge = math.atan((sf - 0.5) * 2.0 * math.tan(hfov * 0.5))   # negative (left of centre)
+        a_max  = hfov * 0.5
+        _hy_off = 0.0
+        if self.a.head_track == "on":
+            _hy = self.node.head_yaw()
+            if _hy is not None:
+                _hy_off = self.a.head_yaw_sign * _hy       # body-forward bearing in image-space
+        c, s = math.cos(od[2]), math.sin(od[2])
+        dx = self._ma[:, 0] - od[0]
+        dy = self._ma[:, 1] - od[1]
+        fwd  = dx * c + dy * s
+        left = -dx * s + dy * c
+        # Ahead-of-robot AND within brake reach. Bearing sign: +right in the image; body +left
+        # gives -bearing, so bearing_img = atan2(-left, fwd). Consistent with _sector_clearances,
+        # which slices the image by columns (col > centre -> right, matches +bearing_img).
+        m0 = (fwd > 0.0) & (fwd < self.a.localmap_range_m)
+        if not m0.any():
+            return sectors
+        # Vectorised nearest-per-sector.
+        bearing = np.arctan2(-left[m0], fwd[m0]) + _hy_off        # body-relative
+        rng     = fwd[m0]
+        # Left sector: bearing in [-a_max, a_edge). Right: (-a_edge, a_max] i.e. bearing > -a_edge.
+        # Centre: [a_edge, -a_edge]. a_edge is negative, so -a_edge is positive.
+        masks = {"L": bearing <  a_edge,
+                 "C": (bearing >= a_edge) & (bearing <= -a_edge),
+                 "R": bearing > -a_edge}
+        out = dict(sectors)
+        for k in ("L", "C", "R"):
+            if out[k] is None:                                    # unknown stays unknown (blocked)
+                continue
+            mm = masks[k]
+            if not mm.any():
+                continue
+            map_r = float(rng[mm].min())
+            if map_r < out[k]:                                    # reduce-only
+                out[k] = map_r
+        return out
+
+    def _ma_dbg(self, msg):
+        """OBSERVABILITY ONLY -- changes no decision. _map_assist_confirm was silent, so we could not
+        tell whether map-assist ever fired. Keep a running per-outcome tally and emit a throttled
+        (~1/2 s) line so a run's map-assist activity is visible in k1_follow.err. Outcome keys:
+        FIRE = the map actually TIGHTENED the live clearance (map-assist did something); no-odom = no
+        pose on --odom-topic (inert); no-map-pts-in-corridor = pose placed no map point in the forward
+        footprint corridor; map-nearer-discarded / map-farther-discarded = a map point was there but
+        outside --map-assist-confirm-m of the
+        live range (discarded); agree-noeffect = map agreed but was not closer than live."""
+        tally = getattr(self, "_ma_tally", None)
+        if tally is None:
+            tally = {}
+            self._ma_tally = tally
+        key = msg.split(" ", 1)[0]
+        tally[key] = tally.get(key, 0) + 1
+        now = time.monotonic()
+        if now - getattr(self, "_ma_dbg_t", 0.0) >= 2.0:
+            self._ma_dbg_t = now
+            log("MAP-ASSIST %s | tally=%s" % (msg, tally))
+
+    def _map_change_observe(self, band, hgt, lat_signed, sel):
+        """Feed one frame to the map-change manager. OBSERVATION ONLY -- returns nothing, and no
+        caller uses a return value. Deliberately fed the SAME self-masked selection the brake acts
+        on, so a finding corresponds to something the robot actually reacts to.
+
+        Decimated by --map-change-stride: findings need persistence across seconds, not every frame,
+        so there is no reason to pay the cost 10x/s. Wrapped whole -- an observer that can throw into
+        the control loop is a safety regression, not a feature."""
+        if self._mc is None:
+            return
+        try:
+            self._mc_n += 1
+            if (self._mc_n % max(1, int(self.a.map_change_stride))) != 0:
+                return
+            od = self.node.latest_odom(max_age=1.0) if self.node is not None else None
+            if od is None:
+                return                  # no fresh MAP-frame pose -> cannot place anything; skip
+            if not sel.any():
+                return
+            self._mc.observe((od[0], od[1], od[2]),
+                             band[sel].astype(np.float64),
+                             -lat_signed[sel].astype(np.float64),   # image +right -> robot +LEFT
+                             t=time.time())
+            now = time.monotonic()
+            if (now - self._mc_report_t) >= max(5.0, float(self.a.map_change_report_s)):
+                self._mc_report_t = now
+                self._map_change_report(final=False)
+        except Exception as e:  # noqa: BLE001 -- never break the loop for an observer
+            if (time.monotonic() - getattr(self, "_mc_err_t", 0.0)) > 30.0:
+                self._mc_err_t = time.monotonic()
+                log("MAP-CHANGE-ERR %s (observation skipped)" % e)
+
+    def _map_change_report(self, final=False):
+        """Emit current findings to the log + the forensic JSONL, and (on exit) fold them into the
+        cross-run ledger. Findings are recomputed from the accumulated votes, so this is safe to
+        call repeatedly; only the ledger write is once-per-run."""
+        if self._mc is None:
+            return
+        try:
+            regs = self._mc.findings()
+            st = self._mc.stats()
+            log("MAP-CHANGE %d finding(s) | %d obs, %d cells tracked%s"
+                % (len(regs), st["observations"], st["tracked_cells"], " [final]" if final else ""))
+            for r in regs:
+                log("  MAP-CHANGE %s at (%.2f,%.2f) ~%.2fx%.2fm conf=%.2f views=%d parallax=%.0fdeg"
+                    % (r["cls"], r["map_xy"][0], r["map_xy"][1], r["extent_m"][0], r["extent_m"][1],
+                       r["conf"], r["n_views"], r["parallax_deg"]))
+                self.events.tick(t=round(time.time(), 3), ev="map_change", cls=r["cls"],
+                                 map_xy=r["map_xy"], extent_m=r["extent_m"], cells=r["cells"],
+                                 votes=r["votes"], n_views=r["n_views"],
+                                 parallax_deg=r["parallax_deg"], conf=r["conf"],
+                                 nearest_prior_m=r["nearest_prior_m"], map=r["map"])
+            if final and regs:
+                from map_change import update_ledger
+                d = self.a.map_change_dir
+                os.makedirs(d, exist_ok=True)
+                p = os.path.join(d, "%s.json" % self._mc.map_id)
+                update_ledger(p, self._mc.map_id, self._mc.res, regs,
+                              run_id=time.strftime("%Y%m%d_%H%M%S"))
+                log("MAP-CHANGE ledger updated: %s" % p)
+        except Exception as e:  # noqa: BLE001
+            log("MAP-CHANGE report failed (%s) -- findings not persisted this run" % e)
+
+    def _obstacle_memory(self, live):
+        """Carry a seen obstacle forward using odometry. Returns the clearance to USE.
+
+        THE PROBLEM. The robot has no memory at all: an obstacle tracked cleanly from 1.0 m down
+        to 0.5 m ceases to exist the moment it leaves the sensing window -- the last 20 cm of the
+        approach, which is exactly where contact happens. Widening the window helps but can never
+        fully close it: something a hand's width away is always at the edge of what a head-mounted
+        camera can see.
+
+        THE SIMPLEST THING THAT WORKS. Not a map -- one number. Remember the range when it was
+        last seen and where the robot was, then subtract the distance travelled since. An obstacle
+        seen at 0.8 m that the robot has since advanced 0.3 m toward is now 0.5 m away, whether or
+        not it is still visible.
+
+        SAFETY RULE, and the whole reason this is safe to add: memory may only ever make the robot
+        MORE cautious. The caller takes the MINIMUM of live and remembered, so memory can lower a
+        clearance but never raise one. A stale memory costs a needless stop; it can never
+        authorise motion. Same posture as the brake, which only reduces vx and never grants it.
+
+        Fails closed in the ordinary sense too: no odometry, expired, or the robot has TURNED
+        appreciably (a heading change invalidates a forward-only estimate -- what was ahead is no
+        longer ahead) -> forget it and use whatever the sensor says now."""
+        if not self.a.obstacle_memory_s:
+            return live
+        now = time.monotonic()
+        od = self.node.latest_odom() if self.node is not None else None
+        if od is None:
+            self._obs_mem = None
+            return live
+        x, y, th = od
+
+        # Predict from the EXISTING memory BEFORE touching it. Refreshing first was a bug the
+        # test caught: a bad far reading (the blob detector losing a near object and reporting
+        # the wall behind it) overwrote the good near memory, so there was nothing left to
+        # compare against and the clearance jumped to the wall. Compare, then refresh.
+        pred = None
+        m = self._obs_mem
+        if m is not None:
+            r0, x0, y0, th0, t0 = m
+            dth = abs((th - th0 + math.pi) % (2.0 * math.pi) - math.pi)
+            if (now - t0) > self.a.obstacle_memory_s:
+                self._obs_mem = None                     # too old to trust
+            elif dth > math.radians(self.a.obstacle_memory_max_turn_deg):
+                self._obs_mem = None                     # turned: forward-only estimate is void
+            else:
+                p = r0 - math.hypot(x - x0, y - y0)
+                if p <= self.a.obstacle_self_range_m:
+                    self._obs_mem = None                 # driven past it -- no phantom brake
+                else:
+                    pred = p
+
+        # Only let LIVE become the memory when it is the nearer evidence, so a far reading cannot
+        # erase a near obstacle; the old one then ages out on its own timer instead.
+        if live is not None and (pred is None or live <= pred):
+            self._obs_mem = (live, x, y, th, now)
+
+        if pred is None:
+            return live
+        if live is None:
+            if (now - getattr(self, "_mem_log_t", 0.0)) >= 1.0:
+                self._mem_log_t = now
+                log("OBSTACLE-MEMORY unseen: dead-reckoned to %.2fm" % pred)
+            return pred
+        return min(live, pred)                           # memory may only LOWER a clearance
+    def _nearest_blob(self, band, sel, hgt=None):
+        """Range of the nearest CONTIGUOUS obstacle inside `sel`, or None, plus the largest blob.
+
+        WHY CONTIGUITY. The old gate was a bare pixel COUNT -- "N valid pixels anywhere" -- so
+        scattered sensor speckle counted exactly the same as a solid chair. That forced
+        --obstacle-min-valid high enough to reject noise (70), which is precisely what made
+        sparse-but-real scenes fall under it and take the no-data path. One threshold could not
+        serve both jobs.
+        A real obstacle is CONNECTED; noise is not. Requiring a connected blob lets the size floor
+        drop by ~5x while being MORE selective: 12 contiguous pixels is an object, 70 scattered
+        ones are probably not. It also removes the percentile dilution that hid a genuine in-path
+        object at 0.30 m -- the range is now measured WITHIN the nearest blob, not across the whole
+        window where a few near pixels get averaged away.
+        Falls back to the old count when scipy is unavailable, so the brake degrades rather than
+        disappears."""
+        try:
+            from scipy import ndimage
+        except Exception:  # noqa: BLE001 -- no scipy: degrade to the legacy count, never to nothing
+            # No ground rejection on this path: without labelling there are no per-blob statistics
+            # to test, and guessing would be worse than braking.
+            v = band[sel]
+            if v.size < self.a.obstacle_min_valid:
+                return None, int(v.size)
+            return float(np.percentile(v, self.a.obstacle_pctile)), int(v.size)
+        # CANDIDATES MUST BE NEAR. Selecting every VALID pixel makes the far background one huge
+        # connected region with the object inside it, so labelling changes nothing. Measured: a
+        # solid object and pure speckle both returned the same range, and the wide corridor missed
+        # a real object entirely by diluting it in a percentile. An obstacle is a connected region
+        # of NEAR depth -- anything beyond --obstacle-brake-start cannot brake anyway.
+        sel = sel & (band < self.a.obstacle_brake_start)
+        # SHORT-CIRCUIT AN EMPTY MASK. Measured over 51 real archived depth frames, this near-mask
+        # is entirely empty in 86% of them (label count p50 = 0, kept blobs p50 = 0) -- the common
+        # case is simply "nothing within braking range". ndimage.label + bincount then cost
+        # 3.07 ms p50 / 4.42 ms p90 to compute a guaranteed-zero result, on a loop already running
+        # ~120 ms against a 100 ms budget. `.any()` short-circuits on the first True, so a frame
+        # that DOES have an obstacle pays almost nothing extra. Byte-identical: label() of an empty
+        # mask returns n = 0, which the next two lines already turn into this exact return.
+        if not sel.any():
+            return None, 0
+        lab, n = ndimage.label(sel)
+        if n <= 0:
+            return None, 0
+        sizes = np.bincount(lab.ravel())
+        sizes[0] = 0
+        keep = np.flatnonzero(sizes >= max(1, int(self.a.obstacle_min_blob_px)))
+        if keep.size == 0:
+            return None, int(sizes.max() if sizes.size else 0)
+        # Nearest blob wins. Its range is a percentile WITHIN the blob, keeping the existing
+        # anti-glitch posture (a single bad pixel must not define the obstacle).
+        best = None
+        for li in keep[:16]:                       # bounded: many blobs means noise, not a scene
+            m = (lab == li)
+            vv = band[m]
+            if not vv.size:
+                continue
+            if self._is_ground(vv, hgt[m] if hgt is not None else None, int(sizes[li])):
+                continue                           # the floor is not an obstacle
+            r = float(np.percentile(vv, self.a.obstacle_pctile))
+            if best is None or r < best:
+                best = r
+                best_m = m
+        # BRAKE-BLOB FORENSICS (2026-09-10). The brake was pinning clearance at 0.65-0.68 m with
+        # vx<=0.02 on 47% of frames and nothing in the log said WHERE that return was, so its
+        # identity was guesswork -- I attributed it to the hands, then found the arms are behind
+        # the camera at rest and could not have produced it. One line ends the guessing: the
+        # winning blob's image centroid, pixel extent, and world height band. Read it as:
+        #   near the bottom centre + height ~0 -> floor / ground-reject leak
+        #   low + wide + height 0.6-0.8        -> the robot's own body or hands
+        #   off to one side, height 0.3-1.0    -> real furniture
+        #   coincident with the tracked person -> the operator (target-margin should exclude them)
+        # Rate-limited to 1/s, and ONLY when the blob is inside the braking band, so a healthy
+        # frame costs nothing. Pure observation: nothing here changes a decision.
+        if (best is not None and best < self.a.obstacle_brake_start
+                and (time.monotonic() - getattr(self, "_blob_dbg_t", 0.0)) >= 1.0):
+            self._blob_dbg_t = time.monotonic()
+            try:
+                ys, xs = np.nonzero(best_m)
+                if hgt is not None:
+                    hb = hgt[best_m]
+                    hs = "h=[%.2f..%.2f]m" % (float(np.nanmin(hb)), float(np.nanmax(hb)))
+                else:
+                    hs = "h=n/a"
+                log("BRAKE-BLOB %.2fm px=%d centroid=(%d,%d) u=[%d..%d] v=[%d..%d] %s "
+                    "(self_range=%.2f brake_stop=%.2f)"
+                    % (best, int(best_m.sum()), int(xs.mean()), int(ys.mean()),
+                       int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max()), hs,
+                       self.a.obstacle_self_range_m, self.a.obstacle_brake_stop))
+            except Exception:  # noqa: BLE001 -- forensics must never break the brake
+                pass
+        return best, int(sizes.max())
+
+    def _is_ground(self, z, h, npx):
+        """True if this blob is the FLOOR seen obliquely rather than an object. Default OFF.
+
+        THE PROBLEM. _corridor_clearance computes height as camera_height - z*(v-cy)/f, which
+        assumes a LEVEL optical axis. Measured 2026-09-04 the camera sits ~10 deg off level, and the
+        resulting error is z*sin(pitch) -- it scales with RANGE, so the floor plane tilts in the
+        height model and climbs above --floor-margin-m into the hit box. Field result: clearances of
+        0.43-0.80 m on open floor, vx capped to zero, the robot refusing to cross an empty room.
+        Correcting the pitch directly needs to know it, and it could not be measured: only 4 of
+        ~1000 archived frames yield a confident ground fit (the floor is too small a share of these
+        views) and no recording before cfdcb14 carries the head pose.
+
+        WHAT THIS USES INSTEAD -- no pitch value required. The floor is a PLANE SEEN OBLIQUELY, so
+        computed height and depth are strongly correlated across it; a compact object is not.
+        Measured on recorded frames:
+            floor blobs      corr(z,h) = -0.76 .. -0.94,  thousands of px
+            near-object blobs corr(z,h) = +0.45 .. +0.96,  height span 0.06-0.15 m
+        Opposite signs, no overlap.
+
+        WHY THE THRESHOLDS ARE CONSERVATIVE AND WHY THIS IS OFF BY DEFAULT. A tabletop is also a
+        horizontal plane and correlates the same way, and blobs of 24-131 px at corr -0.89..-0.97
+        appear in the archive that I could not confidently label floor-or-object. Requiring a LARGE
+        area as well means this only fires on the corridor-filling floor and leaves every ambiguous
+        blob braking. That is the safe direction: a missed floor rejection costs a stall, a wrong
+        one costs a collision. Validated only against two recordings -- enough to ship as an opt-in,
+        not enough to make it the default."""
+        if self.a.ground_reject != "on" or h is None:
+            return False
+        if npx < self.a.ground_min_px or z.size < 8:
+            return False
+        zs = z.astype(np.float64)
+        hs = h.astype(np.float64)
+        if zs.std() < 1e-9 or hs.std() < 1e-9:       # degenerate: no plane to speak of
+            return False
+        c = float(np.corrcoef(zs, hs)[0, 1])
+        if not np.isfinite(c) or c >= self.a.ground_corr:
+            return False
+        if (time.monotonic() - getattr(self, "_ground_log_t", 0.0)) >= 1.0:
+            self._ground_log_t = time.monotonic()
+            log("GROUND-REJECT %dpx at %.2fm corr=%+.2f (<%.2f) -> floor plane, not an obstacle"
+                % (npx, float(np.percentile(zs, 20)), c, self.a.ground_corr))
+        return True
+
+    def _self_mask_ok(self, sel, shape, sl=None, hshift=0.0):
+        """Drop the robot's OWN pixels from an obstacle selection. Returns the new sel, or None if
+        the mask is unusable (caller must then treat the frame as blind, never as clear).
+
+        THE HEAD PANS, SO THE MASK MUST TOO. A pixel mask assumes the body sits at FIXED pixels,
+        which holds only for a camera bolted rigidly to the body. This head yaws, so the arm SWEEPS
+        across the image and a mask captured at one head angle is wrong at every other. Measured
+        2026-09-04: per-pixel max depth over 1023 frames from 31 recordings masked ZERO pixels at
+        0.45 m -- not because the arm is absent (it is in 87% of one run's frames) but because with
+        the head panning, every pixel eventually sees something far, and one far reading unmasks a
+        pixel permanently. That is also why the original live capture was untrustworthy.
+        The arm is body-fixed, exactly like body-forward, so it moves in the image by the SAME
+        -head_yaw*focal term the corridor already applies. The mask is therefore captured HEAD
+        CENTRED and shifted by that term here. Shifting fills with False (not wrap): a column
+        rotated in from the far edge would mask real world.
+
+        WHY POSITION AND NOT RANGE. --obstacle-self-range-m is a range cut, and range cannot
+        separate the robot from the world: measured on 2026-09-04 the body returned 0.22-0.35 m,
+        the same distances a real obstacle occupies. Every threshold therefore either lets the body
+        through (0.22: clearance pinned at 0.22-0.35 m, vx=+0.00 for a whole session with the
+        operator 4.39 m away) or blinds the robot to genuine obstacles (0.35 measured doing exactly
+        that). The run that proved it: across 57 deg of body rotation at the 0.30 rad/s yaw clamp
+        and operator ranges from 1.00 m to 4.39 m, the near return never left 0.22-0.35 m. Nothing
+        in the world is rigid to the robot like that -- it was the robot.
+        Position DOES separate them, which is the same asymmetry selfmask.py exploits to build the
+        mask (per-pixel max over time: a world pixel varies, a body pixel never does).
+
+        SHAPE MISMATCH IS FAIL-CLOSED. A mask built at another resolution would blank the WRONG
+        pixels -- it would hide part of the world and expose part of the robot, silently. So a
+        mismatch disables forward drive rather than being ignored."""
+        if self._self_mask is None:
+            return sel
+        m = self._self_mask
+        if m.shape != shape:
+            if not self._self_mask_warned:
+                self._self_mask_warned = True
+                log("SELF-MASK-SHAPE mask is %s but depth is %s -- refusing to use it, and "
+                    "forbidding forward (a mask for the wrong resolution masks the wrong pixels). "
+                    "Re-run selfmask.py against this camera, or drop --self-mask."
+                    % (m.shape, shape))
+            return None
+        k = int(round(hshift))
+        if k:
+            sh = np.zeros_like(m)
+            if k > 0:
+                if k < m.shape[1]:
+                    sh[:, k:] = m[:, :-k]
+            else:
+                if -k < m.shape[1]:
+                    sh[:, :k] = m[:, -k:]
+            m = sh                                   # False-filled, never wrapped
+        if sl is not None:
+            m = m[sl]
+        return sel & ~m
+
+    def _clr_vote(self, clr):
+        """Aged median over EVERY evaluated frame -- the clear ones as well as the detections.
+
+        The window used to be appended to ONLY on the detection path: a frame that found no
+        obstacle returned early, so its verdict never entered the filter. That made the median a
+        LATCH rather than a vote -- computed from a list holding nothing but detections, it could
+        only ever report an obstacle, and a single speckle blob held the brake down until three
+        further detections replaced it, which clear frames were unable to do.
+        Field evidence, run 20260904T014601Z: depth speckle cleared the 12px blob threshold in 45%
+        of frames at a random 0.5-1.0 m range; those were the only frames recorded; the brake pinned
+        vx to 0.00 for a whole session in open space while gap steer rotated against a phantom.
+        A REAL obstacle is detected in ~every frame and still wins the median, so voting rejects
+        speckle WITHOUT weakening the brake -- which is why this is the fix and not a higher blob
+        threshold, since that would trade this false positive for more of the couch false negative.
+        Always returns the median as a FLOAT (see the note below the return: None must keep its
+        single meaning of 'no depth frame at all')."""
+        # TURN WIPE. The window's evidence is heading-specific, and rotation invalidates it in
+        # BOTH directions -- but the dangerous one is a window of pre-turn CLEAR votes outvoting a
+        # real obstacle the turn has just put in front of the robot: measured ~2 frames
+        # (~0.3-0.5 s at the field loop rate) of uncapped forward drive at something already
+        # inside stop range (2026-09-05 audit, adversarially confirmed at the app's shipped
+        # --obstacle-aged 5). Mirrors _obstacle_memory's own turn-wipe doctrine, keyed on the
+        # velocity actually SENT last tick (which exists without odometry): while yawing fast,
+        # the median degrades to the current frame's own reading, so a detection bites on frame
+        # one instead of being outvoted by a heading that no longer exists.
+        if abs(getattr(self, "_prev_vyaw", 0.0)) > 0.15:
+            self._clr_hist = []
+        self._clr_hist.append(float(clr))
+        self._clr_hist = self._clr_hist[-max(1, self.a.obstacle_aged):]
+        return float(sorted(self._clr_hist)[len(self._clr_hist) // 2])
+        # ALWAYS A FLOAT, NEVER None. The first cut of this returned None when the median reached
+        # obstacle_brake_start, reasoning that None and a large float both mean "no cap" to
+        # _obstacle_vx_cap. They do -- but None is NOT synonymous downstream: _obstacle_vx_cap,
+        # _gap_steer_bias and _reverse_step:733 read None as CLEAR, while _head_scan_finish,
+        # _body_scan_step and _reverse_step:721 read it as BLOCKED (fail-closed "cannot see !=
+        # nothing there"). _reverse_step therefore contradicted itself twelve lines apart, and
+        # because body_scan_clear_m (1.5) == obstacle_brake_start (1.5), `clr >= body_scan_clear_m`
+        # became unreachable and the 360 escape sweep could never mark ANY heading clear -- field
+        # confirmation in runs/20260904T021434Z_cfe43b6/k1_follow.err: BODY-SCAN start at L974 and
+        # L1486, BODY-SCAN abort: timeout at L1264. Returning the float keeps one meaning for None
+        # ("no depth frame at all", set at the top of _corridor_clearance) and lets every consumer
+        # keep its own reading of a number.
+
+    def _nodata(self, band, blob_px, where, raw=False):
+        """Decide what 'not enough obstacle evidence' MEANS, and say so out loud.
+
+        This used to be a bare `return None`, and None means NO CAP in _obstacle_vx_cap -- so the
+        brake failed OPEN, at full speed, with nothing logged. The sectors have always taken the
+        opposite reading of the same situation ("stays None == unknown == blocked"). The robot
+        drove into a couch through this hole.
+        A healthy frame with an empty window is genuinely clear -- open space returns nothing
+        inside obstacle_max_m. A SPARSE FRAME means the sensor cannot see, which is not the same
+        as nothing being there, so forward is suppressed."""
+        fv = int(np.count_nonzero(np.isfinite(band) & (band > 0.15)
+                                  & (band < self.a.obstacle_max_m)))
+        blind = fv < max(0.02 * float(band.size), 4.0 * self.a.obstacle_min_valid)
+        if (time.monotonic() - getattr(self, "_nodata_log_t", 0.0)) >= 1.0:
+            self._nodata_log_t = time.monotonic()
+            log("OBSTACLE-NODATA %s blob=%dpx need=%dpx frame_valid=%d -> %s"
+                % (where, blob_px, self.a.obstacle_min_blob_px, fv,
+                   "SENSOR BLIND, forward suppressed" if blind else "window empty, clear"))
+        if blind:
+            return 0.0          # fail closed, and deliberately NOT a vote: a blind frame is not
+                                # evidence of clear, so it must not dilute the window either way.
+        if raw:
+            # A genuinely clear frame, read raw, IS clearance at the top of the measurable range
+            # (candidates beyond brake_start are discarded by _nearest_blob) -- the value the head
+            # scan compares against body_scan_clear_m. No vote: raw reads must not touch the window.
+            return self.a.obstacle_brake_start
+        return self._clr_vote(self.a.obstacle_brake_start)   # a clear frame VOTES clear
+
+    def _corridor_clearance(self, apply_head_shift=True, raw=False):
+        """ONE evaluation per depth frame. Memoized on the frame OBJECT, not on a frame counter, so
+        it is correct for every caller and needs no cooperation from the loop.
+
+        WHY. Two call sites sit on the tracked path -- the brake, and _gap_steer_bias's ARGUMENT,
+        which Python evaluates even when gap steer is off. Both cast a vote through _clr_vote, so
+        every tracked frame voted TWICE: obstacle_aged=7 was really a 3.5-frame window, and the
+        depth of the filter silently depended on whether obstacle_brake was armed (1 vote/frame
+        off, 2 on). It also paid for a second full-frame numpy pass on a loop already over budget
+        (measured dt p50 137-144 ms against a 100 ms target).
+        Memoizing fixes the vote arithmetic and gives the pass back. It also makes the offline gate
+        honest: a harness calling this once per frame now models the real loop exactly."""
+        if self.node is None:
+            return None
+        if raw:
+            # RAW: this frame's own reading, no vote and no cache. The head scan needs the
+            # clearance of the heading it is LOOKING AT RIGHT NOW; routing its samples through the
+            # shared aged median made every sample the median of the last N FORWARD frames instead
+            # -- and since the scan only runs while the robot is stopped at an obstacle, that
+            # window is full of near detections, so the sweep was arithmetically incapable of ever
+            # reporting a clear heading (2026-09-05 audit, adversarially confirmed: it froze,
+            # swept, and concluded nothing, in every shipped configuration). Raw reads also cast
+            # no vote, which removes the scan's double-vote pollution of the brake's own window.
+            return self._corridor_clearance_uncached(apply_head_shift, raw=True)
+        _d0 = self.node.latest_depth()
+        if (_d0 is not None and _d0 is self._clr_cache_d
+                and apply_head_shift is self._clr_cache_hs):
+            return self._clr_cache
+        _v = self._corridor_clearance_uncached(apply_head_shift)
+        self._clr_cache_d = _d0
+        self._clr_cache_hs = apply_head_shift
+        self._clr_cache = _v
+        return _v
+
+    def _corridor_clearance_uncached(self, apply_head_shift=True, raw=False):
         """Robust nearest-obstacle range (m) in the forward corridor, or None. Cheap: a percentile
         over the central band of the depth map (excludes the floor via a mid-vertical band). Uses a
         PERCENTILE (not raw min) + an AGED-MEDIAN history -- Phase-2 finding: a single depth-glitch
-        pixel at a raw min would FALSE-BRAKE (the relock-lunge failure class)."""
+        pixel at a raw min would FALSE-BRAKE (the relock-lunge failure class).
+        Call _corridor_clearance(), never this: this one votes every time it runs."""
         if self.node is None:
             return None
         # FIX (audit 2026-07-04): use latest_depth()'s default freshness (max_age=0.5 == DEPTH_FRESH_S),
@@ -581,18 +1734,1357 @@ class Follower:
         try:
             h, w = d.shape[:2]
             cf = max(0.05, min(1.0, self.a.obstacle_corridor_frac))
-            x0 = int(w * (0.5 - cf / 2.0)); x1 = int(w * (0.5 + cf / 2.0))
+            # HEAD-PAN CORRECTION: the corridor must track BODY-forward, not head-forward.
+            # With the head panned by hy, body-forward sits at -hy in the image, so shift the
+            # window by -hy*focal px. Without this the brake watches wherever the head looks --
+            # it would report clear while the robot walks into something. Unknown head yaw
+            # gives 0.0 shift AND forbids forward elsewhere, so the corridor is never silently
+            # wrong. At 105.8 deg FOV a +/-30 deg pan keeps body-forward well inside frame.
+            _hshift = 0.0
+            if apply_head_shift and self.a.head_track == "on":
+                _hy = self.node.head_yaw()
+                if _hy is not None:
+                    _hshift = -self.a.head_yaw_sign * _hy * focal_px(w, self.a.hfov_deg)
             y0 = int(h * self.a.obstacle_band_top); y1 = int(h * self.a.obstacle_band_bot)
+            if self.a.corridor_mode == "footprint":
+                # SELF-AWARE CORRIDOR. A fixed image fraction is the wrong shape for this job:
+                # the physical width it covers scales with range. At corridor-frac 0.55 and this
+                # FOV it spans 0.58 m at 0.4 m -- barely wider than the 0.45 m robot -- but 2.91 m
+                # at 2 m and 5.09 m at 3.5 m, so the brake fires for furniture over a metre off the
+                # shoulder that the robot was never going to touch. That is a direct source of the
+                # false stops that freeze the follow.
+                #
+                # Instead, keep a depth pixel only if the point it represents lies within the
+                # ROBOT'S OWN width (plus a clearance margin) of the centreline. For a pixel at
+                # column u with depth z, the lateral offset is z * (u - centre) / focal, so the
+                # test is per-pixel and the selected wedge automatically narrows with range and
+                # widens up close -- the shape the robot actually sweeps.
+                f = focal_px(w, self.a.hfov_deg)
+                # TURN-AWARE HALF-WIDTH. Standing still the robot occupies its half-width; while
+                # ROTATING it sweeps its CIRCUMSCRIBED radius, hypot(half_width, half_depth),
+                # because the corners swing outboard. For a 0.60 x 0.35 m body that is 0.30 -> 0.35,
+                # a swept width of 0.69 m rather than 0.60 m.
+                # Not academic: gap steer detours by applying YAW, so the robot is turning at
+                # exactly the moment it squeezes past an obstacle. The operator reports it clipping
+                # its HANDS during avoidance, and the hands are the outboard corner of that circle.
+                _hw = 0.5 * max(0.05, self.a.robot_width_m)
+                _hd = 0.5 * max(0.0, self.a.robot_length_m)
+                _turning = abs(getattr(self, "_prev_vyaw", 0.0)) > 0.05
+                half = (math.hypot(_hw, _hd) if _turning else _hw) + max(0.0, self.a.corridor_margin_m)
+                # HEIGHT -- the third dimension, and what makes this a HIT BOX rather than a
+                # footprint. The row band (obstacle_band_top/bot) is a fixed IMAGE fraction, so the
+                # physical height its lower edge reaches RISES as range closes: 0.62 m at 0.5 m but
+                # 0.72 m at 0.3 m. The hands ride at 0.67 m (URDF), so inside ~0.4 m anything at
+                # hand height falls out of the band and goes invisible -- the robot tracks an
+                # obstacle from 1.0 m down to 0.5 m and then loses it over the last 20 cm, which is
+                # exactly where the hands reach it. That is the reported hand-clipping.
+                #
+                # So test HEIGHT per pixel instead of slicing rows: for depth z at row v,
+                # height = camera_height - z * (v - centre) / focal. The row band is then not
+                # needed at all, and the whole frame can be used.
+                #
+                # This also removes the reason band_bot was capped: FLOOR returns have height ~0,
+                # below --floor-margin-m, so they are excluded by the geometry rather than by
+                # hoping a fixed row cut keeps them out.
+                band = d
+                u = (np.arange(w, dtype=np.float32) - (w * 0.5 + _hshift)) / max(f, 1.0)
+                vv = (np.arange(h, dtype=np.float32) - (h * 0.5)) / max(f, 1.0)
+                # COMPUTED ONCE. `band * u[None,:]` is a full-frame 544x448 multiply and a ~1 MB
+                # temporary; it used to be evaluated THREE times per frame (here and at both
+                # consumers below) for one identical result. Measured on 51 real archived depth
+                # frames, removing the two redundant passes is a pure win with a byte-identical
+                # result -- the signed form is what the consumers want anyway, and the brake only
+                # ever needed its magnitude.
+                lat_signed = band * u[None, :]
+                lat = np.abs(lat_signed)
+                hgt = self.a.camera_height_m - band * vv[:, None]
+                # SELF-EXCLUSION. Dropping the row band cured the hand-height blindness but exposed
+                # something that band had been hiding by accident: the lower rows look down at the
+                # ROBOT'S OWN chest and arms. Its hands sit at 0.67 m and its chest near 0.8 m --
+                # both inside the height window and dead centre laterally -- so the hit box saw
+                # ITSELF. In the field that pinned clearance at a constant 0.15-0.20 m, capped vx
+                # to zero every frame, and the robot turned on the spot without ever walking.
+                # Anything nearer than --obstacle-self-range-m is the robot, not the world.
+                sel = ((band > max(0.15, self.a.obstacle_self_range_m))
+                       & (band < self.a.obstacle_max_m)
+                       & np.isfinite(band) & (lat <= half)
+                       & (hgt >= self.a.floor_margin_m)
+                       & (hgt <= max(0.2, self.a.robot_height_m)))
+                # The range cut above is a BACKSTOP once a self-mask is loaded; the mask is what
+                # actually separates body from world (see _self_mask_ok).
+                sel = self._self_mask_ok(sel, d.shape, hshift=_hshift)
+                if sel is None:
+                    return 0.0                           # unusable mask -> blind, forward forbidden
+                # DEPTH-HOLE DETECTOR (hole_stats, 2026-09-09). _nodata only catches WHOLE-FRAME
+                # blackouts (frame_valid < ~2% of pixels). A dark couch, glossy floor, or IR-black
+                # surface returns no depth for its own pixels while the REST of the scene stays
+                # bright -- corridor valid-pixel count crashes locally while _nodata still thinks
+                # the frame is healthy. Rolling median of recent corridor valid pixels IS the
+                # baseline for "what this corridor normally holds"; a sharp drop below a fraction
+                # of that median means the sensor just went dark in the direction the robot is
+                # walking, which is exactly the couch/couch-arm/glass signature. Fail-closed:
+                # return 0.0 (forward forbidden, yaw still allowed), same posture as _nodata's
+                # blind path. Only fires once a baseline exists (>= --depth-hole-baseline-frames),
+                # so the follow's first few frames are never held. min-baseline-px prevents the
+                # check from tripping when the baseline itself is thin (empty room, distant scene).
+                if self.a.depth_hole == "on":
+                    cur_px = int(sel.sum())
+                    hist = self._corr_valid_hist
+                    hist.append(cur_px)
+                    max_hist = max(4, int(self.a.depth_hole_history_frames))
+                    if len(hist) > max_hist:
+                        del hist[0:len(hist) - max_hist]
+                    if len(hist) >= max(3, int(self.a.depth_hole_baseline_frames)):
+                        prior = sorted(hist[:-1])
+                        med = prior[len(prior) // 2]
+                        if med >= int(self.a.depth_hole_min_baseline_px):
+                            ratio = cur_px / float(med) if med > 0 else 1.0
+                            if ratio < max(0.0, min(1.0, self.a.depth_hole_ratio)):
+                                self._hole_streak += 1
+                                if (time.monotonic() - self._hole_log_t) >= 1.0:
+                                    self._hole_log_t = time.monotonic()
+                                    log("DEPTH-HOLE corridor valid=%dpx median=%dpx ratio=%.2f (<%.2f) "
+                                        "streak=%d -> local blind, forward forbidden (yaw free)"
+                                        % (cur_px, med, ratio, self.a.depth_hole_ratio, self._hole_streak))
+                                # DARK-OBSTACLE (2026-09-09 couch fix). A dark, absorbent surface --
+                                # couch, dark chair, black fabric, dark carpet edge -- fail-opens the
+                                # depth sensor over a large, contiguous region for MANY consecutive
+                                # frames while the robot approaches. That is not a transient camera
+                                # blip; it is a real physical thing the robot cannot ignore. When the
+                                # streak crosses --dark-obstacle-frames, we CONCLUDE the corridor is
+                                # a fail-open surface (not a flicker), log it, and set a hint the
+                                # gap-steer path uses to widen its search. Still fail-closed on
+                                # forward: this ONLY expands lateral search, never lets vx > 0.
+                                if self._hole_streak >= max(1, int(self.a.dark_obstacle_frames)):
+                                    if (time.monotonic() - self._dark_obstacle_log_t) >= 2.0:
+                                        self._dark_obstacle_log_t = time.monotonic()
+                                        log("DARK-OBSTACLE persistent depth-hole (streak=%d, >=%d "
+                                            "frames) -> classified as fail-open surface (couch/dark "
+                                            "fabric); widening gap-steer search + writing to localmap"
+                                            % (self._hole_streak, self.a.dark_obstacle_frames))
+                                    # WRITE THE DARK OBSTACLE INTO LOCALMAP (2026-09-09).
+                                    # DEPTH-HOLE alone returns 0.0 (blind, forward forbidden) but
+                                    # keeps no memory: turn away and the couch has to be rediscovered
+                                    # on every re-approach. Write a synthetic cell at the corridor
+                                    # centreline at the brake-start range so localmap remembers
+                                    # "something forward at ~1.15m" -- gap-steer can then commit to
+                                    # the same detour without re-firing DEPTH-HOLE first, and the
+                                    # cell is placed in WORLD coords so it persists as the robot
+                                    # moves laterally past it. Uses the existing min-hits gate:
+                                    # spurious single-frame hole flashes never write a persistent
+                                    # cell, only the same DARK-OBSTACLE streak that already made us
+                                    # brake. Fail-closed on missing pose: no write, same as _localmap_update.
+                                    try:
+                                        _o = self.node.latest_odom() if self.node is not None else None
+                                        _od = self._odom_xy()
+                                        _th = float(_o[2]) if _o else None
+                                        if _od is not None and _th is not None:
+                                            _rng = float(self.a.obstacle_brake_start)
+                                            _wx = _od[0] + _rng * math.cos(_th)
+                                            _wy = _od[1] + _rng * math.sin(_th)
+                                            _res = max(0.02, self.a.localmap_res_m)
+                                            _k = int(self._lm_key(round(_wx / _res), round(_wy / _res)))
+                                            _now2 = time.monotonic()
+                                            _e = self._lm.get(_k)
+                                            if _e is None:
+                                                self._lm[_k] = [_now2, _now2, 1]
+                                            else:
+                                                _e[1] = _now2; _e[2] += 1
+                                    except Exception:  # noqa: BLE001 -- never break the loop
+                                        pass
+                                return 0.0
+                            else:
+                                # Corridor came back to healthy -- streak resets.
+                                self._hole_streak = 0
+                        else:
+                            self._hole_streak = 0
+                # hgt goes in so a blob can be tested for being the FLOOR (see _is_ground). Only
+                # this path has a height model; the image-fraction path below does not.
+                # The same height model is what lets the short-horizon memory place points, so it
+                # is fed here and nowhere else.
+                self._localmap_update(band, hgt, lat_signed, self._lm_target_range)
+                # OBSERVER, not a decision: records where the live view stops matching the prebuilt
+                # map. Returns nothing and is read by nothing below. No-op unless --map-change on.
+                self._map_change_observe(band, hgt, lat_signed, sel)
+                clr, blob = self._nearest_blob(band, sel, hgt)
+                if raw and clr is not None:
+                    return clr
+                # Resolve the LIVE clearance FULLY first: 0.0 (blind, forward forbidden), None
+                # (clear -> no cap), or a voted float. Memory is applied AFTER, as a pure tightening.
+                # nodata_clear tracks WHICH KIND of "clear" the vote is: a real-blob vote is
+                # trusted; a _nodata window-empty vote is a low-confidence "we saw nothing near"
+                # (open room OR couch -- indistinguishable from depth alone) and is what
+                # map-assist's NODATA reinforce path will trust the map about.
+                _nodata_clear = False
+                if clr is None:
+                    live = self._nodata(band, blob, "footprint", raw=raw)
+                    # _nodata returns 0.0 (blind) or a _clr_vote float (window empty, clear). The
+                    # non-blind, non-raw case IS the nodata-clear vote we want the map to reinforce.
+                    # DISABLED 2026-09-09 field run: this trigger fires on ANY non-blind clear
+                    # frame (frame_valid ~68%, plenty of pixels), not only the sparse-corridor
+                    # couch case. Combined with any anchor misalignment it forces vx=0 in open
+                    # space. Rewire with a strict sparse-corridor gate (sel-valid / sel-total
+                    # ratio) before re-enabling. Keeping map-assist's confirm-only default here.
+                    _nodata_clear = False
+                else:
+                    live = self._clr_vote(clr)
+                if raw:
+                    return live
+                _lm = self._localmap_clearance(half)
+                # LOCALMAP SECONDARY POSTURE (2026-09-09 field-run fix, same architecture as
+                # map-assist's secondary). Memory may only REFINE a live brake, never CREATE one.
+                # The prior rule ("memory beats live if _lm < live, including live=None or
+                # live=brake_start-vote") let memory FILL a clear frame -- but that is exactly
+                # what accumulates arm/torso/person-edge/floor-tilt cells at 0.5-0.8 m and pins
+                # vx=0 in open space (field-run 2026-09-09: "LOCALMAP 0.68m from memory beats
+                # live 1.15m (499 cells)" -> CLEARANCE 0.65 -> vx-cap 0 -> gap-steer sees
+                # "centre blocked" -> yaw fights the follow's target bearing -> stutter). Same
+                # tradeoff as map-assist: lose the "remember-behind-me" behavior (an obstacle
+                # that leaves live view is no longer held), gain no phantom brakes in open
+                # space. The trade is right for unplugged-Aurora ops where anchor drift means
+                # any stale spatial memory misleads more than it helps. FAIL-CLOSED path
+                # (live == 0.0) is unchanged -- memory still cannot release a blind brake.
+                _eff = live
+                _live_is_braking = (live is not None and live != 0.0
+                                    and live < self.a.obstacle_brake_start)
+                _lm_fired = (_lm is not None and _live_is_braking and _lm < live)
+                if _lm_fired:
+                    if (time.monotonic() - getattr(self, "_lm_log_t", 0.0)) >= 1.0:
+                        self._lm_log_t = time.monotonic()
+                        log("LOCALMAP %.2fm refines live %.2fm (%d cells) -> braking on it"
+                            % (_lm, live, len(self._lm)))
+                    _eff = _lm
+                    _nodata_clear = False   # localmap gave evidence; no longer trusting-nothing
+                # MAP-ASSIST is now TERTIARY (2026-09-09 field-run operator direction: "move map
+                # assist behind local"). The prebuilt Aurora map may only refine a clearance that
+                # TWO independent live layers already agree on: the live depth blob AND the
+                # localmap memory. Without localmap agreement, map-assist stays out even if live
+                # is braking. Rationale: with Aurora unplugged the anchor drifts, so a lone map
+                # projection can wander into wrong image positions; requiring localmap
+                # confirmation means an actually-seen-now obstacle has to exist before the map
+                # is trusted to sharpen it. When localmap-off, map-assist is inert here (its own
+                # secondary gate in _map_assist_confirm still fires, but this call is skipped).
+                # BRAKE ARBITRATION LOG (2026-09-09). Unified per-frame line so brake
+                # attribution is one grep instead of correlating LOCALMAP / MAP-ASSIST /
+                # NODATA / DEPTH-HOLE across sibling lines. Rate-limited to 1/s to keep
+                # the stderr readable while still surfacing every distinct brake outcome.
+                # Sources: live=_nearest_blob outcome (None/clr/0.0), lm=_localmap_clearance,
+                # ma applied later. Winner = the value that actually reaches the caller.
+                if (time.monotonic() - getattr(self, "_brake_attrib_t", 0.0)) >= 1.0:
+                    self._brake_attrib_t = time.monotonic()
+                    src = "clear" if _eff is None else (
+                        "blind" if _eff == 0.0 else (
+                            "lm" if _lm_fired else "live"))
+                    live_s = "None" if clr is None else ("%.2f" % clr)
+                    lm_s = "None" if _lm is None else ("%.2f" % _lm)
+                    eff_s = "None" if _eff is None else ("%.2f" % _eff)
+                    log("BRAKE-ATTRIB live=%s lm=%s cells=%d eff=%s src=%s"
+                        % (live_s, lm_s, len(self._lm), eff_s, src))
+                if _lm_fired:
+                    return self._map_assist_confirm(half, _eff, nodata_clear=_nodata_clear)
+                return _eff
+            x0 = int(max(0, min(w - 2, w * (0.5 - cf / 2.0) + _hshift)))
+            x1 = int(max(x0 + 1, min(w, w * (0.5 + cf / 2.0) + _hshift)))
             band = d[y0:y1, x0:x1]
-            v = band[(band > 0.15) & (band < self.a.obstacle_max_m) & np.isfinite(band)]
-            if v.size < self.a.obstacle_min_valid:
-                return None
-            clr = float(np.percentile(v, self.a.obstacle_pctile))
-        except Exception:  # noqa: BLE001 -- a reflex must never break the loop
+            # Same contiguity + fail-closed treatment as the footprint path. This branch carried
+            # the ORIGINAL bare `return None`, so it fails OPEN on sparse depth exactly as the
+            # footprint one did -- and it is the DEFAULT mode, so the fix has to land here or the
+            # safety hole stays open for everyone who has not opted into the hit box.
+            sel = (band > 0.15) & (band < self.a.obstacle_max_m) & np.isfinite(band)
+            sel = self._self_mask_ok(sel, d.shape, (slice(y0, y1), slice(x0, x1)),
+                                     hshift=_hshift)
+            if sel is None:
+                return 0.0                               # unusable mask -> blind, forward forbidden
+            clr, blob = self._nearest_blob(band, sel)
+            if raw and clr is not None:
+                return clr
+            # PARITY WITH FOOTPRINT (2026-09-09): resolve LIVE first, then let map-assist confirm.
+            # Before this the frac branch returned _nodata / _clr_vote directly and never called
+            # map-assist -- switching --corridor-mode from footprint to frac silently disarmed the
+            # entire map-assist layer. Frac has no per-pixel width/height model, so no localmap
+            # fold-in and no per-pixel self-mask geometry; just the reduce-only map confirmation.
+            # nodata_clear carries the same low-confidence signal (couch case) as the footprint
+            # path uses. Byte-identical when --map-assist off (self._ma is None short-circuit).
+            _nodata_clear = False
+            if clr is None:
+                live = self._nodata(band, blob, "frac", raw=raw)
+                # DISABLED 2026-09-09 field run (frac path) -- see the footprint site for why.
+                _nodata_clear = False
+                if raw:
+                    return live
+            else:
+                live = self._clr_vote(clr)
+            # Corridor half-width for frac: half the robot width plus the corridor margin -- the
+            # same lateral gate the footprint path uses in its map-assist call above.
+            _hw_frac = 0.5 * max(0.05, self.a.robot_width_m) + max(0.0, self.a.corridor_margin_m)
+            _hw_frac  # kept for reference; unused now that frac skips map-assist
+            # MAP-ASSIST TERTIARY (2026-09-09): map-assist requires localmap agreement to fire,
+            # per the operator's "move map-assist behind local" direction. The frac path has no
+            # localmap fold-in, so map-assist can never gain the required corroboration here --
+            # skip the call entirely rather than pretending. Return the pure live clearance.
+            return live
+        except Exception as e:  # noqa: BLE001 -- a reflex must never break the loop
+            # FAIL CLOSED, and say so. This was `return None`, and None means NO CAP downstream in
+            # _obstacle_vx_cap -- so any exception in the corridor math silently DISABLED the
+            # obstacle brake at full speed, every frame, for as long as it kept throwing. That is
+            # the exact hole 3a91550 closed for the sparse-depth case, reopened for the error case.
+            # 0.0 means blind, and blind means forward forbidden; the robot stands instead of
+            # driving unbraked. Confirmed by the 2026-09-05 demo-readiness audit as the one
+            # remaining fail-open from that day's changes.
+            if (time.monotonic() - getattr(self, "_clr_err_t", 0.0)) >= 1.0:
+                self._clr_err_t = time.monotonic()
+                log("OBSTACLE-ERR %s -> treating frame as BLIND (forward forbidden)" % e)
+            return 0.0
+
+    # ---- HEAD TRACKING (stage 3). Point the head at the operator so the BODY is free to turn --
+    # a detour then costs no lock margin, which is the constraint every gap-steer loss hit today
+    # (losses at -27, -32, +31 deg with a fixed head).
+    #
+    # THE COUPLING: bearing_from_x() measures the operator relative to where the CAMERA points, and
+    # everything downstream assumes that equals body-forward. Once the head pans that is false, so
+    # the OBSERVED head yaw is added back to recover the body-relative bearing, and the obstacle
+    # corridor is shifted to keep watching body-forward. Head yaw is never assumed -- unknown
+    # (stale/absent /head_pose) fails closed.
+    def _head_probe(self):
+        """ONE-SHOT head calibration, run once at startup while the robot is in kWalking but
+        BEFORE self.walking flips True -- so velocity is still gated off (see the drive gate in
+        _send_velocity) and the ONLY thing that can move is the head. That placement is the whole
+        point: with the head off-centre every bearing is wrong by that angle, so a head probe must
+        never run while the robot is able to drive.
+
+        RotateHead is MODE-GATED by the firmware -- it returns 400 (bad request) in kPrepare and is
+        accepted only in kWalking, which is why this cannot be checked on a parked robot.
+
+        Measures the SIGN convention: does a commanded +yaw read back as +yaw on /head_pose?
+        Logs the answer for --head-yaw-sign, then leaves the head centred. Any failure (no pose,
+        no motion, or failure to re-centre) is reported loudly and disables the head features for
+        the session -- it never silently proceeds with an unverified head.
+        """
+        probe_rad = 0.20                 # ~11.5 deg: well inside the bridge clamp, clearly measurable
+        settle_s = 2.5                   # head servo travel + /head_pose publish latency
+        recentre_tol_deg = 3.0
+
+        y0 = self.node.head_yaw(max_age=1.0)
+        if y0 is None:
+            log("HEAD-PROBE SKIP /head_pose unavailable -> head features stay disabled")
+            self._head_ok = False
+            return
+        try:
+            self.bridge.send_head(0.0, probe_rad)
+        except Exception as e:  # noqa: BLE001
+            log("HEAD-PROBE ERR send failed: %s -> head features stay disabled" % e)
+            self._head_ok = False
+            return
+        if self._sleep_interruptible(settle_s):
+            # RE-CENTRE ON INTERRUPT (2026-09-10 fix). This return sat BETWEEN the +probe_rad
+            # command and the re-centre below, so an operator STOP during the 2.5 s settle left
+            # the head parked at +11.5 deg for the whole session -- and with head_track off the
+            # follow applies no bearing correction, so every bearing silently carried that
+            # offset and the corridor watched ~0.4 m off the swept path at 2 m. The comment
+            # below claimed this could "never" happen; for this path it was false.
+            # It went unnoticed because the probe was an accidental no-op: K1Finder ships
+            # --head-probe CHECKED (K1Finder.ps1:852), but /head_pose was never subscribed, so
+            # head_yaw() returned None and the probe bailed at HEAD-PROBE SKIP above before
+            # commanding anything. Subscribing /head_pose (2026-09-09) armed this path.
+            try:
+                self.bridge.send_head(0.0, 0.0)
+            except Exception as e:  # noqa: BLE001 -- best effort; a failed recentre is logged, not raised
+                log("HEAD-PROBE ERR interrupt recentre failed: %s (head may be off-centre)" % e)
+            self._head_ok = False
+            return
+        y1 = self.node.head_yaw(max_age=1.0)
+
+        # Re-centre FIRST, unconditionally, before any interpretation -- so an early return or a
+        # surprising reading can never leave the head parked off-centre.
+        try:
+            self.bridge.send_head(0.0, 0.0)
+        except Exception as e:  # noqa: BLE001
+            log("HEAD-PROBE ERR recentre failed: %s" % e)
+        if self._sleep_interruptible(settle_s):
+            return
+        y2 = self.node.head_yaw(max_age=1.0)
+
+        if y1 is None or y2 is None:
+            log("HEAD-PROBE FAIL pose went stale mid-probe -> head features stay disabled")
+            self._head_ok = False
+            return
+        d = math.degrees(y1 - y0)
+        cen = math.degrees(y2)
+        if abs(d) < 2.0:
+            log("HEAD-PROBE FAIL commanded %+.1f deg, head moved %+.1f deg (no motion) -> RotateHead "
+                "not actuated; head features stay disabled" % (math.degrees(probe_rad), d))
+            self._head_ok = False
+            return
+        if abs(cen) > recentre_tol_deg:
+            log("HEAD-PROBE FAIL head did not return to centre (%+.1f deg, tol %.1f) -> head features "
+                "stay disabled (every bearing would carry this offset)" % (cen, recentre_tol_deg))
+            self._head_ok = False
+            return
+        sign = 1.0 if d > 0 else -1.0
+        self._head_ok = True
+        log("HEAD-PROBE OK commanded %+.1f deg -> observed %+.1f deg, recentred %+.1f deg. "
+            "Measured --head-yaw-sign %+.0f (configured %+.0f)%s"
+            % (math.degrees(probe_rad), d, cen, sign, self.a.head_yaw_sign,
+               "" if sign == self.a.head_yaw_sign else "  <-- MISMATCH: configured sign is BACKWARDS"))
+
+    def _head_track(self, bearing_img):
+        """Drive the head toward centring the operator. Returns the OBSERVED head yaw (rad) to use
+        for corrections, or None when it is unknown and the caller must fail closed.
+        In 'off' -> returns 0.0 and commands nothing (byte-identical).
+        In 'audit' -> computes + logs, commands nothing, and returns 0.0 so NO correction is applied."""
+        if self.a.head_track == "off":
+            return 0.0
+        if self._head_ok is False:
+            # --head-probe ran and FAILED. Behave exactly as "off": an unverified head means every
+            # bearing correction would be guesswork, and a wrong sign steers toward the obstacle.
+            return 0.0
+        hy = self.node.head_yaw() if self.node is not None else None
+        if hy is None:
+            # UNKNOWN head yaw. Recentre (best effort) and tell the caller to fail closed -- an
+            # assumed-zero yaw with a panned head is the silent-corruption case this exists to avoid.
+            if self.a.head_track == "on" and self.bridge is not None:
+                try:
+                    self.bridge.send_head(0.0, 0.0)
+                except Exception:  # noqa: BLE001 -- head pointing must never break the loop
+                    pass
+            if (time.monotonic() - getattr(self, "_last_head_log", 0.0)) >= 1.0:
+                self._last_head_log = time.monotonic()
+                log("HEAD-UNKNOWN /head_pose stale or absent -> recentre + no bearing correction")
             return None
-        self._clr_hist.append(clr)
-        self._clr_hist = self._clr_hist[-max(1, self.a.obstacle_aged):]
-        return float(sorted(self._clr_hist)[len(self._clr_hist) // 2])   # aged-median
+        sgn = self.a.head_yaw_sign
+        # Centring the operator means panning BY their image bearing. sgn resolves the hardware's
+        # yaw convention (+ = left or right), which is not documented -- verify once, then it is fixed.
+        want = clamp(hy + sgn * bearing_img,
+                     -math.radians(self.a.head_track_max_deg),
+                     math.radians(self.a.head_track_max_deg))
+        moved = abs(bearing_img) > math.radians(self.a.head_track_deadband_deg)
+        if self.a.head_track == "on":
+            if moved and self.bridge is not None:
+                try:
+                    self.bridge.send_head(0.0, want)
+                except Exception:  # noqa: BLE001
+                    pass
+            if (time.monotonic() - getattr(self, "_last_head_log", 0.0)) >= 1.0:
+                self._last_head_log = time.monotonic()
+                log("HEAD yaw=%+.0fdeg -> want %+.0fdeg (operator %+.0fdeg in frame, body-rel %+.0fdeg)"
+                    % (math.degrees(hy), math.degrees(want), math.degrees(bearing_img),
+                       math.degrees(bearing_img + sgn * hy)))
+            return hy
+        # audit: report what WOULD be commanded; apply nothing.
+        if (time.monotonic() - getattr(self, "_last_head_log", 0.0)) >= 1.0:
+            self._last_head_log = time.monotonic()
+            log("HEAD-AUDIT yaw=%+.0fdeg would-command %+.0fdeg (operator %+.0fdeg in frame) -- NOT applied"
+                % (math.degrees(hy), math.degrees(want), math.degrees(bearing_img)))
+        return 0.0
+
+    # ---- SECTOR CLEARANCE (gap-following stage 4). AUDIT-ONLY: computes where the free space is
+    # and logs it; steers NOTHING. The brake watches only the central corridor (35% of width =
+    # 49.7 deg) and DISCARDS the rest of a 105.8 deg frame -- so the robot can already see whether
+    # there is a gap beside an obstacle, it just never asks. Same robustness rules as the brake
+    # (percentile not min, min-valid footprint) because the same depth-glitch class applies.
+    def _sector_clearances(self):
+        """Clearance (m) per sector across the FULL frame: {'L': m|None, 'C': m|None, 'R': m|None}.
+        None = not enough valid depth to judge, which callers must treat as BLOCKED, never as clear
+        -- 'I cannot see' and 'nothing is there' must not be the same answer for a moving robot."""
+        out = {"L": None, "C": None, "R": None}
+        if self.node is None:
+            return out
+        d = self.node.latest_depth()
+        if d is None:
+            return out
+        try:
+            h, w = d.shape[:2]
+            y0 = int(h * self.a.obstacle_band_top); y1 = int(h * self.a.obstacle_band_bot)
+            # SECTORS ARE INDEPENDENT OF THE CORRIDOR (field fix 2026-09-03). They used to be
+            # defined as whatever lay OUTSIDE the corridor, so widening corridor-frac 0.35 -> 0.55
+            # shrank each side sector from ~32% to ~22% of the frame. Fewer pixels -> they kept
+            # falling under --obstacle-min-valid -> the committed side failed its check every few
+            # frames -> the gap-steer hysteresis fell through to a fresh decision and OSCILLATED
+            # again. Fixed thirds keep each sector large enough to judge reliably, whatever the
+            # corridor is set to.
+            sf = max(0.15, min(0.45, self.a.sector_frac))
+            # HEAD-PAN CORRECTION: the corridor must track BODY-forward, not head-forward.
+            # With the head panned by hy, body-forward sits at -hy in the image, so shift the
+            # window by -hy*focal px. Without this the brake watches wherever the head looks --
+            # it would report clear while the robot walks into something. Unknown head yaw
+            # gives 0.0 shift AND forbids forward elsewhere, so the corridor is never silently
+            # wrong. At 105.8 deg FOV a +/-30 deg pan keeps body-forward well inside frame.
+            _hshift = 0.0
+            if self.a.head_track == "on":
+                _hy = self.node.head_yaw()
+                if _hy is not None:
+                    _hshift = -self.a.head_yaw_sign * _hy * focal_px(w, self.a.hfov_deg)
+            cx0 = int(w * sf); cx1 = int(w * (1.0 - sf))
+            for key, (sx0, sx1) in (("L", (0, cx0)), ("C", (cx0, cx1)), ("R", (cx1, w))):
+                if sx1 - sx0 < 8:
+                    continue
+                band = d[y0:y1, sx0:sx1]
+                v = band[(band > 0.15) & (band < self.a.obstacle_max_m) & np.isfinite(band)]
+                if v.size < self.a.obstacle_min_valid:
+                    continue                      # stays None == unknown == blocked
+                out[key] = float(np.percentile(v, self.a.obstacle_pctile))
+        except Exception:  # noqa: BLE001 -- an audit computation must never break the loop
+            return {"L": None, "C": None, "R": None}
+        # MAP-ASSIST for sectors (2026-09-09): reduce-only, per-sector. Without this, gap-steer or
+        # the escape selector can commit to a side that the prebuilt map knows is blocked -- the
+        # sector value comes back a clear 2.5 m from live but a mapped chair sits at 0.8 m in that
+        # wedge, and the robot detours into it. Byte-identical when --map-assist off or no odom.
+        return self._map_assist_confirm_sectors(out)
+
+    def _gap_horizon(self):
+        """Range (m) at which gap STEERING treats the path as blocked -- decoupled from the brake.
+
+        The brake keeps --obstacle-brake-start for grading vx. This is the same question asked for
+        a different purpose ("should I be looking for a way around?"), and tying the two together
+        capped the engage point at brake_start and coupled steering to the floor geometry that
+        forces brake_start low. Returns --gap-horizon-m when positive, else falls back to
+        --obstacle-brake-start (the legacy coupled behaviour, exactly).
+
+        Logged ONCE per session with the derived engage point, so the effective value sits in
+        k1_follow.err next to the launch line and can never be a post-run mystery -- same
+        reasoning as run_follow.sh echoing the session cap.
+        """
+        h = float(getattr(self.a, "gap_horizon_m", 0.0) or 0.0)
+        if h <= 0.0:
+            h = float(self.a.obstacle_brake_start)
+        if not getattr(self, "_gap_horizon_logged", False):
+            self._gap_horizon_logged = True
+            _bp = float(self.a.obstacle_brake_stop)
+            _trig = _bp + (h - _bp) * max(0.0, min(1.0, self.a.gap_steer_trigger_frac))
+            # The EFFECTIVE engage point: _gap_steer_bias caps it just under brake-start, because
+            # the corridor cannot report more (see the clear-vote note there).
+            _trig = min(_trig, float(self.a.obstacle_brake_start) - 1e-3)
+            log("GAP-HORIZON %.3fm (frac %.2f) -> gap steer engages at %.3fm with %.3fm of runway "
+                "to full stop; brake zone %.2f->%.2f UNTOUCHED"
+                % (h, self.a.gap_steer_trigger_frac, _trig, _trig - _bp,
+                   self.a.obstacle_brake_start, _bp))
+        return h
+
+    def _gap_reject(self, why):
+        """Rate-limited 'Follow-The-Gap found nothing, and here is which test killed it' line.
+
+        Its own 1 Hz budget, separate from the GAP-PROFILE success line, so a run that alternates
+        between steering and rejecting still shows both. Logging only -- callers ignore the return.
+        """
+        _t = time.monotonic()
+        if (_t - getattr(self, "_gapreject_log_t", 0.0)) >= 1.0:
+            self._gapreject_log_t = _t
+            log("GAP-REJECT %s" % why)
+
+    def _gap_profile(self, target_bearing=None, max_detour_deg=None):
+        """FOLLOW-THE-GAP: the widest PASSABLE opening in the depth frame, as
+        (bearing_rad, width_m, range_m), or None when nothing is passable.
+
+        WHY THIS REPLACES THE 3-SECTOR TEST. _sector_clearances splits the frame into fixed
+        image thirds and asks a binary "is this third clear?". Three failures follow from that
+        shape, all seen in the field:
+          1. A gap STRADDLING two sectors is invisible -- each half reads blocked by the
+             obstacle in its own third, so the robot reports boxed-in and freezes in front of
+             a doorway it would fit through.
+          2. A sector reports one percentile over its whole width, so a near chair at one edge
+             masks genuinely open space across the rest of the same third.
+          3. "Clear at range" is not "wide enough to fit". A 0.20 m slot between two chairs
+             reads clear at 2.5 m and the robot wedges itself into it. Nothing in the old path
+             ever compared an opening against the robot's own width.
+
+        WHAT THIS DOES INSTEAD. Bin the depth frame by image COLUMN into angular bins; take a
+        low percentile of valid depth down each bin's column strip as that bearing's clearance;
+        mark bins passable when that clearance exceeds the brake-start horizon; find CONTIGUOUS
+        runs of passable bins; convert each run's angular extent into a METRIC width at its own
+        range (w = 2*r*sin(dtheta/2)); discard runs narrower than the robot's swept width plus
+        margin; and return the survivor whose centre bearing is the LEAST detour from the
+        operator. That is the classic Follow-The-Gap construction, and every step above maps
+        onto one of the three failures.
+
+        COST. One strided pass over the already-read depth frame -- no second frame fetch, no
+        scipy, fully vectorised. --gap-profile-bins columns of work (default 48) on a frame the
+        caller has already paid for. Called ONLY when the centre corridor is blocked, so a
+        clear-path frame pays nothing.
+
+        SAFETY. Pure observation: returns a bearing, never a velocity. A bin that cannot be
+        measured stays NOT passable -- 'I cannot see' is never 'nothing is there', the same
+        invariant _sector_clearances holds. Returning None means boxed-in, and the caller must
+        fall back to letting the brake stop the robot rather than guessing a direction."""
+        # Bearing (rad) of the widest opening the filters threw away, for the caller's CRITICAL
+        # turn when this returns None. Reset every call so a stale frame's answer is never used.
+        self._gap_widest_rej = None
+        if self.node is None:
+            return None
+        d = self.node.latest_depth()
+        if d is None:
+            return None
+        try:
+            h, w = d.shape[:2]
+            f = focal_px(w, self.a.hfov_deg)
+            if f <= 1.0:
+                return None
+            y0 = int(h * self.a.obstacle_band_top)
+            y1 = int(h * self.a.obstacle_band_bot)
+            if y1 - y0 < 4:
+                return None
+            # Same head-pan correction the corridor and sectors apply: the profile must be
+            # measured about BODY-forward, not head-forward, or a panned head silently
+            # rotates every bearing this returns.
+            _hshift = 0.0
+            if self.a.head_track == "on":
+                _hy = self.node.head_yaw()
+                if _hy is not None:
+                    _hshift = -self.a.head_yaw_sign * _hy * f
+            cx = w * 0.5 + _hshift
+
+            nb = max(8, min(256, int(self.a.gap_profile_bins)))
+            band = d[y0:y1, :]
+            valid = np.isfinite(band) & (band > 0.15) & (band < self.a.obstacle_max_m)
+            edges = np.linspace(0, w, nb + 1).astype(int)
+
+            bs = float(self._gap_horizon())   # steering horizon, not the brake's
+            clr = np.full(nb, np.nan, dtype=np.float64)
+            # Per-bin clearance from a low percentile so one speckle pixel cannot open a bin,
+            # and a bin without enough valid pixels stays NaN == not passable.
+            min_px = max(4, int(self.a.obstacle_min_valid // max(1, nb // 8)))
+            for i in range(nb):
+                s0, s1 = edges[i], edges[i + 1]
+                if s1 - s0 < 1:
+                    continue
+                col = band[:, s0:s1]
+                v = col[valid[:, s0:s1]]
+                if v.size < min_px:
+                    continue                       # unmeasurable -> stays NaN -> blocked
+                clr[i] = float(np.percentile(v, self.a.obstacle_pctile))
+
+            passable = np.isfinite(clr) & (clr >= bs)
+            if not passable.any():
+                # Distinguish "cannot see" from "everything is close": the first is a depth
+                # problem, the second is a genuinely boxed-in robot, and they need opposite fixes.
+                _meas = int(np.isfinite(clr).sum())
+                _best = float(np.nanmax(clr)) if _meas else float("nan")
+                self._gap_reject("no passable bin: %d/%d bins measurable, best clearance %.2fm "
+                                 "vs brake-start %.2fm (%s)"
+                                 % (_meas, nb, _best, bs,
+                                    "depth too sparse -- raise obstacle-max-m or check the camera"
+                                    if _meas < max(1, nb // 4) else "boxed in"))
+                return None
+
+            # Bin centre bearings. bearing is POSITIVE to the RIGHT (perception.bearing_from_x),
+            # which is the convention every caller here already uses.
+            centres = 0.5 * (edges[:-1] + edges[1:]).astype(np.float64)
+            bearings = np.arctan((centres - cx) / f)
+
+            # Contiguous runs of passable bins.
+            runs = []
+            i = 0
+            while i < nb:
+                if not passable[i]:
+                    i += 1
+                    continue
+                j = i
+                while j + 1 < nb and passable[j + 1]:
+                    j += 1
+                runs.append((i, j))
+                i = j + 1
+
+            # SWEPT WIDTH. Standing still the robot occupies its half-width; while rotating it
+            # sweeps its circumscribed radius, because the corners swing outboard. Gap steer
+            # applies YAW, so the robot is turning exactly while it threads the gap -- use the
+            # turning figure, same reasoning as the footprint corridor's half-width.
+            _hw = 0.5 * max(0.05, self.a.robot_width_m)
+            _hd = 0.5 * max(0.0, self.a.robot_length_m)
+            # GAP-FIT MARGIN is ON TOP of the corridor margin, and deliberately its own knob.
+            # corridor_margin_m also sets the BRAKE corridor's half-width, so raising that to make
+            # gap selection pickier would widen the brake corridor too and cause MORE phantom
+            # braking -- the opposite of the intent. This margin applies to gap acceptance only.
+            # Field-observed on the first live run: accepted gaps of 0.81-0.97 m against a 0.80 m
+            # requirement, i.e. the robot committing to openings barely wider than itself.
+            need_w = 2.0 * (math.hypot(_hw, _hd) + max(0.0, self.a.corridor_margin_m)
+                            + max(0.0, self.a.gap_fit_margin_m))
+
+            tb = 0.0 if target_bearing is None else float(target_bearing)
+            best = None
+            # Reject bookkeeping (diagnostics only -- nothing below reads these to decide).
+            _n_narrow = 0
+            _widest = 0.0            # widest opening the width filter threw away
+            _n_detour = 0
+            _least_detour = None     # closest-to-the-operator gap the detour cap threw away
+            # ...except this one, which the caller DOES read (as _gap_widest_rej, only when this
+            # returns None): the widest run EITHER filter threw away, as (width_m, centre bearing).
+            # A run open at the FOV edge competes on its measured width, which is a lower bound.
+            _wr = None
+            for (i0, i1) in runs:
+                # Angular extent measured at the run's OUTER edges, not bin centres, so a
+                # single-bin gap still gets its true angular width.
+                a0 = math.atan((edges[i0] - cx) / f)
+                a1 = math.atan((edges[i1 + 1] - cx) / f)
+                dth = abs(a1 - a0)
+                r = float(np.nanmin(clr[i0:i1 + 1]))
+                if not math.isfinite(r):
+                    continue
+                # Chord width of this angular opening at its own nearest range.
+                width_m = 2.0 * r * math.sin(0.5 * dth)
+                if width_m < need_w:
+                    _n_narrow += 1
+                    _widest = max(_widest, width_m)
+                    if _wr is None or width_m > _wr[0]:
+                        _wr = (width_m, 0.5 * (a0 + a1))
+                    continue                        # too narrow to fit -- never steer into it
+                cbear = 0.5 * (a0 + a1)
+                detour = abs(cbear - tb)
+                # MAX DETOUR FROM THE OPERATOR (2026-09-09 field fix). Least-detour ranking only
+                # orders gaps that ALREADY passed the width filter -- so when the opening on the
+                # operator's line is too narrow to fit, the only survivors are gaps far off to
+                # the side and the layer happily commits to one. Field-observed: gap -44 deg
+                # chosen with the operator at -6 deg, and gap +33 deg chosen with the operator
+                # at -15 deg (opposite side entirely). That is correct Follow-The-Gap for a
+                # racer clearing a track and WRONG for a follow robot: a gap 44 deg off from a
+                # person who is 6 deg ahead is not a route TO them, it is a route away, and the
+                # operator walks out of frame while the robot detours.
+                # A gap only counts if it is plausibly on the way to the operator. When nothing
+                # is, we return None and the caller stands down (no sector fallback with the
+                # profile on -- see _gap_steer_bias) and the brake stops us -- stopping is the
+                # honest answer, not steering somewhere irrelevant because it happened to be wide.
+                _cap_deg = (self.a.gap_max_detour_deg if max_detour_deg is None
+                            else max_detour_deg)
+                if detour > math.radians(max(0.0, _cap_deg)):
+                    _n_detour += 1
+                    if _least_detour is None or detour < _least_detour:
+                        _least_detour = detour
+                    if _wr is None or width_m > _wr[0]:
+                        _wr = (width_m, cbear)
+                    continue
+                # Least detour off the follow line wins; width breaks ties so that between two
+                # equally-convenient gaps the robot takes the roomier one.
+                key = (detour, -width_m)
+                if best is None or key < best[0]:
+                    best = (key, cbear, width_m, r)
+            if best is None:
+                # WHICH filter killed it is the whole diagnostic. Too-narrow says the geometry or
+                # need_w (footprint + corridor_margin_m + gap_fit_margin_m) is the binding
+                # constraint; off-the-line says gap_max_detour_deg is. They call for different
+                # knobs, so never report a bare "no gap".
+                self._gap_widest_rej = None if _wr is None else _wr[1]
+                self._gap_reject("%d opening(s), none usable: %d too narrow (widest %.2fm, "
+                                 "need %.2fm), %d off the follow line (least detour %s, cap "
+                                 "%.0fdeg, operator %+.0fdeg)"
+                                 % (len(runs), _n_narrow, _widest, need_w, _n_detour,
+                                    ("%.0fdeg" % math.degrees(_least_detour))
+                                    if _least_detour is not None else "n/a",
+                                    (self.a.gap_max_detour_deg
+                                     if max_detour_deg is None else max_detour_deg),
+                                    math.degrees(tb)))
+                return None
+            return (best[1], best[2], best[3])
+        except Exception as e:  # noqa: BLE001 -- a steering hint must never break the loop
+            if (time.monotonic() - getattr(self, "_gapprof_err_t", 0.0)) > 10.0:
+                self._gapprof_err_t = time.monotonic()
+                log("GAP-PROFILE-ERR %s (treated as no usable gap this frame)" % e)
+            return None
+
+    # ---- GAP STEERING (stage 5). Routes AROUND an obstacle instead of only stopping for it.
+    # INVARIANTS (deliberate, do not relax):
+    #   * It may only add YAW. It never authorises forward vx -- the brake still governs speed
+    #     independently, so the worst case is turning while stopped, never driving somewhere unseen.
+    #   * A sector that cannot be MEASURED (None) counts as BLOCKED. "I cannot see" and "nothing is
+    #     there" must never be the same answer for a moving robot.
+    #   * Boxed in (no side measurably clear) -> returns 0.0 and lets the brake stop us. It does not
+    #     guess a direction.
+    #   * It stops adding bias once the operator approaches the frame edge: the point of turning is to
+    #     keep following them, and a detour that loses the lock has failed even if it misses the chair.
+    # ---- STAGE 6: STATIONARY HEAD SCAN -------------------------------------------------------
+    # WHY THIS EXISTS. The brake stops the robot when the forward corridor is blocked, and at that
+    # point the obstacle typically fills the 105.8 deg field of view: the centre corridor AND both
+    # side sectors all read blocked-or-unknown, gap steer has nothing it can commit to, and the
+    # robot freezes. Field evidence 2026-09-03: gap steer holds its committed side perfectly while
+    # following (9 events, 0 sign flips) and only breaks down at the 0.39-0.56 m full stops
+    # (5 events, 3 flips). That is a VISIBILITY limit, not a tuning one -- from that position there
+    # is no free space in view to steer toward. Panning the head is the only way to see past an
+    # obstacle that close without moving first.
+    #
+    # NON-BLOCKING BY CONSTRUCTION. One step per follow frame, never a sleep. The loop MUST keep
+    # streaming velocity or the bridge staleness watchdog (STALE_MS) zeroes the robot mid-scan --
+    # a blocking sweep would trip the very safety floor it depends on.
+    #
+    # SAFETY PROPERTIES:
+    #   * The scan only ever produces a YAW hint. Forward speed stays under the obstacle brake and
+    #     the forbid_forward keystone, so even a wrong-direction result makes the robot rotate in
+    #     place -- it cannot drive into the thing it is looking at.
+    #   * It runs ONLY while the brake already has forward motion stopped. Never mid-stride.
+    #   * Head yaw is never assumed. A stale or absent /head_pose aborts the scan, re-centres, and
+    #     falls back to the unscanned behaviour.
+    #   * The head is re-centred before the result is used, and abandoned on timeout.
+    def _head_scan_positions(self):
+        """Sweep positions in radians, symmetric about centre."""
+        n = max(3, min(9, int(self.a.head_scan_steps)))
+        mx = math.radians(max(5.0, min(34.0, self.a.head_scan_max_deg)))
+        if n % 2 == 0:
+            n += 1
+        half = n // 2
+        return [mx * (i / float(half)) for i in range(-half, half + 1)]
+
+    def _scan_timeout(self):
+        """Hard abort budget for one sweep. Derived unless --head-scan-timeout-s is set.
+        A position advances when the head arrives (>= settle) OR after settle*2 on the slow
+        path, and the re-centre costs one more of the same -- so the true worst case is
+        (steps + 1) * settle * 2. The shipped fixed default was exactly the SWEEP half of
+        that, which made an abort certain on any slow sweep; this cannot drift out of sync
+        with the settle/steps knobs the way a hardcoded number did."""
+        if self.a.head_scan_timeout_s > 0.0:
+            return self.a.head_scan_timeout_s
+        n = max(3, min(9, int(self.a.head_scan_steps)))
+        settle = max(0.1, self.a.head_scan_settle_s)
+        return max(4.0, (n + 1) * settle * 2.0 * 1.5)
+
+    def _head_scan_abort(self, why):
+        """Give up mid-scan: re-centre (best effort) and fall back to unscanned behaviour."""
+        try:
+            if self.bridge is not None:
+                self.bridge.send_head(0.0, 0.0)
+        except Exception:  # noqa: BLE001
+            pass
+        self._scan_state = "idle"
+        self._scan_hint = 0
+        self._scan_last_t = time.monotonic()
+        log("HEAD-SCAN ABORT %s -> re-centred, falling back" % why)
+
+    def _head_scan_step(self, blocked, cx_img):
+        """Advance the stationary sweep by ONE step. Returns True while a scan is in progress, in
+        which case the caller must hold the robot still: the scan owns the head, and a moving base
+        would invalidate every sample taken from a different pose."""
+        if self.a.head_scan == "off":
+            return False
+        if self._head_ok is False:
+            # The startup probe RAN and FAILED -- the head does not actuate. Sweeping anyway would
+            # command a head that never moves: all five samples land at centre, the map becomes five
+            # copies of the same view, and the robot holds still ~8 s per attempt for nothing.
+            # _head_track already fails closed on this; the scan must too.
+            if (time.monotonic() - getattr(self, "_scan_warn_t", 0.0)) > 30.0:
+                self._scan_warn_t = time.monotonic()
+                log("HEAD-SCAN disabled: --head-probe FAILED (head not actuated) -> no sweeping")
+            return False
+        now = time.monotonic()
+        self._scan_touch_t = now   # fed every step; the orphan watchdog in _process_frame reads it
+        tol = math.radians(max(1.0, self.a.head_scan_tol_deg))
+        settle = max(0.1, self.a.head_scan_settle_s)
+
+        if self._scan_state == "idle":
+            if not blocked:
+                self._scan_blocked_since = None       # the block cleared: dwell restarts
+                return False
+            # DWELL. The scan used to start on the FIRST blocked frame, so a momentary stop was
+            # enough to launch a full sweep. Stops flicker -- CLEARANCE then blob=0px clear then
+            # CLEARANCE -- so the robot scanned constantly and mostly aborted mid-sweep when the
+            # state changed under it (16 starts, most ending "ABORT orphaned", in one 300 s run).
+            # Requiring the block to PERSIST separates a real obstacle, which stays, from the
+            # flicker, which does not. This is the lever for "stop scanning so often": a distance
+            # threshold cannot do it, because the brake already caps vx to zero at
+            # --obstacle-brake-stop, so the robot never approaches nearer than that and a tighter
+            # range gate would simply never fire.
+            if self._scan_blocked_since is None:
+                self._scan_blocked_since = now
+            if (now - self._scan_blocked_since) < max(0.0, self.a.head_scan_dwell_s):
+                return False
+            if (now - self._scan_last_t) < max(0.0, self.a.head_scan_cooldown_s):
+                return False
+            # Refuse to repeat a sweep that already came up empty from this spot (see
+            # _head_scan_finish). Fail OPEN, deliberately: with no odometry we cannot tell whether
+            # the robot moved, so we allow the scan rather than suppress it forever -- a needless
+            # sweep is cheap, a permanently disabled escape is not.
+            if self._scan_barren is not None:
+                _now_xy = self._odom_xy()
+                if _now_xy is not None:
+                    _moved = math.hypot(_now_xy[0] - self._scan_barren[0],
+                                        _now_xy[1] - self._scan_barren[1])
+                    if _moved < max(0.0, self.a.head_scan_move_m):
+                        return False
+                self._scan_barren = None
+            if self.node is None or self.node.head_yaw(max_age=1.0) is None:
+                if (now - getattr(self, "_scan_warn_t", 0.0)) > 10.0:
+                    self._scan_warn_t = now
+                    log("HEAD-SCAN unavailable: /head_pose not readable -> no scan")
+                return False
+            self._scan_pos = self._head_scan_positions()
+            self._scan_i = 0
+            self._scan_map = []
+            self._scan_t0 = now
+            self._scan_cmd_t = now
+            self._scan_state = "pan"
+            try:
+                self.bridge.send_head(0.0, self._scan_pos[0])
+            except Exception as e:  # noqa: BLE001
+                self._head_scan_abort("send failed: %s" % e)
+                return False
+            log("HEAD-SCAN start %d positions across +/-%.0f deg (robot stopped, yaw-only result)"
+                % (len(self._scan_pos), self.a.head_scan_max_deg))
+            return True
+
+        if (now - self._scan_t0) > self._scan_timeout():
+            self._head_scan_abort("timeout")
+            return False
+        hy = self.node.head_yaw(max_age=1.0) if self.node is not None else None
+        if hy is None:
+            self._head_scan_abort("head pose went stale mid-scan")
+            return False
+        return self._head_scan_advance(now, hy, tol, settle, cx_img)
+
+    def _head_scan_advance(self, now, hy, tol, settle, cx_img):
+        """Pan/re-centre half of the step machine, split out to keep each part readable."""
+        if self._scan_state == "pan":
+            tgt = self._scan_pos[self._scan_i]
+            waited = (now - self._scan_cmd_t)
+            if (abs(hy - tgt) <= tol and waited >= settle) or waited > (settle * 2.0):
+                # Sample where the CAMERA points (no body-forward shift), labelled with the
+                # OBSERVED yaw -- never the commanded one, so a servo that fell short is recorded
+                # as where it actually looked.
+                clr = self._corridor_clearance(apply_head_shift=False, raw=True)
+                self._scan_map.append((hy, clr, cx_img))
+                self._scan_i += 1
+                self._scan_cmd_t = now
+                done = self._scan_i >= len(self._scan_pos)
+                nxt = 0.0 if done else self._scan_pos[self._scan_i]
+                if done:
+                    self._scan_state = "recentre"
+                try:
+                    self.bridge.send_head(0.0, nxt)
+                except Exception as e:  # noqa: BLE001
+                    self._head_scan_abort("send failed: %s" % e)
+                    return False
+            return True
+
+        if self._scan_state == "recentre":
+            if abs(hy) <= tol and (now - self._scan_cmd_t) >= settle:
+                self._head_scan_finish(hy)
+                return False
+            if (now - self._scan_cmd_t) > self._scan_timeout():
+                self._head_scan_abort("head did not return to centre")
+                return False
+            return True
+        return False
+
+    def _odom_xy(self):
+        """(x, y) planar odometry, or None when it is absent or stale. None means UNKNOWN, and
+        every caller must fail open on it -- odom_topic defaults to '' (no subscription at all)."""
+        try:
+            od = self.node.latest_odom() if self.node is not None else None
+        except Exception:  # noqa: BLE001
+            return None
+        return (float(od[0]), float(od[1])) if od else None
+
+    def _head_scan_finish(self, hy_centre):
+        """Turn the sweep into a committed side, logging the whole map so a wrong call is
+        diagnosable from the log alone rather than by re-running the robot."""
+        self._scan_state = "idle"
+        self._scan_last_t = time.monotonic()
+        # FRUITLESS-SCAN BACKOFF. A sweep that finds no clear heading will find no clear heading
+        # again if nothing has changed -- same robot, same pose, same room -- so repeating it on the
+        # base cooldown is pure cost: the robot holds still, sweeps, concludes nothing, and does it
+        # again. Measured 16 starts in one 300 s run. _scan_barren records where a scan came up
+        # empty; the idle branch then refuses to re-sweep until the robot has actually MOVED past
+        # --head-scan-move-m or the way ahead has cleared. A useful scan clears it immediately, so
+        # a scan that DOES find a way is never penalised.
+        parts = []
+        best_clr = None
+        best_yaw = 0.0
+        for (yaw, clr, _cx) in self._scan_map:
+            parts.append("%+.0fdeg=%s" % (math.degrees(yaw),
+                                          ("%.2fm" % clr) if clr is not None else "blocked"))
+            if clr is not None and (best_clr is None or clr > best_clr):
+                best_clr, best_yaw = clr, yaw
+
+        # EMPIRICAL DIRECTION EVIDENCE. As the head pans, a fixed scene point slides the OTHER way
+        # in the image. Two samples with the operator visible therefore reveal which way +yaw
+        # physically turns the camera -- independently of --head-yaw-sign, which the probe verified
+        # only as command-vs-readback consistency (both in the head frame), NOT as a mapping into
+        # the image/bearing frame. Logged every scan so the convention is measured, not assumed.
+        eviden = ""
+        slope = None
+        pts = [(y, cx) for (y, _c, cx) in self._scan_map if cx is not None]
+        if len(pts) >= 2 and abs(pts[-1][0] - pts[0][0]) > math.radians(4.0):
+            slope = (pts[-1][1] - pts[0][1]) / (pts[-1][0] - pts[0][0])
+            eviden = "  cx-evidence %+.0fpx/rad -> +yaw looks %s" % (
+                slope, "RIGHT" if slope < 0 else "LEFT")
+
+        # Steering horizon, not the brake's: _scan_hint is consumed by _gap_steer_bias, so the
+        # two must agree on what "clear" means or the scan can hand it a blocked heading.
+        bs = self._gap_horizon()
+        if best_clr is None or best_clr < bs:
+            self._scan_hint = 0
+            # Came up empty: remember WHERE, so we do not immediately repeat it from the same spot.
+            self._scan_barren = self._odom_xy()
+            log("HEAD-SCAN map [%s] centred %+.1fdeg -> NO clear heading (best %s, need >=%.2fm)%s"
+                "  [no re-scan until the robot moves %.2fm or the way clears]"
+                % (", ".join(parts), math.degrees(hy_centre),
+                   ("%.2fm" % best_clr) if best_clr is not None else "none", bs, eviden,
+                   self.a.head_scan_move_m))
+            return
+        self._scan_barren = None            # a useful scan is never penalised
+        dead = math.radians(max(1.0, self.a.head_scan_tol_deg))
+        if abs(best_yaw) <= dead:
+            self._scan_hint = 0
+        else:
+            # WHICH WAY IS +yaw? Neither source is trustworthy alone, so require BOTH to agree.
+            #
+            # The measurement: as the head pans, a static scene point slides the opposite way, so
+            # slope = d(cx)/d(yaw) < 0 means +yaw turns the camera toward image-RIGHT. But the only
+            # point being tracked is the OPERATOR, and the operator MOVES during the sweep, so the
+            # slope mixes head pan with operator motion. Three consecutive field scans measured
+            # -90, +311 and +37 px/rad -- inconsistent in sign, and none near the physical value,
+            # which for a pure pan is the focal length (~206 px/rad at this FOV). An earlier
+            # version of this code trusted that measurement outright; it would have picked a side
+            # from noise with full confidence.
+            #
+            # The config: --head-yaw-sign was only ever verified as command-vs-readback
+            # consistency INSIDE the head frame; it never established the mapping into the image
+            # frame, which is what choosing a side needs.
+            #
+            # So: accept only a PHYSICALLY PLAUSIBLE magnitude whose sign AGREES with the config.
+            # Disagreement means one of them is wrong and we cannot tell which -- exactly when a
+            # robot should not act. Refusing costs a detour; guessing costs a collision.
+            _f = focal_px(544.0, self.a.hfov_deg)
+            if slope is None:
+                self._scan_hint = 0
+                eviden += "  [no cx evidence -> direction unresolved, refusing to steer]"
+            elif not ((0.5 * _f) <= abs(slope) <= (2.0 * _f)):
+                self._scan_hint = 0
+                eviden += ("  [evidence implausible: |slope| %.0f outside %.0f..%.0f px/rad, so it "
+                           "is operator motion not head pan -> refusing to steer]"
+                           % (abs(slope), 0.5 * _f, 2.0 * _f))
+            elif (slope > 0.0) != (self.a.head_yaw_sign > 0):
+                self._scan_hint = 0
+                eviden += ("  [MEASURED direction disagrees with --head-yaw-sign %+.0f -> refusing "
+                           "to steer; resolve the convention first]" % self.a.head_yaw_sign)
+            else:
+                _plus_is_left = (slope > 0.0)
+                _left = (best_yaw > 0.0) == _plus_is_left
+                self._scan_hint = 1 if _left else -1
+        self._scan_hint_t = time.monotonic()
+        log("HEAD-SCAN map [%s] centred %+.1fdeg -> freest %+.0fdeg (%.2fm) hint=%s%s"
+            % (", ".join(parts), math.degrees(hy_centre), math.degrees(best_yaw), best_clr,
+               {1: "LEFT", -1: "RIGHT", 0: "AHEAD"}[self._scan_hint], eviden))
+
+    def _gap_steer_bias(self, bearing, clr_centre, target_range=None):
+        """Yaw bias (rad/s) toward the freest side when the CENTRE corridor is blocked; 0.0 = none.
+        Sign convention (verified against field logs): POSITIVE vyaw turns LEFT.
+
+        FIELD FIX 2026-09-03 -- the first live run oscillated (-0.20/+0.20/+0.20/-0.20 on near
+        identical bearings), so the biases cancelled and the robot drove straight on while wobbling:
+          * TRIGGER: it fired whenever clearance was below --obstacle-brake-start (1.5 m), i.e. the
+            moment the brake merely began grading, with the path still essentially clear. It now
+            fires only once meaningfully blocked, a configurable fraction INTO the grading zone.
+          * HYSTERESIS: it re-decided the side every frame and the sector clearances flicker, so the
+            choice flipped. It now COMMITS to a side and holds it while that side stays clear,
+            releasing only when the centre is clear again. A detour has to be committed to be a
+            detour."""
+        if self.a.gap_steer == "off":
+            return 0.0
+        # STEERING horizon, not the brake's. See _gap_horizon: obstacle_brake_start is capped low
+        # by the floor geometry, and using it here capped the engage point with it.
+        bs = self._gap_horizon()
+        bp = self.a.obstacle_brake_stop
+        # Engage part-way down the grading zone, not at its very top.
+        trig = bp + (bs - bp) * max(0.0, min(1.0, self.a.gap_steer_trigger_frac))
+        # THE CLEAR VOTE IS CLEAR (gap-01, 2026-09-10). The corridor never reports more than
+        # obstacle_brake_start: _nearest_blob drops returns beyond it (the no-scipy fallback
+        # aside) and a clear frame votes exactly it. Since 6b0fde7 trig is 0.70 + 0.675*0.80 =
+        # 1.24 m -- ABOVE that ceiling -- so `clr_centre >= trig` could never release: 0 of n=412
+        # and 0 of n=1117 logged clearances reached 1.24 (max 1.15), the clear vote is ~20% of
+        # tracked ticks, and replayed depth gave nonzero gap yaw on 25-34% of clear-corridor
+        # frames. Capping just under brake-start releases on the clear vote, so gap steer engages
+        # only on a REAL detection -- any real detection, still earlier than the legacy 1.06 m.
+        # A no-op whenever trig is already below the ceiling (e.g. the legacy coupled horizon).
+        trig = min(trig, float(self.a.obstacle_brake_start) - 1e-3)
+        # THE OPERATOR IS NOT AN OBSTACLE (field fix 2026-09-03, operator report).
+        # _obstacle_vx_cap() already refuses to brake when the nearest corridor return IS the
+        # followed target -- the person is in the forward corridor BY DEFINITION. Gap steer was
+        # reading _corridor_clearance() RAW and so never applied that test, which at a tight
+        # --standoff-m put the operator inside the trigger zone and made the robot try to route
+        # AROUND the very person it was following.
+        # Same margin and same semantics as the brake, so the two reflexes agree on what an
+        # obstacle IS. Applied to the CENTRE only: target_range - margin is a loose bound (at
+        # standoff 0.7 it is ~0.3 m), and using it to clear a SIDE sector would call a chair at
+        # 0.5 m "free" and steer into it. Side detection is deliberately left untouched.
+        # TEMPORAL COMMITMENT (2026-09-09 side-step fix). Once committed to a side, hold it
+        # for at least --gap-steer-commit-s regardless of whether the sector-clearance vote
+        # flips. Without this the detour drops out the moment the committed side momentarily
+        # measures blocked (a person's arm swings past, a chair edge speckles the sector),
+        # then re-triggers to the OTHER side on the next frame -- producing the side-step
+        # flapping the operator sees. Setting commit-s = 0 restores frame-by-frame decisions.
+        _now_gs = time.monotonic()
+        _in_hold = (self._gap_dir != 0
+                    and (_now_gs - self._gap_dir_t) < max(0.0, self.a.gap_steer_commit_s))
+        # HOLD IS AUTHORITATIVE (2026-09-09 stanky-leg fix). Rerun on the first Follow-The-Gap
+        # run: 40 vyaw sign reversals in 789 ticks, 34 of them with NO matching operator-bearing
+        # reversal -- i.e. the yaw flips came from THIS layer, not the person. The profile path
+        # and the sector fallback alternated frame to frame (77 GAP-PROFILE vs 84 GAP-STEER
+        # fallback lines) and each re-decided the side on its own rule, so the committed
+        # direction flipped every ~4 s. A walking gait cannot absorb a yaw reversal mid-stride;
+        # one leg takes it, which is the "stanky leg". While the commit hold is live, the held
+        # direction WINS over both paths -- the only thing allowed to override it is the
+        # operator-out-of-frame edge guard, because losing the lock is worse than a wobble.
+        # Forward speed is still governed by the brake independently, so the worst case here is
+        # yawing while stopped, never driving somewhere unseen (the stage-5 invariant).
+        if _in_hold:
+            _hold_edge = self.a.gap_steer_max_bearing_deg
+            if getattr(self, "_hole_streak", 0) >= max(1, int(self.a.dark_obstacle_frames)):
+                _hold_edge = max(_hold_edge, self.a.dark_obstacle_widen_deg)
+            _hold_left = self._gap_dir > 0
+            if not (abs(bearing) >= math.radians(_hold_edge) and ((bearing > 0.0) == _hold_left)):
+                # Replay the magnitude that COMMITTED, not the rail. Emitting gap_steer_rate
+                # here turned a 0.004 rad/s proportional command into 0.24 rad/s for 2 s.
+                _hm = abs(getattr(self, "_gap_mag", 0.0)) or self.a.gap_steer_rate
+                return _hm * (1.0 if _hold_left else -1.0)
+        if (clr_centre is not None and target_range is not None
+                and clr_centre > (target_range - self.a.obstacle_target_margin)):
+            if not _in_hold:
+                self._gap_dir = 0                  # the "block" is the operator -> nothing to route around
+                return 0.0
+        elif clr_centre is None or clr_centre >= trig:
+            if not _in_hold:
+                self._gap_dir = 0                  # path clear -> release the commitment
+                return 0.0
+        # If we're still IN the commit hold and the branches above would have released, keep
+        # steering in the committed direction rather than dropping to 0. Prevents flapping.
+        if _in_hold and (clr_centre is None or clr_centre >= trig
+                          or (clr_centre is not None and target_range is not None
+                              and clr_centre > (target_range - self.a.obstacle_target_margin))):
+            _hm = abs(getattr(self, "_gap_mag", 0.0)) or self.a.gap_steer_rate
+            return _hm * (1.0 if self._gap_dir > 0 else -1.0)
+        # FOLLOW-THE-GAP PATH (2026-09-09). Preferred over the 3-sector binary test: it can see
+        # a gap that straddles sectors, it validates the opening against the robot's own swept
+        # width before committing, and it steers PROPORTIONALLY to how far off the gap is
+        # instead of applying a fixed full-rate bias for every geometry. With the profile on it
+        # no longer falls through to the sector logic when it finds no usable gap (gap-02, see
+        # below); the sectors steer only with --gap-profile off.
+        # CRITICAL BLOCK (2026-09-10 field fix). Measured: ~25 consecutive samples at
+        # CLEARANCE 0.75-0.80 m / vx-cap 0.02-0.06 -- creeping into an obstacle while every
+        # suppression guard independently threw the detour away (11 of 15 rejects were "off the
+        # follow line" at 36-81 deg against a 35 deg cap, then 9 GAP-YIELDs zeroed the fallback).
+        # Below gap_critical_m the robot is already in the stop band's shoulder with forward motion
+        # near zero, so the trade flips: a big detour risks the lock, but SEARCH re-acquires a lost
+        # lock (3/3 in that run) and nothing recovers a robot wedged against furniture.
+        # This only ever WIDENS what gap steer may consider. vx stays the brake's business, so it
+        # cannot authorise forward motion -- at worst the robot yaws on the spot.
+        _crit_m = float(getattr(self.a, "gap_critical_m", 0.0) or 0.0)
+        _critical = (_crit_m > 0.0 and clr_centre is not None and clr_centre <= _crit_m)
+        _detour_cap = self.a.gap_max_detour_deg
+        if _critical:
+            _detour_cap = max(_detour_cap, float(self.a.gap_critical_detour_deg))
+            if (time.monotonic() - getattr(self, "_gapcrit_log_t", 0.0)) >= 2.0:
+                self._gapcrit_log_t = time.monotonic()
+                log("GAP-CRITICAL clearance %.2fm <= %.2fm -> detour cap %.0f->%.0fdeg and yield "
+                    "suspended (stopping against the obstacle is now the worse outcome)"
+                    % (clr_centre, _crit_m, self.a.gap_max_detour_deg, _detour_cap))
+        if self.a.gap_profile == "on":
+            _g = self._gap_profile(target_bearing=bearing, max_detour_deg=_detour_cap)
+            if _g is not None:
+                _gb, _gw, _gr = _g
+                # A GAP DEAD AHEAD IS NOT A DETOUR (2026-09-10 field fix). Measured: 5 of 14
+                # GAP-PROFILE lines reported body-forward open at 1.89-2.92 m wide while the
+                # corridor had called the centre blocked -- the two measurements disagreeing.
+                # _cmd then came out ~0.004: too small to steer with, but non-zero, and both the
+                # yaw-gain relax and the commit latch key off non-zero rather than magnitude. So a
+                # forward gap halved the tracker's authority (operator 19-28 deg off-axis at the
+                # time) and latched a 2 s hold on the sign of noise.
+                # Standing down returns EXACTLY 0.0, which restores full k_yaw and clears the
+                # commitment -- strictly less yaw than before, and vx is the brake's business.
+                if abs(_gb) <= math.radians(max(0.0, self.a.gap_steer_deadband_deg)):
+                    self._gap_dir = 0
+                    self._gap_mag = 0.0
+                    if (time.monotonic() - getattr(self, "_gapdead_log_t", 0.0)) >= 2.0:
+                        self._gapdead_log_t = time.monotonic()
+                        log("GAP-STANDDOWN gap %+.0fdeg is within %.0fdeg of forward "
+                            "(width %.2fm at %.2fm) -> no detour, full yaw returned to the tracker "
+                            "(operator %+.0fdeg)"
+                            % (math.degrees(_gb), self.a.gap_steer_deadband_deg, _gw, _gr,
+                               math.degrees(bearing)))
+                    return 0.0
+                # Steer toward the gap centre proportionally: error is how far the gap sits off
+                # the current heading. Scaled by --gap-steer-rate and clamped to it, so this can
+                # never command a harder yaw than the fixed-rate path it replaces.
+                # SIGN (2026-09-10 field fix -- this was INVERTED and is the reason gap steer
+                # never routed around anything). Conventions, all from the code:
+                #   bearing_from_x = atan2(cx - w/2, f)   -> POSITIVE means to the RIGHT
+                #   _gap_profile's cbear uses the same construction -> POSITIVE gap = to the RIGHT
+                #   this method's docstring: POSITIVE vyaw turns LEFT
+                # so facing a heading at bearing t requires vyaw = -k*t, which is exactly the
+                # tracker's own law (vyaw = -k_yaw*bearing; operator right -> negative -> turn
+                # right). The old form was +rate*(_gb/30deg), i.e. a gap on the LEFT commanded a
+                # RIGHT turn. Measured over run 2: 9 of 9 non-deadband decisions steered AWAY from
+                # the chosen gap (gap -23deg -> yaw -0.19, -20 -> -0.16, -38 -> -0.24, ...), and
+                # the aggregate GAP-STEER count was L=9/R=34 while the gaps themselves were 8 LEFT
+                # / 1 RIGHT. The sector fallback was always correct (+rate when want_left), which
+                # is why THAT path occasionally worked and this one never did.
+                #
+                # GAIN: reuse k_yaw rather than the old magic 30deg normaliser, so gap steer and
+                # the tracker are the SAME control law applied to different headings -- they then
+                # compose instead of each having its own gain, and saturation is automatic and
+                # identical. Numerically near-identical to the old slope (the 30deg normaliser was
+                # close to the 36.0deg saturation angle vyaw_max/k_yaw), so this changes the sign
+                # error, not the aggressiveness: at _gb 19deg both give ~0.15, and both rail at
+                # gap_steer_rate.
+                _cmd = -self.a.k_yaw * _gb
+                _cmd = max(-self.a.gap_steer_rate, min(self.a.gap_steer_rate, _cmd))
+                # Same operator-in-frame guard the fixed path uses: never push the operator out.
+                _edge_deg2 = self.a.gap_steer_max_bearing_deg
+                if getattr(self, "_hole_streak", 0) >= max(1, int(self.a.dark_obstacle_frames)):
+                    _edge_deg2 = max(_edge_deg2, self.a.dark_obstacle_widen_deg)
+                _want_left2 = _cmd > 0.0
+                if abs(bearing) >= math.radians(_edge_deg2) and ((bearing > 0.0) == _want_left2):
+                    return 0.0
+                _new_dir2 = 1 if _want_left2 else -1
+                if self._gap_dir != _new_dir2:
+                    self._gap_dir = _new_dir2
+                    self._gap_dir_t = time.monotonic()
+                self._gap_mag = abs(_cmd)      # so the hold replays THIS, not the rail
+                if (time.monotonic() - getattr(self, "_gapprof_log_t", 0.0)) >= 1.0:
+                    self._gapprof_log_t = time.monotonic()
+                    log("GAP-PROFILE gap bearing %+.0fdeg width %.2fm at %.2fm -> yaw %+.2f rad/s "
+                        "(operator %+.0fdeg)"
+                        % (math.degrees(_gb), _gw, _gr, _cmd, math.degrees(bearing)))
+                return _cmd
+            # NO USABLE GAP -> NO SECTOR SLAM (gap-02, 2026-09-10). Falling through to the sectors
+            # re-asked the question the profile exists to replace: a fixed +/-gap_steer_rate bias
+            # toward any third whose percentile reads clear, with NO width test -- i.e. toward the
+            # very openings the width filter had just rejected. Run 045306Z: 21 sector slams, 12
+            # of them pointed AWAY from the widest rejected opening. With the profile on, "no
+            # usable gap" now means no yaw, and the brake governs vx. Two exceptions:
+            # (1) a fresh head-scan hint, on its EXACT old gate (both sectors blocked), so
+            #     --head-scan on is not silently disarmed. The sectors only gate it; they no
+            #     longer pick a side.
+            if (self.a.head_scan == "on" and self._scan_hint != 0
+                    and (time.monotonic() - self._scan_hint_t) <= max(1.0, self.a.head_scan_hint_ttl_s)):
+                s = self._sector_clearances()
+                if not ((s["L"] is not None and s["L"] >= bs) or (s["R"] is not None and s["R"] >= bs)):
+                    self._gap_dir = self._scan_hint
+                    self._gap_mag = self.a.gap_steer_rate   # scan hint is a full-rate commitment
+                    return self.a.gap_steer_rate * (1.0 if self._scan_hint > 0 else -1.0)
+            # (2) CRITICAL (clearance <= gap_critical_m), where stopping dead against the obstacle
+            #     is the worse outcome: rotate toward the widest opening the profile rejected (too
+            #     narrow or off the follow line), proportionally and at no more than HALF
+            #     gap_steer_rate. Same law as the profile path (vyaw = -k_yaw*bearing; bearing
+            #     POSITIVE = RIGHT, vyaw POSITIVE = LEFT), same deadband, same operator-edge guard.
+            #     No opening at all -> nothing to rotate toward -> 0.0, never a guess.
+            _wb = getattr(self, "_gap_widest_rej", None)
+            if (_critical and _wb is not None
+                    and abs(_wb) > math.radians(max(0.0, self.a.gap_steer_deadband_deg))):
+                _cap = 0.5 * self.a.gap_steer_rate
+                _cmd = max(-_cap, min(_cap, -self.a.k_yaw * _wb))
+                _edge_deg3 = self.a.gap_steer_max_bearing_deg
+                if getattr(self, "_hole_streak", 0) >= max(1, int(self.a.dark_obstacle_frames)):
+                    _edge_deg3 = max(_edge_deg3, self.a.dark_obstacle_widen_deg)
+                _want_left3 = _cmd > 0.0
+                if abs(bearing) >= math.radians(_edge_deg3) and ((bearing > 0.0) == _want_left3):
+                    return 0.0
+                _new_dir3 = 1 if _want_left3 else -1
+                if self._gap_dir != _new_dir3:
+                    self._gap_dir = _new_dir3
+                    self._gap_dir_t = time.monotonic()
+                self._gap_mag = abs(_cmd)      # so the hold replays THIS, not the rail
+                if (time.monotonic() - getattr(self, "_gapcturn_log_t", 0.0)) >= 1.0:
+                    self._gapcturn_log_t = time.monotonic()
+                    log("GAP-CRITICAL-TURN no usable gap; widest rejected opening %+.0fdeg -> yaw "
+                        "%+.2f rad/s (cap %.2f = half gap-steer-rate; vx stays the brake's)"
+                        % (math.degrees(_wb), _cmd, _cap))
+                return _cmd
+            self._gap_dir = 0                      # no usable gap -> the brake handles it
+            return 0.0
+        s = self._sector_clearances()
+        left_ok = s["L"] is not None and s["L"] >= bs
+        right_ok = s["R"] is not None and s["R"] >= bs
+        if not (left_ok or right_ok):
+            # BOXED IN from THIS viewpoint -- both sectors blocked or unjudgeable. Before giving up,
+            # use a stationary head-scan result if one is fresh: the sweep covers ~170 deg where the
+            # fixed camera sees 105.8, so it can find free space that simply is not in frame from
+            # here. This is the whole reason the scan exists; without it the robot freezes facing a
+            # close obstacle with no side it can justify.
+            # Still YAW-ONLY: the brake holds forward speed at zero until the rotation actually
+            # brings clear space into the centre corridor, so acting on a stale or wrong scan makes
+            # the robot turn on the spot, never drive at something it cannot see.
+            if (self.a.head_scan == "on" and self._scan_hint != 0
+                    and (time.monotonic() - self._scan_hint_t) <= max(1.0, self.a.head_scan_hint_ttl_s)):
+                self._gap_dir = self._scan_hint
+                self._gap_mag = self.a.gap_steer_rate   # scan hint is a full-rate commitment
+                return self.a.gap_steer_rate * (1.0 if self._scan_hint > 0 else -1.0)
+            self._gap_dir = 0                      # boxed in -> brake handles it; never guess
+            return 0.0
+        if self._gap_dir > 0 and left_ok:          # HOLD the committed side while it stays clear
+            want_left = True
+        elif self._gap_dir < 0 and right_ok:
+            want_left = False
+        elif left_ok and right_ok:
+            want_left = bearing < 0.0              # fresh choice: least detour off the follow line
+        else:
+            want_left = left_ok
+        # DON'T FIGHT THE TRACKER AT THE YAW RAIL (2026-09-10 field fix). vyaw = -k_yaw*bearing
+        # saturates vyaw_max at |bearing| = vyaw_max/k_yaw = 0.30/0.477 = 36.0 deg. Measured live,
+        # 20% of frames sat beyond that and 20% of vyaw samples were railed. The edge guard below
+        # keys off --gap-steer-max-bearing-deg (40), which is ABOVE that 36 deg saturation point,
+        # so gap-steer kept adding bias exactly when the tracking term had no authority left --
+        # observed as "GAP-STEER bias +0.24 (bearing +37deg)", i.e. steering LEFT while the
+        # operator was 37 deg RIGHT. That both delays re-centring and contributes to the yaw
+        # limit cycle the operator sees as spinning left/right.
+        # Past saturation the operator is the only thing that matters: yield the yaw budget to the
+        # tracker. This only ever REMOVES bias (returns 0.0), so it cannot steer the robot
+        # anywhere new, and the brake still governs vx independently.
+        # ...unless the corridor is CRITICAL: yielding hands all yaw to the tracker, which aims
+        # the robot AT the obstacle it is stuck against. Steering is the only avoidance left.
+        if (not _critical) and abs(bearing) >= math.radians(max(1.0, self.a.gap_steer_yield_deg)):
+            if (time.monotonic() - getattr(self, "_gap_yield_log_t", 0.0)) >= 2.0:
+                self._gap_yield_log_t = time.monotonic()
+                log("GAP-YIELD operator at %+.0fdeg past the %.0fdeg yaw-saturation point -> "
+                    "gap-steer bias suppressed so the tracker keeps full yaw authority"
+                    % (math.degrees(bearing), self.a.gap_steer_yield_deg))
+            self._gap_dir = 0
+            return 0.0
+        # DARK-OBSTACLE widening (2026-09-09 couch fix). When _corridor_clearance
+        # has classified the forward view as a persistent fail-open surface
+        # (couch/dark fabric), a normal gap-steer edge of 40 deg still leaves the
+        # robot pointing at the SAME dark surface after biasing -- a couch is
+        # 2 m wide and even a full 40 deg detour at 1 m clearance only steps 0.7 m
+        # sideways, not enough to see past it. Widen the allowed operator-bearing
+        # edge to --dark-obstacle-widen-deg so gap-steer can commit to a bigger
+        # detour AND the operator-out-of-frame guard reflects the same widened
+        # posture. Reverts the instant _hole_streak drops back to 0.
+        _edge_deg = self.a.gap_steer_max_bearing_deg
+        if getattr(self, "_hole_streak", 0) >= max(1, int(self.a.dark_obstacle_frames)):
+            _edge_deg = max(_edge_deg, self.a.dark_obstacle_widen_deg)
+        edge = math.radians(_edge_deg)
+        # SIGN: bearing is POSITIVE to the right (perception.py bearing_from_x) and positive vyaw
+        # turns LEFT, so a LEFT steer drives the operator's bearing MORE POSITIVE. The guard must
+        # therefore fire when the operator is already far to the RIGHT and we want to keep steering
+        # left -- i.e. (bearing > 0) == want_left. The original test had it inverted and so could
+        # never fire on the drift it was written to stop: field-confirmed in run
+        # 20260904T052605Z_48cba54:165, GAP-STEER bias +0.24 held at bearing +44 deg, past the
+        # 40 deg edge, pushing the operator toward the 52.9 deg half-FOV and a lock loss.
+        # Failing this test is SAFE: bias -> 0 restores full tracking gain and pulls them back.
+        if abs(bearing) >= edge and ((bearing > 0.0) == want_left):
+            return 0.0                             # would push the operator out of frame
+        _new_dir = 1 if want_left else -1
+        if self._gap_dir != _new_dir:
+            self._gap_dir = _new_dir
+            self._gap_dir_t = time.monotonic()     # start the commit-hold timer on a fresh direction
+        self._gap_mag = self.a.gap_steer_rate      # the sector path IS a full-rate commitment
+        return self.a.gap_steer_rate * (1.0 if want_left else -1.0)
+
+    def _sector_audit(self, target_bearing_rad, clr_centre):
+        """Log where the gaps are and which way a steering layer WOULD go. Pure observation --
+        no command is issued and no control value is changed by this method."""
+        if self.a.sector_audit == "off":
+            return
+        now = time.monotonic()
+        if (now - getattr(self, "_last_sector_log", 0.0)) < 1.0:
+            return
+        self._last_sector_log = now
+        s = self._sector_clearances()
+        def fmt(x):
+            return "--" if x is None else ("%.2f" % x)
+        # Which sector a gap-follower would pick: needs clearance beyond the brake-start distance,
+        # and among those prefers the one closest to the operator's bearing (least detour).
+        bs = self._gap_horizon()   # mirror the DECISION path, or this log misreports it
+        want = {"L": -0.68, "C": 0.0, "R": +0.68}       # sector centre bearings (rad), ~+/-39 deg
+        cands = [(abs(want[k] - target_bearing_rad), k) for k, v in s.items() if v is not None and v >= bs]
+        pick = min(cands)[1] if cands else None
+        log("SECTOR L=%s C=%s R=%s | gap-horizon=%.2f target_bearing=%+.0fdeg -> would-steer=%s%s"
+            % (fmt(s["L"]), fmt(s["C"]), fmt(s["R"]), bs, math.degrees(target_bearing_rad),
+               pick if pick else "NONE(stop)",
+               "" if pick != "C" else " (straight on)"))
 
     def _obstacle_vx_cap(self, target_range):
         """Max forward vx allowed by the corridor clearance (None = no cap). Graded: clear above
@@ -605,7 +3097,7 @@ class Follower:
         in the way."""
         if not self.a.obstacle_brake:
             return None, None
-        clr = self._corridor_clearance()
+        clr = self._obstacle_memory(self._corridor_clearance())
         if clr is None:
             return None, None
         if target_range is not None and clr > (target_range - self.a.obstacle_target_margin):
@@ -632,6 +3124,15 @@ class Follower:
         Wrapped so a bridge write failure can never crash the loop."""
         try:
             self._hold()   # zero velocity first (no-op if already not walking)
+            # DROP THE CORRIDOR WINDOW. Votes are only produced on the TRACKED path, so across any
+            # non-tracked interval (stand, search, park, reacquire) _clr_hist freezes and the first
+            # frames after resuming are decided by evidence from before the gap -- from a different
+            # pose, possibly a different room. Whichever way it froze it is wrong: all-detections
+            # brakes for an obstacle that is gone; all-clear releases the brake on first sight of a
+            # wall. Clearing costs at most obstacle_aged frames of re-fill, during which the median
+            # is the CURRENT frame -- i.e. it degrades toward the raw reading, not toward silence.
+            self._clr_hist = []
+            self._clr_cache_d = None
             if self.drive and self.walking and self.bridge is not None and not self.standing:
                 self.bridge.prep()       # ChangeMode(kPrepare)
                 self.walking = False     # gate velocity off until we re-walk
@@ -812,7 +3313,13 @@ class Follower:
             log("DRIVE-ABORT cannot spawn bridge: %s" % e)
             return False
 
-        ok, reply = self.bridge.command_expect_ok("ping")
+        # PING TIMEOUT 15s (was 4s): loco_follow_bridge_ros.cpp waits up to 8s for
+        # /booster_rpc_service to appear (wait_for_service, L96), then the ping command's
+        # internal API_GET_MODE call takes up to 8s more (L407). Python's default 4s clipped
+        # the bridge before it could reply, DRIVE-ABORTing a working bridge. 15s covers the
+        # worst-case bring-up (ROS discovery on a fresh startup) with margin, and only
+        # affects the one-shot init ping -- runtime commands still use the 4s default.
+        ok, reply = self.bridge.command_expect_ok("ping", timeout=15.0)
         log("BRIDGE ping -> %s" % reply)
         if not ok:
             log("DRIVE-ABORT ping failed; not moving")
@@ -825,6 +3332,43 @@ class Follower:
 
         if self._stop_requested:
             return False
+
+        # MAP-ASSIST DRIVE GATE (fail-closed; only when --map-assist is set -> the whole block is
+        # skipped otherwise, so a non-map-assist run is byte-identical). map-assist reads its pose from
+        # --odom-topic, which for the Aurora prebuilt map MUST be the drift-free MAP-frame bridge pose
+        # (e.g. /aurora_odom), NEVER the robot's own /odometer_state (a different frame -> the map points
+        # land at the wrong bearing and map-assist silently never confirms). So: (1) refuse to drive if
+        # map-assist is on but --odom-topic is missing or the robot-frame topic; (2) refuse to drive
+        # until a FRESH pose is actually confirmed live on that topic (the Aurora bridge must be running
+        # AND relocalized). Turns the old silent-inert failure into a loud, safe refusal.
+        if getattr(self.a, "map_assist", ""):
+            _ot = (getattr(self.a, "odom_topic", "") or "").strip()
+            if _ot.lower() in ("", "none", "/odometer_state", "odometer_state"):
+                log("DRIVE-ABORT map-assist needs a MAP-frame pose on --odom-topic (e.g. /aurora_odom "
+                    "from aurora_odom_bridge.py); got '%s' -> refusing to drive on a mismatched frame"
+                    % (_ot or "<none>"))
+                return False
+            _wait = float(getattr(self.a, "map_assist_odom_wait_s", 30.0))
+            _t0 = time.monotonic()
+            _last = 0.0
+            _live = False
+            while (time.monotonic() - _t0) < _wait:
+                if self._stop_requested:
+                    return False
+                if self.node is not None and self.node.latest_odom(max_age=1.0) is not None:
+                    _live = True
+                    break
+                _nw = time.monotonic()
+                if _nw - _last >= 3.0:
+                    _last = _nw
+                    log("waiting for a LIVE map pose on %s (%.0f/%.0fs) -- start aurora_odom_bridge.py "
+                        "and drive it to a lock" % (_ot, _nw - _t0, _wait))
+                time.sleep(0.2)
+            if not _live:
+                log("DRIVE-ABORT map-assist on but no live pose on %s within %.0fs; refusing to drive "
+                    "(the Aurora bridge is not publishing a relocalized pose)" % (_ot, _wait))
+                return False
+            log("AURORA-ODOM LIVE on %s -> map-assist armed; proceeding to drive" % _ot)
 
         # ITEM 7(d): DRIVE PRECONDITION. Before kWalking, require BOTH RGB and depth publishing at
         # >= --drive-min-fps, sustained for --drive-ready-secs. BOUNDED by --startup-frame-wait so it
@@ -895,6 +3439,11 @@ class Follower:
             return False
         if self._sleep_interruptible(2.0):
             return False
+
+        # Head probe runs HERE by design: kWalking is reached (RotateHead is mode-gated and 400s in
+        # kPrepare) but self.walking is still False, so no velocity can stream while the head moves.
+        if self.a.head_probe:
+            self._head_probe()
 
         self.walking = True
         log("DRIVE-ACTIVE follow enabled (vx[%.2f,%.2f] vyaw[%.2f,%.2f])"
@@ -983,7 +3532,25 @@ class Follower:
         _odom_topic = getattr(self.a, "odom_topic", "") or ""
         if _odom_topic.lower() == "none":
             _odom_topic = ""
-        self.node = CamNode(topics, depth_topic, odom_topic=_odom_topic)
+        # Head pose subscribed when head tracking is enabled, OR --head-probe, OR --head-scan --
+        # off stays
+        # byte-identical. The probe MUST be included: it reads the pose back to measure the yaw
+        # sign, so gating the subscription on head_track alone made --head-probe a silent no-op
+        # ("HEAD-PROBE SKIP /head_pose unavailable") for the common case of probing BEFORE
+        # enabling tracking, which is the only sane order to do it in.
+        # ALWAYS SUBSCRIBE (2026-09-09 field fix). This used to be gated on head_track/scan/probe,
+        # so with all three off the follow never received /head_pose at all: rerun showed
+        # /head/known == 0 for 1159/1159 samples while `ros2 topic hz /head_pose` reported a
+        # healthy 100 Hz publisher with ZERO subscribers. Meanwhile the operator watched the head
+        # physically drift to one side -- and the follow was blind to it, so the corridor and the
+        # bearing were both computed as if the camera faced body-forward. That is the exact
+        # silent-corruption case the NaN-not-zero logging at the /head/yaw_deg sink warns about.
+        # The message is a 100 Hz geometry_msgs/Pose; subscribing costs nothing measurable and
+        # makes the drift OBSERVABLE in every recording. Whether the corridor USES the yaw is
+        # still gated on head_track (the sign convention is unverified in the image frame), so
+        # this changes observability only, never a decision.
+        _head_topic = self.a.head_pose_topic
+        self.node = CamNode(topics, depth_topic, odom_topic=_odom_topic, head_pose_topic=_head_topic)
         # FR-1 (CRITICAL): service CamNode on a DEDICATED background executor thread. The old
         # one-spin_once-per-10Hz-tick pattern measured the LOOP's callback-servicing rate, not the
         # sensor: with 2 RGB subs + depth at KEEP_LAST 1, depth was serviced at <=3.3-5Hz on a
@@ -997,7 +3564,8 @@ class Follower:
         threading.Thread(target=self._cam_spin, daemon=True, name="cam-spin").start()
 
         # Load YOLO ONCE at startup (before any walking).
-        self.det = PersonDetector(self.a.yolo_path, self.a.conf)
+        self.det = PersonDetector(self.a.yolo_path, self.a.conf,
+                                  trt=self.a.yolo_trt, trt_cache=self.a.yolo_trt_cache)
         log("MODE %s  topics=%s  depth=%s  yolo=%s"
             % ("DRIVE" if self.drive else "PREVIEW", ",".join(topics),
                depth_topic or "off", "ok" if self.det.ok else "DISABLED"))
@@ -1028,12 +3596,44 @@ class Follower:
         intr_logged = False       # P6.1: emit camera intrinsics once, on the first framed tick
         last_depth_state = None   # depth-health heartbeat (log on transition + 10s pulse)
         last_depth_hb = 0.0
+        # RERUN WARM-UP GRACE EPOCH. The grace is about the LOOP's first frames -- the first
+        # YOLO/ONNX inferences, which are legitimately slow while the robot is not yet walking --
+        # NOT about process start. self.t_start is set in __init__, i.e. BEFORE the ReID engine
+        # load, the gesture model load+warm-up, the YOLO load, the bridge ping and the DRIVE-WAIT
+        # depth-floor wait. Measured across 57 archived runs, t_start -> first control tick is
+        # p50 29.4 s (p10 23.5, p90 39.2), so a 15 s grace keyed to t_start was ALREADY SPENT
+        # before frame 1 in 56 of 57 runs. The streak therefore began accumulating on the true
+        # warm-up tail (tick 0 p50 668 ms; ticks 1-23 p50 152-187 ms) and completed at tick 24 --
+        # which is why /diag/loop_ms holds exactly 24 marks in 13 of 15 measured recordings and why
+        # RERUN-DISABLED-SLOW fired in 88 of 95 runs, discarding 69.8% of all recorded driving.
+        # Replayed over the archive, moving to this epoch takes recorded yield 6.2% -> 83.7%.
+        # The comment at the shed already stated this intent; only the epoch was wrong.
+        self._loop_t0 = time.monotonic()
 
         try:
             while not self._stop_requested:
                 t0 = time.monotonic()
+                # LOOP-STALL DETECTOR (2026-09-09). loop_ms brackets the compute inside a tick,
+                # but rerun showed 5984 ms and 4771 ms gaps between consecutive velocity
+                # commands while loop_ms never exceeded 1000 -- the stall lives in something the
+                # in-tick timer does not cover. Measure tick-to-tick on the WALL CLOCK and name
+                # the state when it blows, so the next recording says which call, not just that
+                # one happened. Pure observation; changes no decision.
+                _prev_t0 = getattr(self, "_last_tick_t0", None)
+                if _prev_t0 is not None and (t0 - _prev_t0) > 1.0:
+                    log("LOOP-STALL %.0fms between ticks state=%s walking=%s standing=%s "
+                        "(loop_ms did not see it -> outside the in-tick timer)"
+                        % ((t0 - _prev_t0) * 1000.0, self.state, self.walking, self.standing))
+                self._last_tick_t0 = t0
 
-                if (t0 - self.t_start) >= self.a.max_seconds:
+                # max_seconds <= 0 means NO SESSION CAP -- run until the operator stops it (2026-09-10
+                # operator request: "should have no limit and record until run ends"). Note the
+                # comparison must be guarded rather than relying on 0: `elapsed >= 0` is true on the
+                # FIRST tick, so a bare 0 would terminate the run instantly instead of unbounding it.
+                # An unlimited DRIVE is refused in parse_args unless explicitly overridden, so by the
+                # time we get here an unbounded session is either preview (cannot command velocity)
+                # or a deliberate, logged operator choice.
+                if self.a.max_seconds > 0 and (t0 - self.t_start) >= self.a.max_seconds:
                     log("WATCHDOG max-seconds (%.0fs) reached -> stop" % self.a.max_seconds)
                     break
 
@@ -1100,6 +3700,23 @@ class Follower:
                         rerun_sink._RR.scalar("/health/depth_fps", _dfps)
                         rerun_sink._RR.scalar("/health/rgb_fps", self.node.rgb_fps())
                         rerun_sink._RR.scalar("/health/depth_starved", 1.0 if self._depth_starved else 0.0)
+                        # HEAD POSE, logged so a run can be diagnosed OFFLINE. Its absence cost real
+                        # time: the 2026-09-04 floor false-positive traced to the hit box assuming a
+                        # LEVEL camera while the real pitch was ~10 deg, and no recording carried the
+                        # head pose, so 64 .rrd files could not say whether that pitch is a fixed
+                        # mounting offset or swings with the gait -- which is what decides the fix.
+                        # NaN (not 0.0) when unknown: an assumed-zero pose is exactly the silent-
+                        # corruption case this is here to expose.
+                        try:
+                            _hy_l = self.node.head_yaw()
+                            _hp_l = self.node.head_pitch()
+                            rerun_sink._RR.scalar("/head/yaw_deg",
+                                                  math.degrees(_hy_l) if _hy_l is not None else float("nan"))
+                            rerun_sink._RR.scalar("/head/pitch_deg",
+                                                  math.degrees(_hp_l) if _hp_l is not None else float("nan"))
+                            rerun_sink._RR.scalar("/head/known", 1.0 if _hp_l is not None else 0.0)
+                        except Exception:  # noqa: BLE001 -- telemetry must never break the loop
+                            pass
                 if frame is not None:
                     ever_framed = True
                     last_frame_mono = now
@@ -1191,9 +3808,15 @@ class Follower:
                     _xs = sorted(self._loop_ms_hist)
                     _n = len(_xs)
                     _pct = lambda p: _xs[min(_n - 1, int(p * _n))]
+                    # Per-stage attribution (compute-manager Phase 1): stages ordered by p90
+                    # DESCENDING, so the most expensive stage reads first -- that is the shed
+                    # question. Measurement only; nothing sheds on it yet.
+                    _stages = PERF.summary()
                     log("LOOP-MS n=%d p50=%.0f p90=%.0f p99=%.0f max=%.0f budget=%.0f rerun=%s"
+                        " | stage p50/p90: %s"
                         % (_n, _pct(0.5), _pct(0.9), _pct(0.99), _xs[-1], period * 1000.0,
-                           "on" if rerun_sink._RR.ok else "off"))
+                           "on" if rerun_sink._RR.ok else "off", _stages or "(none)"))
+                    PERF.reset()   # per-window stats, matching the 10s LOOP-MS cadence
                 # Stage 1 slow-frame guard: surface a perception overrun in the
                 # log (visible in --preview) before it ever matters under --drive.
                 if dt > period:
@@ -1218,14 +3841,29 @@ class Follower:
                         # the whole run even after the loop recovered to healthy. Don't accumulate the
                         # streak until warmup has elapsed; the shed still fires for a genuinely-overloaded
                         # DRIVING loop after that.
-                        if (t0 - self.t_start) < self.a.rerun_warmup_s:
+                        if (t0 - self._loop_t0) < self.a.rerun_warmup_s:
                             self._rr_overrun_streak = 0
                         else:
                             self._rr_overrun_streak += 1
+                            # NEVER-SHED (2026-09-09). --rerun-never-shed on (default) suppresses the
+                            # RERUN-DISABLED-SLOW auto-disable so a captured run never gets cut
+                            # short. Streak still tracked for observability; a warning fires once
+                            # per --rerun-overrun-frames milestone so the operator sees when the
+                            # loop is chronically over budget without losing the recording. The
+                            # follow loop itself is unchanged either way -- Rerun logging is inside
+                            # try/except in every k1_rerun call site, so a broken sink can't stall
+                            # the loop, only miss log entries.
                             if self._rr_overrun_streak >= self.a.rerun_overrun_frames:
-                                rerun_sink._RR.ok = False
-                                log("RERUN-DISABLED-SLOW %d frames over budget with --rerun -> Rerun OFF "
-                                    "(follow safe + byte-identical from here)" % self._rr_overrun_streak)
+                                if getattr(self.a, "rerun_never_shed", "on") == "on":
+                                    if (time.monotonic() - getattr(self, "_rr_shed_warn_t", 0.0)) >= 5.0:
+                                        self._rr_shed_warn_t = time.monotonic()
+                                        log("RERUN-OVERRUN %d consecutive frames over budget "
+                                            "(never-shed on -> recording kept alive)"
+                                            % self._rr_overrun_streak)
+                                else:
+                                    rerun_sink._RR.ok = False
+                                    log("RERUN-DISABLED-SLOW %d frames over budget with --rerun -> Rerun OFF "
+                                        "(follow safe + byte-identical from here)" % self._rr_overrun_streak)
                                 self._rr_overrun_streak = 0
                     # NET-NEW gesture overrun auto-disable (SCOPE §4.3): an INDEPENDENT counter
                     # that does NOT share the SLOW-LOOP reset above (which fires every 5 frames
@@ -1268,6 +3906,7 @@ class Follower:
             except Exception:  # noqa: BLE001
                 pass
             self._gbind_session_log()   # A/B rollup (no-op unless --lock-trigger both)
+            self._map_change_report(final=True)   # no-op unless --map-change on; writes the ledger
             try:
                 self.events.close()     # P5.3: flush + close the forensic JSONL
             except Exception:  # noqa: BLE001
@@ -1366,14 +4005,26 @@ class Follower:
         cv2.rectangle(frame, (0, 0), (w, 30), bcol, -1)
         cv2.putText(frame, banner, (10, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                     (255, 255, 255), 2, cv2.LINE_AA)
+        _pt = time.perf_counter()
         emit_frame(status, frame, self.a.stream_quality)
+        PERF.add("emit", (time.perf_counter() - _pt) * 1000.0)
 
     # -- per-frame state machine -------------------------------------------
     def _process_frame(self, frame):
         h_img, w_img = frame.shape[:2]
 
+        # SCAN ORPHAN WATCHDOG. _head_scan_step only runs on the tracked-control path, so losing
+        # the target mid-sweep (LOST -> SEARCH) would stop advancing it and leave the head PARKED
+        # OFF-CENTRE -- and a panned head silently offsets every bearing computed from pixel
+        # offset. If nothing has advanced a live scan for a second, re-centre and drop it.
+        if self._scan_state != "idle" and (time.monotonic() - getattr(self, "_scan_touch_t", 0.0)) > 1.0:
+            self._head_scan_abort("orphaned (left the tracking path mid-sweep)")
+
+
         # YOLO persons every frame (defensive; [] on any failure).
+        _pt = time.perf_counter()
         persons = self.det.detect(frame)
+        PERF.add("detect", (time.perf_counter() - _pt) * 1000.0)
         self._frame_idx += 1   # Stage 2: monotonic frame counter (admit spacing)
 
         # Stage 1: stamp a stable track_id + motion prediction on each person.
@@ -1381,7 +4032,9 @@ class Follower:
         # leaves persons untouched so we degrade to the stateless path.
         if self.tracker is not None:
             try:
+                _pt = time.perf_counter()
                 self.tracker.update(persons)
+                PERF.add("track", (time.perf_counter() - _pt) * 1000.0)
             except Exception as e:  # noqa: BLE001 -- tracking must never kill the loop
                 log("TRACK-ERR %s (stateless fallback this frame)" % e)
 
@@ -1405,7 +4058,9 @@ class Follower:
         # The trigger PRODUCES the lock point mc (ArUco marker, or a raised hand); the
         # streak math below is byte-identical to the original marker block, and with
         # --lock-trigger aruco the trigger returns exactly marker_center(frame).
+        _pt = time.perf_counter()
         hint = self._lock_trigger.detect(frame, persons, self.state, w_img, h_img)
+        PERF.add("pose", (time.perf_counter() - _pt) * 1000.0)
         self._lock_hint = hint
         mc = hint.point if hint is not None else None
         if mc is not None:
@@ -1706,6 +4361,14 @@ class Follower:
         self.state = S_TRACK
         self.lost_count = 0
         self.marker_streak = 0
+        # Arm the gesture acquisition dwell. Before the FIRST lock the operator is standing
+        # there waiting to be locked onto, so pose must run immediately; after it, a drop to a
+        # stationary state is usually a momentary blip that re-ID recovers, and paying 111 ms
+        # p50 of pose for it starves the loop. See GestureTrigger.detect.
+        try:
+            self._lock_trigger._ever_locked = True
+        except Exception:  # noqa: BLE001 -- ArUco/composite triggers lack the attr; harmless
+            pass
         log("LOCKED person seeded box=(%d,%d,%d,%d) c=(%d,%d) conf=%.2f -- %s handoff complete"
             % (int(chosen["box"][0]), int(chosen["box"][1]),
                int(chosen["box"][2]), int(chosen["box"][3]),
@@ -2051,7 +4714,9 @@ class Follower:
             else:
                 p["_ph"] = cached[1]
         if boxes:
+            _pt = time.perf_counter()
             feats = self.reid.embed_batch(frame, boxes)
+            PERF.add("reid", (time.perf_counter() - _pt) * 1000.0)
             any_valid = False
             for k, i in enumerate(need):
                 f = feats[k] if k < len(feats) else None
@@ -2285,7 +4950,50 @@ class Follower:
 
         # Range + bearing were computed up-front (for the geofence) and are reused here.
         # SAME control law + HARD clamps used throughout.
-        vyaw = self._slew(self._prev_vyaw, -self.a.k_yaw * bearing, self.vyaw_slew)
+        # ---- Stage-3 HEAD TRACKING. Point the head at the operator, then convert their
+        # IMAGE bearing into a BODY-relative one. With the head centred this is a no-op; with
+        # the head panned it is the difference between steering toward them and away.
+        # None == head yaw UNKNOWN -> fail closed: no correction, and forward is forbidden
+        # below (an assumed-zero yaw with a panned head is the silent-corruption case).
+        _hy = self._head_track(bearing)
+        _head_unknown = (_hy is None)
+        if _head_unknown:
+            _hy = 0.0
+        bearing = bearing + self.a.head_yaw_sign * _hy
+
+        # ---- Stage-5 GAP STEERING. Computed BEFORE the yaw law so the existing slew limiter
+        # still bounds how fast yaw may change, and re-clamped with it. Returns 0.0 unless
+        # --gap-steer on, so by default the next line is the shipped expression unchanged.
+        # It biases YAW ONLY. Forward speed stays entirely under the brake + forbid_forward
+        # keystone below, so a steer can never authorise driving at something unseen: the
+        # robot turns toward the gap with vx capped, and forward resumes by itself once the
+        # ROTATION has put the clear sector in the centre corridor and the brake releases.
+        _gap = self._gap_steer_bias(bearing, self._corridor_clearance(), rng)
+        if self.a.gap_steer == "audit" and _gap != 0.0:
+            if (time.monotonic() - getattr(self, "_last_gap_log", 0.0)) >= 1.0:
+                self._last_gap_log = time.monotonic()
+                log("GAP-AUDIT would-bias vyaw %+.2f rad/s (bearing %+.0fdeg) -- NOT applied"
+                    % (_gap, math.degrees(bearing)))
+            _gap = 0.0
+        elif _gap != 0.0 and (time.monotonic() - getattr(self, "_last_gap_log", 0.0)) >= 1.0:
+            self._last_gap_log = time.monotonic()
+            log("GAP-STEER bias %+.2f rad/s (bearing %+.0fdeg, centre blocked) -> routing around"
+                % (_gap, math.degrees(bearing)))
+        # A detour has to be allowed to WIN or it never happens. yaw = -k*bearing + gap, so the
+        # tracking term cancels the bias at bearing = gap/k -- with k=0.9 and gap=0.20 that is
+        # only ~13 deg: a nudge, not a route around. While a detour is COMMITTED, relax the
+        # operator-tracking gain so the equilibrium moves out to a useful angle (~25 deg at
+        # relax 0.5). The operator stays inside the 105.8 deg FOV throughout, and full gain is
+        # restored the moment the corridor clears and _gap returns to 0.
+        _k = self.a.k_yaw * (self.a.gap_steer_yaw_relax if _gap != 0.0 else 1.0)
+        # BEARING DEADBAND (2026-09-09 field-run fix). The follow yaw term is proportional to
+        # bearing, so tracker centroid jitter -- measured at ~13% of frames swinging >2 deg
+        # frame-to-frame -- feeds straight through as commanded yaw twitch even when the target
+        # has not moved. Below --follow-yaw-deadband-deg the yaw term is dropped (bias/scan can
+        # still yaw the robot for detour work); above it, full gain applies. Set 0.0 to disable.
+        _bdb = math.radians(max(0.0, self.a.follow_yaw_deadband_deg))
+        _b_yaw = 0.0 if abs(bearing) < _bdb else bearing
+        vyaw = self._slew(self._prev_vyaw, -_k * _b_yaw + _gap, self.vyaw_slew)
         vyaw = clamp(vyaw, self.vyaw_min, self.vyaw_max)
         if rng is not None:
             err = rng - self.a.standoff_m
@@ -2306,7 +5014,10 @@ class Follower:
         # flag so it is RE-APPLIED AFTER the slew: an accel-limited ramp from a high baseline
         # toward 0 (e.g. _slew(+0.18,0,0.06)=+0.12) would otherwise re-leak a forbidden forward
         # command the clamp cannot pull back to 0 (INV-1).
-        forbid_forward = ((rsrc != "depth")
+        # Head yaw UNKNOWN while head tracking is enabled -> the bearing is untrustworthy, so
+        # forward is forbidden until /head_pose returns. Turn-only, same shape as depth-starved.
+        forbid_forward = (_head_unknown
+                          or (rsrc != "depth")
                           or (rng is not None and self.a.min_safe_range > 0.0
                               and rng <= self.a.min_safe_range)
                           or self._postrelock_noforward
@@ -2319,7 +5030,42 @@ class Follower:
         # OBSTACLE-BRAKE (Phase 3): cap forward vx by the corridor clearance -- computed ONCE here,
         # applied before the slew (so the slew ramps toward the cap) and re-applied after (like
         # forbid_forward). Only ever reduces forward vx; yaw untouched. Inert unless --obstacle-brake.
+        self._lm_target_range = rng     # so the local map excludes the operator's own pixels
         _obs_cap, _clr = self._obstacle_vx_cap(rng)
+        # Stage-4 gap audit: log where the free space is and which way a steering layer WOULD
+        # go. Observation only -- no command, and nothing below reads its result.
+        self._sector_audit(bearing, _clr)
+        # STAGE 7: BACK OFF WHEN STUCK. Last resort, after the brake has stopped us AND neither
+        # gap steer nor the head scan found a heading. From close to a wide obstacle the gap is
+        # geometrically outside what the sensor can see, so no further scanning helps -- only
+        # changing position does. Retraces ground just walked; see _reverse_step.
+        _stuck = (_obs_cap is not None and _obs_cap <= 0.01
+                  and _gap == 0.0 and self._gap_dir == 0
+                  and rng is not None and rng > (self.a.standoff_m + 0.25))
+        _bs_yaw = self._body_scan_step(_stuck, _clr)
+        if _bs_yaw is not None:
+            vx = 0.0                        # rotate in place only -- never translate while sweeping
+            vyaw = self._slew(self._prev_vyaw, _bs_yaw, self.vyaw_slew)
+            _rev = None                     # a sweep outranks a blind reverse
+        else:
+            _rev = self._reverse_step(_stuck, _clr)
+        if _rev is not None:
+            vx = _rev                       # overrides the brake's zero: deliberately backwards
+            vyaw = self._slew(self._prev_vyaw, 0.0, self.vyaw_slew)   # straight back, no turning
+        # STAGE 6: STATIONARY HEAD SCAN. Fires only once the brake has forward motion FULLY stopped
+        # while the follow still wants to advance (operator beyond the standoff) -- exactly the
+        # freeze case: stopped close to something, no side it can justify, nothing left to try.
+        # While sweeping, the base is held still so every sample comes from ONE pose; vx goes to 0
+        # through the slew below, and yaw is slewed toward 0 rather than cut, so the gait is never
+        # jerked. The scan itself only ever writes a yaw HINT consumed by _gap_steer_bias.
+        _scanning = False
+        if self.a.head_scan != "off":
+            _blocked_now = (_obs_cap is not None and _obs_cap <= 0.01)
+            _want_fwd = (rng is not None and rng > (self.a.standoff_m + 0.25))
+            _scanning = self._head_scan_step(_blocked_now and _want_fwd, cx)
+            if _scanning:
+                vx = 0.0
+                vyaw = self._slew(self._prev_vyaw, 0.0, self.vyaw_slew)
         if _obs_cap is not None and vx > _obs_cap:
             vx = _obs_cap
         # FIX F1: keep a short window of recent VALIDATED depth ranges (its median is the glitch-
@@ -2369,8 +5115,10 @@ class Follower:
             rerun_sink._RR.scalar("/follow/range", rng)
             rerun_sink._RR.scalar("/follow/range_source", 2.0 if rsrc == "depth" else (1.0 if rsrc == "bboxH" else 0.0))
             rerun_sink._RR.scalar("/follow/bearing", bearing_deg)
-            rerun_sink._RR.scalar("/cmd/vx", vx)
-            rerun_sink._RR.scalar("/cmd/vyaw", vyaw)
+            # /cmd/vx and /cmd/vyaw are emitted in _drive_vel (the chokepoint every velocity
+            # path passes through), NOT here -- emitting on the accepted-match path only is what
+            # produced the phantom multi-second gaps. forbid_forward stays: it is a follow-path
+            # decision, meaningful only where a target range exists.
             rerun_sink._RR.scalar("/cmd/forbid_forward", 1.0 if forbid_forward else 0.0)
             rerun_sink._RR.scalar("/reid/sim", sim)
             rerun_sink._RR.scalar("/track/conf", best["conf"])
@@ -2711,7 +5459,7 @@ class Follower:
             except Exception:  # noqa: BLE001
                 pass
         # Fallback: pinhole on bbox height.
-        rng = range_from_bbox_height(person["h"], h_img, self.a.hfov_deg,
+        rng = range_from_bbox_height(person["h"], h_img, self.a.vfov_deg,
                                      self.a.person_h_m)
         if rng is not None and rng > 0:
             return rng, "bboxH"
@@ -2836,6 +5584,72 @@ def parse_args(argv):
     p.add_argument("--topic", default=DEF_TOPIC)
     p.add_argument("--depth-topic", default="/boostercamera/head/depth",
                    help="depth image topic ('none' to disable)")
+    # ---- HEAD TRACKING (stage 3). DEFAULT OFF + byte-identical when off. -------------------
+    # off   : head is never commanded, head_yaw is FORCED to 0.0, and every bearing/corridor
+    #         expression is literally the one that shipped -- provable with replay_eval compare.
+    # audit : compute and LOG what would be commanded and what the corrections would be; send
+    #         NOTHING and apply NOTHING. This is how the numbers get checked before the head moves.
+    # on    : pan the head to keep the operator centred, correct bearing by the OBSERVED head yaw,
+    #         and shift the obstacle corridor so it keeps watching BODY-forward, not head-forward.
+    # Fails closed: head pose stale/absent in `on` -> recentre + forward vx suppressed.
+    p.add_argument("--head-probe", action="store_true",
+                   help="run a ONE-SHOT head calibration at startup (after kWalking is entered but "
+                        "before velocity is ungated, so only the head can move): command a small yaw, "
+                        "read it back on --head-pose-topic, re-centre, and log the measured "
+                        "--head-yaw-sign. Off by default. Required to trust any head feature -- "
+                        "RotateHead is mode-gated and cannot be checked on a parked robot.")
+    p.add_argument("--head-scan", choices=("off", "audit", "on"), default="off",
+                   help="STATIONARY HEAD SCAN: when the obstacle brake has fully stopped forward "
+                        "motion but the operator is still beyond the standoff, sweep the head "
+                        "across the room, sample the depth corridor at each position, re-centre, "
+                        "and pick the freest heading. Fixes the freeze case where an obstacle at "
+                        "0.4-0.6 m fills the 105.8 deg view so neither side can be judged. "
+                        "audit = sweep and log the map, commanding NO steer. on = also let the "
+                        "result break the gap-steer deadlock. YAW ONLY -- forward speed stays "
+                        "under the brake and forbid_forward, so a wrong result turns the robot on "
+                        "the spot rather than driving it at anything. Off by default.")
+    p.add_argument("--head-scan-max-deg", type=float, default=30.0,
+                   help="half-width of the sweep (deg). The bridge clamps head yaw to +/-34 deg "
+                        "regardless, so this cannot exceed the mechanical guard.")
+    p.add_argument("--head-scan-steps", type=int, default=3,
+                   help="sample positions across the sweep (forced odd so one lands dead centre). "
+                        "More positions = a finer map but a longer freeze.")
+    p.add_argument("--head-scan-settle-s", type=float, default=1.0,
+                   help="time to let the head reach a commanded position before sampling depth. "
+                        "Too short samples mid-travel and mislabels the clearance.")
+    p.add_argument("--head-scan-tol-deg", type=float, default=4.0,
+                   help="how close the OBSERVED head yaw must be to the commanded one to count as "
+                        "settled; also the centre deadband and the re-centre check.")
+    p.add_argument("--head-scan-cooldown-s", type=float, default=6.0,
+                   help="minimum gap between scans, so a persistently blocked corridor cannot make "
+                        "the robot sweep continuously instead of following.")
+    p.add_argument("--head-scan-timeout-s", type=float, default=0.0,
+                   help="hard abort for a scan that never settles (re-centres and falls back). "
+                        "0 = derive it from the sweep, which is what you want. A FIXED value is a "
+                        "trap: the first on-robot scan aborted every single time because the old "
+                        "default 8.0 was EXACTLY the worst-case sweep for 5 positions at 0.4 s "
+                        "settle (5 x settle x 4), so any position taking the slow path guaranteed "
+                        "a timeout before the re-centre could finish.")
+    p.add_argument("--head-scan-hint-ttl-s", type=float, default=8.0,
+                   help="how long a scan result may steer for. The world moves; an old map is not "
+                        "evidence about the world now, so the hint ages out rather than persisting.")
+    p.add_argument("--head-track", choices=("off", "audit", "on"), default="off",
+                   help="head tracks the operator (off|audit|on). Default off = byte-identical.")
+    p.add_argument("--head-pose-topic", default="/head_pose",
+                   help="geometry_msgs/Pose topic giving the CURRENT head orientation; subscribed "
+                        "only when --head-track is not off. Bearing correction REQUIRES it -- an "
+                        "assumed head yaw is the silent-corruption case.")
+    p.add_argument("--head-yaw-sign", type=float, default=1.0,
+                   help="+1 or -1: which way the hardware's positive head yaw turns. NOT documented "
+                        "by the SDK -- verify once with a small commanded pan and the /head_pose "
+                        "readback, then it is fixed. Getting it wrong drives the head AWAY from the "
+                        "operator, which is why head-track defaults to off and audit commands nothing.")
+    p.add_argument("--head-track-max-deg", type=float, default=30.0,
+                   help="max commanded head yaw (deg); kept inside the bridge clamp (34 deg) so "
+                        "body-forward stays well inside the 105.8 deg camera FOV.")
+    p.add_argument("--head-track-deadband-deg", type=float, default=6.0,
+                   help="do not chase bearing errors smaller than this (deg) -- stops the head "
+                        "hunting on tracker jitter.")
     p.add_argument("--odom-topic", default="",
                    help="P6.1a: planar base odometry topic (booster_interface/msg/Odometer {x,y,theta}); "
                         "'' disables (default -> no subscription, byte-identical). Recording only -- feeds "
@@ -2852,7 +5666,14 @@ def parse_args(argv):
     # control law / geometry
     p.add_argument("--standoff-m", type=float, default=DEF_STANDOFF_M)
     p.add_argument("--deadband-m", type=float, default=DEF_DEADBAND_M)
-    p.add_argument("--hfov-deg", type=float, default=DEF_HFOV_DEG)
+    p.add_argument("--hfov-deg", type=float, default=DEF_HFOV_DEG,
+                   help="camera HORIZONTAL field of view (deg). Sets the focal length behind every "
+                        "bearing: bearing = atan2(dx, (w/2)/tan(hfov/2)). MUST match the calibration "
+                        "or every steering decision is scaled wrong.")
+    p.add_argument("--vfov-deg", type=float, default=DEF_VFOV_DEG,
+                   help="camera VERTICAL field of view (deg), used for the bbox-height range fallback. "
+                        "Previously this path reused --hfov-deg against the vertical pixel count, which "
+                        "is only valid for square pixels at equal FOV -- it is not.")
     p.add_argument("--calibration", default=None,
                    help="P8.1 models/calibration.json; when its resolution matches the frame it "
                         "replaces the --hfov-deg intrinsic seed in the recorded bundle (recording-only)")
@@ -2921,15 +5742,484 @@ def parse_args(argv):
                         "toward the RERUN-DISABLED-SLOW shed -- covers model/TensorRT warmup (robot not "
                         "walking yet) so the backstop can't kill the recording during startup (default 15)")
 
+    # ---- GAP STEERING (stage 5). Routes AROUND an obstacle rather than only stopping for it.
+    # Adds YAW ONLY: forward speed stays under the brake + forbid_forward keystone, so a steer can
+    # never authorise driving at something unseen. The robot turns toward a MEASURED-clear side with
+    # vx capped, and forward resumes by itself once the rotation has put that clear sector in the
+    # centre corridor and the brake releases. A sector it cannot measure counts as BLOCKED.
+    p.add_argument("--gap-steer", choices=("off", "audit", "on"), default="off",
+                   help="steer around a blocked centre corridor toward a clear side (off|audit|on). "
+                        "audit computes+logs the bias and discards it. Default off = byte-identical.")
+    p.add_argument("--gap-steer-rate", type=float, default=0.20,
+                   help="yaw bias (rad/s) applied toward the clear side; bounded and still subject "
+                        "to the yaw slew limiter and the hard vyaw clamp.")
+    p.add_argument("--gap-steer-yaw-relax", type=float, default=0.5,
+                   help="scale the operator-tracking yaw gain WHILE a detour is committed. The"
+                        " tracking term cancels the gap bias at bearing = gap/k_yaw (~13 deg at"
+                        " defaults), so without this the robot only nudges and never routes"
+                        " around. 0.5 moves that equilibrium to ~25 deg. 1.0 disables.")
+    p.add_argument("--gap-steer-trigger-frac", type=float, default=0.80,
+                   help="how far INTO the braking zone the corridor must be before steering "
+                        "engages, as a fraction from brake-stop to brake-start. "
+                        "RAISED 0.35 -> 0.80 on 2026-09-04 so the robot commits to going AROUND "
+                        "something before it is stopped by it. Two reasons. "
+                        "(1) It is measured in a zone that MOVED: this trigger is relative, so "
+                        "narrowing obstacle-brake-start 1.5 -> 1.15 silently pulled the engage "
+                        "point from 0.98 m in to 0.86 m -- the speed fix made steering start LATER. "
+                        "(2) 0.86 m leaves only 0.16 m before the 0.7 m full stop, which at "
+                        "vx_max 0.18 is ~0.9 s and ~12 deg of heading at the 0.24 rad/s bias -- not "
+                        "enough to route around anything, so the robot stopped and then steered. "
+                        "0.80 engages at ~1.06 m: ~2 s and ~27 deg, enough to curve past. "
+                        "THE ORIGINAL 0.35 EXISTS FOR A REASON -- the first field run fired at the "
+                        "top of the zone (1.49 m), with the path still essentially clear, and "
+                        "oscillated as opposing biases cancelled. What makes a higher value safe "
+                        "now is the _gap_dir commitment added in the same fix: a chosen side is "
+                        "HELD while it stays clear instead of being re-decided every frame.")
+    p.add_argument("--gap-steer-max-bearing-deg", type=float, default=35.0,
+                   help="stop biasing further toward the frame edge the operator is already near -- "
+                        "a detour that loses the lock has failed even if it misses the obstacle.")
+    # ---- SECTOR / GAP-FOLLOWING (stage 4, AUDIT ONLY) --------------------------------------
+    # The brake watches only the central 49.7 deg of a 105.8 deg frame and discards the rest, so
+    # the free space beside an obstacle is already visible every frame and simply never consulted.
+    # 'audit' LOGS where the gaps are and which way a steering layer would go; it commands NOTHING
+    # and changes no control value. Default off = byte-identical.
+    p.add_argument("--sector-frac", type=float, default=0.33,
+                   help="width of each SIDE sector as a fraction of the frame (centre gets the"
+                        " rest). Independent of --obstacle-corridor-frac ON PURPOSE: sectors used"
+                        " to be the corridor leftovers, so widening the corridor shrank them until"
+                        " they fell under --obstacle-min-valid and the gap-steer hysteresis kept"
+                        " falling through to a fresh decision, which oscillated.")
+    p.add_argument("--sector-audit", choices=("off", "audit"), default="off",
+                   help="log per-sector (L/C/R) depth clearance and the gap a steering layer would "
+                        "pick. Observation only -- never steers.")
     # --- OBSTACLE-BRAKE reflex (Phase 3 obstacle-avoidance). DEFAULT-OFF + byte-identical when off. ---
     p.add_argument("--obstacle-brake", action="store_true",
                    help="grade forward vx down as an obstacle enters the forward DEPTH corridor "
                         "(geometry-triggered forward-clearance reflex; yaw untouched; only ever "
                         "REDUCES vx). Off by default. Composes with the forbid_forward keystone.")
-    p.add_argument("--obstacle-brake-start", type=float, default=1.5,
-                   help="corridor clearance (m) at/below which vx starts grading down")
+    p.add_argument("--obstacle-brake-start", type=float, default=1.15,
+                   help="corridor clearance (m) at/below which vx starts grading down. "
+                        "LOWERED 1.5 -> 1.15 on 2026-09-04 because the ramp was the source of the "
+                        "robot's hesitancy: the cap is vx_max*(clr-stop)/(start-stop), so at the "
+                        "measured MEDIAN clearance of 0.85 m a 1.5 start yielded 0.034 m/s -- 19% "
+                        "of full speed -- and the robot crept through open corridors. At 1.15 the "
+                        "same reading gives 0.060 m/s, +78%. Safe on its own terms: with vx_max "
+                        "0.18 and vx_slew 0.06 at 10 Hz the robot stops in about 3 cm, so 1.5 m was "
+                        "~50x its stopping distance and 1.15 m is still ~38x. "
+                        "COUPLED -- KEEP body_scan_clear_m <= THIS. _nearest_blob only considers "
+                        "returns nearer than this, and _clr_vote votes 'clear' AT this value, so a "
+                        "body_scan_clear_m above it makes 'this heading is clear' unreachable and "
+                        "silently kills the 360 escape sweep (it did exactly that until c43f161).")
     p.add_argument("--obstacle-brake-stop", type=float, default=0.7,
                    help="corridor clearance (m) at/below which forward vx is capped to 0 (turn/back only)")
+    p.add_argument("--localmap", choices=("off", "on"), default="off",
+                   help="short-horizon robot-centred occupancy memory built from depth + odometry. "
+                        "NOT a map: cells expire after --localmap-ttl-s, nothing persists across "
+                        "runs, there is no loop closure and no global frame -- which is also why "
+                        "odometry drift does not matter, since nothing lives long enough to drift. "
+                        "WHY: the obstacle layer has almost no state. _obstacle_memory holds ONE "
+                        "obstacle and wipes it on any turn past 25 deg, and the 360 body scan "
+                        "throws away everything it saw except a single heading. "
+                        "SAFETY: the memory may only ever REDUCE clearance, never raise it, so it "
+                        "can report an obstacle the live view has lost but can never clear one the "
+                        "live view sees -- a bug degrades to over-braking, not a collision. "
+                        "REQUIRES --odom-topic (defaults to '' = no subscription); without a pose "
+                        "it contributes nothing rather than placing points wrongly. Default off.")
+    p.add_argument("--localmap-res-m", type=float, default=0.10,
+                   help="cell size (m). 0.10 is well under the robot's 0.45 m width, so a cell "
+                        "cannot straddle the difference between passable and not.")
+    p.add_argument("--localmap-ttl-s", type=float, default=8.0,
+                   help="how long a cell survives unseen. This is the memory horizon AND the drift "
+                        "bound: 8 s at 0.18 m/s is ~1.4 m of travel, far less than odometry drifts "
+                        "over. Long enough to survive a body rotation, short enough that a chair "
+                        "someone moved does not haunt the robot.")
+    p.add_argument("--localmap-range-m", type=float, default=3.0,
+                   help="ignore returns beyond this when writing or reading cells")
+    p.add_argument("--localmap-stride", type=int, default=12,
+                   help="pixel subsample stride when folding a frame in. The loop is already over "
+                        "budget (measured dt p50 137-144 ms against a 100 ms target), so this is "
+                        "deliberately coarse: stride 12 on 544x448 is ~1700 points, vectorised.")
+    p.add_argument("--localmap-max-cells", type=int, default=4000,
+                   help="sweep expired cells once the dict exceeds this, so memory stays bounded "
+                        "even if the TTL sweep is starved")
+    p.add_argument("--localmap-min-hits", type=int, default=2,
+                   help="ROBUSTNESS: a cell must be observed in this many frames before it can brake. "
+                        "Filters single-frame flashes (arm swing, depth speckle) that used to slip "
+                        "into memory and pin phantom brakes at sub-self-range distance. 1 restores "
+                        "the pre-2026-09-09 behaviour.")
+    p.add_argument("--depth-hole", choices=("off", "on"), default="on",
+                   help="DEPTH-SENSOR ROBUSTNESS: detect LOCAL corridor blackouts (couch fail-open, "
+                        "glossy floor, IR-black surface) that _nodata's whole-frame check misses. "
+                        "Compares current corridor valid-pixel count against a rolling median of "
+                        "recent frames; a sharp drop -> forward forbidden (yaw free), same posture "
+                        "as _nodata's blind path. Only fires once a baseline exists. Additive on "
+                        "top of _nodata and self-range gating; localmap can only tighten, not "
+                        "release. off restores the pre-2026-09-09 behaviour (whole-frame blind only).")
+    p.add_argument("--depth-hole-history-frames", type=int, default=30,
+                   help="rolling window length for the corridor-valid baseline. 30 = ~3s at 10Hz.")
+    p.add_argument("--depth-hole-baseline-frames", type=int, default=10,
+                   help="minimum recent frames before the hole check can fire, so the first second "
+                        "of a follow is never held.")
+    p.add_argument("--depth-hole-min-baseline-px", type=int, default=200,
+                   help="minimum recent-median valid-pixel count that qualifies as a real baseline. "
+                        "Prevents the check from tripping when the baseline is naturally sparse "
+                        "(empty room, target far away).")
+    p.add_argument("--depth-hole-ratio", type=float, default=0.25,
+                   help="current corridor valid-pixels must fall BELOW ratio*median to be a hole. "
+                        "0.25 = a 4x drop. Lower = more sensitive; too low fires on natural depth "
+                        "flicker.")
+    p.add_argument("--dark-obstacle-frames", type=int, default=5,
+                   help="COUCH/DARK-FABRIC classifier. After this many consecutive DEPTH-HOLE frames "
+                        "(default 5 = 0.5s at 10Hz), the corridor is CLASSIFIED as a persistent "
+                        "fail-open surface (couch, dark chair, black fabric). Logs DARK-OBSTACLE and "
+                        "widens gap-steer's allowed detour bearing so a 2m-long couch can be routed "
+                        "around from a viewpoint the normal 40deg edge can't reach past.")
+    p.add_argument("--dark-obstacle-widen-deg", type=float, default=60.0,
+                   help="widened gap-steer max bearing edge while DARK-OBSTACLE is active. Reverts to "
+                        "--gap-steer-max-bearing-deg the instant the depth-hole streak clears.")
+    p.add_argument("--yolo-trt", choices=("off", "on"), default="off",
+                   help="PERF: run YOLO detection on onnxruntime's TensorRT EP at FP16 instead of "
+                        "the CUDA EP ultralytics picks by default. Measured on the Orin 2026-09-10: "
+                        "predict p50 25.4 -> 14.6 ms (1.73x); raw forward 20.1 -> 7.35 ms (2.51x). "
+                        "Verified numerically equivalent at the operating conf 0.35 -- 7/7 boxes "
+                        "matched at IoU>=0.5, worst corner delta 0.29 px, identical person counts. "
+                        "REQUIRES a pre-built engine in --yolo-trt-cache: a cold build measured "
+                        "574s, so this refuses to build inline and falls back to CUDA instead of "
+                        "stalling startup. Fail-safe: any problem keeps the default CUDA session.")
+    p.add_argument("--yolo-trt-cache", default="/home/booster/trt_cache",
+                   help="directory holding the cached TensorRT engine for --yolo-trt. Engines are "
+                        "keyed by graph hash + precision + SM arch, so a changed model, JetPack or "
+                        "GPU misses the cache and falls back rather than loading a stale engine.")
+    p.add_argument("--gap-profile", choices=("off", "on"), default="on",
+                   help="FOLLOW-THE-GAP steering. Replaces the 3-sector binary clear/blocked test "
+                        "with an angular free-space profile: bins the depth frame by column, finds "
+                        "contiguous passable runs, converts each run's angular extent to a METRIC "
+                        "width at its own range, discards any opening narrower than the robot's "
+                        "swept width + margin, and steers PROPORTIONALLY toward the least-detour "
+                        "survivor. Fixes three field failures the sector test could not: a gap "
+                        "straddling two sectors reads blocked; one near object masks open space "
+                        "across the rest of its third; and 'clear at range' was never checked "
+                        "against whether the robot actually FITS. When no usable gap is found it "
+                        "does NOT fall back to the sector logic (full-rate, no width test): yaw "
+                        "stays 0 and the brake governs vx, except when critically blocked "
+                        "(--gap-critical-m) -- then it turns toward the widest rejected opening "
+                        "at no more than half --gap-steer-rate.")
+    p.add_argument("--gap-fit-margin-m", type=float, default=0.12,
+                   help="EXTRA clearance a --gap-profile opening must have beyond the robot's swept "
+                        "width + --corridor-margin-m before it is accepted. Its own knob on purpose: "
+                        "--corridor-margin-m also sets the BRAKE corridor half-width, so raising "
+                        "that to be pickier about gaps would widen the brake corridor and cause more "
+                        "phantom braking. Field-observed 2026-09-09: gaps of 0.81-0.97 m accepted "
+                        "against a 0.80 m requirement -- threading needles. 0 restores the old fit.")
+    p.add_argument("--yaw-cross-dwell-ticks", type=int, default=2,
+                   help="GAIT: when the yaw command wants to change SIGN, send exactly 0.0 for "
+                        "this many ticks first. A tick is ~170-200 ms == about one step cycle, "
+                        "and the bridge forwards MoveCommand raw, so the step straddling a "
+                        "reversal is told to turn opposite its planned foot placement -- the "
+                        "\"stanky leg\". Measured 2026-09-09: 40 vyaw sign reversals in 789 "
+                        "ticks, 34 with NO matching operator-bearing reversal. Only ever "
+                        "REDUCES |vyaw|; a near-rail (urgent) turn bypasses it so a "
+                        "lock-saving rotation is never withheld. 0 disables (diff-empty).")
+    p.add_argument("--gesture-dwell-s", type=float, default=2.0,
+                   help="PERF: once a lock has existed, wait this long in a stationary state "
+                        "before running the gesture pose model again. Pose costs 111 ms p50 / "
+                        "568 ms p99 against a 100 ms budget, and it used to fire the instant "
+                        "the follow blipped to SEARCH -- 187 SEARCH entries vs 2 real losses "
+                        "in one run. A momentary loss is re-IDs job, not a gesture. Does NOT "
+                        "apply before the first lock, when the operator is deliberately "
+                        "waiting to be locked onto. 0 disables.")
+    p.add_argument("--gap-critical-m", type=float, default=0.85,
+                   help="GAP: corridor clearance at or below which the robot counts as "
+                        "CRITICALLY blocked (default 0.85 = obstacle-brake-stop 0.70 + 0.15, "
+                        "i.e. inside the stop band's shoulder with forward motion already "
+                        "near zero). While critical the detour cap widens to "
+                        "--gap-critical-detour-deg and GAP-YIELD stands aside, because the "
+                        "alternative has become stopping dead against the obstacle. Measured "
+                        "2026-09-10: ~25 consecutive samples at 0.75-0.80 m / vx-cap 0.02 "
+                        "with every guard independently discarding the only available gap. "
+                        "Only ever WIDENS what gap steer may consider; vx stays the brake's "
+                        "business so it cannot authorise forward motion. <=0 disables.")
+    p.add_argument("--gap-critical-detour-deg", type=float, default=90.0,
+                   help="GAP: detour cap while CRITICALLY blocked (see --gap-critical-m). A "
+                        "large detour risks the lock, but SEARCH re-acquires a lost lock "
+                        "(3/3 in the 2026-09-10 run) and nothing recovers a robot wedged "
+                        "against furniture. The operator-out-of-frame guard "
+                        "(--gap-steer-max-bearing-deg) is separate and still bounds this.")
+    p.add_argument("--gap-horizon-m", type=float, default=1.375,
+                   help="GAP: range at which gap STEERING treats the path as blocked, "
+                        "decoupled from --obstacle-brake-start (which keeps grading vx and is "
+                        "NOT changed). The engage point is this interpolated down by "
+                        "--gap-steer-trigger-frac, so 1.375 with frac 0.80 engages at 1.24 m "
+                        "with 0.54 m of runway -- 50%% more than the 0.36 m the old "
+                        "brake-coupled rule allowed (operator request 2026-09-10). In effect it "
+                        "engages on ANY real corridor detection: the engage point is capped just "
+                        "under --obstacle-brake-start, because the corridor never reports more "
+                        "(a clear frame votes exactly that value). The frac "
+                        "is clamped to 1.0, so the old rule could not exceed brake_start "
+                        "1.15 m at all, and raising brake_start is refused because at "
+                        "band-bot 0.75 the floor returns from 1.98 m and would be braked on. "
+                        "This also raises the profile passability bar, which MUST move with "
+                        "the trigger: otherwise the centre reads passable at the engage range "
+                        "and the forward-gap deadband stands the detour down. <=0 restores "
+                        "the legacy coupled behaviour exactly.")
+    p.add_argument("--gap-steer-deadband-deg", type=float, default=8.0,
+                   help="GAP: treat a gap within this many degrees of body-forward as "
+                        "\"straight on\" rather than a detour -- stand down, clear the "
+                        "commitment, and hand full yaw back to the tracker. Measured "
+                        "2026-09-10: 5 of 14 profile hits reported forward open at "
+                        "1.89-2.92 m wide while the corridor called the centre blocked, "
+                        "yielding a ~0.004 rad/s command that still halved k_yaw (the "
+                        "relax keys off non-zero) and latched a 2 s hold on the sign of "
+                        "noise, with the operator 19-28 deg off-axis. False cases sat at "
+                        "0-1 deg and every true detour at 19-38 deg, so 8 deg splits them "
+                        "with room. Only ever REDUCES |vyaw|. 0 disables (diff-empty).")
+    p.add_argument("--gap-steer-yield-deg", type=float, default=34.0,
+                   help="past this operator bearing, gap-steer yields its yaw bias to the tracker. "
+                        "Set just INSIDE the yaw saturation point (vyaw_max/k_yaw = 0.30/0.477 = "
+                        "36.0 deg): beyond it the tracking term is railed and has no authority "
+                        "left, so any added bias only delays re-centring and feeds the yaw limit "
+                        "cycle. Field-observed 2026-09-10: 'GAP-STEER bias +0.24 (bearing +37deg)' "
+                        "steering LEFT while the operator was 37 deg RIGHT. Only ever removes "
+                        "bias, never adds; the brake still governs vx.")
+    p.add_argument("--gap-max-detour-deg", type=float, default=60.0,
+                   help="a --gap-profile gap is only considered when its centre bearing is within "
+                        "this angle of the OPERATOR's bearing. Without it the layer picks any wide "
+                        "gap once the operator's own line is too narrow to fit, and steers away "
+                        "from the person it is following (field-observed: gap -44deg chosen with "
+                        "the operator at -6deg). When no gap is within the cone the profile "
+                        "returns nothing and the brake stops the robot, which is the honest "
+                        "answer rather than detouring somewhere irrelevant.")
+    p.add_argument("--gap-profile-bins", type=int, default=48,
+                   help="angular bins across the frame for --gap-profile. 48 over a 105.8 deg FOV "
+                        "is ~2.2 deg per bin. More bins = finer gaps resolved, more per-frame cost "
+                        "on a loop already near budget.")
+    p.add_argument("--gap-steer-commit-s", type=float, default=2.0,
+                   help="SIDE-STEP SMOOTHER: once gap-steer commits to a detour direction, hold "
+                        "it for at least this many seconds regardless of frame-to-frame sector-"
+                        "clearance flips. Prevents the flapping side-steps that come from a "
+                        "person's arm swinging through the committed sector's read or from "
+                        "sector-clearance speckle. 0 = original frame-by-frame behaviour.")
+    p.add_argument("--rerun-never-shed", choices=("off", "on"), default="on",
+                   help="RECORDING RELIABILITY: suppresses both auto-disable paths for the Rerun "
+                        "sink -- the SLOW-LOOP shed (RERUN-DISABLED-SLOW after N over-budget "
+                        "frames) AND the k1_rerun 20-fault auto-disable. Recording stays alive for "
+                        "the entire run. Follow loop is unaffected either way: every k1_rerun call "
+                        "site wraps in try/except so a broken sink still cannot stall the loop, "
+                        "only miss log entries. off restores the pre-2026-09-09 behaviour where a "
+                        "chronically overloaded loop closes the .rrd mid-run.")
+    p.add_argument("--follow-yaw-deadband-deg", type=float, default=1.5,
+                   help="ROBUSTNESS: bearing under this magnitude contributes 0 to the follow "
+                        "yaw term. Rejects tracker centroid jitter (measured at ~13%% of frames "
+                        "swinging >2 deg frame-to-frame in the 2026-09-09 field run) that used "
+                        "to feed straight through as yaw twitch. 0 disables the deadband.")
+    p.add_argument("--localmap-max-turn-deg", type=float, default=15.0,
+                   help="ROBUSTNESS: wipe the localmap when the robot yaws more than this since the "
+                        "last update. World-fixed cells slide out of the corridor faster than odom "
+                        "can track them under drift on a spin; the wipe prevents last-frame cells "
+                        "from becoming phantom obstacles ahead after a rotation. Matches the "
+                        "--obstacle-memory-max-turn-deg posture on the single-obstacle memory.")
+    p.add_argument("--map-assist", default="",
+                   help="ASSISTIVE prebuilt-map layer (Aurora 3D .ply, map frame). It NEVER brakes on "
+                        "its own: it only REINFORCES a live-depth obstacle the local avoidance already "
+                        "sees at the same range (within --map-assist-confirm-m); a map obstacle the "
+                        "live view does not confirm is discarded, and it never releases the brake. Pose "
+                        "is the robot's OWN odometry (--odom-topic), not the Aurora. Empty = off.")
+    p.add_argument("--map-assist-confirm-m", type=float, default=0.5,
+                   help="a map obstacle counts only when the live clearance is within this of it")
+    p.add_argument("--map-assist-odom-wait-s", type=float, default=30.0,
+                   help="with --map-assist, REFUSE to drive until a fresh pose is confirmed on "
+                        "--odom-topic within this many seconds (the Aurora bridge must be relocalized). "
+                        "Fail-closed: on timeout the drive aborts rather than running map-assist inert.")
+    p.add_argument("--map-change", choices=("off", "on"), default="off",
+                   help="OBSERVATION-ONLY map-change manager: record where the live view stops "
+                        "matching the --map-assist prior, and document it in a cross-run ledger. "
+                        "It CHANGES NO DECISION -- map-assist stays primary and its min()-only "
+                        "reinforcement is untouched; nothing in the control path reads this. Needs "
+                        "--map-assist AND a MAP-frame --odom-topic (/aurora_odom); inert otherwise. "
+                        "Off by default, so decisions are byte-identical unless explicitly enabled. "
+                        "See docs/MAP_CHANGE_PLAN.md.")
+    p.add_argument("--map-change-stride", type=int, default=5,
+                   help="observe every Nth depth frame. Findings need persistence across seconds, "
+                        "not every frame, so there is no reason to pay the cost at full rate.")
+    p.add_argument("--map-change-min-votes", type=int, default=8,
+                   help="observations a cell needs before it can be part of a finding")
+    p.add_argument("--map-change-min-parallax-deg", type=float, default=25.0,
+                   help="a cell must be seen changed from viewpoints at least this far apart. This "
+                        "is what rejects BODY-FIXED artifacts (arm/rig/self-occlusion): they hold a "
+                        "constant robot-relative position, so in the map frame they smear across "
+                        "cells as the robot moves and can never accumulate in one.")
+    p.add_argument("--map-change-min-prior-support", type=int, default=3,
+                   help="raw map points a cell needs before it may be reported as VANISHED. Aurora "
+                        "maps carry a tail of stray single-point landmarks that are never pruned "
+                        "(force_map_global_optimization is device-blocked); walking through where "
+                        "one appears to be otherwise reports it as a change in the world.")
+    p.add_argument("--map-change-report-s", type=float, default=60.0,
+                   help="seconds between in-run map-change summaries (minimum 5)")
+    p.add_argument("--map-change-dir", default="/home/booster/map_changes",
+                   help="directory for the cross-run change ledger, one JSON per map")
+    p.add_argument("--ground-reject", choices=("off", "on"), default="off",
+                   help="drop blobs that are the FLOOR seen obliquely rather than an object. The "
+                        "hit box assumes a level camera; the real pitch is ~10 deg, and the "
+                        "resulting z*sin(pitch) error tilts the floor plane up into the height "
+                        "window -- measured as 0.43-0.80 m clearances on open floor with vx capped "
+                        "to zero. Rather than correct a pitch that could not be measured (only 4 of "
+                        "~1000 archived frames give a confident ground fit, and no recording before "
+                        "cfdcb14 carries the head pose), this uses the SHAPE: a plane seen obliquely "
+                        "has height strongly correlated with depth, a compact object does not. "
+                        "DEFAULT OFF -- validated against two recordings only, and a tabletop is "
+                        "also a plane. Turn it on deliberately and watch for GROUND-REJECT lines.")
+    p.add_argument("--ground-corr", type=float, default=-0.60,
+                   help="corr(depth,height) below which a blob is the ground. Measured: floor "
+                        "-0.76..-0.94, near objects +0.45..+0.96 -- opposite signs, no overlap. "
+                        "The default sits at the conservative end of the floor's own range.")
+    p.add_argument("--ground-min-px", type=int, default=500,
+                   help="a blob must ALSO be at least this large to be called ground. The real "
+                        "floor fills the corridor (thousands of px); the archive also holds 24-131 "
+                        "px blobs at corr -0.89..-0.97 that could not be confidently labelled "
+                        "floor-or-object, and this keeps every one of them braking. A missed floor "
+                        "rejection costs a stall; a wrong one costs a collision.")
+    p.add_argument("--corridor-mode", choices=("frac", "footprint"), default="frac",
+                   help="how the forward corridor is defined. frac = a fixed fraction of the IMAGE "
+                        "(--obstacle-corridor-frac), whose PHYSICAL width scales with range: at "
+                        "0.55 it spans 0.58 m at 0.4 m but 5.09 m at 3.5 m, so the brake fires for "
+                        "furniture metres off the shoulder. footprint = keep only depth points "
+                        "within the ROBOT'S OWN width (--robot-width-m) plus --corridor-margin-m of "
+                        "the centreline, which narrows with range and widens up close -- the shape "
+                        "the robot actually sweeps. Default frac (unchanged behaviour).")
+    p.add_argument("--robot-width-m", type=float, default=0.45,
+                   help="the robot WIDEST STATIC EXTENT in m -- arms and hands included, NOT "
+                        "shoulder width. The operator observed the robot clipping its HANDS during "
+                        "avoidance, which is what a torso-width value produces: the hands sit "
+                        "outside the sensed corridor. 0.45 is a shoulder-width ESTIMATE with no "
+                        "measured source -- measure the arm span and set it.")
+    p.add_argument("--camera-height-m", type=float, default=0.86,
+                   help="height of the depth camera above the floor (m). Measured by floor-plane "
+                        "fit; the URDF puts head_pitch 0.747 m above the feet, with the camera "
+                        "mounted above that. Sets the datum for every height test, so an error "
+                        "here shifts the whole hit box vertically.")
+    p.add_argument("--robot-height-m", type=float, default=1.00,
+                   help="top of the robot's collision volume above the floor (m). Anything taller "
+                        "than this passes overhead and is not a collision.")
+    p.add_argument("--body-scan", choices=("off", "on"), default="off",
+                   help="when stopped with no heading the head can reach, rotate in place through "
+                        "a full turn sampling free space per heading, then face the freest one. "
+                        "From 0.35 m off a wide obstacle the escape sits ~68 deg off-centre, "
+                        "outside BOTH the head sweep (+/-23 deg) and the camera half-field (52.9), "
+                        "so only turning the body can find it. Rotating is not blind -- unlike "
+                        "reversing, the robot sees everything it turns past. No map is kept: the "
+                        "samples are discarded after the decision. Off by default (new motion).")
+    p.add_argument("--body-scan-yaw", type=float, default=0.30,
+                   help="sweep rate (rad/s) for the body scan.")
+    p.add_argument("--body-scan-max-rev", type=float, default=1.0,
+                   help="revolutions to sweep before deciding. 1.0 = a full 360.")
+    p.add_argument("--head-scan-move-m", type=float, default=0.30,
+                   help="after a sweep finds NO clear heading, refuse to sweep again until the "
+                        "robot has moved at least this far (or the way ahead clears). Repeating a "
+                        "fruitless scan from the same pose returns the same answer at the cost of "
+                        "holding the robot still -- a scan that DOES find a way clears the backoff "
+                        "immediately, so the useful stop-scan-steer path is never penalised. "
+                        "Fails OPEN without odometry (odom_topic defaults to ''): a needless sweep "
+                        "is cheap, a permanently disabled escape is not.")
+    p.add_argument("--head-scan-dwell-s", type=float, default=2.0,
+                   help="the way ahead must stay blocked CONTINUOUSLY for this long before the head "
+                        "scan starts. 0 = the shipped behaviour (scan on the first blocked frame). "
+                        "WHY: stops flicker -- CLEARANCE, then blob=0px clear, then CLEARANCE -- so "
+                        "a momentary stop launched a full sweep, and the robot scanned constantly "
+                        "and mostly aborted mid-sweep when the state changed under it (16 starts, "
+                        "most 'ABORT orphaned', in one 300 s run). A real obstacle keeps the block "
+                        "up; flicker does not. Try 2.0. "
+                        "NOTE this is the right lever, not a distance gate: --obstacle-brake-stop "
+                        "already caps vx to zero at 0.7 m, so the robot never gets nearer than that "
+                        "and a tighter range trigger would never fire at all.")
+    p.add_argument("--body-scan-clear-m", type=float, default=1.15,
+                   help="a heading must reach this clearance to be worth turning to. If nothing "
+                        "does in a whole revolution the robot is genuinely enclosed and the scan "
+                        "defers to the brake rather than picking the least-bad direction. "
+                        "MUST BE <= --obstacle-brake-start: clearance can never exceed that value "
+                        "(_nearest_blob discards farther returns, _clr_vote votes clear AT it), so "
+                        "a larger value here is not 'stricter', it is UNREACHABLE and disables the "
+                        "escape sweep entirely. Enforced by sector_selftest.")
+    p.add_argument("--body-scan-timeout-s", type=float, default=30.0,
+                   help="hard abort for a sweep that never completes.")
+    p.add_argument("--body-scan-cooldown-s", type=float, default=15.0,
+                   help="minimum gap between sweeps, so it cannot spin repeatedly.")
+    p.add_argument("--reverse-when-stuck", choices=("off", "on"), default="off",
+                   help="back off when fully stopped with NO clear heading. At 0.35 m from a wide "
+                        "obstacle the gap sits ~68 deg off-centre, beyond both the head sweep "
+                        "(+/-23 deg) and the camera half-field (52.9 deg), so no scan can find it "
+                        "from there -- measured as every scan direction returning 0.33-0.41 m. "
+                        "Backing up to ~1 m puts the same edge near 45 deg, in view. REVERSING IS "
+                        "BLIND (no rear sensor), so it only ever RETRACES ground just walked "
+                        "forward. Off by default -- this is new motion.")
+    p.add_argument("--reverse-speed", type=float, default=0.05,
+                   help="reverse speed (m/s, magnitude). Deliberately slower than forward: the "
+                        "robot cannot see behind itself.")
+    p.add_argument("--reverse-max-m", type=float, default=0.35,
+                   help="hard cap on one back-off. The real bound is the RETRACE distance (how far "
+                        "it advanced since the way ahead was last clear); this is the second belt.")
+    p.add_argument("--reverse-timeout-s", type=float, default=8.0,
+                   help="abort a back-off that has not finished in this long.")
+    p.add_argument("--reverse-cooldown-s", type=float, default=10.0,
+                   help="minimum gap between back-offs, so it cannot oscillate forward and back.")
+    p.add_argument("--obstacle-memory-s", type=float, default=2.0,
+                   help="how long an unseen obstacle is carried forward by dead reckoning (s). "
+                        "0 disables the memory. The robot has none otherwise: an obstacle tracked "
+                        "from 1.0 m to 0.5 m vanishes over the last 20 cm of the approach, which "
+                        "is where contact happens. Memory may only ever LOWER a clearance -- the "
+                        "minimum of live and remembered is used -- so a stale memory costs a "
+                        "needless stop and can never authorise motion.")
+    p.add_argument("--obstacle-memory-max-turn-deg", type=float, default=25.0,
+                   help="forget the remembered obstacle once the robot has turned this far since "
+                        "seeing it. The estimate is forward-only, and after a turn what was ahead "
+                        "is no longer ahead.")
+    p.add_argument("--self-mask", default="",
+                   help="path to a boolean .npy from selfmask.py marking the robot's OWN depth "
+                        "pixels. Position beats range here: the body returns 0.22-0.35 m, the same "
+                        "distances a real obstacle occupies, so no --obstacle-self-range-m value "
+                        "separates them. Empty = off (range cut only). A path that will not load "
+                        "is fatal, not ignored.")
+    p.add_argument("--obstacle-self-range-m", type=float, default=0.65,
+                   help="ignore depth returns nearer than this (m) -- that close, the camera is "
+                        "looking at the ROBOT, not the world. The head camera sits at 0.86 m with a "
+                        "94.9 deg vertical FOV, so its lower rows see the robot's own chest and "
+                        "arms; with hands at 0.67 m and chest near 0.8 m they land inside the hit "
+                        "box and it detects itself. Measured in the field as a clearance pinned at "
+                        "0.15-0.20 m on every frame, vx capped to zero, the robot turning on the "
+                        "spot and never walking. The old row band hid this by accident. "
+                        "RAISED 0.45 -> 0.65 on 2026-09-09 field-run. Arm blind shell measured at "
+                        "0.36-0.53 m, so 0.45 let 0.50-0.55 m arm swing through as blobs which fed "
+                        "the localmap; secondary posture then legitimately refined live brakes onto "
+                        "phantom arm cells at 0.32-0.55 m. 0.65 m covers the full arm-shell envelope. "
+                        "Cost: robot cannot see anything closer than 0.65 m -- fine because standoff "
+                        "is 0.7 m; nothing legitimately gets closer during a follow. "
+                        "RAISED 0.22 -> 0.45 on 2026-09-04. 0.22 was set from one session where "
+                        "self-returns never exceeded 0.20 m, and a blunt 0.35 was rejected then for "
+                        "'blinding the robot to real obstacles at 0.25-0.30 m'. Recorded depth says "
+                        "those were the ARM, not obstacles -- the same misreading that had the "
+                        "0.5-1.0 m floor returns down as speckle. Replaying the archive, raising the "
+                        "cut to 0.45 (and 0.50) suppresses 255 blobs and 255 of 255 sit in the "
+                        "left-edge arm region, centroid column 27 of 544; in a run where the arm was "
+                        "not in view it suppresses nothing at all. Field cost of leaving it at 0.22: "
+                        "109 of 173 clearance readings were the arm, every one a full stop. "
+                        "THE COST OF THIS SETTING: the robot is blind inside 0.45 m. That is only "
+                        "safe because the brake stops at 0.7 m, so nothing should legitimately get "
+                        "closer -- but the couch false-negative (DECISIONS.md) is exactly the case "
+                        "where it does not stop, and then nothing catches it. This is a STOPGAP for "
+                        "--self-mask, which excludes the body by POSITION and costs no close range.")
+    p.add_argument("--floor-margin-m", type=float, default=0.06,
+                   help="ignore returns below this height (m) -- that is the floor. Doing it by "
+                        "GEOMETRY is what lets the row band be dropped entirely: the old fixed "
+                        "band_bot existed to keep the floor out of frame, and capping it is what "
+                        "made the hit box go blind at hand height up close.")
+    p.add_argument("--robot-length-m", type=float, default=0.35,
+                   help="the robot's front-to-back depth (m). Used with --robot-width-m to get the "
+                        "CIRCUMSCRIBED radius hypot(w/2, l/2), which is the half-width the robot "
+                        "actually sweeps while ROTATING -- and it detours by rotating, so this is "
+                        "the number that governs clipping something on the way past.")
+    p.add_argument("--corridor-margin-m", type=float, default=0.15,
+                   help="clearance added EACH SIDE of the robot width in footprint mode, covering "
+                        "gait sway, depth noise and tracking error. Total swept width is "
+                        "robot_width + 2 x margin.")
     p.add_argument("--obstacle-corridor-frac", type=float, default=0.35,
                    help="central fraction of image WIDTH treated as the forward corridor")
     p.add_argument("--obstacle-band-top", type=float, default=0.30,
@@ -2940,9 +6230,17 @@ def parse_args(argv):
                    help="ignore corridor depth beyond this (m)")
     p.add_argument("--obstacle-pctile", type=float, default=8.0,
                    help="robust-near percentile of corridor depth (not raw min -> glitch-resistant)")
+    p.add_argument("--obstacle-min-blob-px", type=int, default=12,
+                   help="minimum CONTIGUOUS pixels for a depth return to count as an obstacle. "
+                        "Replaces the bare --obstacle-min-valid count, which treated scattered "
+                        "speckle the same as a solid chair and therefore had to be set high (70) "
+                        "to reject noise -- which is what made sparse-but-real scenes fall through "
+                        "to the no-data path. A connected blob is a far better object test, so this "
+                        "can be ~5x smaller and still be more selective. --obstacle-min-valid is "
+                        "still used for the frame-health check and as the no-scipy fallback.")
     p.add_argument("--obstacle-min-valid", type=int, default=40,
                    help="min valid corridor depth pixels to trust a clearance reading")
-    p.add_argument("--obstacle-aged", type=int, default=3,
+    p.add_argument("--obstacle-aged", type=int, default=7,
                    help="aged-median window (frames) over the clearance -> a single glitch can't brake")
     p.add_argument("--obstacle-target-margin", type=float, default=0.4,
                    help="don't brake unless the corridor obstacle is at least this much CLOSER than "
@@ -3142,6 +6440,17 @@ def parse_args(argv):
     p.add_argument("--hb-stale-ms", type=int, default=400,
                    help="heartbeat older than this (ms) = operator absent -> stop (this node's gate; "
                         "the bridge applies its own HB_STALE_MS/HB_PREP_MS tiers independently)")
+    p.add_argument("--allow-unbounded-drive", action=argparse.BooleanOptionalAction, default=False,
+                   help="permit --drive with NO session cap (--max-seconds 0), for long capture "
+                        "runs that should record until the operator stops them. DELIBERATELY "
+                        "SEPARATE from --allow-untethered-unsafe: that flag waives the operator "
+                        "DEADMAN, which is a far larger concession than waiving a timer, and "
+                        "nobody should have to give up the deadman to get unlimited recording "
+                        "time. With --require-heartbeat armed the deadman IS the bound -- the "
+                        "robot stops the moment the operator's heartbeat goes stale, whatever the "
+                        "clock says -- so an unbounded session is genuinely held by active "
+                        "consent rather than by a timeout. Refused by default so an unbounded "
+                        "drive is always an explicit choice.")
     p.add_argument("--allow-untethered-unsafe", action=argparse.BooleanOptionalAction, default=False,
                    help="DANGEROUS override: permit --drive WITHOUT --require-heartbeat (no operator "
                         "deadman). Default off -> such a config is REFUSED at startup. Only for a "
@@ -3271,9 +6580,14 @@ def parse_args(argv):
     p.add_argument("--gesture-overrun-frames", type=int, default=5,
                    help="consecutive over-budget frames WITH pose inference active before the "
                         "gesture trigger auto-disables (degrade before the C++ watchdog must safe)")
-    p.add_argument("--gesture-every-n", type=int, default=3,
-                   help="in --lock-trigger both, run pose inference every Nth frame (audit "
-                        "decimation so it cannot starve the live ArUco control loop)")
+    p.add_argument("--gesture-every-n", type=int, default=0,
+                   help="run pose inference every Nth frame. 0 = auto: 1 in --lock-trigger gesture "
+                        "(pose IS the trigger), 3 in both (audit decimation so it cannot starve the "
+                        "live ArUco loop). Until now the value was IGNORED in gesture mode -- the "
+                        "only mode in use -- so this lever did not exist. Pose is the single largest "
+                        "stage at 64-83 ms p50 and runs only in SEARCH/REACQUIRE/PARKED, so raising "
+                        "this cuts the SEARCH-phase loop tail (which is what trips the bridge "
+                        "staleness tiers) at the cost of slower gesture acquisition.")
     p.add_argument("--gesture-stop", action=argparse.BooleanOptionalAction, default=False,
                    help="in-follow STOP gesture: the FOLLOWED person raising BOTH hands commands "
                         "WAIT (HOLD). DE-ESCALATING only (never motion). Runs pose DECIMATED in "
@@ -3368,6 +6682,25 @@ def parse_args(argv):
     # explicit unsafe override. Fires HERE (parse_args) before Follower/rclpy.init/CamNode/YOLO/
     # bridge -- so no motion path is ever spawned for an untethered-unsafe config. Inverts today's
     # dangerous default (drive silently ran with the deadman OFF). Preview is unaffected.
+    # UNLIMITED SESSION + DRIVE is fail-closed (2026-09-10). max_seconds <= 0 removes the session
+    # runaway bound, which is exactly what a data-capture run wants -- but on a DRIVING robot it
+    # also removes the last time-based backstop, so it must be a deliberate choice rather than a
+    # profile side effect. Preview is unaffected: with no bridge the node cannot command velocity,
+    # so an unbounded preview/controller run is free. Mirrors the deadman gate below, and fires
+    # here (before Follower/rclpy/YOLO/bridge) so no motion path is spawned for such a config.
+    if args.drive and args.max_seconds <= 0 and not args.allow_unbounded_drive:
+        p.error("REFUSING TO DRIVE: --max-seconds %g removes the session watchdog. Pass "
+                "--allow-unbounded-drive to record until you stop it (keep --require-heartbeat "
+                "armed -- the deadman then IS the bound), or set a positive --max-seconds."
+                % args.max_seconds)
+    # An unbounded drive with NO deadman has neither a time bound nor an operator bound. That
+    # combination needs both overrides, and it is worth refusing loudly rather than letting the two
+    # independently-reasonable flags silently compose into a robot nothing will stop.
+    if (args.drive and args.max_seconds <= 0 and not args.require_heartbeat
+            and not args.allow_untethered_unsafe):
+        p.error("REFUSING TO DRIVE: unbounded session AND no operator deadman -- nothing bounds "
+                "this run in time or by consent. Arm --require-heartbeat (recommended: the "
+                "heartbeat becomes the bound), or set a positive --max-seconds.")
     if args.drive and not args.require_heartbeat and not args.allow_untethered_unsafe:
         p.error("REFUSING TO DRIVE: --drive without --require-heartbeat is untethered-unsafe "
                 "(no operator deadman -- a lost operator cannot stop the robot). Add "

@@ -1,0 +1,505 @@
+#!/usr/bin/env python3
+"""Headless selftest for the SPATIAL obstacle layer: sector clearances, gap-steer commitment,
+and the operator-is-not-an-obstacle exclusion. No robot, no motion, no camera.
+
+WHY THIS EXISTS. These behaviours all shipped VERIFY ON ROBOT with no offline coverage, because
+replay_eval injected depth as a UNIFORM plane -- on which _sector_clearances() returns L == C == R
+by construction, so "centre blocked AND a side clear" is unsatisfiable and gap steer can never
+fire. This drives the functions directly with a synthetic piecewise depth frame instead, which is
+the same shape the piecewise replay stub now produces.
+
+Cases:
+  1 open      -- everything far            -> no steer (path clear releases the commitment)
+  2 detour    -- centre near, LEFT far     -> commits LEFT (+rate)
+  3 boxed in  -- centre near, sides unread -> no steer (fail closed: cannot see != nothing there)
+  4 hysteresis-- committed side holds even when both sides are open
+  5 operator  -- the near return IS the followed target -> no steer (regression for the
+                 operator-exclusion fix; gap steer used to route around the person it followed)
+
+Usage:  python sector_selftest.py [--node <follow_person_k1.py>]
+"""
+import random
+import argparse
+import importlib.util
+import math
+import os
+import sys
+
+import numpy as np
+
+NODE_DEFAULT = "/home/booster/follow_person_k1.py"
+
+
+def load(node_path):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(node_path)))
+    spec = importlib.util.spec_from_file_location("follow_person_k1", node_path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    m.log = lambda *a, **k: None
+    return m
+
+
+class FakeNode:
+    """Only the accessors the obstacle layer touches. Depth is authored per column band."""
+
+    def __init__(self, left, centre, right, h=448, w=544):
+        self.d = np.full((h, w), float("nan"), dtype=np.float32)
+        cut = int(w / 3)
+        for lo, hi, v in ((0, cut, left), (cut, w - cut, centre), (w - cut, w, right)):
+            self.d[:, lo:hi] = float("nan") if v is None else float(v)
+
+    def latest_depth(self, max_age=0.5):
+        return self.d
+
+    def head_yaw(self, max_age=0.5):
+        return None          # head unknown -> the layer must not apply a pan shift
+
+
+def build(m, extra=()):
+    argv = ["--obstacle-brake", "--gap-steer", "on",
+            "--obstacle-corridor-frac", "0.55", "--sector-frac", "0.33",
+            "--obstacle-min-valid", "70", "--obstacle-brake-start", "1.5",
+            "--obstacle-brake-stop", "0.7", "--gap-steer-trigger-frac", "0.65",
+            "--gap-steer-rate", "0.24", "--gap-steer-max-bearing-deg", "35"] + list(extra)
+    return m.Follower(m.parse_args(argv))
+
+
+def sectors(f, left, centre, right):
+    f.node = FakeNode(left, centre, right)
+    return f._sector_clearances()
+
+
+def live_session():
+    """True if a follow session is actually DRIVING the robot.
+
+    The obvious check is a self-match trap, and it caught me: this script is invoked as
+    `sector_selftest.py --node .../follow_person_k1.py`, so its own command line contains the node
+    filename and `pgrep -f` matched THIS PROCESS. The bracket trick does not help -- it stops the
+    pattern text from matching itself, not the real path in our own argv. The guard therefore
+    reported a live session every time and refused to run for two days.
+
+    So identify a session by what only a real one has: the node running WITH --drive, and not us."""
+    try:
+        import subprocess
+        r = subprocess.run(["pgrep", "-f", "follow_person_k1.py"],
+                           capture_output=True, text=True, timeout=10)
+        me = {os.getpid(), os.getppid()}
+        for tok in r.stdout.split():
+            if not tok.strip().isdigit():
+                continue
+            pid = int(tok)
+            if pid in me:
+                continue
+            try:
+                with open("/proc/%d/cmdline" % pid, "rb") as f:
+                    cl = f.read().decode("utf-8", "ignore").replace("\0", " ")
+            except OSError:
+                continue
+            if "follow_person_k1.py" in cl and "--drive" in cl and "selftest" not in cl:
+                return True
+        return False
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--node", default=NODE_DEFAULT)
+    ap.add_argument("--force", action="store_true",
+                    help="run even while a follow session is live (do not: see the guard below)")
+    a = ap.parse_args()
+    # This selftest loads YOLO and OSNet onto the SAME Orin GPU the follow uses. Running it beside
+    # a live session starves that session: it was observed pushing the bridge ping past its
+    # timeout, giving "BRIDGE ping -> <no-reply/timeout>" and a DRIVE-ABORT on a real drive. The
+    # test is headless and can wait; the robot on its feet cannot.
+    if live_session() and not a.force:
+        print("REFUSING: a follow session is live -- this test would contend for the GPU and can "
+              "stall the bridge ping. Re-run when the session ends, or pass --force.")
+        return 2
+    m = load(a.node)
+    f = build(m)
+    fails = []
+
+    def check(name, got, want):
+        ok = (got == want) if not isinstance(want, float) else abs(got - want) < 1e-9
+        print("  %-46s %-22s %s" % (name, repr(got), "OK" if ok else "FAIL (want %r)" % (want,)))
+        if not ok:
+            fails.append(name)
+
+    # --- the premise: a uniform plane cannot express a detour -------------------------------
+    print("premise -- uniform depth makes the sectors indistinguishable:")
+    s = sectors(f, 1.0, 1.0, 1.0)
+    same = (s["L"] is not None and s["C"] is not None and s["R"] is not None
+            and abs(s["L"] - s["R"]) < 1e-6 and abs(s["L"] - s["C"]) < 1e-6)
+    check("uniform plane -> L == C == R", same, True)
+
+    print("\ncase 1 -- open room, nothing near:")
+    f._gap_dir = 0
+    s = sectors(f, 4.0, 4.0, 4.0)
+    check("centre clearance is far", s["C"] > 3.0, True)
+    check("no steer", f._gap_steer_bias(0.0, s["C"], 4.5), 0.0)
+
+    print("\ncase 2 -- centre blocked, left open:")
+    f._gap_dir = 0
+    s = sectors(f, 3.0, 0.8, 0.8)
+    check("L clear", s["L"] > 1.5, True)
+    check("C blocked", s["C"] < 1.22, True)
+    check("commits LEFT (+rate)", f._gap_steer_bias(0.0, s["C"], 3.0), 0.24)
+    check("commitment recorded", f._gap_dir, 1)
+
+    print("\ncase 3 -- boxed in, both sides unreadable (the empty-side case):")
+    f._gap_dir = 0
+    s = sectors(f, None, 0.8, None)
+    check("L unreadable -> None", s["L"], None)
+    check("R unreadable -> None", s["R"], None)
+    check("no steer (fail closed)", f._gap_steer_bias(0.0, s["C"], 3.0), 0.0)
+
+    print("\ncase 4 -- hysteresis: a committed detour is not re-decided:")
+    f._gap_dir = -1                                   # already committed RIGHT
+    s = sectors(f, 3.0, 0.8, 3.0)                     # both sides now open
+    check("holds RIGHT rather than flipping", f._gap_steer_bias(0.0, s["C"], 3.0), -0.24)
+    check("commitment unchanged", f._gap_dir, -1)
+
+    print("\ncase 5 -- the near return IS the operator (regression: 002d86c):")
+    f._gap_dir = 0
+    s = sectors(f, 3.0, 0.8, 0.8)
+    check("no steer when the block is the target", f._gap_steer_bias(0.0, s["C"], 1.0), 0.0)
+    check("no commitment made", f._gap_dir, 0)
+    # ... and the same scene with the operator far away must still steer
+    check("still steers when the target is far", f._gap_steer_bias(0.0, s["C"], 3.0), 0.24)
+
+    # --- head-scan direction mapping ---------------------------------------------------------
+    # The first on-robot scan measured cx-evidence -90 px/rad: as yaw increases the scene slides
+    # LEFT in the image, so +yaw points the camera RIGHT. The code had been assuming +yaw = LEFT
+    # from --head-yaw-sign and would have steered toward the WORSE side. head_yaw_sign was only
+    # ever verified as command-vs-readback consistency INSIDE the head frame; it never established
+    # the mapping into the image frame. These pin the measured mapping.
+    print("\nhead-scan direction mapping (measured, not assumed):")
+    rad = math.radians
+
+    def hint(scan_map):
+        f._scan_map = scan_map
+        f._scan_hint = 0
+        f._head_scan_finish(0.0)
+        return f._scan_hint
+
+    # A pure head pan shifts a static point by the focal length, ~206 px/rad at this FOV. Over a
+    # +/-23 deg sweep (0.80 rad) that is a ~165 px swing. Fixtures below are built to that scale.
+    # Default --head-yaw-sign is +1, i.e. the config asserts +yaw = LEFT (slope > 0).
+
+    # plausible AND agrees with the config: gap at +23 deg is on the LEFT -> steer LEFT
+    check("plausible + agrees, gap at +23deg -> LEFT",
+          hint([(rad(-23), 0.6, 150.0), (rad(0), 0.9, 232.0), (rad(23), 3.0, 315.0)]), 1)
+    # mirrored scene, same optics -> steer RIGHT
+    check("plausible + agrees, gap at -23deg -> RIGHT",
+          hint([(rad(-23), 3.0, 150.0), (rad(0), 0.9, 232.0), (rad(23), 0.6, 315.0)]), -1)
+    # plausible magnitude but the measurement DISAGREES with --head-yaw-sign: one of them is
+    # wrong and we cannot tell which -> refuse rather than pick a side
+    check("plausible but disagrees with config -> refuse",
+          hint([(rad(-23), 0.6, 315.0), (rad(0), 0.9, 232.0), (rad(23), 3.0, 150.0)]), 0)
+    # too small to be a head pan: this is operator motion contaminating the estimate. This is the
+    # real field case -- three scans measured -90, +311, +37 px/rad, inconsistent and unphysical.
+    check("implausible slope (operator motion) -> refuse",
+          hint([(rad(-23), 0.6, 250.0), (rad(0), 0.9, 270.0), (rad(23), 3.0, 290.0)]), 0)
+    # no operator visible across the sweep -> direction unresolved -> refuse to steer
+    check("no cx evidence -> refuse to steer",
+          hint([(rad(-23), 0.6, None), (rad(0), 0.9, None), (rad(23), 3.0, None)]), 0)
+    # nothing clear enough anywhere -> no hint regardless of direction
+    check("nothing meets the clearance bar -> no hint",
+          hint([(rad(-23), 0.6, 150.0), (rad(0), 0.9, 232.0), (rad(23), 1.1, 315.0)]), 0)
+
+    # --- self-aware corridor (--corridor-mode footprint) --------------------------------------
+    # A fixed image fraction covers a physical width that scales with range, so it is simultaneously
+    # too wide far away and too diluted close in. The case below is the one that matters: an object
+    # 0.30-0.37 m off the centreline at 0.5 m is INSIDE the robot's 0.375 m half-width -- a genuine
+    # collision -- and frac mode reports the corridor CLEAR because 28 near columns are averaged
+    # away by the percentile across a 1.45 m-wide corridor.
+    print("\nself-aware corridor (footprint vs image-fraction):")
+
+    def clearance(mode, depth):
+        g = build(m, ["--corridor-mode", mode])
+        g._clr_hist = []
+        g.node = FakeNode(None, None, None)
+        g.node.d = depth
+        return g._corridor_clearance()
+
+    f_px = (544.0 / 2.0) / math.tan(math.radians(105.8) / 2.0)
+    near_d = np.full((448, 544), 4.0, dtype=np.float32)
+    near_d[:, 118:150] = 0.5                     # |lateral| 0.30..0.37 m -> inside the footprint
+    off = np.full((448, 544), 4.0, dtype=np.float32)
+    off[:, 130:190] = 2.5                      # |lateral| 1.00..1.73 m -> outside the footprint
+    def near(x):
+        """A clearance that would BRAKE. None now means 'no near blob' i.e. CLEAR, which is a
+        correct answer and not a missing one -- the contiguity change made that the normal reply
+        for an empty window, and this assertion used to assume a float and crashed on it."""
+        return x is not None and x < 1.5
+
+    check("in-path object at 0.5m -> footprint BRAKES", near(clearance("footprint", near_d)), True)
+    check("...and image-fraction sees it too now", near(clearance("frac", near_d)), True)
+    check("off-path object -> footprint ignores", near(clearance("footprint", off)), False)
+    check("swept width is constant in metres", abs(2 * (0.5 * 0.45 + 0.15) - 0.75) < 1e-9, True)
+
+    # --- TEMPORAL: the aged-median filter, scored over a SEQUENCE ---------------------------
+    # WHY THIS BLOCK EXISTS. Every assertion above scores ONE frame, and the 2026-09-04 field
+    # failure was a MULTI-FRAME bug: _clr_hist was appended to only on the detection path, so the
+    # median was computed from a list of nothing but detections and could never report clear.
+    # A single-frame suite is structurally incapable of catching that -- each individual frame was
+    # scored correctly. The filter is a temporal object and has to be tested as one, by driving a
+    # sequence through ONE Follower and scoring the RATE, not by asserting on a frame.
+    print("\ntemporal aged-median (sequence, not single frame):")
+
+    def brake_rate(p_detect, blob, n=400, seed=5):
+        """Fraction of frames the brake would cap vx, over a sequence sharing one _clr_hist."""
+        rnd = random.Random(seed)
+        g = build(m, ["--corridor-mode", "footprint"])
+        g._clr_hist = []
+        g.node = FakeNode(None, None, None)
+        capped = 0
+        for _ in range(n):
+            d = np.full((448, 544), 4.0, dtype=np.float32)   # open space: everything far
+            if rnd.random() < p_detect:
+                r0, r1, c0, c1, z = blob(rnd)
+                d[r0:r1, c0:c1] = z
+            g.node.d = d
+            # CALL IT TWICE, LIKE THE LOOP DOES. The tracked path evaluates the corridor at the
+            # brake AND as _gap_steer_bias's argument. When those each cast a vote, a harness
+            # calling it once modelled a 7-deep window that was really 3.5 deep, and reported a
+            # speckle rate of 2.8% where the loop's own was ~10%. Memoization now collapses both to
+            # one evaluation per frame, so these two calls SHOULD agree -- and this line is what
+            # keeps that true: if the memo is ever broken, the double vote comes back and this
+            # measurement moves, instead of the gate quietly modelling a loop that does not exist.
+            c = g._corridor_clearance()
+            c2 = g._corridor_clearance()
+            if c2 != c and not (c is None and c2 is None):
+                raise AssertionError("corridor memo broken: %r then %r on one frame" % (c, c2))
+            capped += (c is not None and c <= 0.7)           # obstacle_brake_start stop end
+        return capped / float(n)
+
+    # Speckle: a ~25px near-range artefact at a random range, present in 45% of frames --
+    # the measured field distribution. A real object at this range fills thousands of px.
+    def speckle(rnd):
+        r = rnd.randrange(235, 250)
+        c = rnd.randrange(258, 285)
+        return r, r + 5, c, c + 5, rnd.uniform(0.50, 0.96)
+
+    # A real object: large, contiguous, stable range, present in ~every frame.
+    def solid(_rnd):
+        return 200, 280, 240, 300, 0.60
+
+    sp = brake_rate(0.45, speckle)
+    rl = brake_rate(0.98, solid)
+    print("  (speckle brake rate %.1f%%, real-object brake rate %.1f%%)" % (100 * sp, 100 * rl))
+    check("45%% speckle does NOT hold the brake down", sp < 0.15, True)
+    check("a real object still brakes in ~every frame", rl > 0.90, True)
+    check("...so the two are actually separated", (rl - sp) > 0.75, True)
+
+    # --- LOCALMAP: short-horizon memory. The transform, and the safety property ---------------
+    # A world<-robot placement error is silent and would put remembered obstacles in the wrong
+    # place, so the round trip is asserted directly rather than inferred from behaviour. The
+    # conservative-only property is the reason this feature can ship at all, so it is asserted too.
+    print("\nlocalmap (odom-anchored short-horizon memory):")
+
+    class OdomNode(FakeNode):
+        def __init__(self, d, pose):
+            FakeNode.__init__(self, None, None, None)
+            self.d = d
+            self._pose = pose
+
+        def latest_odom(self, max_age=1.0):
+            return self._pose
+
+    gl = build(m, ["--corridor-mode", "footprint", "--localmap", "on"])
+    check("OFF by default -> no memory is written", len(build(m)._lm), 0)
+
+    # An object dead ahead at 1.0 m, robot at the origin facing +x.
+    dep = np.full((448, 544), 4.0, dtype=np.float32)
+    dep[200:260, 258:286] = 1.0
+    gl.node = OdomNode(dep, (0.0, 0.0, 0.0))
+    gl._clr_hist = []
+    gl._corridor_clearance()
+    check("a frame writes cells", len(gl._lm) > 0, True)
+    seen_here = gl._localmap_clearance(0.379)
+    check("remembers it ahead at ~1.0 m", seen_here is not None and abs(seen_here - 1.0) < 0.25, True)
+
+    # ROUND TRIP: rotate the robot 90 deg about the same spot. The object is now to its RIGHT,
+    # so it must LEAVE the forward corridor -- if the sign convention were wrong it would stay.
+    gl.node._pose = (0.0, 0.0, math.pi / 2.0)
+    check("after turning 90 deg it is no longer ahead", gl._localmap_clearance(0.379), None)
+    # ...and turning back must recover it, proving the cells are anchored in the world and not
+    # smeared by the rotation.
+    gl.node._pose = (0.0, 0.0, 0.0)
+    back = gl._localmap_clearance(0.379)
+    check("turning back recovers it", back is not None and abs(back - 1.0) < 0.25, True)
+    # Driving forward 0.5 m must bring it 0.5 m closer.
+    gl.node._pose = (0.5, 0.0, 0.0)
+    closer = gl._localmap_clearance(0.379)
+    check("driving 0.5 m forward closes the range by ~0.5 m",
+          closer is not None and abs((back - closer) - 0.5) < 0.15, True)
+
+    # FAIL CLOSED: no pose -> contribute nothing, rather than placing cells wrongly.
+    gl.node._pose = None
+    check("no odometry -> memory reads nothing", gl._localmap_clearance(0.379), None)
+    n_before = len(gl._lm)
+    gl._corridor_clearance()
+    check("no odometry -> memory writes nothing", len(gl._lm), n_before)
+
+    # AUDIT REGRESSION 1 -- memory must never RAISE clearance on a BLIND live frame. Prime memory
+    # with a far obstacle, then feed a sensor-blind frame; the corridor must still read blind (0.0),
+    # not the remembered range. This was the fail-open: a remembered 2 m released the brake while
+    # blind.
+    gb = build(m, ["--corridor-mode", "footprint", "--localmap", "on", "--obstacle-brake"])
+    gb.node = OdomNode(np.full((448, 544), 4.0, dtype=np.float32), (0.0, 0.0, 0.0))
+    gb._clr_hist = []
+    far = np.full((448, 544), 4.0, dtype=np.float32); far[220:240, 262:282] = 2.0
+    gb.node.d = far; gb._clr_cache_d = None; gb._corridor_clearance()   # remember a 2 m obstacle
+    blind = np.full((448, 544), np.nan, dtype=np.float32)               # sensor sees nothing
+    gb.node.d = blind; gb._clr_cache_d = None
+    check("memory does NOT release the brake on a blind frame", gb._corridor_clearance(), 0.0)
+
+    # AUDIT REGRESSION 3 -- the followed operator's pixels are not written as obstacles. A person
+    # dead ahead at the target range must leave the memory empty when target_range is supplied.
+    gw = build(m, ["--corridor-mode", "footprint", "--localmap", "on"])
+    gw.node = OdomNode(np.full((448, 544), 4.0, dtype=np.float32), (0.0, 0.0, 0.0))
+    gw._clr_hist = []
+    person = np.full((448, 544), 4.0, dtype=np.float32); person[180:300, 240:304] = 2.0
+    gw.node.d = person
+    gw._lm_target_range = 2.0            # the operator is at 2.0 m -> their pixels excluded
+    gw._clr_cache_d = None; gw._corridor_clearance()
+    check("operator's own pixels are NOT written to memory", len(gw._lm), 0)
+
+    # --- GROUND REJECTION: a path that DELETES obstacles needs its own gate ------------------
+    # The floor is a plane seen obliquely, so corr(depth, height) across it is strongly negative;
+    # a compact object's is not. Measured on recorded frames: floor -0.76..-0.94, near objects
+    # +0.45..+0.96. These assertions pin the direction of the test and, more importantly, that it
+    # stays INERT by default -- this is the one piece of today's work that can hide a real obstacle.
+    print("\nground rejection (default OFF, opt-in):")
+    gg_off = build(m, ["--corridor-mode", "footprint"])
+    n = 400
+    z_plane = np.linspace(0.5, 1.4, n)              # a plane: height tracks depth
+    h_plane = 0.86 - 0.62 * z_plane
+    z_obj = np.full(n, 0.60) + np.random.RandomState(3).normal(0, 0.01, n)
+    h_obj = np.linspace(0.30, 0.95, n)              # upright object: height varies, depth does not
+    check("OFF by default -> a floor-like plane is still an obstacle",
+          gg_off._is_ground(z_plane, h_plane, 3000), False)
+
+    gg = build(m, ["--corridor-mode", "footprint", "--ground-reject", "on"])
+    check("ON -> large oblique plane is rejected as ground", gg._is_ground(z_plane, h_plane, 3000), True)
+    check("ON -> upright object is NOT rejected", gg._is_ground(z_obj, h_obj, 3000), False)
+    check("ON -> a SMALL plane is kept (ambiguous stays braking)",
+          gg._is_ground(z_plane, h_plane, 100), False)
+    check("ON -> no height model (frac path) -> never rejects",
+          gg._is_ground(z_plane, None, 3000), False)
+
+    # --- MAX-BEARING GUARD: the sign that decides whether it can fire at all -------------------
+    # bearing is +ve to the RIGHT; +ve vyaw turns LEFT; so a held LEFT steer drives bearing MORE
+    # POSITIVE. The guard exists to stop a detour pushing the operator out of frame, and with the
+    # test inverted it could only fire on the side that was already coming back -- field-confirmed
+    # by a +0.24 bias held at bearing +44 deg, past the 40 deg edge.
+    print("\ngap-steer max-bearing guard (outward drift must be cut):")
+    gb = build(m, ["--gap-steer", "on", "--gap-steer-max-bearing-deg", "40",
+                   "--gap-steer-rate", "0.24"])
+    s_left = sectors(gb, 3.0, 0.8, 0.8)            # only the LEFT sector is open
+    gb._gap_dir = 1                                 # already committed LEFT
+    far_right = math.radians(44.0)                  # operator far to the RIGHT, drifting further
+    check("held LEFT steer at +44deg is CUT", gb._gap_steer_bias(far_right, s_left["C"], 3.0), 0.0)
+    gb._gap_dir = 1
+    far_left = math.radians(-44.0)                  # same steer, operator returning toward centre
+    check("...but the same steer at -44deg still runs",
+          gb._gap_steer_bias(far_left, s_left["C"], 3.0), 0.24)
+
+    # --- RAW SCAN READS + TURN WIPE (2026-09-05 audit regressions, adversarially confirmed) ---
+    # The head scan's samples must read the heading being LOOKED AT, not the shared aged median:
+    # routed through the vote, a robot stopped at an obstacle had its window saturated with near
+    # detections, so every sweep sample read "blocked" and the scan could never conclude. And a
+    # window of pre-turn CLEAR votes must not outvote an obstacle a turn has just revealed.
+    print("\nraw scan reads + turn wipe:")
+    gr = build(m, ["--corridor-mode", "footprint", "--obstacle-aged", "5"])
+    near_lr = np.full((448, 544), 4.0, dtype=np.float32)
+    near_lr[:, 118:150] = 0.5
+    clear_fr = np.full((448, 544), 4.0, dtype=np.float32)
+    gr.node = FakeNode(None, None, None)
+    gr._clr_hist = []
+    gr.node.d = near_lr
+    for _ in range(5):
+        gr._clr_cache_d = None
+        gr._corridor_clearance()
+    gr.node.d = clear_fr
+    gr._clr_cache_d = None
+    voted = gr._corridor_clearance()
+    nv = len(gr._clr_hist)
+    rawv = gr._corridor_clearance(apply_head_shift=False, raw=True)
+    check("saturated window still reads blocked (the brake's job)", voted < 0.7, True)
+    check("RAW read of a clear heading reaches body_scan_clear_m", rawv >= 1.15, True)
+    check("a raw read casts no vote", len(gr._clr_hist), nv)
+    gr._clr_hist = [1.15] * 5
+    gr._prev_vyaw = 0.30
+    gr.node.d = near_lr
+    gr._clr_cache_d = None
+    check("turning onto an obstacle brakes on frame ONE", gr._corridor_clearance() < 0.7, True)
+    gr._prev_vyaw = 0.0
+
+    # --- CONFIG INVARIANT: body_scan_clear_m must stay reachable -----------------------------
+    # Clearance can never exceed obstacle_brake_start: _nearest_blob discards returns beyond it,
+    # and _clr_vote votes "clear" AT it. So body_scan_clear_m > obstacle_brake_start is not a
+    # stricter setting, it is an UNREACHABLE one -- `clr >= body_scan_clear_m` never fires and the
+    # 360 escape sweep can never mark a heading clear. That shipped: BODY-SCAN start / abort:
+    # timeout in runs/20260904T021434Z_cfe43b6. Read the SHIPPED defaults, not the test's overrides,
+    # or lowering brake-start in defaults.yaml would re-break it with the gate still green.
+    print("\nconfig invariant (shipped defaults, not this test's overrides):")
+    _dy = {}
+    _cfg = os.path.join(os.path.dirname(os.path.abspath(a.node)), "config", "defaults.yaml")
+    try:
+        with open(_cfg, encoding="utf-8") as _fh:
+            for _ln in _fh:
+                _ln = _ln.strip()
+                if _ln and not _ln.startswith("#") and ":" in _ln:
+                    _k, _, _v = _ln.partition(":")
+                    _dy[_k.strip()] = _v.strip()
+    except OSError:
+        pass
+    _bs = float(_dy.get("obstacle_brake_start", "nan"))
+    _bc = float(_dy.get("body_scan_clear_m", "nan"))
+    _st = float(_dy.get("obstacle_brake_stop", "nan"))
+    print("  (defaults: brake_start=%.2f  body_scan_clear=%.2f  brake_stop=%.2f)" % (_bs, _bc, _st))
+    check("body_scan_clear_m <= obstacle_brake_start (escape reachable)", _bc <= _bs, True)
+    check("obstacle_brake_stop < obstacle_brake_start (ramp has width)", _st < _bs, True)
+
+    # --- SELF-MASK: head-pan shift, and the no-wrap guarantee -------------------------------
+    print("\nself-mask (head-pan shift):")
+    gm = build(m, ["--corridor-mode", "footprint"])
+    gm.node = FakeNode(None, None, None)
+    msk = np.zeros((448, 544), dtype=bool)
+    msk[200:260, 20:60] = True                     # a body blob near the LEFT edge, as measured
+    gm._self_mask = msk
+    gm._self_mask_warned = False
+    base = np.ones((448, 544), dtype=bool)
+
+    def masked_cols(hshift):
+        out = gm._self_mask_ok(base.copy(), (448, 544), hshift=hshift)
+        cols = np.where((~out).any(axis=0))[0]      # columns holding ANY masked pixel
+        return (int(cols.min()), int(cols.max())) if cols.size else None
+
+    check("head centred -> mask sits where captured", masked_cols(0.0), (20, 59))
+    check("head panned -> mask moves with the body", masked_cols(+40.0), (60, 99))
+    check("...and the other way too", masked_cols(-15.0), (5, 44))
+    # A wrapped shift would rotate the blob in from the far edge and mask real world there.
+    far = gm._self_mask_ok(base.copy(), (448, 544), hshift=-30.0)
+    check("shift FILLS, never wraps (right edge stays visible)", bool(far[:, 500:].all()), True)
+    gm._self_mask = None                            # default state: the feature is off
+    check("no mask loaded -> selection untouched",
+          bool(gm._self_mask_ok(base.copy(), (448, 544)).all()), True)
+    gm._self_mask = msk
+    # Fail-closed: a mask built at another resolution must disable forward, not be ignored.
+    check("wrong-resolution mask -> None (forbids forward)",
+          gm._self_mask_ok(base.copy(), (240, 320)), None)
+
+    print("")
+    if fails:
+        print("SECTOR-SELFTEST-FAIL %d: %s" % (len(fails), ", ".join(fails)))
+        return 1
+    print("SECTOR-SELFTEST-OK sectors + gap-steer commitment + operator exclusion")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -57,7 +57,21 @@ class StubNode:
             return None
         import numpy as np
         h, w = self._frame_hw
-        return np.full((int(h), int(w)), float(self._depth_range), dtype=np.float32)
+        # A scalar gives the original UNIFORM plane. A 3-tuple (left, centre, right) gives a
+        # PIECEWISE scene, which is what the spatially-differentiated behaviours actually need:
+        # on a uniform plane _sector_clearances() returns L == C == R by construction, so
+        # "centre blocked AND a side clear" can never be true and gap steer / the head scan are
+        # untestable offline. Column split matches --sector-frac thirds. Use None inside the
+        # tuple for "no valid returns" (the empty-side case that reads as BLOCKED).
+        r = self._depth_range
+        if isinstance(r, (tuple, list)):
+            lo, mid, hi = (float(x) if x is not None else float("nan") for x in r)
+            d = np.full((int(h), int(w)), mid, dtype=np.float32)
+            cut = int(w / 3)
+            d[:, :cut] = lo
+            d[:, w - cut:] = hi
+            return d
+        return np.full((int(h), int(w)), float(r), dtype=np.float32)
     def depth_health(self, now=None):
         if self._depth_range is None:
             return "WARMING", 0.0     # WARMING => the depth-starved latch stays byte-inert

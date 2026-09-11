@@ -120,6 +120,9 @@ class GestureTrigger(LockTrigger):
         self._miss = {}            # track_id -> consecutive missed pose frames (field fix: one
                                    # blurry/low-conf frame used to HARD-RESET the whole hold)
         self._tick = 0
+        self._stationary_since = None   # monotonic time the CURRENT stationary stretch began
+        self._ever_locked = False       # has a lock ever succeeded? (the dwell only applies after)
+        self._dwell_log_t = 0.0
         self._cmd_tick = 0         # separate decimation counter for the in-follow STOP gesture
         self._stop_streak = 0      # consecutive STOP-gesture checks the seed held both hands up
         self._ms = collections.deque(maxlen=200)   # rolling pose-inference ms (latency instrument)
@@ -216,6 +219,56 @@ class GestureTrigger(LockTrigger):
         except Exception:  # noqa: BLE001
             return False
 
+    def _arm_owned_why(self, k, box, margin):
+        """Same tests as _arm_owned, but returns (owned, reason) so a refusal can say WHY.
+        The refusal used to assert "likely an overlapping neighbour", which was actively
+        misleading in the field: one session refused four times while persons=1 for 190 frames,
+        where by definition there was no neighbour to overlap. The gate that actually fires is
+        the wrist-in-body-column test -- an arm raised OUT TO THE SIDE passes the raised check
+        (which only compares wrist height to shoulder height) but fails ownership, and nothing
+        in the log said so."""
+        try:
+            kpc = float(self.a.gesture_kp_conf)
+            x1, y1, x2, y2 = box
+            padx = 0.12 * max(x2 - x1, 1.0)
+
+            def conf(idx):
+                return float(k[idx][2]) >= kpc
+
+            def inx(idx):
+                return (x1 - padx) <= float(k[idx][0]) <= (x2 + padx)
+
+            def iny(idx):
+                return (y1 - 1.0) <= float(k[idx][1]) <= (y2 + 1.0)
+
+            def yv(idx):
+                return float(k[idx][1])
+
+            for sh, nm in ((KP_L_SHOULDER, "L"), (KP_R_SHOULDER, "R")):
+                if conf(sh) and not (inx(sh) and iny(sh)):
+                    return False, "%s-shoulder outside the matched box (torso is not this body)" % nm
+            for w, s, nm in ((KP_L_WRIST, KP_L_SHOULDER, "L"), (KP_R_WRIST, KP_R_SHOULDER, "R")):
+                if conf(w) and conf(s) and yv(w) < yv(s) - margin:
+                    if inx(w):
+                        return True, ""
+                    # DEGENERATE KEYPOINT, not a sideways arm. The pose model emits undetected
+                    # joints at the origin, and those can still clear the confidence gate -- the
+                    # field log showed x=0 on every refusal, on people who were either tiny
+                    # (33 px box) or cropped by the frame edge. Reporting that as "raise your arm
+                    # differently" sends the operator chasing a posture problem that is not there,
+                    # so name it for what it is.
+                    if float(k[w][0]) <= 0.0 or float(k[w][1]) <= 0.0:
+                        return False, ("%s-wrist keypoint is degenerate (x=%.0f y=%.0f at the "
+                                       "origin) -- the joint was not really detected. Usually the "
+                                       "person is too small or cropped by the frame edge; get "
+                                       "closer and fully in view" % (nm, float(k[w][0]), float(k[w][1])))
+                    return False, ("%s-wrist raised but OUTSIDE the body column (x=%.0f vs box "
+                                   "%.0f..%.0f pad %.0f) -- arm is out to the SIDE; raise it UP, "
+                                   "within your body width" % (nm, float(k[w][0]), x1, x2, padx))
+            return False, "no confident wrist above its shoulder by the margin"
+        except Exception:  # noqa: BLE001
+            return False, "keypoint fault"
+
     def _raisers(self, frame, persons):
         """Run pose, return (set of track_ids raising this frame, {track_id: owner_box}).
         Each pose detection is matched to a TRACKED YOLO person by IoU (a within-frame
@@ -287,12 +340,17 @@ class GestureTrigger(LockTrigger):
                     margin = self.a.gesture_kp_margin_frac * bh
                     raised = self._is_raised(k, margin)
                     try:
-                        gdbg(self.a, "CAND tid=%s iou=%.2f margin=%.0f raised=%s "
-                             "Lw=(y%.0f,c%.2f) Ls=(y%.0f,c%.2f) Rw=(y%.0f,c%.2f) Rs=(y%.0f,c%.2f)"
+                        # wrist X and the box span are logged because ownership turns on the
+                        # wrist-in-body-column test; without them a refusal is undiagnosable
+                        # from the log, which is exactly what happened for a full field day.
+                        gdbg(self.a, "CAND tid=%s iou=%.2f margin=%.0f raised=%s box_x=%.0f..%.0f "
+                             "Lw=(x%.0f,y%.0f,c%.2f) Ls=(y%.0f,c%.2f) "
+                             "Rw=(x%.0f,y%.0f,c%.2f) Rs=(y%.0f,c%.2f)"
                              % (best_tid, best_iou, margin, raised,
-                                float(k[KP_L_WRIST][1]), float(k[KP_L_WRIST][2]),
+                                float(best_box[0]), float(best_box[2]),
+                                float(k[KP_L_WRIST][0]), float(k[KP_L_WRIST][1]), float(k[KP_L_WRIST][2]),
                                 float(k[KP_L_SHOULDER][1]), float(k[KP_L_SHOULDER][2]),
-                                float(k[KP_R_WRIST][1]), float(k[KP_R_WRIST][2]),
+                                float(k[KP_R_WRIST][0]), float(k[KP_R_WRIST][1]), float(k[KP_R_WRIST][2]),
                                 float(k[KP_R_SHOULDER][1]), float(k[KP_R_SHOULDER][2])))
                     except Exception:  # noqa: BLE001
                         pass
@@ -300,9 +358,9 @@ class GestureTrigger(LockTrigger):
                         # HARDEN (wrong-person lock): the raised arm must be OWNED by the matched body
                         # (shoulders inside the box + raised wrist in the body column). Blocks binding
                         # a raiser's arm onto an overlapping bystander who never raised a hand.
-                        if not self._arm_owned(k, best_box, margin):
-                            gdbg(self.a, "ARM-DISOWNED tid=%s -> refuse (raised arm not owned by "
-                                 "the matched body; likely an overlapping neighbour)" % best_tid)
+                        _owned, _why = self._arm_owned_why(k, best_box, margin)
+                        if not _owned:
+                            gdbg(self.a, "ARM-DISOWNED tid=%s -> refuse: %s" % (best_tid, _why))
                         else:
                             raisers.add(best_tid)
                             owners[best_tid] = best_box
@@ -322,8 +380,40 @@ class GestureTrigger(LockTrigger):
         # path while the robot is driving. Gesture re-acquire after a loss defers to the stood
         # S_REACQUIRE that follows the scan; the other three states command no motion.
         if state not in (S_SEARCH, S_REACQUIRE, S_PARKED):
+            self._stationary_since = None       # left the stationary states -> restart the dwell
             gdbg(self.a, "STATE-SKIP state=%s not in (SEARCH,REACQUIRE,PARKED) -> pose not run "
                  "(raise a hand while stationary/searching, not while following or scanning)" % state)
+            return None
+        # ACQUISITION DWELL (2026-09-10 operator: "gestures are firing all the time eating a lot
+        # of the budget ... only need gestures when the robot looses the user its following and
+        # when it needs to be locked on").
+        #
+        # State-gating alone was not enough. Pose fired the INSTANT the follow dropped to a
+        # stationary state, and most of those drops are momentary: the 2026-09-10 run logged 187
+        # SEARCH entries against only 2 real LOST events. Each one immediately cost a 111 ms p50 /
+        # 568 ms p99 pose inference against a 100 ms budget, on a 6-core Orin already at load 11.
+        # That is a feedback loop -- the blip costs pose, pose slows the loop, the slow loop makes
+        # tracking worse, which causes more blips.
+        #
+        # A momentary loss is recovered by the tracker and re-ID, NOT by a gesture: nobody raises
+        # a hand within 200 ms of the robot glancing away. So once a lock has existed, wait
+        # --gesture-dwell-s in the stationary state before paying for pose. That is exactly the
+        # operator distinction -- the robot has GENUINELY lost you.
+        #
+        # THE EXCEPTION: before any lock has EVER succeeded the operator is standing there
+        # deliberately waiting to be locked onto. Making them wait would regress the very case
+        # the trigger exists for, and it costs nothing -- the robot is stood still with no follow
+        # loop to protect. So the dwell applies only after a first successful lock.
+        now = time.monotonic()
+        if self._stationary_since is None:
+            self._stationary_since = now
+        _dwell = max(0.0, float(getattr(self.a, "gesture_dwell_s", 0.0)))
+        if self._ever_locked and _dwell > 0.0 and (now - self._stationary_since) < _dwell:
+            if (now - self._dwell_log_t) >= 2.0:
+                self._dwell_log_t = now
+                gdbg(self.a, "DWELL-SKIP %.1fs/%.1fs in %s -> pose deferred (a momentary loss is "
+                     "re-IDs job; gesture is for a genuine loss)"
+                     % (now - self._stationary_since, _dwell, state))
             return None
         self._tick += 1
         if self.every_n > 1 and (self._tick % self.every_n) != 0:

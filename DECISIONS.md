@@ -574,3 +574,315 @@ of the loop budget, measured under the same combined YOLO+ReID load as P7.3.
    shield build being enabled. **Enabling actuation is a code change through review — never a
    runtime flag, config default, or env var.**
 
+
+---
+
+## OPEN BUG (2026-09-04): an absorbing surface is INVISIBLE to the obstacle brake
+
+**Status: located in code, NOT fixed. This is the couch collision.**
+
+`depth_to_meters()` documents "Zeros = no data". Every corridor selection then filters
+`band > 0.15`, so a no-data pixel is *excluded from the selection entirely* rather than
+treated as unknown. The consequence:
+
+- dark / IR-absorbing upholstery returns **0** over the whole area it occupies
+- those pixels drop out of `sel`, so the couch contributes **no** connected component
+- `_nearest_blob` returns `None` -> `_nodata` -> the frame is scored **"window empty, clear"**
+- the brake releases and the robot drives into it
+
+The blind check in `_nodata` does not catch this, because it is a **whole-frame** test
+(`fv < max(0.02*size, 4*obstacle_min_valid)`). A couch-shaped hole in an otherwise valid
+frame leaves `fv` high, so the frame reads healthy while the corridor specifically is blind.
+That is the exact inversion of the sector logic, which has always treated
+"stays None == unknown == blocked".
+
+**The asymmetry to keep in mind:** speckle (fixed 2026-09-04 in `_clr_vote`) made the brake
+fire when nothing was there. This makes it fail to fire when something IS there. They push in
+opposite directions, so they must not be tuned against each other -- raising
+`obstacle_min_blob_px` to suppress speckle makes THIS worse, which is why the speckle fix was
+a temporal vote instead.
+
+**Proposed fix (needs a human call before implementing):** measure invalid-pixel *density
+inside the corridor wedge only*, and treat a large near-field hole as **occupied at the range
+implied by its surroundings**, not as clear. Risk to weigh: the corridor is often legitimately
+empty (open doorway, sky, beyond max range), so a naive "hole == obstacle" rule reintroduces
+false stops -- it needs the hole to be *bounded by* valid near returns to count.
+
+**Cheaper thing to check first:** does the vendor publish a depth **confidence/quality**
+channel or a second topic alongside `/boostercamera/head/depth`? Nothing in this repo consumes
+one, and the node only ever reads a single-channel 16UC1/32FC1 image. If confidence exists,
+gating on it kills speckle at the source and distinguishes "no return" from "low confidence",
+which is exactly the distinction both bugs turn on.
+  Check:  ros2 topic list | grep -i 'depth\|conf'
+          ros2 topic info /boostercamera/head/depth
+
+---
+
+## CORRECTION (2026-09-04): commit 07b4b68's diagnosis was WRONG. The fix stands; the reason does not.
+
+`07b4b68` claims depth speckle latched the brake and pinned vx to 0.00. **The speckle diagnosis is
+refuted.** Anyone reading that commit message should read this first.
+
+**How it was refuted.** The run's own Rerun recording is readable offline and nobody had looked:
+`runs/20260904T014601Z_a23969b/k1_follow_1788486361.rrd` holds 91 depth frames (float32 m, 544x448).
+Replaying the a23969b hit box over them gives a largest-near-blob-per-frame distribution of:
+0 px on 58 frames, 1 px on 2, then 55, 616, 664, 834, 2949 ... 53992. **Nothing between 1 and 55 px.**
+Strongly bimodal; `obstacle_min_blob_px: 12` sits in an empty gap.
+
+**The methodological error, which is the part worth remembering.** The commit's evidence was the blob
+sizes in `OBSTACLE-NODATA` lines: 0,1,2,4,5,6,9,10,11 px, read as "a smooth noise tail running through
+the threshold". But `OBSTACLE-NODATA` only prints **rejected** blobs. The sample was censored at the
+threshold by construction, so it could only ever look like a tail ending at 11. *No* conclusion about
+bimodality was available from that log. The recorded frames were there the whole time.
+
+**What the freeze actually was -- two geometric false positives, not noise:**
+
+1. **The floor, promoted into the hit box by unmodelled camera pitch** (the 0.5-1.0 m readings).
+   `_corridor_clearance` computes height as `camera_height_m - z*(v-cy)/f`, which assumes a LEVEL
+   camera. RANSAC on frame 1423 fits the camera 0.92 m up and tilted ~10 deg. The resulting height
+   error GROWS with range (+0.079 m at 0.6-0.8 m, +0.233 m at 1.5-2.0 m) -- the signature of a pitch
+   term, not an offset -- lifting the entire floor above `floor_margin_m: 0.06`. Sweeping *only* the
+   assumed pitch on genuinely-open recorded frames reproduces the log exactly: 12 deg -> 11-35 px
+   (the `blob=11px` lines at k1_follow.err L799/L888); 14 deg -> 316-882 px at 0.97-1.01 m (the
+   `CLEARANCE 0.96/0.97m` lines at L1082/L1104/L1123). One degree of pitch on a real floor produced
+   the whole "noise tail".
+2. **The robot's own left shoulder/arm** (the 0.22-0.38 m readings) -- see the commit message of
+   c43f161. This one is confirmed twice, from field log and from recorded depth.
+
+**Therefore the top of the fix list is NOT noise filtering.** It is (a) model the camera pitch (or
+subscribe to it) instead of assuming level, and (b) land a self-mask. Both are geometry.
+
+**What survives from 07b4b68.** The latch WAS real -- `_clr_hist` was fed only detections and could
+never report clear -- and voting is still the right shape. But its headline number is wrong too:
+`_corridor_clearance()` is called TWICE per tracked frame (follow_person_k1.py:1573 for the brake and
+:3309 as an unconditionally-evaluated argument to `_gap_steer_bias`), so `obstacle_aged: 7` is really
+a 3.5-frame window. Measured through the real two-calls-per-frame pattern the improvement is
+**44.2% -> 39.5%** brake-engaged, not the 43.6% -> 3.2% the commit claims; that figure came from a
+test harness that calls the function once per frame and so models the wrong loop.
+
+**Two open items this leaves:**
+- **The double call** wastes a full-frame numpy pass on a loop already over budget (dt 137-199 ms vs
+  a 100 ms target) AND double-counts every vote. Memoizing per depth frame fixes both. Not yet done.
+- **The majority vote has a couch trade** that was not measured before shipping: for an object seen
+  only p of the time, p=0.70 improves (71.8->81.0%) but p=0.30 REGRESSES (32.2->24.8%) and p=0.20
+  regresses (21.8->12.5%). The crossover is p~0.5 by construction. The couch is exactly a
+  sub-0.5 detection case (it returns nothing but edges), so the vote may have made the couch
+  false-negative WORSE. Measure before trusting the brake around soft furniture.
+
+---
+
+## CLOSED (2026-09-04): the static SELF-MASK cannot work on this robot. The range cut is correct.
+
+**Do not re-attempt a pixel-position self-mask without reading this.** It looks like the obviously
+right answer, and it is not — twice now the reasoning has led back to it.
+
+**THE MEASUREMENT.** 1392 depth frames across 39 recordings, asking of every pixel: of the frames
+where it returned anything at all, what fraction read nearer than 0.45 m?
+
+    best pixel in the entire frame   0.207     (p99.99)
+    pixels near in >= 70% of frames  0
+    pixels near in >= 90% of frames  0
+
+The most consistently-near pixel in the image is near only **21%** of the time. An earlier build
+using per-pixel MAX gave zero masked pixels with the smallest per-pixel max at **3.33 m**.
+
+**WHY.** The method assumes the robot's body occupies FIXED PIXELS. First guess was that head
+panning broke it (head scan, probe) and that accumulating in the body frame would fix it. That is
+wrong — head motion alone cannot scatter a fixed structure this far. **The arms SWING with the
+gait.** The arm is a moving limb, not a fixed occluder, so no set of pixels is reliably "robot".
+
+**THE CONSEQUENCE, which reverses the earlier framing in this file.** `obstacle_self_range_m: 0.45`
+was described as a stopgap for the "proper" mask fix. It is the other way round: **the range cut is
+the right tool for a swinging limb**, because range is the thing that stays consistent about the arm
+while its image position does not. The 0.45 m blind spot is the price of the arm being where it is,
+not a compromise awaiting a better answer.
+
+**WHAT IS STILL TRUE.** `--self-mask` (c43f161, head-pan shift 4bfbccb) remains in the tree, default
+off and inert, and is still correct for a genuinely fixed occluder — a bracket, a cable, a mount. It
+is simply not the answer for a limb. `eval/selfmask_from_runs.py` is likewise still the right way to
+build one, and now prints the near-fraction distribution so an empty mask reads as THIS finding
+rather than as "no robot found".
+
+**THE ACTUAL PROPER FIX, if the 0.45 blind spot ever proves too costly:** forward kinematics from the
+arm joint angles. The robot knows where its own arms are; it can project them into the depth image
+per frame instead of inferring them from statistics. That is real work — a joint-state subscription
+plus a kinematic chain — not a config change, and it should be scoped only against evidence that
+0.45 m of blindness actually costs something in the field.
+
+---
+
+## Aurora A1M1 SLAM integration -- bring-up state (2026-09-07)
+
+**Architecture (A) is confirmed available and the robot meets every prerequisite.** The online path
+-- Aurora rides the robot, streams live in-map pose -- is real, not assumed. Verified from the
+vendor's own repo (github.com/Slamtec/py_aurora_remote) and the robot itself.
+
+ROBOT PREREQUISITES (all PASS, checked 2026-09-07 on 192.168.9.75):
+  glibc 2.35 (SDK needs >= 2.31) | aarch64 / JetPack 6 R36.4.3 | Python 3.10.12 | NumPy 1.26.3
+  | pip 25.1.1 + internet to PyPI | 300 GB free | ROS2 Humble | USB 3.1 hub with spare ports.
+
+SDK INSTALLED on the robot: slamtec-aurora-python-sdk-linux-aarch64 2.1.1, editable install from
+~/aurora/py_aurora_remote/python_bindings. The native lib
+cpp_sdk/aurora_remote_public/lib/linux_aarch64/libslamtec_aurora_remote_sdk.so is present (it is in
+the cpp_sdk git submodule -- a shallow clone WITHOUT --recurse-submodules will silently omit it).
+`import slamtec_aurora_sdk` -> IMPORT-OK 2.1.1; API surface confirmed: AuroraSDK.get_current_pose,
+.connect/.is_connected, .map_manager, .require_mapping_mode, .get_map_info.
+
+NETWORK TOPOLOGY is already correct for the safety contract: the Aurora belongs on the WIRED
+USB-ethernet link (usb_eth0 192.168.127.101, SLAMTEC's default subnet), physically separate from the
+WiFi (wlP1p1s0 192.168.9.75) that carries the operator deadman. Confirmed the deadman link and the
+pose link are different interfaces -- the "never put pose on the deadman WiFi" rule is satisfied by
+the existing wiring.
+
+STILL UNPROVEN (needs the device physically connected -- cannot check from the desktop):
+  1. get_current_pose() actually streams over the link. Probe staged: robot/aurora/aurora_pose_probe.py
+     (also on the robot at ~/aurora/). Run with the Aurora plugged in and powered.
+  2. THE MAP FORMAT PROBLEM IS CONFIRMED REAL, not hypothetical: the SDK loads/saves .vslam
+     (load_vslam_map/save_vslam_map). The operator's saved map is map.stcm -- a VIEWER export from
+     aurora_remote.exe, six layers, no dense cloud (see eval/stcm_grid.py + the 7cdce09 entry). The
+     robot-side SDK is not documented to load .stcm. A fresh .vslam export from the device or SDK is
+     very likely required before relocalization can be tested.
+  3. Whether Aurora VISUAL-INERTIAL tracking survives a bipedal gait (its IMU expects smoother
+     motion) -- the Stage-1 walk test, still owed.
+
+NOT STARTED and gated behind the above: any follow_person_k1.py change. Nothing touches velocity
+until the pose chain is proven on hardware and a shadow-mode corpus exists. --localmap remains the
+intended consumer (feed Aurora pose in place of drifting odometry); it still has the 2026-09-05
+audit defects to fix first.
+
+DEMO: none of this happens before the imminent demo, INCLUDING mounting the ~505 g device on the
+trunk -- that is a physical change to a machine two audits cleared as GO.
+
+---
+
+## Aurora bring-up (2026-09-07, cont.) -- map round-trip tooling + corrected findings
+
+TWO EARLIER CLAIMS CORRECTED by evidence:
+  1. Map save/load is NOT save_vslam_map/load_vslam_map (those names came from a doc summary).
+     The real API is map_manager sessions: start_download_session (device -> .vslam file) and
+     start_upload_session (.vslam file -> device), with is_session_active/query_session_status/
+     wait_for_completion. Confirmed by dir(map_manager) on both installed SDKs.
+  2. The Aurora was NOT unreachable on the robot due to a subnet mismatch. Its MAC
+     (c6:0b:a6:89:0d:04) sits at 192.168.127.10 on the robot's usb_eth0 (192.168.127.101/24) --
+     same subnet, pings 0.26 ms. On the laptop the same device was 192.168.11.1. So it takes a
+     per-host address and IS reachable from the robot. The earlier connect failure was the SDK
+     server port being closed (mode/timing on the device), not the network. Re-probe after a clean
+     device power-up with the pose probe.
+
+SDK NOW INSTALLED ON BOTH ENDS:
+  robot:  slamtec-aurora-python-sdk-linux-aarch64 2.1.1  (~/aurora/py_aurora_remote)
+  laptop: slamtec-aurora-python-sdk-win64-x64     2.1.1  (C:/Users/toddm/aurora_sdk/py_aurora_remote)
+
+THE MAP ROUND-TRIP TOOLS (vendored in robot/aurora/, also staged on each machine):
+  save_vslam.py         -- LAPTOP: download the live map off the device -> map.vslam
+  aurora_upload_reloc.py -- ROBOT: upload map.vslam onto the device, relocalize, sample pose
+  aurora_pose_probe.py / aurora_check.py -- connect + live-pose / import + API-surface probes
+None touch follow_person_k1.py. No motion. Standalone bring-up only.
+
+MAP STATE: today's laptop map was NOT saved to disk (only the old viewer-export map.stcm and two
+0-byte failed .stcm saves exist). The robot SDK needs .vslam. Capture it with save_vslam.py while
+the device is on the laptop, before it is lost.
+
+SEQUENCE TO PROVE THE ONLINE PATH (no follow-node changes, no walking):
+  1. laptop: python save_vslam.py            -> map.vslam
+  2. scp map.vslam to the robot
+  3. robot:  python3 aurora_upload_reloc.py map.vslam
+             -> UPLOAD-OK, RELOC-OK, POSE-RATE > 0  proves the whole chain
+Only after that proves out does any follow-node integration begin, and not before the demo.
+
+LOCALIZATION DESIGN -- "adding the 3D map to the local map" (2026-09-07)
+  The question was how the robot localizes in the pre-built Aurora map so the map can help it. Two
+  ways to get a pose in the map frame: (1) the Aurora provides it (it runs the SLAM; once relocalized,
+  get_current_pose is drift-free in the map frame), or (2) the robot relocalizes itself from its own
+  RGB-D. (2) is a research problem -- the map's feature DB is the Aurora's visual-inertial keyframes,
+  not matchable by the robot's forward 106-deg depth cam, and there is no 360 lidar for a 2D
+  scan-match. So (1) is the only tractable path, and the whole robot-side integration is then just
+  "consume the Aurora pose."
+
+  THE CLEAN INTEGRATION (chosen): the follow's --localmap already consumes booster_interface/msg/
+  Odometer{x,y,theta} from --odom-topic and fails closed on staleness. So publishing the relocalized
+  Aurora pose as that message on /aurora_odom, and running the follow with --odom-topic /aurora_odom,
+  localizes the robot in the map with ZERO change to the safety-critical node. Built:
+  robot/aurora/aurora_odom_bridge.py (VERIFY ON ROBOT; inert until run). One calibration: the yaw
+  offset between Aurora-forward and robot-forward (--yaw-offset-deg), a single mount scalar; the mount
+  translation is a constant shift on an 8 s-TTL robot-centric buffer and is ignored as noise.
+
+  WHY THIS AND NOT map-into-the-brake: even with a pose, feeding the pre-built map straight into the
+  brake means a relocalization dropout or a stale pose plants a PHANTOM WALL -> phantom braking/freeze
+  -- the same fail-wrong class just closed on the local map. The safe envelope is that the map only
+  ever reaches the brake THROUGH the local map, whose invariant is "memory may only reduce clearance,
+  never raise it": a wrong Aurora pose can over-brake but never release a real obstacle, and a lost
+  reloc just goes quiet -> live-depth-only. Level A (pose -> drift-free local map) ships first; Level B
+  (seed the local map's cells from the pre-built occupancy grid, reloc-confidence-gated, purge on
+  loss) builds on a proven A and is not started yet.
+
+  ROOT BLOCKER is unchanged: the robot<->Aurora SDK link (README (2)). Retry after a clean device
+  power-up on the robot's link, or DHCP on usb_eth0; the bridge and the whole design are ready the
+  moment aurora_upload_reloc.py prints RELOC-OK on the robot.
+
+LOCALIZATION PROVEN END-TO-END + VERIFIED SDK API (2026-09-07, on the laptop)
+  The full chain was run against the real device and RELOCALIZED: connect -> upload map.vslam ->
+  pure-localization mode -> relocalize -> a real drift-free pose (0.66, 0.89, z~0.005) at ~95 Hz.
+  Three things this pinned down, all now baked into the code:
+  1. THE SDK API (my first scripts were wrong -- guessed from a doc summary). Relocalization is on
+     s.CONTROLLER, not s: controller.require_pure_localization_mode(); controller.require_relocalization().
+     s.require_relocalization does NOT exist. Map load is map_manager.start_upload_session(path) + wait.
+     Lock signal: data_provider.get_relocalization_status() -> (state, ts), SUCCEED == 2 (NONE 0 /
+     IN_PROGRESS 1 / FAILED 3). aurora_upload_reloc.py + aurora_odom_bridge.py corrected to match.
+  2. THE MAP FRAME IS Z-UP. In the relocalized pose the z component stays ~0.005 m and constant while
+     x,y carry the motion -> ground plane = (x,y), yaw about z. That is exactly what pose_to_planar()
+     assumed, so the bridge math is CORRECT (resolves council finding A3's "what if y-up" worry).
+     pose_to_planar on the captured pose gives theta -8.48 deg, and is quaternion-sign-invariant
+     (q and -q give the same planar pose) -- validated.
+  3. THE MAP DOES NOT PERSIST across an SDK session -- a fresh connect finds an empty device
+     (all_map_info == []). So the map must be uploaded every session; the bridge + probe both do
+     (upload only if get_all_map_info() is empty). Relocalization only SUCCEEDs once the device SEES
+     the mapped space AND moves -- stationary it sits at FAILED (that was the earlier 60 s of FAILED,
+     not a bug).
+
+  COUNCIL FINDING A1 IMPLEMENTED: the bridge now publishes ONLY while get_relocalization_status is
+  SUCCEED, and drops a per-frame jump > --max-step-m. Lost lock / unmapped space -> it goes quiet ->
+  latest_odom() staleout -> live-depth-only. The documented fail-closed guarantee is now real code,
+  not a comment.
+
+  CONNECTION REALITY (K1 has NO free USB port): the Aurora serves its SDK over ETHERNET at
+  192.168.11.1 (proven: the laptop reached it through a USB-ethernet adapter, got a 192.168.11.120
+  DHCP lease, SDK live). So the robot does NOT need a USB port -- it connects over ethernet via its
+  USB-ethernet dongle (usb_eth0). The earlier robot failure (1445 closed, device at 192.168.127.10,
+  no DHCP offer, discovery 0) was a SUBNET/mode mismatch: usb_eth0 was static 192.168.127.101 while
+  the Aurora serves 192.168.11.x. REMAINING to run the robot path: (a) Aurora ethernet -> robot
+  usb_eth0, robot on 192.168.11.x (DHCP or static); (b) prove RELOC-OK on the robot; (c) measure
+  --yaw-offset-deg with the bridge's --verify-frame (drive a known straight line + 90 deg turn);
+  (d) run the bridge, follow with --odom-topic /aurora_odom --localmap on.
+
+MAP-ASSIST -- prebuilt map REINFORCES a confirmed live obstacle (2026-09-07, commit e4346d8)
+  The follow's reactive avoidance stays the authority; the pre-built Aurora 3D map is ASSISTIVE. In
+  the footprint clearance path, after the localmap tightening, _map_assist_confirm can only return a
+  SMALLER clearance, and only when the LIVE view already sees an obstacle at ~the same range (within
+  --map-assist-confirm-m, default 0.5). A map obstacle the live view does not confirm is DISCARDED; a
+  blind (0.0) or clear (None) frame is returned untouched. So the map NEVER brakes alone and NEVER
+  releases -- a wrong map or anchor just fails to confirm and live avoidance runs unchanged. Pose is
+  the robot's OWN odometry (--odom-topic), so the Aurora's divergent head-mounted VIO never enters the
+  control loop; the Aurora is used only for the static map. Off (byte-identical) unless --map-assist
+  set. Verified: SECTOR-SELFTEST-OK + the confirm gate proven directly (clear+map->no brake; blind->
+  untouched; agree->reinforce; disagree->trust live; no odom->untouched). App toggle 'Map assist' in
+  K1Finder.ps1, footprint-gated, points at ~/localmap/latest_localmap_3d.ply.
+
+  THE DIVERGENCE FINDING: the Aurora's VIO diverges on the robot -- head-mounted mapping AND handheld
+  standalone mapping both produced maps with a room-scale CORE (~17x16x3 m) but outlier landmarks
+  flung to 70-260 m by momentary tracking loss (gait/handoff). Map-assist tolerates this: the height-
+  band filter drops z-outliers, the localmap range drops far x/y ones, the confirm-gate drops the
+  rest. The handheld core is a real ~18x16x3.3 m room -> usable as the map-assist source.
+
+  THE ANCHOR (pending, user "wait on that"): map-assist places the map via the robot's odometry, which
+  starts at the session origin, NOT the map origin -- so odom and the Aurora map frame are misaligned
+  by an unknown transform. Misaligned -> nothing confirms -> map-assist safely inert. To make it FIRE:
+  either start the robot at the map origin (manual), or AUTO-ANCHOR (chosen design, not built):
+  record robot odom + Aurora bridge pose SIMULTANEOUSLY over a short slow calibration pass, rigid-fit
+  the two trajectories -> the transform is the anchor, the fit residual is the cross-verification (tight
+  fit -> trust; loose -> Aurora too noisy -> no anchor, fail-closed). NO existing run has paired
+  (Aurora pose, odom) -- follow .rrd logs log /odometer_state only, and the Aurora reloc data went to
+  laptop logs and diverged. So the calibration must be captured fresh, and it hinges on the Aurora
+  giving usable pose (GATING TEST: is reloc stable STATIONARY + gentle on the robot? diverges walking).
+  Next evolution the operator wants after the anchor: map fills LOW-CONFIDENCE depth regions (a step
+  beyond confirm-only -- must stay fail-closed, brake-only), and arm-workspace clearance from the map.

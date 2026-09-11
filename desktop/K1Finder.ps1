@@ -34,7 +34,14 @@ $script:RerunViewerExe = $null                                      # laptop vie
 $script:RerunWebViewerVer = '0.23.1'                                # MUST match the robot's pinned rerun-sdk (the .rrd format is version-locked)
 $script:RerunWebViewer    = ('https://app.rerun.io/version/{0}/' -f $script:RerunWebViewerVer)  # no-install 'Open .rrd' fallback: loads the .rrd LOCALLY in-browser (nothing uploaded), so SmartScreen/Defender have nothing to block
 $K1_SSH_USER      = 'booster'
-$K1_SSH_PASS      = '123456'
+# SECURITY: the robot SSH password is NEVER stored in this repo. It used to be a literal here, which
+# published it to git history and to the GitHub remote -- removing it from the tree does NOT unpublish
+# it, so the password MUST still be rotated on the robot (docs/SECURITY_CREDENTIALS.md).
+# It now comes from the K1PW environment variable, and ONLY from there.
+# When K1PW is not set the app still launches (preview mode / UI is usable); SSH-dependent actions
+# will fail with an authentication error at call time rather than a startup refusal. Set K1PW before
+# an SSH action:  $env:K1PW = '<password>'  (this session)  or  setx K1PW "<password>"  (persist).
+$K1_SSH_PASS      = $env:K1PW
 $K1_LOCO_IFACE    = '127.0.0.1'
 $SCRIPT_DIR       = if ($PSScriptRoot) { $PSScriptRoot }
                     elseif ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path }
@@ -64,21 +71,24 @@ $script:RobotIP  = $K1_DEFAULT_IP
 $script:SshUser  = $K1_SSH_USER
 $script:SshPass  = $K1_SSH_PASS
 
-# ---- SSH password via askpass (non-interactive) -----------------------------
-$ASKPASS = Join-Path $WORK 'askpass.cmd'
-function Update-Askpass {
-    Set-Content -Path $ASKPASS -Value "@echo off`r`necho $($script:SshPass)" -Encoding ASCII
-}
-Update-Askpass
-$env:SSH_ASKPASS = $ASKPASS
-$env:SSH_ASKPASS_REQUIRE = 'force'
+# ---- SSH auth: KEY AUTH ONLY (2026-09-09) ------------------------------------
+# Password machinery removed at operator request -- "no need for password should just be able to
+# click start". SSH uses whatever the user's OpenSSH resolves: ~/.ssh/id_ed25519, id_rsa, agent
+# keys, ~/.ssh/config Host aliases -- the normal Windows-OpenSSH stack. BatchMode=yes below fails
+# fast on missing auth instead of hanging on a prompt inside a scp/ssh call the UI is waiting on.
+#
+# The $K1_SSH_PASS / $script:SshPass variables are kept (may be empty) because a few child scripts
+# still take a -Pass parameter; passing an empty string means those children also skip password
+# machinery and use whatever SSH resolves. No askpass helper is written and no SSH_ASKPASS is set,
+# so ssh never gets asked for a password even if K1PW happens to be in the environment.
 $env:DISPLAY = 'localhost:0.0'
+$SSH_OPTS = @('-o','StrictHostKeyChecking=accept-new','-o','ConnectTimeout=8',
+              '-o','ServerAliveInterval=5','-o','BatchMode=yes')
 
-$SSH_OPTS = @('-o','StrictHostKeyChecking=accept-new','-o','PreferredAuthentications=password',
-              '-o','PubkeyAuthentication=no','-o','ConnectTimeout=8','-o','ServerAliveInterval=5')
-
+# String form of $SSH_OPTS for the call sites that build a command line instead of an argv array.
+# Kept in sync with $SSH_OPTS above.
 function Get-SshOptString {
-    '-o StrictHostKeyChecking=accept-new -o PreferredAuthentications=password -o PubkeyAuthentication=no -o ConnectTimeout=8 -o ServerAliveInterval=5'
+    '-o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o ServerAliveInterval=5 -o BatchMode=yes'
 }
 
 # Start a process and RELIABLY return its exit code. GOTCHA: Start-Process -PassThru leaves
@@ -113,7 +123,8 @@ function Deploy-RobotFiles {
 }
 
 # Deploy person-follow helpers (python + bridge source + launcher). run_follow.sh
-# compiles loco_follow_bridge from source on the robot on first DRIVE (verified recipe).
+# compiles the loco bridge from source on the robot on first DRIVE, through the shared
+# bridge_build.sh (verified recipe; ROS transport preferred -- see that file's P1.9 note).
 # follow_person_k1.py = lock-and-handoff: marker is a one-time lock onto the person, then YOLO-follows that person.
 function Deploy-FollowFiles {
     param([string]$ip)
@@ -122,7 +133,10 @@ function Deploy-FollowFiles {
     # failed push must abort the launch (fail-closed) with an HONEST reason. Invoke-Proc gives a
     # reliable exit code (Start-Process -PassThru does not -- see helper). A non-zero here means
     # the robot refused/timed-out the copy, NOT that a local file is missing -- name which case.
-    foreach ($f in @('follow_person_k1.py','common.py','bridge.py','tracking.py','identity.py','rerun_sink.py','perception.py','triggers.py','loco_follow_bridge.cpp','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
+    # bridge_build.sh is hard-required too (P1.9): it is the ONE copy of the bridge build recipe and
+    # every launcher sources it and refuses to start without it (exit 3), so a failed push must abort
+    # the launch HERE rather than surface later on the robot as "COMPILE FAILED".
+    foreach ($f in @('follow_person_k1.py','common.py','bridge.py','tracking.py','identity.py','rerun_sink.py','perception.py','triggers.py','calibration.py','map_change.py','loco_follow_bridge.cpp','loco_follow_bridge_ros.cpp','bridge_build.sh','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
         $src = Join-Path $ROBOT_DIR $f
         if (-not (Test-Path $src)) { $script:DeployErr = ("local helper file not found: {0}" -f $src); return $false }
         $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f)))
@@ -174,57 +188,86 @@ function Deploy-FollowFiles {
 }
 
 # ---- Gesture pose-model staging (auto, idempotent) --------------------------
-# True iff the robot has $path. Uses a single-quoted remote test (no embedded double quotes -> safe
-# through Start-Process arg quoting). Output captured to a temp file.
-# ROBUST (2026-07-08): only a DEFINITIVE completed 'MISSING' returns $false. The old version ignored
-# the WaitForExit result and read the temp file unconditionally, so a slow/stalled ssh (robot under
-# load -- observed at load ~8.5 with SSH connect stalls) left stdout EMPTY within the timeout and
-# read as MISSING -- spuriously tripping "ReID engine unavailable" / gesture re-staging even though
-# the file was present (and REID-ENGINE ok had already logged that session). Ambiguous/timed-out
-# attempts are RETRIED, never trusted as absence.
-function Test-RobotFile([string]$ip,[string]$path){
-    $tmp = Join-Path $env:TEMP 'k1_rf_chk.txt'
+# PRESENT / MISSING / UNKNOWN for $path on the robot. Only a COMPLETED answer (ssh exit 0 carrying the
+# marker) is PRESENT or MISSING. A timeout, an ssh failure (exit 255: unreachable, auth, busy link) or
+# empty output is UNKNOWN -- "could not ask" is never reported as "absent". (2026-09-10: an unanswered
+# probe during an Auto-Tune .rrd pull became "OSNet ReID engine isn't on the robot" while it was.)
+# UNKNOWN is retried twice with a short backoff. Single-quoted remote test: no embedded double quotes,
+# so it is safe through Start-Process arg quoting. A unique temp file per try, so a probe that is still
+# being killed can never hold the next one's file. With $size >= 0, PRESENT also needs that byte count.
+function Get-RobotFileState([string]$ip,[string]$path,[long]$size=-1){
+    if($size -ge 0){ $test = 'test -f ''{0}'' && [ $(stat -c%s ''{0}'') -eq {1} ] && echo PRESENT || echo MISSING' -f $path,$size }
+    else { $test = 'test -f ''{0}'' && echo PRESENT || echo MISSING' -f $path }
     for($i=0; $i -lt 3; $i++){
+        if($i -gt 0){ Start-Sleep -Milliseconds (1000 * $i) }
+        $tmp = Join-Path $env:TEMP ('k1_rf_{0}.txt' -f ([IO.Path]::GetRandomFileName() -replace '\.',''))
         try{
-            Remove-Item $tmp -ErrorAction SilentlyContinue
-            $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("test -f '{0}' && echo PRESENT || echo MISSING" -f $path))) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
+            $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), $test)) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
             try{ $null = $p.Handle }catch{}
-            if(-not $p.WaitForExit(12000)){ try{$p.Kill()}catch{}; continue }   # slow/hung -> retry, don't conclude MISSING
-            $out = (Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
-            if($out -match 'PRESENT'){ return $true }
-            if($out -match 'MISSING'){ return $false }
-            # empty/garbled (ssh errored to stderr, which we don't capture) -> retry
+            if(-not $p.WaitForExit(12000)){ try{ $p.Kill() }catch{}; $null = $p.WaitForExit(2000); continue }
+            $out = [string](Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
+            if($p.ExitCode -eq 0 -and $out -match 'PRESENT'){ return 'PRESENT' }
+            if($p.ExitCode -eq 0 -and $out -match 'MISSING'){ return 'MISSING' }
         }catch{}
+        finally{ Remove-Item $tmp -ErrorAction SilentlyContinue }
     }
-    return $false   # 3 ambiguous attempts: report absent (node still fail-closes correctly at runtime)
+    return 'UNKNOWN'
+}
+function Test-RobotFile([string]$ip,[string]$path){ return ((Get-RobotFileState $ip $path) -eq 'PRESENT') }
+
+# Copy $local to $remote on the robot WITHOUT ever exposing a partial file: scp to "$remote.tmp", check
+# its byte count, then mv it over $remote (atomic on one filesystem). A timed-out scp is killed and only
+# the .tmp is lost -- the in-place scp this replaces could truncate a working model. Returns the state of
+# $remote afterwards: PRESENT (right size), MISSING, or UNKNOWN (could not confirm).
+function Copy-ToRobotAtomic([string]$ip,[string]$local,[string]$remote,[int]$TimeoutMs=120000){
+    $len = (Get-Item $local).Length
+    $tmpR = "$remote.tmp"
+    $rdir = (Split-Path $remote -Parent) -replace '\\','/'
+    $rc = Invoke-Proc ssh.exe ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("mkdir -p '{0}'" -f $rdir))) 10000
+    if($rc -ne 0){ return 'UNKNOWN' }
+    $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($local, ("{0}@{1}:{2}" -f $script:SshUser,$ip,$tmpR))) $TimeoutMs
+    if($rc -ne 0){
+        Add-LogTrack ('scp of {0} failed (exit {1}) -- the robot copy was not touched.' -f (Split-Path $local -Leaf), $rc) $amber
+        return (Get-RobotFileState $ip $remote)
+    }
+    if((Get-RobotFileState $ip $tmpR $len) -ne 'PRESENT'){ return (Get-RobotFileState $ip $remote) }
+    $rc = Invoke-Proc ssh.exe ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("mv -f '{0}' '{1}'" -f $tmpR,$remote))) 10000
+    if($rc -ne 0){ return 'UNKNOWN' }
+    return (Get-RobotFileState $ip $remote $len)
 }
 
 # Make the YOLO11n-pose model exist on the robot before a gesture / A-B follow. Priority:
-#   1) already present;  2) a local copy (matching basename) next to the app -> scp it (OFFLINE-safe);
+#   1) already present;  2) a local copy (matching basename) next to the app -> atomic copy (OFFLINE-safe);
 #   3) export it on the robot via the deployed stage_pose.py (downloads the .pt ONCE -> needs internet).
-# Returns $true if present afterward. If $false, the node still launches and SAFELY falls back to the
-# ArUco marker. Never throws.
+# Returns PRESENT, MISSING, or UNKNOWN (the robot did not answer: nothing is staged or exported, so a
+# busy link can never start a copy over a working model). On anything but PRESENT the node still
+# launches and SAFELY falls back to the ArUco marker if the model really is absent. Never throws.
 function Ensure-GestureModel([string]$ip){
     $remote = $script:GestureModel
-    if(Test-RobotFile $ip $remote){ Add-LogTrack ('Gesture model present: {0}' -f $remote) $green; return $true }
+    $st = Get-RobotFileState $ip $remote
+    if($st -eq 'PRESENT'){ Add-LogTrack ('Gesture model present: {0}' -f $remote) $green; return 'PRESENT' }
+    if($st -eq 'UNKNOWN'){ Add-LogTrack ('Could not reach the robot at {0} to check the gesture model -- not staging.' -f $ip) $amber; return 'UNKNOWN' }
     $local = Join-Path $MODELS_DIR (Split-Path $remote -Leaf)
     if(Test-Path $local){
         Add-LogTrack ('Staging gesture model ({0}) to robot...' -f (Split-Path $local -Leaf)) $accent
-        try{ $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($local, ("{0}@{1}:{2}" -f $script:SshUser,$ip,$remote))) -NoNewWindow -PassThru; $null = $p.WaitForExit(120000) }catch{ Add-LogTrack ('scp failed: {0}' -f $_) $red }
-        if(Test-RobotFile $ip $remote){ Add-LogTrack 'Gesture model staged (scp).' $green; return $true }
+        $st = Copy-ToRobotAtomic $ip $local $remote
+        if($st -eq 'PRESENT'){ Add-LogTrack 'Gesture model staged (scp, size verified).' $green; return 'PRESENT' }
+        if($st -eq 'UNKNOWN'){ return 'UNKNOWN' }
     }
     Add-LogTrack 'No local model -> exporting on the robot (ultralytics, needs internet once)...' $amber
-    $tmp = Join-Path $env:TEMP 'k1_stage.txt'
+    $tmp = Join-Path $env:TEMP ('k1_stage_{0}.txt' -f ([IO.Path]::GetRandomFileName() -replace '\.',''))
     try{
-        Remove-Item $tmp -ErrorAction SilentlyContinue
         $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), 'python3 /home/booster/stage_pose.py')) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
-        $null = $p.WaitForExit(240000)
+        try{ $null = $p.Handle }catch{}
+        if(-not $p.WaitForExit(240000)){ try{ $p.Kill() }catch{}; $null = $p.WaitForExit(2000); Add-LogTrack 'Robot export timed out (killed).' $amber }
         $r = (Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
         if($r){ Add-LogTrack ('stage_pose: {0}' -f ($r.Trim())) $accent }
     }catch{ Add-LogTrack ('Robot export failed: {0}' -f $_) $red }
-    if(Test-RobotFile $ip $remote){ Add-LogTrack 'Gesture model exported on robot.' $green; return $true }
+    finally{ Remove-Item $tmp -ErrorAction SilentlyContinue }
+    $st = Get-RobotFileState $ip $remote
+    if($st -eq 'PRESENT'){ Add-LogTrack 'Gesture model exported on robot.' $green; return 'PRESENT' }
     Add-LogTrack 'Gesture model unavailable -> follow uses the ArUco marker (safe). Stage yolo11n-pose.onnx on the robot to enable gesture.' $amber
-    return $false
+    return $st
 }
 
 # P4.2b: prefer the TRT engine for the gesture pose model WHEN it is on the robot. Its presence is
@@ -235,46 +278,36 @@ function Ensure-GestureModel([string]$ip){
 # Ensure-GestureModel + Get-TrackExtraArgs so both the staging check and the launch flag see the choice.
 function Resolve-GestureModel([string]$ip){
     $engine = '/home/booster/yolo11n-pose.engine'
-    if(Test-RobotFile $ip $engine){
+    $est = Get-RobotFileState $ip $engine
+    if($est -eq 'PRESENT'){
         $script:GestureModel = $engine
         Add-LogTrack 'Gesture model: TRT engine (yolo11n-pose.engine, FP16 ~2x faster pose).' $green
     } else {
         $script:GestureModel = '/home/booster/yolo11n-pose.onnx'
+        if($est -eq 'UNKNOWN'){ Add-LogTrack 'Could not check the robot for the TRT pose engine -- using yolo11n-pose.onnx (about 2x slower pose).' $amber }
     }
 }
 
 # Make the OSNet ReID ONNX exist on the robot before an --appearance osnet follow. Priority:
-#   1) already present;  2) a local copy (matching basename) next to the app -> scp it (OFFLINE-safe).
-# NO robot-side export branch (OSNet has no ultralytics one-liner -> pre-stage the .onnx). Returns $true
-# if present afterward. On $false the node still launches and SAFELY falls back to a colour histogram
-# (the REID badge shows HIST red and the node's arm-gate auto-refuses armed re-lock). Never throws.
+#   1) already present;  2) a local copy (matching basename) next to the app -> atomic copy (OFFLINE-safe).
+# NO robot-side export branch (OSNet has no ultralytics one-liner -> pre-stage the .onnx). Returns
+# PRESENT, MISSING, or UNKNOWN (the robot did not answer: nothing is staged). On anything but PRESENT the
+# node still launches and SAFELY falls back to a colour histogram if the engine really is absent (the
+# REID badge shows HIST red and the node's arm-gate auto-refuses armed re-lock). Never throws.
 function Ensure-ReidModel([string]$ip){
     $remote = $script:ReidEngine
-    if(Test-RobotFile $ip $remote){ Add-LogTrack ('ReID engine present: {0}' -f $remote) $green; return $true }
+    $st = Get-RobotFileState $ip $remote
+    if($st -eq 'PRESENT'){ Add-LogTrack ('ReID engine present: {0}' -f $remote) $green; return 'PRESENT' }
+    if($st -eq 'UNKNOWN'){ Add-LogTrack ('Could not reach the robot at {0} to check the ReID engine -- not staging (a busy link is not a missing file).' -f $ip) $amber; return 'UNKNOWN' }
     $local = Join-Path $MODELS_DIR (Split-Path $remote -Leaf)
     if(Test-Path $local){
         Add-LogTrack ('Staging ReID engine ({0}) to robot...' -f (Split-Path $local -Leaf)) $accent
-        try{
-            $rdir = (Split-Path $remote -Parent) -replace '\\','/'
-            $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ("mkdir -p '{0}'" -f $rdir))) -NoNewWindow -PassThru; $null = $p.WaitForExit(10000)
-            $p = Start-Process scp.exe -ArgumentList ($SSH_OPTS + @($local, ("{0}@{1}:{2}" -f $script:SshUser,$ip,$remote))) -NoNewWindow -PassThru
-            # APP-4: a timed-out scp keeps writing in the background and a bare `test -f` passes on
-            # the truncated in-progress file -> KILL on timeout, then verify the REMOTE SIZE below.
-            if(-not $p.WaitForExit(120000)){ try{ $p.Kill() }catch{}; $null=$p.WaitForExit(2000); Add-LogTrack 'scp timed out -> staging treated as FAILED' $red }
-        }catch{ Add-LogTrack ('scp failed: {0}' -f $_) $red }
-        # Size-verified presence (not just existence): catches truncated/aborted transfers. Remote
-        # command uses NO double quotes (safe through Start-Process arg quoting, like Test-RobotFile).
-        $llen = (Get-Item $local).Length
-        $tmp = Join-Path $env:TEMP 'k1_reid_sz.txt'
-        try{
-            Remove-Item $tmp -ErrorAction SilentlyContinue
-            $q = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), ('test -f ''{0}'' && [ $(stat -c%s ''{0}'') -eq {1} ] && echo SIZEOK || echo BAD' -f $remote,$llen))) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
-            $null = $q.WaitForExit(10000)
-            if((Get-Content $tmp -Raw -ErrorAction SilentlyContinue) -match 'SIZEOK'){ Add-LogTrack 'ReID engine staged (scp, size verified).' $green; return $true }
-        }catch{}
+        $st = Copy-ToRobotAtomic $ip $local $remote
+        if($st -eq 'PRESENT'){ Add-LogTrack 'ReID engine staged (scp, size verified).' $green; return 'PRESENT' }
+        if($st -eq 'UNKNOWN'){ return 'UNKNOWN' }
     }
     Add-LogTrack ('ReID engine unavailable ({0}) -> deep re-ID falls back to histogram; armed re-lock auto-refused. Pre-stage {1} on the robot (or next to the app) to enable OSNet.' -f $remote, (Split-Path $remote -Leaf)) $amber
-    return $false
+    return 'MISSING'
 }
 
 # ---- Rerun (rerun.io) staging + viewer (Phase 3) ---------------------------
@@ -502,7 +535,8 @@ $script:HbProc=$null   # Deadman-HB relay ssh process (P2 #12); alive only while
 $script:trackMs=$null; $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1
 $script:TrackStart=[datetime]::MinValue
 $script:TrackRerunOn=$false      # P6.2b: did the current/last Tracker session record a .rrd? -> post-run offload
-$script:TrackMaxSec=315          # UI-side hard session watchdog BACKSTOP; node --max-seconds 300 stops first (graceful settle), this only fires if the node hangs
+$script:K1SessionCapSec=300      # FIELD NIGHT 2026-09-10 (plan C25, operator-approved): every app-launched follow ends at 300 s. run_follow.sh reads it as K1_MAX_SEC (default 2000). Revert to 2000 after the field block.
+$script:TrackMaxSec=2060         # UI-side hard session watchdog BACKSTOP; node --max-seconds 2000 (run_follow.sh appends it) stops first (graceful settle), this only fires if the node hangs. MUST STAY ABOVE the node's --max-seconds or the UI kills the session before the node can settle gracefully.
 $script:TrackToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 $ctrlSync = [hashtable]::Synchronized(@{ Log=(New-Object System.Collections.Queue); Stop=$false })
 $script:LiveProc=$null; $script:LivePS=$null; $script:LiveRS=$null; $script:LiveOn=$false
@@ -516,7 +550,7 @@ $script:MotionButtons=@()
 $followSync = [hashtable]::Synchronized(@{ Log=(New-Object System.Collections.Queue); Stop=$false })
 $script:FollowProc=$null; $script:FollowPS=$null; $script:FollowRS=$null; $script:FollowOn=$false; $script:FollowDrive=$false
 $script:FollowStart=[datetime]::MinValue
-$script:FollowMaxSec=315          # UI-side hard session watchdog BACKSTOP; node --max-seconds 300 stops first (graceful settle), this only fires if the node hangs
+$script:FollowMaxSec=1260        # UI-side hard session watchdog BACKSTOP; node --max-seconds 1200 stops first (graceful settle), this only fires if the node hangs. MUST STAY ABOVE the node's --max-seconds or the UI kills the session before the node can settle gracefully.
 $script:FollowToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 
 # ============================================================================
@@ -562,7 +596,8 @@ $tabLive=New-Object System.Windows.Forms.TabPage; $tabLive.Text='  3. Live View 
 $tabCtrl=New-Object System.Windows.Forms.TabPage; $tabCtrl.Text='  4. Control  '; $tabCtrl.BackColor=[System.Drawing.Color]::White
 $tabFiles=New-Object System.Windows.Forms.TabPage; $tabFiles.Text='  5. Robot Files  '; $tabFiles.BackColor=[System.Drawing.Color]::White
 $tabTrack=New-Object System.Windows.Forms.TabPage; $tabTrack.Text='  6. Tracker  '; $tabTrack.BackColor=[System.Drawing.Color]::White
-[void]$tabs.TabPages.AddRange(@($tabDiscover,$tabSsh,$tabLive,$tabCtrl,$tabFiles,$tabTrack))
+$tabMap=New-Object System.Windows.Forms.TabPage; $tabMap.Text='  7. SLAM Map  '; $tabMap.BackColor=[System.Drawing.Color]::White
+[void]$tabs.TabPages.AddRange(@($tabDiscover,$tabSsh,$tabLive,$tabCtrl,$tabFiles,$tabTrack,$tabMap))
 
 $form.Controls.Add($header); $form.Controls.Add($status); $form.Controls.Add($tabs); $tabs.BringToFront()
 
@@ -601,7 +636,7 @@ $lblIp2=New-Object System.Windows.Forms.Label; $lblIp2.Text='Robot IP:'; $lblIp2
 $ip2Box=New-Object System.Windows.Forms.TextBox; $ip2Box.Size='150,26'; $ip2Box.Location='78,25'; $ip2Box.Font=$mono; $ip2Box.Text=$K1_DEFAULT_IP; $grpRobot.Controls.Add($ip2Box)
 $pullBtn=New-Object System.Windows.Forms.Button; $pullBtn.Text='Pull from Discover'; $pullBtn.Size='140,26'; $pullBtn.Location='240,25'; $pullBtn.FlatStyle='Flat'; $grpRobot.Controls.Add($pullBtn)
 $testBtn=New-Object System.Windows.Forms.Button; $testBtn.Text='Test SSH'; $testBtn.Size='100,26'; $testBtn.Location='392,25'; $testBtn.FlatStyle='Flat'; $grpRobot.Controls.Add($testBtn)
-$userLbl=New-Object System.Windows.Forms.Label; $userLbl.Text=("login: {0} / pw: {1}" -f $K1_SSH_USER,$K1_SSH_PASS); $userLbl.AutoSize=$true; $userLbl.ForeColor=[System.Drawing.Color]::DimGray; $userLbl.Location='512,30'; $grpRobot.Controls.Add($userLbl)
+$userLbl=New-Object System.Windows.Forms.Label; $userLbl.Text=("login: {0} (SSH key auth)" -f $K1_SSH_USER); $userLbl.AutoSize=$true; $userLbl.ForeColor=[System.Drawing.Color]::DimGray; $userLbl.Location='512,30'; $grpRobot.Controls.Add($userLbl)
 $grpSsh=New-Object System.Windows.Forms.GroupBox; $grpSsh.Text='SSH'; $grpSsh.Dock='Fill'
 $sshDesc=New-Object System.Windows.Forms.Label; $sshDesc.Text='Open a shell on the robot, or install an SSH key so uploads need no password.'; $sshDesc.AutoSize=$true; $sshDesc.ForeColor=[System.Drawing.Color]::DimGray; $sshDesc.Location='12,22'; $grpSsh.Controls.Add($sshDesc)
 $sshTermBtn=New-Object System.Windows.Forms.Button; $sshTermBtn.Text='Open SSH Terminal'; $sshTermBtn.Size='160,30'; $sshTermBtn.Location='12,46'; $sshTermBtn.BackColor=$accent; $sshTermBtn.ForeColor='White'; $sshTermBtn.FlatStyle='Flat'; $sshTermBtn.Font=$fontBold; $grpSsh.Controls.Add($sshTermBtn)
@@ -820,6 +855,97 @@ $trackApp=New-Object System.Windows.Forms.ComboBox; $trackApp.DropDownStyle='Dro
 $trackCoast=New-Object System.Windows.Forms.CheckBox; $trackCoast.Text='Coast occlusions'; $trackCoast.AutoSize=$true; $trackCoast.Location='192,110'; $grpTrackCtl.Controls.Add($trackCoast)
 $trackReacq=New-Object System.Windows.Forms.CheckBox; $trackReacq.Text='Auto re-acq'; $trackReacq.AutoSize=$true; $trackReacq.Location='322,110'; $trackReacq.Checked=$true; $grpTrackCtl.Controls.Add($trackReacq)
 $trackFence=New-Object System.Windows.Forms.CheckBox; $trackFence.Text='Range fence'; $trackFence.AutoSize=$true; $trackFence.Location='416,110'; $grpTrackCtl.Controls.Add($trackFence)
+# OBSTACLE BRAKE (--obstacle-brake, OBSTACLE_LABELING_PLAN.md Phase 3). Depth forward-clearance
+# reflex: grades forward vx down from --obstacle-brake-start (1.5 m) to ZERO at --obstacle-brake-stop
+# (0.7 m). Percentile + aged-median (never a raw min -> a single depth glitch cannot false-brake),
+# IGNORES the followed operator (--obstacle-target-margin), yaw untouched, fail-to-stop with no depth.
+# Only ever REDUCES vx, so it cannot make the forward path less safe. DEFAULT ON: it was built
+# 2026-07-04 but never wired here, so every session before 2026-09-03 drove with NO obstacle braking.
+$trackObstacle=New-Object System.Windows.Forms.CheckBox; $trackObstacle.Text='Obstacle brake'; $trackObstacle.AutoSize=$true; $trackObstacle.Location='416,132'; $trackObstacle.ForeColor=$accent; $trackObstacle.Font=$fontBold; $trackObstacle.Checked=$true; $grpTrackCtl.Controls.Add($trackObstacle)
+
+# HEAD PROBE (--head-probe). ONE-SHOT startup calibration for the head, NOT a follow feature.
+# The firmware MODE-GATES RotateHead: it answers 400 (bad request) in kPrepare and is accepted only
+# in kWalking -- so the head cannot be checked on a parked robot, and the probe has to ride along
+# with a real session. It runs after kWalking is entered but BEFORE velocity is ungated, so the only
+# thing that can move is the head. Costs ~5 s of startup. Leave it on until HEAD-PROBE OK appears in
+# the log with the measured sign, then it can be switched off.
+$trackHeadProbe=New-Object System.Windows.Forms.CheckBox; $trackHeadProbe.Text='Head probe'; $trackHeadProbe.AutoSize=$true; $trackHeadProbe.Location='610,132'; $trackHeadProbe.ForeColor=$accent; $trackHeadProbe.Font=$fontBold; $trackHeadProbe.Checked=$true; $grpTrackCtl.Controls.Add($trackHeadProbe)
+# GAP STEER (stage 5): route AROUND a blocked corridor instead of only stopping for it.
+#   off   - shipped behaviour, brake only (default)
+#   audit - logs SECTOR L/C/R + the bias it WOULD apply, commands nothing. Run this FIRST.
+#   on    - actually steers: yaw bias toward a measured-clear side. Forward speed still sits
+#           entirely under the obstacle brake, so it turns toward the gap with vx capped and
+#           forward resumes by itself once the rotation puts the gap in the centre corridor.
+$lblGap=New-Object System.Windows.Forms.Label; $lblGap.Text='Gap steer'; $lblGap.AutoSize=$true; $lblGap.Location='716,112'; $grpTrackCtl.Controls.Add($lblGap)
+$trackGap=New-Object System.Windows.Forms.ComboBox; $trackGap.DropDownStyle='DropDownList'; $trackGap.Size='74,24'; $trackGap.Location='778,108'; [void]$trackGap.Items.AddRange(@('off','audit','on')); $trackGap.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackGap)
+# HEAD SCAN (--head-scan). The freeze fix: when the brake has fully stopped forward motion but the
+# operator is still beyond the standoff, the robot sweeps its head across the room, samples the
+# depth corridor at each position, re-centres, and picks the freest heading. An obstacle at
+# 0.4-0.6 m fills the 105.8 deg field of view, so from a fixed camera NEITHER side can be judged
+# and gap steer has nothing to commit to -- the sweep sees ~170 deg instead.
+# YAW ONLY: forward speed stays under the brake, so a wrong result turns the robot on the spot.
+# Start on 'audit' -- it performs the sweep and logs the HEAD-SCAN map without steering, which is
+# also how the head yaw -> left/right convention gets confirmed from the cx-evidence field.
+$lblScan=New-Object System.Windows.Forms.Label; $lblScan.Text='Head scan'; $lblScan.AutoSize=$true; $lblScan.Location='716,134'; $grpTrackCtl.Controls.Add($lblScan)
+# 'patient' == on, but the way ahead must stay blocked 2 s before it sweeps. The scan otherwise
+# starts on the FIRST blocked frame, and stops flicker (CLEARANCE, then blob=0px clear, then
+# CLEARANCE), so it swept constantly and mostly aborted mid-sweep -- 16 starts in one 300 s run,
+# most ending "ABORT orphaned". A real obstacle holds the block; flicker does not.
+$trackScan=New-Object System.Windows.Forms.ComboBox; $trackScan.DropDownStyle='DropDownList'; $trackScan.Size='74,24'; $trackScan.Location='778,130'; [void]$trackScan.Items.AddRange(@('off','audit','on','patient')); $trackScan.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackScan)
+
+# HIT BOX (--corridor-mode footprint). Selects depth returns by the robot's OWN physical extent
+# instead of a fixed image fraction. Fixes three measured faults of the fraction corridor:
+#   * it goes BLIND at hand height (0.67 m) inside 0.4 m, which is the clipped-hands report --
+#     an obstacle is tracked from 1.0 m down to 0.5 m then lost over the final 20 cm;
+#   * it MISSES an in-path object 0.30 m off centre at 0.5 m (reports it clear);
+#   * it is absurdly over-wide at range (5.09 m at 3.5 m), braking for furniture off the shoulder.
+# Also excludes the floor by GEOMETRY, so the band cap that caused the blindness is not needed.
+# Dimensions come from the robot's own URDF: 0.457 m lateral, 0.192 m deep, hands at 0.67 m.
+$lblHit=New-Object System.Windows.Forms.Label; $lblHit.Text='Hit box'; $lblHit.AutoSize=$true; $lblHit.Location='716,156'; $grpTrackCtl.Controls.Add($lblHit)
+$trackHitBox=New-Object System.Windows.Forms.ComboBox; $trackHitBox.DropDownStyle='DropDownList'; $trackHitBox.Size='90,24'; $trackHitBox.Location='778,152'; [void]$trackHitBox.Items.AddRange(@('frac','footprint')); $trackHitBox.SelectedIndex=1; $grpTrackCtl.Controls.Add($trackHitBox)   # DEFAULT footprint: required for Local map + Map assist to engage (map-assist is footprint-gated)
+
+# ESCAPE (--body-scan / --reverse-when-stuck). What to do when the brake has stopped the robot and
+# NEITHER gap steer nor the head scan can find a way past. That is not stubbornness: from 0.35 m off
+# a wide obstacle the gap sits ~68 deg off-centre, outside the head sweep (+/-23) AND the camera
+# half-field (52.9), so it is unobservable from there. Measured as every head-scan direction
+# returning 0.33-0.41 m while the robot shuffled and never committed.
+#   spin    = rotate a full turn sampling free space per heading, then face the middle of the widest
+#             gap. Rotating is NOT blind -- the robot sees everything it turns past.
+#   spin+back = also allow a short bounded REVERSE as a last resort when a turn finds nothing. That
+#             one IS blind (no rear sensor), so it only ever retraces ground just walked forward.
+$lblEsc=New-Object System.Windows.Forms.Label; $lblEsc.Text='Escape'; $lblEsc.AutoSize=$true; $lblEsc.Location='716,178'; $grpTrackCtl.Controls.Add($lblEsc)
+$trackEscape=New-Object System.Windows.Forms.ComboBox; $trackEscape.DropDownStyle='DropDownList'; $trackEscape.Size='90,24'; $trackEscape.Location='778,174'; [void]$trackEscape.Items.AddRange(@('off','spin','spin+back')); $trackEscape.SelectedIndex=0; $grpTrackCtl.Controls.Add($trackEscape)
+# FLOOR REJECT (--ground-reject). The hit box computes a pixel's height assuming a LEVEL camera;
+# the real pitch is ~10 deg, and the resulting z*sin(pitch) error scales with RANGE, so the floor
+# plane tilts up into the height window and open floor reads as an obstacle at 0.43-0.80 m with vx
+# capped to zero -- 97 of 219 clearance readings in one 300 s run, AFTER the robot's own arm had
+# already been excluded. The pitch itself could not be measured (only 4 of ~1000 archived frames
+# give a confident ground fit, and no recording carries the head pose), so this identifies the floor
+# by SHAPE instead: a plane seen obliquely has height strongly correlated with depth (-0.76..-0.94
+# measured) where a compact object does not (+0.45..+0.96).
+# DEFAULT OFF, and deliberately a choice rather than a default: a tabletop is also a horizontal
+# plane, so this is the only control on this page that can HIDE a real obstacle. It is gated on a
+# large blob so ambiguous ones keep braking. Turn it on, then watch the log for GROUND-REJECT lines
+# and check each one was really floor.
+# PLACEMENT: the group's row is RowStyles Absolute 226, so anything past y~190 renders BELOW the
+# visible client area. The first version of this control sat at y=200 and was invisible -- the
+# control existed, the flag was wired, and there was simply no way to reach it. y=72 is the button
+# row, empty right of x~700.
+$trackFloor=New-Object System.Windows.Forms.CheckBox; $trackFloor.Text='Floor reject'; $trackFloor.AutoSize=$true; $trackFloor.Location='716,72'; $trackFloor.ForeColor=$accent; $trackFloor.Font=$fontBold; $grpTrackCtl.Controls.Add($trackFloor)
+# LOCAL MAP (--localmap): a short-horizon occupancy memory from the robot's OWN depth + odometry, so
+# it remembers an obstacle after turning away from it instead of forgetting it (obstacle_memory holds
+# ONE, wiped past a 25 deg turn). Only ever REDUCES clearance -- it can brake for something the live
+# view has lost, never release the brake for something it can see. Needs --odom-topic (added below).
+# The three 2026-09-05 audit defects (blind-frame release, cell-key sign, operator-wake writes) are
+# fixed and gated. Default OFF; footprint hit box only (its height model is what places cells).
+$trackLocalMap=New-Object System.Windows.Forms.CheckBox; $trackLocalMap.Text='Local map'; $trackLocalMap.AutoSize=$true; $trackLocalMap.Location='830,72'; $trackLocalMap.ForeColor=$accent; $trackLocalMap.Font=$fontBold; $trackLocalMap.Checked=$true; $grpTrackCtl.Controls.Add($trackLocalMap)
+# MAP ASSIST (--map-assist): the pre-built Aurora 3D map REINFORCES a live obstacle the local
+# avoidance already sees at the same range; a map obstacle the live view does not confirm is
+# discarded, and it never releases the brake. Pose comes from the robot's OWN odometry, not the
+# Aurora. Assistive, not primary. Footprint hit box only; default OFF, byte-identical when off.
+# (36bf74a had made it ON by default. With the Aurora retired nothing publishes /aurora_odom, so every
+# DRIVE from a freshly started app waited 30 s for that pose and DRIVE-ABORTed -- 2026-09-10 readiness.)
+$trackMapAssist=New-Object System.Windows.Forms.CheckBox; $trackMapAssist.Text='Map assist'; $trackMapAssist.AutoSize=$true; $trackMapAssist.Location='924,72'; $trackMapAssist.ForeColor=$accent; $trackMapAssist.Font=$fontBold; $trackMapAssist.Checked=$false; $grpTrackCtl.Controls.Add($trackMapAssist)
 # DANGER: armed markerless re-lock (--arm-reacquire). OSNet only -- the node refuses it on the weak
 # backends. Default OFF; preview-verify it re-locks onto YOU before driving with it on.
 $trackArmReloc=New-Object System.Windows.Forms.CheckBox; $trackArmReloc.Text='Arm re-lock'; $trackArmReloc.AutoSize=$true; $trackArmReloc.Location='510,110'; $trackArmReloc.ForeColor=$red; $trackArmReloc.Font=$fontBold; $grpTrackCtl.Controls.Add($trackArmReloc)
@@ -847,6 +973,31 @@ $reidBadge=New-Object System.Windows.Forms.Label; $reidBadge.Text='REID: --'; $r
 # Rerun (rerun.io) recording toggle -> --rerun (Phase 3). Default OFF and byte-identical to today
 # when off. Records a scrubbable .rrd on the robot; pull+open it with the 'Open .rrd' button below.
 $trackRerun=New-Object System.Windows.Forms.CheckBox; $trackRerun.Text='Rerun'; $trackRerun.AutoSize=$true; $trackRerun.Location='645,156'; $trackRerun.ForeColor=$accent; $trackRerun.Font=$fontBold; $grpTrackCtl.Controls.Add($trackRerun)
+# CONTROLLER RUN (2026-09-10 operator request): collect a full data bundle while driving the robot
+# MANUALLY on the Booster gamepad, with no autonomous following at all.
+#
+# HOW IT WORKS. Forces the node into --preview and adds --profile capture. Preview never opens the
+# bridge, so the node CANNOT command velocity and the gamepad's own firmware path is untouched -- the
+# operator drives, the node only watches. --profile capture turns on the recording bundle (rerun RGB +
+# depth + scalars + P6.1 intrinsics + /odometer_state) that demo/field deliberately leave off for
+# loop cost. We keep run_follow.sh (not run_follow_capture.sh) so --stream survives and the app still
+# shows live video while you drive; run_follow_capture.sh omits --stream and the preview would go dark.
+#
+# WHY THIS BEATS A BLIND RECORDING. Detection, tracking and re-ID all still run in preview, so the
+# .rrd carries per-frame person boxes, track ids and depth alongside the images -- labelled data for
+# free, instead of raw video to annotate later.
+#
+# SAFETY: this OVERRIDES the drive button (see the $mode line at launch). Ticked, the follow cannot be
+# commanded to drive under any circumstance, which is what makes it safe to walk the robot by hand.
+$trackCtrlRun=New-Object System.Windows.Forms.CheckBox; $trackCtrlRun.Text='Controller run (no follow)'; $trackCtrlRun.AutoSize=$true; $trackCtrlRun.Location='645,176'; $trackCtrlRun.ForeColor=$amber; $trackCtrlRun.Font=$fontBold; $grpTrackCtl.Controls.Add($trackCtrlRun)
+$trackCtrlRun.Add_CheckedChanged({
+    if($trackCtrlRun.Checked){
+        $trackRerun.Checked = $true    # the recording bundle IS the point of this mode
+        Add-LogTrack 'CONTROLLER RUN armed: forces --preview + --profile capture. The follow will NOT drive -- use the Booster gamepad. Recording RGB+depth+odom.' $amber
+    } else {
+        Add-LogTrack 'Controller run disarmed -- normal follow behaviour restored.' $accent
+    }
+})
 $chkGesture.Add_CheckedChanged({ if($chkGesture.Checked -and $chkAB.Checked){ $chkAB.Checked=$false } })
 $chkAB.Add_CheckedChanged({ if($chkAB.Checked -and $chkGesture.Checked){ $chkGesture.Checked=$false } })
 $chkVoice.Add_CheckedChanged({ if($chkVoice.Checked){ Start-Voice } else { Stop-Voice } })
@@ -891,6 +1042,58 @@ $trackLog=New-Object System.Windows.Forms.RichTextBox; $trackLog.ReadOnly=$true;
 
 $trackLayout.Controls.Add($grpTrackCtl,0,0); $trackLayout.Controls.Add($trackPic,0,1); $trackLayout.Controls.Add($trackBadge,0,2); $trackLayout.Controls.Add($trackLog,0,3)
 $tabTrack.Controls.Add($trackLayout)
+
+# ============================================================================
+#  TAB 7 - SLAM MAP  (render the Aurora occupancy grid so the operator can SEE the space)
+# ============================================================================
+# Static map view: shells to eval/stcm_grid.py (anaconda python + numpy + PIL) to render a chosen
+# .stcm/.vslam into a PNG, then shows it. The occupancy layer is 2D; a LIVE pose-on-map overlay is
+# the next step and is gated on the pose chain proving out on hardware (see robot/aurora/).
+$mapLayout=New-Object System.Windows.Forms.TableLayoutPanel; $mapLayout.Dock='Fill'; $mapLayout.ColumnCount=1; $mapLayout.RowCount=2; $mapLayout.Padding='10,8,10,8'
+[void]$mapLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,52)))
+[void]$mapLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,100)))
+$mapBar=New-Object System.Windows.Forms.Panel; $mapBar.Dock='Fill'
+$btnMapRender=New-Object System.Windows.Forms.Button; $btnMapRender.Text='Render map...'; $btnMapRender.Size='110,32'; $btnMapRender.Location='0,6'; $btnMapRender.FlatStyle='Flat'; $btnMapRender.Font=$fontBold
+$mapInfo=New-Object System.Windows.Forms.Label; $mapInfo.AutoSize=$false; $mapInfo.Size='860,40'; $mapInfo.Location='122,6'; $mapInfo.TextAlign='MiddleLeft'; $mapInfo.Text='Pick a .stcm / .vslam to render.  Legend once shown: dark = walls, light = free floor, grey = never observed.'
+$mapBar.Controls.AddRange(@($btnMapRender,$mapInfo))
+$mapPic=New-Object System.Windows.Forms.PictureBox; $mapPic.Dock='Fill'; $mapPic.SizeMode='Zoom'; $mapPic.BackColor=[System.Drawing.Color]::FromArgb(60,60,64)
+$mapLayout.Controls.Add($mapBar,0,0); $mapLayout.Controls.Add($mapPic,0,1)
+$tabMap.Controls.Add($mapLayout)
+$btnMapRender.Add_Click({
+    $ofd=New-Object System.Windows.Forms.OpenFileDialog
+    $ofd.Filter='SLAM maps + clouds (*.stcm;*.vslam;*.ply)|*.stcm;*.vslam;*.ply|All files (*.*)|*.*'
+    $ofd.InitialDirectory=[Environment]::GetFolderPath('Desktop')
+    if($ofd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK){ return }
+    $map=$ofd.FileName
+    $isPly = ([IO.Path]::GetExtension($map).ToLower() -eq '.ply')
+    # Resolve a REAL python (anaconda first; never the WindowsApps stub, which pops the Store).
+    $py=$null
+    foreach($cand in @((Join-Path $env:USERPROFILE 'anaconda3\python.exe'),(Join-Path $env:USERPROFILE 'AppData\Local\anaconda3\python.exe'),(Join-Path $env:USERPROFILE 'miniconda3\python.exe'))){ if(Test-Path $cand){ $py=$cand; break } }
+    if(-not $py){ try{ $g=(Get-Command python.exe -ErrorAction SilentlyContinue); if($g -and ($g.Source -notmatch 'WindowsApps')){ $py=$g.Source } }catch{} }
+    if(-not $py){ $mapInfo.Text='No Python found. The map renderer needs anaconda (numpy + PIL).'; return }
+    # .stcm/.vslam -> the 2D occupancy grid (stcm_grid.py); .ply -> a 3D point cloud top-down (ply_view.py)
+    $rel = if($isPly){'eval\ply_view.py'}else{'eval\stcm_grid.py'}
+    $tool=Join-Path $REPO_ROOT $rel
+    if(-not (Test-Path $tool)){ $mapInfo.Text=("Renderer not found at {0}" -f $tool); return }
+    $png=Join-Path $env:TEMP ('k1_map_{0}.png' -f ([guid]::NewGuid().ToString('N')))
+    $mapInfo.Text='Rendering (large maps take a few seconds)...'; $mapInfo.Refresh()
+    try{
+        $out = & $py $tool $map '--png' $png 2>&1 | Out-String
+        if(Test-Path $png){
+            if($mapPic.Image){ $mapPic.Image.Dispose() }
+            $bytes=[IO.File]::ReadAllBytes($png)            # load via bytes so the file isn't locked
+            $ms=New-Object System.IO.MemoryStream(,$bytes)
+            $mapPic.Image=[System.Drawing.Image]::FromStream($ms)
+            # both renderers print a one-line summary ending in metres ("grid ... m" / "cloud ... m")
+            $meta=($out -split "`n" | Where-Object { $_ -match '(grid|cloud) .+ m' } | Select-Object -First 1)
+            if(-not $meta){ $meta='' }
+            $kind = if($isPly){'3D cloud'}else{'2D grid'}
+            $mapInfo.Text=("{0}  [{1}]   |   {2}" -f (Split-Path $map -Leaf), $kind, $meta.Trim())
+        } else {
+            $mapInfo.Text=("Render failed: {0}" -f ($out.Trim() -replace "`r?`n",'  '))
+        }
+    }catch{ $mapInfo.Text=("Render error: {0}" -f $_) }
+})
 
 # ============================================================================
 #  Log helpers
@@ -955,8 +1158,9 @@ function Start-Live {
     if($script:TrackOn){ Add-LogLive 'Stopping Tracker (single camera consumer)...' $amber; Stop-Tracker }
     if($script:FollowOn){ Add-LogLive 'Stopping Control-tab Follow (single camera consumer)...' $amber; Stop-Follow }
     $script:RobotIP=$ip
+    Open-OperatorSession 'live'   # the Live view owns the link too: hold the Auto-Tune loop off it (shared contract)
     Add-LogLive ("Deploying camera streamer to {0} ..." -f $ip) $accent
-    if(-not (Deploy-RobotFiles $ip)){ Add-LogLive 'Deploy failed (helper scripts missing).' $red; return }
+    if(-not (Deploy-RobotFiles $ip)){ Add-LogLive 'Deploy failed (helper scripts missing).' $red; Close-OperatorSession 'live'; return }
     # clear any orphaned streamer from a previous session (a killed ssh can leave the remote python running)
     try{ $kp=Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip),'pkill -f stream_cam.py')) -NoNewWindow -PassThru; $null=$kp.WaitForExit(6000) }catch{}
     $liveSync.Stop=$false; $liveSync.Done=$false; $liveSync.Jpeg=$null; $liveSync.Seq=0; $liveSync.Frames=0; $liveSync.Err=''
@@ -968,7 +1172,7 @@ function Start-Live {
     $psi=New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName='ssh.exe'; $psi.Arguments=$argStr
     $psi.UseShellExecute=$false; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$false; $psi.CreateNoWindow=$true
     $proc=New-Object System.Diagnostics.Process; $proc.StartInfo=$psi
-    if(-not $proc.Start()){ Add-LogLive 'Failed to start ssh.' $red; return }
+    if(-not $proc.Start()){ Add-LogLive 'Failed to start ssh.' $red; Close-OperatorSession 'live'; return }
     $script:LiveProc=$proc
     $rs=[runspacefactory]::CreateRunspace(); $rs.ApartmentState='MTA'; $rs.Open()
     $rs.SessionStateProxy.SetVariable('proc',$proc); $rs.SessionStateProxy.SetVariable('liveSync',$liveSync)
@@ -988,6 +1192,7 @@ function Stop-Live {
     $script:LiveOn=$false; $startLiveBtn.Enabled=$true; $stopLiveBtn.Enabled=$false
     $script:lastLock=-1; $lockBadge.Text='  MARKER: --  '; $lockBadge.BackColor=[System.Drawing.Color]::Gray
     $liveStatus.Text='Stopped.'; Add-LogLive 'Live view stopped.' $amber
+    Close-OperatorSession 'live'
 }
 function Enable-Camera {
     $ip=$ipLive.Text.Trim(); if(-not $ip){return}
@@ -1048,9 +1253,164 @@ function Get-TrackExtraArgs {
     # Arming is meaningless without the vote running, so ensure --auto-reacquire is present too.
     if($trackArmReloc -and $trackArmReloc.Checked -and $app -eq 'osnet'){
         if(-not ($trackReacq -and $trackReacq.Checked)){ $a += '--auto-reacquire' }
-        $a += '--arm-reacquire'
+        # STRICTER ARMED RE-LOCK (2026-09-03, operator request: must not re-lock onto ANOTHER
+        # person after a loss). Armed re-lock has DRIVE authority -- a wrong re-lock walks the
+        # robot at a stranger -- so it is gated harder than the audit vote:
+        #   --reloc-arm-margin 0.35 (was 0.30): the winner must beat the RUNNER-UP by this much.
+        #     This is the real anti-wrong-person guard: a look-alike can score high in absolute
+        #     terms, but should not out-score you by a wide gap. Only bites in multi-person
+        #     scenes, which is exactly the risk case. NOT set higher: at 0.45 a DECISIVE win
+        #     (g=0.85 vs runner-up 0.50, gap 0.35) is refused too. 0.35 ADMITS that clear win while
+        #     still refusing a look-alike gap (g=0.90 vs 0.62 = 0.28). Set higher and armed re-lock
+        #     effectively never fire and push every loss back to manual re-seeding.
+        #   --reloc-arm-streak 12 (was 8): consecutive confirming frames before it may re-lock.
+        #   --reloc-floor 0.68 (osnet-resolved default 0.55): raises the absolute bar. Field
+        #     relocks were observed at g=0.63/0.72/0.77 -- 0.68 refuses the weakest of those.
+        # Ladder invariants hold: reloc_floor > anchor_floor 0.35; arm_margin >= reloc_margin
+        # 0.20; arm_streak >= reloc_streak 5. Cost of strictness: more manual re-seeding after
+        # a hard loss, which is the SAFE direction to fail.
+        $a += '--arm-reacquire --reloc-arm-margin 0.35 --reloc-arm-streak 12 --reloc-floor 0.68'
     }
     if($trackFence -and $trackFence.Checked){ $a += '--max-follow-range 4.0' }
+    # Gap steering. audit => --sector-audit audit as well, so the SECTOR lines that explain each
+    # decision are in the same log. on => sector audit stays off (the GAP-STEER line already says
+    # what it did) to keep the 1 Hz logging down while it is actually steering.
+    if($trackGap -and $trackGap.SelectedItem -and [string]$trackGap.SelectedItem -ne 'off'){
+        $g = [string]$trackGap.SelectedItem
+        if($g -eq 'audit'){ $a += '--gap-steer audit --sector-audit audit' }
+        # WIDER BERTH (2026-09-03): widen by turning EARLIER, not harder. Engaging late (0.98 m)
+        # forces a sharp deviation; engaging at ~1.22 m gives 0.24 m more runway for the same
+        # lateral clearance at a SMALLER peak bearing -- and peak bearing is exactly what costs
+        # the lock (today's three losses were at -27, -32 and +31 deg).
+        #   trigger-frac 0.35 -> 0.65   engage below ~1.22 m instead of ~0.98 m
+        #   rate 0.20 -> 0.24           slightly firmer arc (settles ~30 deg at relax 0.5)
+        #   max-bearing 35 -> 40        headroom for that 30 deg, still 13 deg inside the FOV edge
+        # NO --gap-steer-trigger-frac HERE. The 0.65 override predated the node's 2026-09-04 raise
+        # to 0.80, which existed precisely to undo the engage-point shrink caused by lowering
+        # brake_start 1.5 -> 1.15 (the trigger is a FRACTION of the brake zone, so narrowing the
+        # zone silently pulled the engage point in). With the stale override the app engaged at
+        # 0.99 m instead of 1.06 m -- deeper into the bearing regime where locks drop. Letting the
+        # node default rule steers strictly EARLIER and touches no brake value.
+        else               { $a += '--gap-steer on --gap-steer-rate 0.24 --gap-steer-max-bearing-deg 40' }
+    }
+    # Obstacle brake: depth forward-clearance reflex. Only ever REDUCES forward vx (yaw untouched),
+    # ignores the operator being followed, and fails to stop when depth is missing -- it composes with
+    # the forbid_forward keystone rather than adding a second forward-authorizing path.
+    if($trackObstacle -and $trackObstacle.Checked){
+        # --obstacle-band-bot 0.75 (default 0.68): FIELD-MEASURED 2026-09-03. The head camera sits at
+        # 0.86 m with a horizontal axis (fitted from per-row floor returns, model vs measured +/-0.05 m
+        # over 4 rows). At the 0.68 default the band only sees ABOVE 0.53 m at 1 m range, so a chair
+        # seat (~0.45 m) is invisible until ~0.6 m -- the robot hit a chair this way: clearance jumped
+        # 1.38 m -> 0.59 m between samples, straight past the grading zone into the stop band. At 0.75
+        # the band sees above 0.38 m at 1 m while the FLOOR does not appear until 1.98 m, safely outside
+        # the 1.5 m trigger. Do NOT also raise --obstacle-brake-start to 2.0: it would put that floor
+        # return inside the braking zone and brake on the ground continuously.
+        # DESENSITISED 2026-09-03 after the brake held vx=0.00 on edges/speckle in a cluttered
+        # room. The reflex triggered on the 8th percentile of corridor depth with only 40 valid
+        # pixels, so a handful of close returns (a glancing table edge, a depth speckle) could
+        # latch a full stop. Now it must see a REAL object:
+        # WIDER CORRIDOR 2026-09-03 (corridor-frac 0.35 -> 0.55): the robot KEPT RUNNING INTO A
+        # CHAIR. The 49.6 deg cone shrinks with range and at 0.5 m covered 0.46 m -- the robot is
+        # 0.45 m wide, so an obstacle just outside the cone was invisible to the brake while still
+        # squarely in the shoulder path. Gap steering compounded it: as the body turned, the chair
+        # slid out of the CENTRE corridor, centre read clear, the brake released, and it drove
+        # diagonally into the thing it was avoiding. 0.55 = 72 deg -> 1.02 m at 0.7 m and 0.73 m at
+        # 0.5 m, i.e. body width plus real margin all the way to contact range.
+        # RE-SENSITISED 2026-09-03 after a field cliff: CLEARANCE went 1.41 -> 0.43 m in ONE 1 Hz
+        # sample while travelling only ~0.18 m, i.e. the obstacle APPEARED rather than approached.
+        # Cause was min-valid 150: a chair leg or table edge subtends few depth pixels at 1.5 m and
+        # plenty at 0.4 m, so requiring 150 made thin objects invisible until close. Walked back:
+        #   pctile 20 -> 12     react to nearer returns sooner (still robust vs a raw min)
+        #   min-valid 150 -> 70 thin/distant objects register again
+        #   brake-stop .6 -> .7 stop ~10 cm further out
+        #   aged stays 5        that is the anti-glitch guard, NOT a sensitivity knob
+        #   brake-start stays 1.5 -- raising it would put the 1.98 m floor return inside the zone
+        # Superseded settings (kept for the record):
+        #   pctile 8 -> 20      ignore the closest few % (noise/thin edges stop dominating)
+        #   min-valid 40 -> 150 require a genuine footprint, not a speckle
+        #   aged 3 -> 5         longer median; a transient cannot latch a stop
+        #   brake-stop .7 -> .6 ~10 cm closer before forward is refused
+        # brake-start stays 1.5: it is COUPLED to the band -- at band-bot 0.75 the floor first
+        # returns at 1.98 m, so a 2.0 m trigger would brake on the ground continuously.
+        # NOTE this trades margin for smoothness in the fail-DANGEROUS direction (brakes later,
+        # less). Pair with --vx-max 0.15 indoors; a gait cannot stop instantly inside 0.6 m.
+        $a += ('--obstacle-brake --obstacle-band-bot 0.75 --obstacle-corridor-frac 0.55 --obstacle-pctile 12 ' +
+               '--obstacle-min-valid 70 --obstacle-aged 5 --obstacle-brake-stop 0.7')
+    }
+    # Head probe: one-shot startup head calibration (see the checkbox comment). Independent of
+    # every follow feature -- it only measures and logs, then re-centres the head.
+    # Escape behaviour when stopped with no reachable heading. Both are new motion, so they are
+    # opt-in; spin is preferred over reverse because rotating keeps the sensors on the world.
+    if($trackEscape -and $trackEscape.SelectedItem -and [string]$trackEscape.SelectedItem -ne 'off'){
+        $a += '--body-scan on'
+        if([string]$trackEscape.SelectedItem -eq 'spin+back'){ $a += '--reverse-when-stuck on' }
+        # Escape's retrace anchor, the reverse distance budget, and the obstacle-memory dead
+        # reckoning all read odometry, and --odom-topic was only ever supplied by the Rerun
+        # checkbox -- with Rerun off, arming Escape produced features that silently did nothing
+        # (2026-09-05 audit, confirmed: _body_scan_step and _reverse_step bail on latest_odom None).
+        # A duplicate of the Rerun line's identical flag is harmless: argparse keeps the last one.
+        $a += '--odom-topic /odometer_state'
+    }
+    # Floor reject: stop reading the floor plane as an obstacle (see the control's comment). Only
+    # meaningful with the footprint hit box, which is the only path carrying a height model -- the
+    # node ignores it otherwise, but sending it on the frac path would imply it does something.
+    if($trackFloor -and $trackFloor.Checked -and
+       $trackHitBox -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
+        $a += '--ground-reject on'
+    }
+    # Local map: short-horizon occupancy memory (see the control's comment). Footprint-gated for the
+    # same reason as Floor reject -- the cell placement uses the hit box's height model, so it is inert
+    # (and misleading) on the image-fraction path. Needs odometry to place cells in a stable frame;
+    # --odom-topic is idempotent (argparse keeps the last), so a duplicate of the Escape/Rerun line is
+    # harmless. Only ever REDUCES clearance; the three 2026-09-05 audit defects are fixed and gated.
+    if($trackLocalMap -and $trackLocalMap.Checked -and
+       $trackHitBox -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
+        $a += '--localmap on'
+        $a += '--odom-topic /odometer_state'
+    }
+    # Map assist: the pre-built Aurora 3D map reinforces a live obstacle the local avoidance already
+    # sees (confirm-only, never brakes alone, never releases). Footprint-gated like Local map.
+    # POSE comes from the Aurora odom-floor bridge on /aurora_odom (a drift-free MAP-frame pose), NOT
+    # the robot's own /odometer_state -- the map points live in the .vslam/.ply map frame, so the pose
+    # must be in that frame or every confirmation is placed at the wrong bearing. The .ply here is the
+    # SAME drive capture the bridge relocalizes in (drive_20260908_101056 -- 2026-09-08 re-map, 10251
+    # points in the map-assist height band vs 1868 in the old 172257 map), so the frames match. KEEP THIS
+    # .ply AND start_bridge.sh's .vslam ON THE SAME drive_* timestamp or the confirm-gate compares a
+    # live obstacle against a mis-placed map and silently never confirms.
+    # REQUIRES the bridge running on the robot (aurora_odom_bridge.py, bootstrapped); if it is not,
+    # /aurora_odom is silent and map-assist (and localmap, which shares --odom-topic) fail closed to
+    # live-depth -- safe, just inert. This --odom-topic is emitted after the Local-map one so argparse
+    # keeps /aurora_odom; do NOT also enable Rerun (it re-emits /odometer_state and would win).
+    if($trackMapAssist -and $trackMapAssist.Checked -and
+       $trackHitBox -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
+        $a += '--map-assist /home/booster/localmap/drive_20260908_104304.ply'
+        $a += '--odom-topic /aurora_odom'
+    }
+    # Hit box: select depth by the robot's real extent (width, depth, height) instead of an image
+    # fraction. Sends the URDF-derived dimensions explicitly so the geometry is visible in the log.
+    if($trackHitBox -and $trackHitBox.SelectedItem -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
+        $a += ('--corridor-mode footprint --robot-width-m 0.46 --robot-length-m 0.20 ' +
+               '--robot-height-m 1.00 --camera-height-m 0.86 --floor-margin-m 0.06 ' +
+               '--corridor-margin-m 0.15')
+    }
+    # Head scan: sweep the head when the brake has us stopped and pick the freest heading.
+    # The scan needs /head_pose, which the node only subscribes when a head feature asks for it --
+    # --head-scan does, so no extra flag is required here.
+    if($trackScan -and $trackScan.SelectedItem -and [string]$trackScan.SelectedItem -ne 'off'){
+        # 'patient' is a UI-ONLY name and must be TRANSLATED, not passed through: --head-scan takes
+        # only off/audit/on, and sending it verbatim made argparse reject the whole command line and
+        # the node refuse to start. It means "on, but wait longer before sweeping".
+        $scanMode = [string]$trackScan.SelectedItem
+        if($scanMode -eq 'patient'){
+            $a += '--head-scan on'
+            $a += '--head-scan-dwell-s 4.0'
+        } else {
+            $a += ('--head-scan ' + $scanMode)
+        }
+    }
+    if ($trackHeadProbe.Checked) {
+        $a += '--head-probe'
+    }
     # Rerun observability -> record a scrubbable .rrd on the robot. Default OFF; byte-identical when off.
     # The node auto-disables Rerun (RERUN-DISABLED-SLOW) if the loop goes over budget with it on, so the
     # gait is never held hostage to logging -- but the loop-cost gate (RERUN_PLAN.md) is still the
@@ -1067,7 +1427,10 @@ function Get-TrackExtraArgs {
     # around / sustained pass follow). Raise to 300s. The node still stops first (with _graceful_stop
     # safing the robot); the deadman + operator STOP stay live so you can stop earlier anytime; the app
     # backstop (Track/FollowMaxSec=315) only fires if the node hangs past its own stop.
-    $a += '--max-seconds 300'
+    # 300 -> 1200 s (4x) on request. The UI backstops at TrackMaxSec/FollowMaxSec must stay ABOVE
+    # this or they fire first and kill the session instead of letting the node stop gracefully --
+    # they were 315 against 300, so raising this alone would have changed nothing.
+    $a += '--max-seconds 2000'   # = the cap run_follow.sh appends (it wins anyway); the UI backstop TrackMaxSec 2060 stays above it
     if($trackRerun -and $trackRerun.Checked){ $a += ('--rerun --rerun-mode save --rerun-dir {0} --odom-topic /odometer_state --rerun-image-every-n 5 --rerun-overrun-frames 24' -f $script:RerunDir) }
     # Deadman HB: node gates velocity on a fresh /tmp/k1_hb mtime AND env-arms the bridge's own
     # heartbeat watchdog. The app-side relay (Start-HbRelay) is started by Start-Tracker.
@@ -1084,6 +1447,16 @@ function Get-TrackExtraArgs {
     # model is fast (ONNX/TRT) AND GESTURE-MS p99 in follow is measured safe. Use voice/button WAIT instead.
     if($lt -ne 'aruco'){ $a += ('--lock-trigger {0} --gesture-model {1} --gesture-debug' -f $lt,$script:GestureModel) }
     $a += '--commands'   # watched-file command channel (/tmp/k1_cmd) for the Cmd buttons + voice
+    # FINAL --odom-topic precedence (fixes an old-vs-new-parameter conflict): map-assist needs the
+    # bridge's MAP-frame pose on /aurora_odom, but Local map / Escape / Rerun all emit
+    # --odom-topic /odometer_state and argparse keeps the LAST one -- with Rerun on, its line (above)
+    # would silently pin map-assist to the ROBOT-frame topic, so it confirms against a mis-placed map
+    # and does nothing. Re-emit /aurora_odom here, after every other block, so map-assist is never
+    # overridden. Footprint-gated to match the map-assist block; absent (others win) when map-assist off.
+    if($trackMapAssist -and $trackMapAssist.Checked -and
+       $trackHitBox -and [string]$trackHitBox.SelectedItem -eq 'footprint'){
+        $a += '--odom-topic /aurora_odom'
+    }
     return ($a -join ' ')
 }
 
@@ -1149,6 +1522,10 @@ function Update-ReidBadge([string]$line){
 # amber = warn (CPU-EP / RELOC HOLD), else the normal $accent.
 function Get-TrackLineColor([string]$line){
     if(-not $line){ return $accent }
+    # Advisory digests are data, not faults: a hint key or class name containing 'hist' or 'failed'
+    # must not paint red. A dead auto-improve loop is a warning.
+    if($line -match 'TUNE-STALE'){ return $amber }
+    if($line -match '^(\[(tune-hints|autotune)\]|==== )'){ return $accent }
     # good-news / recovery lines are NOT faults (so 'DEPTH-STARVED cleared', 'REID-DEGRADED recovered',
     # 'forward vx re-enabled' don't read red via the STARVED/DEGRADED substrings below).
     if($line -match '(?i)cleared|re-enabled|recover|DRIVE-READY'){ return $green }
@@ -1210,11 +1587,27 @@ function Send-FollowCmd([string]$tok){
             $line="$tok ARM"
         }
     }
+    # A slow earlier MOTION command (RESUME/FOLLOW [ARM]) is cancelled before the next send, so it can
+    # never land AFTER a later one (e.g. HOLD) and walk the robot. An unfinished STOP/HOLD/PARK/STATUS is
+    # NEVER cancelled: it may still be connecting, and killing it would drop a safe-down. The append plus
+    # the node's STOP > HOLD priority settles the order of those.
+    if($script:CmdProc -and -not $script:CmdProc.HasExited -and $script:CmdLine -match '^(RESUME|FOLLOW)\b'){
+        try{ $script:CmdProc.Kill() }catch{}
+        Add-LogTrack ("CMD '$($script:CmdLine)' was still sending -- cancelled before '$line'; it may or may not have reached the robot.") $amber
+    }
     try{
-        $cmd="echo $line > /tmp/k1_cmd"
+        # APPEND, never overwrite: the node reads every queued line and applies STOP > HOLD priority, so a
+        # later command can never erase an earlier one it has not read yet.
+        $cmd="echo $line >> /tmp/k1_cmd"
         $sp=Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip),$cmd)) -NoNewWindow -PassThru
-        $null=$sp.WaitForExit(4000)
-        Add-LogTrack ("CMD sent: $line") $accent
+        try{ $null=$sp.Handle }catch{}
+        $script:CmdProc=$sp; $script:CmdLine=$line
+        if($sp.WaitForExit(4000)){
+            if($sp.ExitCode -eq 0){ Add-LogTrack ("CMD sent: $line") $accent }
+            else { Add-LogTrack ("CMD NOT delivered: $line (ssh exit $($sp.ExitCode)). For a STOP use the gamepad / e-stop.") $red }
+        } else {
+            Add-LogTrack ("CMD not confirmed after 4 s: $line (still sending; the next command cancels it). For a STOP use the gamepad / e-stop.") $amber
+        }
     }catch{ Add-LogTrack ("CMD send failed: $_") $red }
 }
 
@@ -1270,6 +1663,52 @@ function Stop-Voice {
     Add-LogTrack 'Voice OFF.' $amber
 }
 
+# OPERATOR SESSION signal -- shared contract with desktop/Auto-Tune-Loop.ps1. While the named mutex
+# Global\K1-Operator-Session EXISTS, the loop starts no .rrd pull or bundle send and kills a running pull
+# within 5 s, so a bulk transfer never shares the link with a launch pre-flight or a follow. Created NOT
+# owned (its existence is the signal) before the pre-flight deploy; disposed when the session ends or the
+# launch aborts. Local\ is the fallback if the Global namespace refuses.
+# Several sessions own the robot link: a follow ('follow': Tracker or Control-tab, never both), the Live
+# view ('live') and the manual loco controller ('ctrl'). Each opens/closes under its own owner name; the
+# mutex exists while ANY owner holds it, and both calls are idempotent per owner.
+$script:OperatorMutex = $null
+$script:OperatorOwners = @{}
+function Open-OperatorSession([string]$owner='follow'){
+    if(-not $script:OperatorOwners){ $script:OperatorOwners = @{} }
+    $script:OperatorOwners[$owner] = $true
+    if($script:OperatorMutex){ return }
+    try{ $script:OperatorMutex = New-Object System.Threading.Mutex($false, 'Global\K1-Operator-Session') }
+    catch{ try{ $script:OperatorMutex = New-Object System.Threading.Mutex($false, 'Local\K1-Operator-Session') }catch{ $script:OperatorMutex = $null } }
+}
+function Close-OperatorSession([string]$owner='follow'){
+    if(-not $script:OperatorOwners){ $script:OperatorOwners = @{} }
+    $script:OperatorOwners.Remove($owner)
+    if($script:OperatorOwners.Count -gt 0){ return }   # another session still owns the link
+    try{ if($script:OperatorMutex){ $script:OperatorMutex.Dispose() } }catch{}
+    $script:OperatorMutex = $null
+}
+
+# Stop any follow node on the robot and CONFIRM none is left: GONE, STILL-RUNNING, or UNKNOWN (ssh failed
+# or timed out). SIGTERM -> the node's handler stops + ChangeMode(kPrepare); it gets 15 s to exit (the
+# bridge shutdown alone is ~4 s, then the graceful settle and the CUDA/TRT teardown). The escaped \.
+# keeps the pattern from matching this command's own shell line (pkill/pgrep -f match whole command
+# lines). TimeoutMs covers ssh ConnectTimeout (8 s) + that 15 s loop + margin, so a slow but valid
+# answer is never reported as "did not answer".
+function Stop-RobotFollowNode([string]$ip,[int]$TimeoutMs=26000){
+    $tmp = Join-Path $env:TEMP ('k1_kill_{0}.txt' -f ([IO.Path]::GetRandomFileName() -replace '\.',''))
+    try{
+        $cmd = 'pkill -TERM -f ''follow_person_k1\.py''; for i in $(seq 30); do pgrep -f ''follow_person_k1\.py'' >/dev/null; rc=$?; [ $rc -eq 1 ] && { echo NODE-GONE; exit 0; }; [ $rc -ne 0 ] && { echo NODE-ERR $rc; exit 0; }; sleep 0.5; done; echo NODE-STILL-RUNNING'
+        $p = Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip), $cmd)) -NoNewWindow -PassThru -RedirectStandardOutput $tmp
+        try{ $null = $p.Handle }catch{}
+        if(-not $p.WaitForExit($TimeoutMs)){ try{ $p.Kill() }catch{}; $null = $p.WaitForExit(2000); return 'UNKNOWN' }
+        $out = [string](Get-Content $tmp -Raw -ErrorAction SilentlyContinue)
+        if($p.ExitCode -eq 0 -and $out -match 'NODE-GONE'){ return 'GONE' }
+        if($p.ExitCode -eq 0 -and $out -match 'NODE-STILL-RUNNING'){ return 'STILL-RUNNING' }
+        return 'UNKNOWN'
+    }catch{ return 'UNKNOWN' }
+    finally{ Remove-Item $tmp -ErrorAction SilentlyContinue }
+}
+
 function Start-Tracker([bool]$drive){
     if($script:TrackOn){ return $false }
     # SINGLE LOCO DRIVER RULE: never run alongside the Control-tab follow or the manual controller.
@@ -1291,6 +1730,19 @@ function Start-Tracker([bool]$drive){
     }
     $ip=$ipTrack.Text.Trim(); if(-not $ip){ Add-LogTrack 'Enter the robot IP first.' $amber; return $false }
     $script:RobotIP=$ip
+    # Pre-flight starts here: hold the Auto-Tune loop off the link from the first deploy byte onward.
+    # Every abort below returns $false, and the toggle handler then closes the session.
+    Open-OperatorSession
+    if(-not $script:OperatorMutex){ Add-LogTrack 'Operator session not signalled (mutex create failed) -- the Auto-Tune loop may pull during this launch.' $amber }
+    # A slow motion command from an earlier session must not land in this one.
+    if($script:CmdProc -and -not $script:CmdProc.HasExited){ try{ $script:CmdProc.Kill() }catch{} }; $script:CmdProc=$null
+    # ONE NODE AT A TIME: stop any previous follow node and CONFIRM it is gone BEFORE the deploy
+    # overwrites its files (run_follow.sh also refuses to exec a second node -- exit 5). Fail-closed:
+    # no confirmation, no launch.
+    $old = Stop-RobotFollowNode $ip
+    if($old -eq 'UNKNOWN'){ $old = Stop-RobotFollowNode $ip }   # one retry: a slow answer is not a refusal
+    if($old -eq 'STILL-RUNNING'){ Add-LogTrack ('An earlier follow node is still running on the robot 15 s after SIGTERM -- NOT starting a second one. If it does not exit, force it:  ssh {0}@{1} "pkill -KILL -f ''follow_person_k1\.py''"  (the bridge stops on stdin EOF), then toggle Follow again. If the robot is moving, use the gamepad / e-stop.' -f $script:SshUser,$ip) $red; return $false }
+    if($old -ne 'GONE'){ Add-LogTrack ("Could not confirm that no follow node is running on {0} (the robot did not answer) -- NOT launching. Toggle Follow again." -f $ip) $red; return $false }
     # SINGLE CAMERA CONSUMER: stop the Live View stream (it also decodes the head
     # camera) so the K1 only ever streams the camera once.
     if($script:LiveOn){ Add-LogTrack 'Stopping Live View (single camera consumer)...' $amber; Stop-Live }
@@ -1300,7 +1752,11 @@ function Start-Tracker([bool]$drive){
     # the node still runs and falls back to the ArUco marker, so offer to continue rather than block.
     if(($chkGesture -and $chkGesture.Checked) -or ($chkAB -and $chkAB.Checked)){
         Resolve-GestureModel $ip   # P4.2b: prefer the TRT engine when built (else .onnx)
-        if(-not (Ensure-GestureModel $ip)){
+        $gst = Ensure-GestureModel $ip
+        if($gst -eq 'UNKNOWN'){
+            $r=[System.Windows.Forms.MessageBox]::Show("The robot at $ip did not answer the gesture-model check (usually a busy link). If the model is missing, gesture FALLS BACK to the ArUco marker (safe). Start anyway?",'Gesture model not checked',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
+            if($r -ne 'OK'){ return $false }
+        } elseif($gst -ne 'PRESENT'){
             $r=[System.Windows.Forms.MessageBox]::Show("The gesture pose model isn't on the robot and couldn't be auto-staged. Gesture will FALL BACK to the ArUco marker (safe). Start anyway?",'Gesture model missing',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
             if($r -ne 'OK'){ return $false }
         }
@@ -1311,7 +1767,12 @@ function Start-Tracker([bool]$drive){
     # colour histogram, the badge shows HIST (red), and the arm-gate auto-REFUSES armed re-lock. So: WARN + confirm.
     $reidApp = if($trackApp -and $trackApp.SelectedItem){ [string]$trackApp.SelectedItem } else { 'global' }
     if($reidApp -eq 'osnet'){
-        if(-not (Ensure-ReidModel $ip)){
+        $rst = Ensure-ReidModel $ip
+        if($rst -eq 'UNKNOWN'){
+            $r=[System.Windows.Forms.MessageBox]::Show("The robot at $ip did not answer the OSNet ReID engine check (usually a busy link). The node checks the engine itself at start: the REID badge shows OSNet(TRT)/OSNet(CUDA) when it loaded, HIST (red) when it did not -- and then ARMED markerless re-lock is auto-refused. Start anyway?",'ReID engine not checked',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
+            if($r -ne 'OK'){ return $false }
+            Add-LogTrack 'ReID engine not checked (robot did not answer) -> watch the REID badge: OSNet = loaded, HIST = missing.' $amber
+        } elseif($rst -ne 'PRESENT'){
             $r=[System.Windows.Forms.MessageBox]::Show("The OSNet ReID engine ($script:ReidEngine) isn't on the robot and couldn't be auto-staged. Deep re-ID will run on a COLOUR-HISTOGRAM fallback (shown red on the REID badge) and ARMED markerless re-lock will be auto-refused. Start anyway?",'ReID engine missing',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
             if($r -ne 'OK'){ return $false }
             Add-LogTrack 'OSNet engine missing -> node falls back to histogram; armed re-lock auto-refused. Badge shows HIST.' $amber
@@ -1330,12 +1791,18 @@ function Start-Tracker([bool]$drive){
             Add-LogTrack 'rerun-sdk missing -> --rerun omitted for this start; re-tick Rerun to retry staging.' $amber
         }
     }
-    try{ $kp=Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip),'pkill -f follow_person_k1.py')) -NoNewWindow -PassThru; $null=$kp.WaitForExit(6000) }catch{}
+    # (the earlier follow node was stopped and confirmed gone at the top of the pre-flight)
     $trackSync.Stop=$false; $trackSync.Done=$false; $trackSync.Jpeg=$null; $trackSync.Seq=0; $trackSync.Frames=0; $trackSync.Err=''
     $script:trackLastSeq=-1; $script:trackFpsFrames=0; $script:trackLastLock=-1; $trackSync.Lock=0
-    $mode = if($drive){'drive'}else{'preview'}
+    # CONTROLLER RUN OVERRIDE: a ticked 'Controller run' forces preview even if the operator hit the
+    # drive button. Preview never opens the bridge, so the node cannot command velocity -- that is the
+    # safety property that makes it OK to drive the robot by hand while it records.
+    $ctrlRun = ($trackCtrlRun -ne $null -and $trackCtrlRun.Checked)
+    $mode = if($drive -and -not $ctrlRun){'drive'}else{'preview'}
+    if($ctrlRun -and $drive){ Add-LogTrack 'CONTROLLER RUN: drive request overridden to --preview (node will not command velocity). Drive with the gamepad.' $amber }
     $standoff=Get-TrackStandoff; $vxmax=Get-TrackVxMax; $extra=Get-TrackExtraArgs
-    $remote="bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb --stream --standoff-m $standoff --vx-max $vxmax $extra"
+    if($ctrlRun){ $extra = "$extra --profile capture" }   # RGB+depth+scalars+intrinsics+odom bundle
+    $remote="K1_MAX_SEC=$($script:K1SessionCapSec) bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb --stream --standoff-m $standoff --vx-max $vxmax $extra"
     Add-LogTrack ("launch: " + $remote) $accent   # echo so the operator can verify --lock-trigger / --gesture-* flags
     # NO -tt (PTY would corrupt the binary JPEG stream). ServerAliveCountMax=1 -> a dropped
     # link triggers remote SIGHUP fast (~5s) for the WALKING case.
@@ -1355,7 +1822,11 @@ function Start-Tracker([bool]$drive){
         # P0 OSNet-health: ALSO pass the ReID/reloc/depth/frame-stall families (REID-ENGINE, REID-DEGRADED,
         # RELOC-*, DEPTH*/DEPTH-STARVED, NO-FRAME). These prefixes are emitted by follow_person_k1.py's log()
         # at column 0 (see the node<->app log-prefix contract); the UI badge + amber/red coloring parse them.
-        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|LOOP-MS|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB|RERUN)')){
+        # Also the launcher's advisory digests, printed by run_follow.sh before the node starts: the tune
+        # hints and autotune label summary ([tune-hints] / [autotune] and their ==== banners) and the
+        # [run_follow] TUNE-STALE alarm for a dead auto-improve loop. Filtered out, they never reached
+        # the operator (review C12).
+        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|LOOP-MS|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB|RERUN|\[tune-hints\]|\[autotune\]|==== (end )?(TUNE HINTS|AUTOTUNE)|\[run_follow\] (TUNE-STALE|tune hints|REFUSED))')){
             $Event.MessageData.Enqueue($d)
         }
     }
@@ -1421,7 +1892,7 @@ function Invoke-Offload([string]$ip, [string]$profileLabel){
         if(-not (Test-Path $script)){ Add-LogTrack 'Offload skip: Offload-Run.ps1 not found beside the app.' $amber; return }
         Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
             '-NoProfile','-ExecutionPolicy','Bypass','-File',$script,
-            '-Ip',$ip,'-User',$script:SshUser,'-Pass',$script:SshPass,'-Profile',$profileLabel) | Out-Null
+            '-Ip',$ip,'-User',$script:SshUser,'-Profile',$profileLabel) | Out-Null   # no -Pass: key-only SSH; an empty value made Start-Process throw, a set K1PW showed on the command line
         Add-LogTrack ("Offload started (background): bundle on robot -> pull to runs\ (label $profileLabel).") $accent
     }catch{ try{ Add-LogTrack ("Offload skip: $_") $amber }catch{} }
 }
@@ -1433,6 +1904,8 @@ function Stop-Tracker([bool]$procAlreadyDead=$false){
     $offloadProfile = if($script:TrackDrive){'tracker-drive'}else{'tracker-preview'}
     $offloadIp=''; try{ $offloadIp=$ipTrack.Text.Trim() }catch{}
     $trackSync.Stop=$true
+    # No command still in flight may land in a stopped (or the next) session.
+    if($script:CmdProc -and -not $script:CmdProc.HasExited){ try{ $script:CmdProc.Kill() }catch{} }; $script:CmdProc=$null
     # Tear down the stderr capture FIRST so the ErrorDataReceived handler stops firing across restarts.
     try{ if($script:TrackProc){ $script:TrackProc.CancelErrorRead() } }catch{}
     try{ if($script:TrackErrSub){ Unregister-Event -SubscriptionId $script:TrackErrSub.Id -ErrorAction SilentlyContinue; $script:TrackErrSub=$null } }catch{}
@@ -1445,9 +1918,8 @@ function Stop-Tracker([bool]$procAlreadyDead=$false){
     # stop + ChangeMode(kPrepare); killing the node also EOFs the bridge stdin, which safes loco too.
     $ip=''
     try{ $ip=$ipTrack.Text.Trim() }catch{}
-    if($ip){
-        try{ $sp=Start-Process ssh.exe -ArgumentList ($SSH_OPTS + @(("{0}@{1}" -f $script:SshUser,$ip),'pkill -TERM -f follow_person_k1.py')) -NoNewWindow -PassThru; $null=$sp.WaitForExit(2500) }catch{}
-    }
+    $gone='UNKNOWN'
+    if($ip){ $gone = Stop-RobotFollowNode $ip }
     try{ if($script:TrackPS){ $script:TrackPS.Dispose() } }catch{}
     try{ if($script:TrackRS){ $script:TrackRS.Close() } }catch{}
     $script:TrackProc=$null; $script:TrackPS=$null; $script:TrackRS=$null
@@ -1461,7 +1933,10 @@ function Stop-Tracker([bool]$procAlreadyDead=$false){
         $script:trackLastLock=-1; Set-TrackBadge -1
         if($trackPic.Image){ $img=$trackPic.Image; $trackPic.Image=$null; $img.Dispose() }
         if($script:trackMs){ $script:trackMs.Dispose(); $script:trackMs=$null }
-        Add-LogTrack 'Follow stopped (killed ssh + pkill; robot does stop + PREP via SIGHUP/SIGTERM/EOF).' $amber
+        if($gone -eq 'GONE'){ Add-LogTrack 'Follow stopped: no follow node left on the robot (checked).' $amber }
+        elseif($gone -eq 'STILL-RUNNING'){ Add-LogTrack ('Follow stop NOT confirmed: the node was still running 15 s after SIGTERM. If the robot is moving, use the gamepad / e-stop. To force it:  ssh {0}@{1} "pkill -KILL -f ''follow_person_k1\.py''"  (the bridge stops on stdin EOF). The next launch refuses to start a second node.' -f $script:SshUser,$ip) $red }
+        elseif(-not $ip){ Add-LogTrack 'Follow stopped locally, but there is no robot IP, so the robot-side stop was not sent or checked. If the robot is moving, use the gamepad / e-stop.' $red }
+        else { Add-LogTrack 'Follow stop NOT confirmed: the robot did not answer the stop check. If the robot is moving, use the gamepad / e-stop.' $red }
         $statusLbl.Text='Tracker stopped.'
     }catch{}
     # P6.2b: AFTER the robot is safed + UI restored, fire the post-run offload for a capture session
@@ -1469,6 +1944,7 @@ function Stop-Tracker([bool]$procAlreadyDead=$false){
     # top, before the teardown reset TrackDrive.
     if($offloadDo){ Invoke-Offload $offloadIp $offloadProfile }
     $script:TrackRerunOn = $false
+    Close-OperatorSession   # session over -> the Auto-Tune loop may use the link again (shared contract)
 }
 
 # ============================================================================
@@ -1487,6 +1963,7 @@ function Connect-Ctrl {
     $ip=$ipCtrl.Text.Trim(); $iface=$ifaceBox.Text.Trim(); if(-not $iface){$iface='127.0.0.1'}
     if(-not $ip){ Add-LogCtrl 'Enter the robot IP first.' $amber; return }
     $script:RobotIP=$ip
+    Open-OperatorSession 'ctrl'   # the manual controller owns the link too: hold the Auto-Tune loop off it (shared contract)
     Add-LogCtrl ("Deploying loco launcher to {0} ..." -f $ip) $accent
     Deploy-RobotFiles $ip | Out-Null
     $ctrlSync.Stop=$false; $ctrlSync.Log.Clear()
@@ -1497,7 +1974,7 @@ function Connect-Ctrl {
     $psi=New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName='ssh.exe'; $psi.Arguments=$argStr
     $psi.UseShellExecute=$false; $psi.RedirectStandardInput=$true; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$false; $psi.CreateNoWindow=$true
     $proc=New-Object System.Diagnostics.Process; $proc.StartInfo=$psi
-    if(-not $proc.Start()){ Add-LogCtrl 'Failed to start ssh.' $red; return }
+    if(-not $proc.Start()){ Add-LogCtrl 'Failed to start ssh.' $red; Close-OperatorSession 'ctrl'; return }
     try{ $proc.StandardInput.AutoFlush=$true }catch{}
     try{ $proc.StandardInput.NewLine="`n" }catch{}   # LF only: the robot's getline compares against "gft" etc., a trailing CR breaks the match
     $script:CtrlProc=$proc
@@ -1525,6 +2002,7 @@ function Disconnect-Ctrl {
     $followToggle.Enabled=$true; $followDriveChk.Enabled=$true   # re-enable follow (DRIVE still needs a fresh ARM)
     if($trackToggle -and -not $script:TrackOn){ $trackToggle.Enabled=$true; $trackDriveChk.Enabled=$true; $trackArmChk.Enabled=$true }   # re-enable Tracker too
     $connStatus.Text='Disconnected.'; Add-LogCtrl 'Controller disconnected.' $amber
+    Close-OperatorSession 'ctrl'
 }
 function Send-Loco([string]$code){
     if(-not $script:CtrlOn -or -not $script:CtrlProc -or $script:CtrlProc.HasExited){ Add-LogCtrl 'Not connected.' $amber; return }
@@ -1585,6 +2063,14 @@ function Start-Follow([bool]$drive){
     }
     $ip=$ipCtrl.Text.Trim(); if(-not $ip){ Add-LogCtrl 'Enter the robot IP (connection box) first.' $amber; return $false }
     $script:RobotIP=$ip
+    # Same pre-flight contract as Start-Tracker: signal the operator session before the first deploy
+    # byte, and confirm no earlier follow node is running. Every abort below returns $false and the
+    # toggle handler closes the session.
+    Open-OperatorSession
+    $old = Stop-RobotFollowNode $ip
+    if($old -eq 'UNKNOWN'){ $old = Stop-RobotFollowNode $ip }   # one retry: a slow answer is not a refusal
+    if($old -eq 'STILL-RUNNING'){ Add-LogCtrl ('An earlier follow node is still running on the robot 15 s after SIGTERM -- NOT starting a second one. If it does not exit, force it:  ssh {0}@{1} "pkill -KILL -f ''follow_person_k1\.py''"  then toggle Follow again. If the robot is moving, use the gamepad / e-stop.' -f $script:SshUser,$ip) $red; return $false }
+    if($old -ne 'GONE'){ Add-LogCtrl ("Could not confirm that no follow node is running on {0} (the robot did not answer) -- NOT launching. Toggle Follow again." -f $ip) $red; return $false }
     # SINGLE CAMERA CONSUMER: stop the Live View stream (it also decodes the head
     # camera) so the camera is only ever streamed once.
     if($script:LiveOn){ Add-LogCtrl 'Stopping Live View (single camera consumer)...' $amber; Stop-Live }
@@ -1592,7 +2078,7 @@ function Start-Follow([bool]$drive){
     if(-not (Deploy-FollowFiles $ip)){ Add-LogCtrl ("Deploy failed: " + $(if($script:DeployErr){$script:DeployErr}else{"a helper under '$ROBOT_DIR' could not be deployed"})) $red; return $false }
     $followSync.Stop=$false; $followSync.Log.Clear()
     $mode = if($drive){'drive'}else{'preview'}
-    $remote="bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb"
+    $remote="K1_MAX_SEC=$($script:K1SessionCapSec) bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb"
     $argStr='-tt '+(Get-SshOptString)+" $($script:SshUser)@$ip `"$remote`""
     $psi=New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName='ssh.exe'; $psi.Arguments=$argStr
     $psi.UseShellExecute=$false; $psi.RedirectStandardInput=$true; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$false; $psi.CreateNoWindow=$true
@@ -1637,9 +2123,19 @@ function Stop-Follow([bool]$procAlreadyDead=$false){
     # reset the toggle UI without re-entering its handler
     $script:FollowToggleGuard=$true; $followToggle.Checked=$false; $script:FollowToggleGuard=$false
     $followToggle.Text='Follow Marker (QR): OFF'; $followToggle.UseVisualStyleBackColor=$true; $followToggle.ForeColor=[System.Drawing.SystemColors]::ControlText
-    $followStatus.Text='Follow stopped. Robot sent stop + PREP on exit.'; $followStatus.ForeColor=[System.Drawing.Color]::DimGray
-    Add-LogCtrl 'Follow stopped (Ctrl-C sent; robot does stop + PREP).' $amber
+    # Confirm on the robot (belt-and-braces SIGTERM after the Ctrl-C), and say what actually happened.
+    $gone='UNKNOWN'; $ipF=''; try{ $ipF=$ipCtrl.Text.Trim() }catch{}
+    if($ipF){ $gone = Stop-RobotFollowNode $ipF }
+    if($gone -eq 'GONE'){
+        $followStatus.Text='Follow stopped. No follow node left on the robot (checked).'
+        Add-LogCtrl 'Follow stopped (Ctrl-C sent; no follow node left on the robot -- checked).' $amber
+    } else {
+        $followStatus.Text='Follow stop NOT confirmed -- check the robot.'
+        Add-LogCtrl ('Follow stop NOT confirmed ({0}). If the robot is moving, use the gamepad / e-stop.' -f $(if($ipF){$gone}else{'no robot IP'})) $red
+    }
+    $followStatus.ForeColor=[System.Drawing.Color]::DimGray
     $statusLbl.Text='Follow stopped.'
+    Close-OperatorSession   # session over -> the Auto-Tune loop may use the link again (shared contract)
 }
 
 # ============================================================================
@@ -1666,7 +2162,11 @@ $mediaTimer.Add_Tick({
     }
     if($script:FollowOn){
         if($script:FollowProc -and $script:FollowProc.HasExited){
-            Add-LogCtrl 'Follow process exited; cleaning up.' $amber
+            $ecF=$null; try{ $ecF=[int]$script:FollowProc.ExitCode }catch{}
+            if($ecF -eq 5){ Add-LogCtrl 'Follow process exited 5 = REFUSED: a follow node was already running on the robot (or pgrep failed), so run_follow.sh did not start a second one. The cleanup below sends it SIGTERM; toggle Follow again in a few seconds.' $red }
+            elseif($ecF -eq 3){ Add-LogCtrl 'Follow process exited 3 = COMPILE FAILED (run_follow.sh) -- see /home/booster/k1_compile.err on the robot.' $red }
+            elseif($ecF -eq 4){ Add-LogCtrl 'Follow process exited 4 = DRIVE-ABORT (the node refused to walk; most often a stalled camera).' $amber }
+            else { Add-LogCtrl ("Follow process exited ({0}); cleaning up." -f $(if($ecF -eq $null){'code unavailable'}else{$ecF})) $amber }
             Stop-Follow $true   # proc already dead: skip the SIGINT write + long wait (no UI stall)
         }
         elseif($script:FollowDrive -and (([datetime]::Now - $script:FollowStart).TotalSeconds -gt $script:FollowMaxSec)){
@@ -1698,9 +2198,10 @@ $mediaTimer.Add_Tick({
             else{
                 # exit 3 = bridge COMPILE FAILED (diagnostics in k1_compile.err -- k1_follow.err
                 # holds the PREVIOUS session at compile time); exit 4 = node REFUSED to drive
-                # (DRIVE-ABORT, deliberate); anything else = crash.
+                # (DRIVE-ABORT, deliberate); exit 5 = run_follow.sh REFUSED a second node; anything else = crash.
                 $tailFile = '/home/booster/k1_follow.err'
                 if($ec -eq 3){ $tailFile='/home/booster/k1_compile.err'; Add-LogTrack 'Follow process exited 3 = COMPILE FAILED (run_follow.sh). See k1_compile.err tail below.' $red }
+                elseif($ec -eq 5){ Add-LogTrack 'Follow process exited 5 = REFUSED: a follow node was already running on the robot (or pgrep failed), so run_follow.sh did not start a second one. The tail below is from THAT node; the cleanup below sends it SIGTERM. Toggle Follow again in a few seconds.' $red }
                 elseif($ec -eq 4){
                     Add-LogTrack 'Follow process exited 4 = DRIVE-ABORT (node refused to walk -- see the amber DRIVE-ABORT line above and the tail below).' $amber
                     # Most DRIVE-ABORTs are stalled cameras (sensors not sustained-fresh). Point the
@@ -1880,7 +2381,7 @@ $timer.Add_Tick({
 function Get-ConnectRecipe([string]$ip){ @"
 ================  K1 CONNECTION RECIPE  ================
 Target robot IP : $ip
-1) SSH:  ssh $K1_SSH_USER@$ip   (password: $K1_SSH_PASS)
+1) SSH:  ssh $K1_SSH_USER@$ip   (SSH key auth)
 2) SDK over Fast-DDS connects by robot IP; on-robot loco iface = 127.0.0.1.
    Loco CLI: ~/Workspace/booster_robotics_sdk/build/b1_loco_example_client 127.0.0.1
 3) Live camera topic: /boostercamera/head/rgb (sensor_msgs/Image).
@@ -1896,10 +2397,10 @@ function Do-Verify([string]$ip){
     if($r.SSH){ Set-Content -Path $LAST_TARGET_FILE -Value $ip -Encoding ASCII; Set-RobotIP $ip; Add-Log (Get-ConnectRecipe $ip) ([System.Drawing.Color]::PaleGreen); $statusLbl.Text="Reachable: $ip (SSH open). IP applied to all tabs." }
     else{ $statusLbl.Text="No SSH on $ip."; [System.Windows.Forms.MessageBox]::Show("SSH not open on $ip. Is the K1 on this network and powered on?",'Not reachable','OK','Warning')|Out-Null }
 }
-function Open-SshTerminal { $ip=$ip2Box.Text.Trim(); if(-not $ip){return}; Add-Log2 ("Opening SSH terminal to {0}@{1} (pw {2})" -f $K1_SSH_USER,$ip,$K1_SSH_PASS) $accent; Start-Process cmd.exe -ArgumentList '/k',"ssh -o StrictHostKeyChecking=accept-new $K1_SSH_USER@$ip" }
+function Open-SshTerminal { $ip=$ip2Box.Text.Trim(); if(-not $ip){return}; Add-Log2 ("Opening SSH terminal to {0}@{1}" -f $K1_SSH_USER,$ip) $accent; Start-Process cmd.exe -ArgumentList '/k',"ssh -o StrictHostKeyChecking=accept-new $K1_SSH_USER@$ip" }
 function Setup-SshKey {
     $ip=$ip2Box.Text.Trim(); if(-not $ip){return}
-    Add-Log2 ("Installing SSH key on {0} (type pw {1} once)..." -f $ip,$K1_SSH_PASS) $accent
+    Add-Log2 ("Installing SSH key on {0} (type the robot password once in the console)..." -f $ip) $accent
     $c='if not exist "%USERPROFILE%\.ssh\id_ed25519" ssh-keygen -t ed25519 -f "%USERPROFILE%\.ssh\id_ed25519" -N "" -q'
     $c+=' & type "%USERPROFILE%\.ssh\id_ed25519.pub" | ssh -o StrictHostKeyChecking=accept-new '+"$K1_SSH_USER@$ip"+' "umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys && echo === KEY INSTALLED ==="'
     $c+=' & echo. & echo Done - you can close this window.'
@@ -1921,7 +2422,7 @@ function Do-Upload {
     } else {
         $fileArgs=($files | ForEach-Object { '"'+$_+'"' }) -join ' '
         $cmd="scp -o StrictHostKeyChecking=accept-new -r $fileArgs "+'"'+$spec+'"'+' & echo. & echo [Done]'
-        Add-Log2 ("Launching scp in a console (type pw {0})..." -f $K1_SSH_PASS) $accent; Start-Process cmd.exe -ArgumentList '/k',$cmd
+        Add-Log2 "Launching scp in a console (type the robot password if asked)..." $accent; Start-Process cmd.exe -ArgumentList '/k',$cmd
     }
 }
 
@@ -2237,6 +2738,7 @@ $followToggle.Add_CheckedChanged({
     if($followToggle.Checked){
         $drive=[bool]$followDriveChk.Checked
         $ok=Start-Follow $drive
+        if(-not $ok){ Close-OperatorSession }   # launch aborted -> release the Auto-Tune loop (shared contract)
         if($ok){
             if($drive){ $followToggle.Text='Follow: DRIVING - click to STOP'; $followToggle.BackColor=$red }
             else { $followToggle.Text='Follow: PREVIEW - click to STOP'; $followToggle.BackColor=$accent }
@@ -2286,7 +2788,8 @@ $trackToggle.Add_CheckedChanged({
     if($script:TrackToggleGuard){ return }
     if($trackToggle.Checked){
         $drive=[bool]$trackDriveChk.Checked
-        $ok=Start-Tracker $drive
+        $ok=Start-Tracker $drive   # no try here: it would turn the app's skip-and-continue errors into an abort after the ssh is live
+        if(-not $ok){ Close-OperatorSession }   # launch aborted -> release the Auto-Tune loop (shared contract)
         if($ok){
             if($drive){ $trackToggle.Text='Follow: DRIVING - click to STOP'; $trackToggle.BackColor=$red }
             else { $trackToggle.Text='Follow: PREVIEW - click to STOP'; $trackToggle.BackColor=$accent }

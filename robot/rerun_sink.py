@@ -45,13 +45,19 @@ def init_rerun(args):
     _RR = _RerunSink(
         enabled=True, mode=args.rerun_mode, path=path, addr=args.rerun_addr,
         image_every_n=args.rerun_image_every_n,
-        min_safe=args.min_safe_range, standoff=args.standoff_m, max_follow=args.max_follow_range)
+        min_safe=args.min_safe_range, standoff=args.standoff_m, max_follow=args.max_follow_range,
+        never_disable=(getattr(args, "rerun_never_shed", "on") == "on"))
     _RR.refs_once()
     if _RR.ok:
         log("RERUN active mode=%s -> %s (image 1/%d)"
             % (args.rerun_mode, _RR.path, args.rerun_image_every_n))
         if args.drive:
-            log("RERUN + --drive: ensure the on-Orin loop-cost gate PASSED (RERUN_PLAN.md); "
-                "an over-budget streak auto-disables Rerun (RERUN-DISABLED-SLOW).")
+            if getattr(args, "rerun_never_shed", "on") == "on":
+                log("RERUN + --drive: ensure the on-Orin loop-cost gate PASSED (RERUN_PLAN.md). "
+                    "never-shed is ON -- an over-budget streak logs RERUN-OVERRUN but KEEPS "
+                    "recording (the .rrd covers the whole run).")
+            else:
+                log("RERUN + --drive: ensure the on-Orin loop-cost gate PASSED (RERUN_PLAN.md); "
+                    "an over-budget streak auto-disables Rerun (RERUN-DISABLED-SLOW).")
     else:
         log("RERUN init failed -> disabled (follow proceeds)")

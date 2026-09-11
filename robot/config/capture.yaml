@@ -19,7 +19,35 @@ require_heartbeat: true       # operator deadman mandatory (active-consent tethe
 obstacle_brake: true          # depth forward-clearance reflex on (only ever reduces vx)
 max_follow_range: 3.0         # geofence: stand if depth-range to target > 3.0 m
 coast_frames: 6               # coast ~0.6 s (yaw-only) through brief occlusions
-max_seconds: 120.0            # session watchdog; raise per-capture via CLI for longer map traverses
+# 120 -> 2000 (2026-09-10 operator: "rerun cuts way too short" / "it should be able to record for
+# 2000 seconds"). The 120 s watchdog terminated every capture at 2 minutes and the .rrd closes with
+# the session -- the 761 MB recording measured at ~6.3 MB/s is exactly 120 s, which is precisely
+# what the operator was seeing. This profile EXISTS to collect data, so a 2-minute cap defeats it.
+# 2000 s outlasts a battery, so in practice the run ends when the operator or the pack decides.
+#
+# WHY NOT 0 (unlimited): 0 is supported by the node (run() guards `max_seconds > 0`), but it trips
+# the fail-closed gate for a DRIVING session unless --allow-unbounded-drive is also passed, and a
+# finite cap keeps the runaway backstop intact for free. A tried-and-reverted 0 setting is what
+# prompted "zero broke it" -- though the actual failure that run was DRIVE-ABORT on a starved depth
+# camera, not the cap.
+#
+# SCOPE: only THIS profile is lengthened. defaults.yaml (120), field.yaml (120) and demo.yaml (90)
+# are UNTOUCHED, so a normal follow still self-terminates at 2 minutes. Every other bound is
+# unchanged: require_heartbeat above, the obstacle brake, max_follow_range 3.0, the C++ staleness
+# floor, and the hardware e-stop.
+#
+# NOTE the launcher also appends --max-seconds "$K1_MAX_SEC" (default 2000) AFTER the app's args,
+# because K1Finder passes --max-seconds 1200 on the CLI and CLI beats the profile by design. Both
+# say 2000 so they agree; K1_MAX_SEC=<n> overrides a single launch.
+#
+# DISK: ~6.3 MB/s at rerun_image_every_n 2 => ~23 GB/hour; offload_run.sh keeps the last 10
+# bundles. 247 GB free measured 2026-09-10, so watch `df -h /home` on very long sessions.
+max_seconds: 2000.0
+# Not needed at a finite max_seconds; kept false so the node's fail-closed gate stays
+# meaningful. Setting max_seconds 0 in future requires flipping this TO true as well --
+# deliberately two steps. It is NOT --allow-untethered-unsafe, which waives the operator
+# deadman; require_heartbeat above stays true regardless.
+allow_unbounded_drive: false
 obstacle_target_margin: 0.4   # don't brake on the operator being followed
 
 # --- recording bundle (the point of this profile) ---
