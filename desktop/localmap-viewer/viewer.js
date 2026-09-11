@@ -210,25 +210,20 @@
   canvasEl.style.userSelect = 'none';
   canvasEl.style.webkitUserSelect = 'none';
   canvasEl.tabIndex = 0; // allow focus so wheel stays local
-  function hardenPointer(e) {
-    e.stopPropagation();
-    if (e.cancelable && (e.type === 'wheel' || e.type === 'touchmove')) e.preventDefault();
+  function isMapPointerTarget(t) {
+    return t === canvasEl || t === viewport || (canvasEl.contains && canvasEl.contains(t));
   }
-  canvasEl.addEventListener('wheel', hardenPointer, { passive: false, capture: true });
-  canvasEl.addEventListener('touchmove', hardenPointer, { passive: false, capture: true });
-  canvasEl.addEventListener('pointerdown', function (e) {
-    e.stopPropagation();
-    try { canvasEl.setPointerCapture(e.pointerId); } catch (err) {}
-    try { canvasEl.focus({ preventScroll: true }); } catch (err2) { try { canvasEl.focus(); } catch (err3) {} }
-  }, true);
-  canvasEl.addEventListener('contextmenu', function (e) { e.preventDefault(); e.stopPropagation(); });
-  // Block page-level overscroll when pointer is over the map
+  // capture-phase preventDefault only — do NOT stopPropagation (OrbitControls must receive events)
   document.addEventListener('wheel', function (e) {
-    if (e.target === canvasEl || canvasEl.contains(e.target)) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
+    if (isMapPointerTarget(e.target)) e.preventDefault();
   }, { passive: false, capture: true });
+  document.addEventListener('touchmove', function (e) {
+    if (isMapPointerTarget(e.target) && e.cancelable) e.preventDefault();
+  }, { passive: false, capture: true });
+  canvasEl.addEventListener('pointerdown', function () {
+    try { canvasEl.focus({ preventScroll: true }); } catch (err) { try { canvasEl.focus(); } catch (err2) {} }
+  }, true);
+  canvasEl.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
   function stdMat(color, opts) {
     opts = opts || {};
@@ -1122,8 +1117,13 @@
       poseWzEl.textContent = Number(wz).toFixed(2);
     }
     if (layers.follow) {
-      target.set(pose.x || 0, 0.4, pose.y || 0);
-      applyCamera();
+      orbitTarget.set(pose.x || 0, 0.4, pose.y || 0);
+      if (controls) {
+        controls.target.copy(orbitTarget);
+        controls.update();
+      } else {
+        camera.lookAt(orbitTarget);
+      }
     }
   }
 
@@ -1324,10 +1324,10 @@
       statsEl.textContent = 'cleared';
     },
     resetView: function () {
-      spherical = { radius: 11, theta: 0.85, phi: 0.92 };
-      target.set(robotGroup.position.x, 0.4, robotGroup.position.z);
-      applyCamera();
+      frameCamera(DEFAULT_RADIUS, DEFAULT_THETA, DEFAULT_PHI,
+        new THREE.Vector3(robotGroup.position.x, 0.4, robotGroup.position.z));
     },
+    getControls: function () { return controls; },
     setFollowPose: function (on) { layers.follow = !!on; },
     setShowRobot: function (on) { layers.robot = !!on; robotGroup.visible = layers.robot; },
     setPose: function (pose) { pushTrail(pose); setPose(pose); },
@@ -1443,6 +1443,7 @@
         obj.material.emissiveIntensity = 0.55 + 0.5 * pulse;
       }
     });
+    if (controls) controls.update();
     renderer.render(scene, camera);
   })();
 })();
