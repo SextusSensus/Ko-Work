@@ -1368,11 +1368,15 @@ function New-LocalMapDomain([string]$name){
         Switch-LocalMapDomain $id
         return $id
     }
+    # Always start EMPTY: no occupancy cells, no asset instances, no copied seed props.
+    # Content arrives via Import last run / Rerun placer / autofill / ?demo_assets=1.
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-    $occ = @{ domain_id=$id; res_m=0.08; range_m=3.5; pose=@{x=0;y=0;yaw=0}; cells=@() }
+    $occ = @{ domain_id=$id; res_m=0.08; range_m=3.5; pose=@{x=0;y=0;yaw=0}; trail=@(); cells=@() }
     ($occ | ConvertTo-Json -Depth 6) | Set-Content -Path (Join-Path $dir 'occupancy.json') -Encoding UTF8
-    $man = @{ id=$id; name=$n; created=$now; updated=$now; run_count=0; cell_count=0; notes='operator-created' }
+    $inst = @{ domain_id=$id; updated=$now; notes='operator-created empty domain'; instances=@() }
+    ($inst | ConvertTo-Json -Depth 6) | Set-Content -Path (Join-Path $dir 'instances.json') -Encoding UTF8
+    $man = @{ id=$id; name=$n; created=$now; updated=$now; run_count=0; cell_count=0; notes='operator-created-empty' }
     ($man | ConvertTo-Json -Depth 4) | Set-Content -Path (Join-Path $dir 'manifest.json') -Encoding UTF8
     $idx = Read-LocalMapDomainsIndex
     if(-not $idx){ $idx = @{ active=$id; domains=@() } }
@@ -1382,8 +1386,8 @@ function New-LocalMapDomain([string]$name){
     $idx.active = $id
     Write-LocalMapDomainsIndex $idx
     Switch-LocalMapDomain $id
-    [void](Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.refreshDomains()")
-    $mapInfo.Text = ("Created domain '{0}' — bring the robot here and Import last run to build it out." -f $n)
+    [void](Invoke-LocalMapJs ("window.k1LocalMap && window.k1LocalMap.refreshDomains && window.k1LocalMap.refreshDomains({ forceId: '{0}' })" -f $id.Replace("'","\'")))
+    $mapInfo.Text = ("Created empty domain '{0}' — Import last run / Rerun placer / autofill to add content." -f $n)
     return $id
 }
 

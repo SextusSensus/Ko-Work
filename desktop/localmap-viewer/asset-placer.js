@@ -846,7 +846,7 @@
 
   function demoSeedFor(domainId) {
     var id = String(domainId || '').toLowerCase();
-    if (id.indexOf('office') >= 0) {
+    if (id === 'office') {
       return [
         { class: 'elevator', x: -5.4, y: 4.6, yaw: 0, w: 1.2, h: 0.25, confidence: 0.94, run_id: 'demo-office-1' },
         { class: 'elevator', x: -3.8, y: 4.6, yaw: 0, w: 1.2, h: 0.25, confidence: 0.93, run_id: 'demo-office-1' },
@@ -872,7 +872,7 @@
         { class: 'person', x: 0.4, y: -3.2, yaw: 0.5, confidence: 0.92, run_id: 'demo-office-3' }
       ];
     }
-    if (id.indexOf('assembly') >= 0 || id.indexOf('factory') >= 0 || id.indexOf('kitchen') >= 0) {
+    if (id === 'assembly-factory' || id === 'kitchen') {
       return [
         { class: 'conveyor', x: -3.4, y: 0, yaw: 0, w: 0.9, h: 8, confidence: 0.93, run_id: 'demo-factory-1' },
         { class: 'conveyor', x: 0, y: 0, yaw: 0, w: 0.9, h: 8, confidence: 0.91, run_id: 'demo-factory-1' },
@@ -888,7 +888,7 @@
         { class: 'person', x: 0.2, y: -1.5, yaw: 0.3, confidence: 0.9, run_id: 'demo-factory-4' }
       ];
     }
-    if (id.indexOf('distribution') >= 0 || id.indexOf('hub') >= 0) {
+    if (id === 'distribution-hub' || id === 'outdoor-patio' || id === 'patio') {
       return [
         { class: 'pallet_rack', x: -3.2, y: -2, yaw: 0, w: 1.2, h: 4, confidence: 0.9, run_id: 'demo-hub-1' },
         { class: 'pallet_rack', x: 3.2, y: 1, yaw: 0, w: 1.2, h: 4, confidence: 0.88, run_id: 'demo-hub-1' },
@@ -907,21 +907,25 @@
         { class: 'floor_tape', x: 0, y: 0, yaw: 0, w: 0.12, h: 12, confidence: 0.99, run_id: 'demo-hub-1' }
       ];
     }
-    // warehouse-bay-a default
-    return [
-      { class: 'corner_shelf', x: -8.6, y: 2.5, yaw: 1.57, confidence: 0.9, run_id: 'demo-wh-1' },
+    if (id === 'warehouse-bay-a') {
+      return [
+        { class: 'corner_shelf', x: -8.6, y: 2.5, yaw: 1.57, confidence: 0.9, run_id: 'demo-wh-1' },
         { class: 'pallet_rack', x: -3.15, y: 0, yaw: 0, w: 1.15, h: 6, confidence: 0.9, run_id: 'demo-wh-1' },
-      { class: 'pallet_rack', x: 3.15, y: 0, yaw: 0, w: 1.15, h: 6, confidence: 0.9, run_id: 'demo-wh-1' },
-      { class: 'pallet', x: -1.6, y: 6.5, yaw: 0, confidence: 0.8, run_id: 'demo-wh-2' },
-      { class: 'cardboard_box', x: -1.6, y: 6.5, yaw: 0.2, confidence: 0.82, run_id: 'demo-wh-2' },
-      { class: 'crate', x: 1.7, y: 6.2, yaw: -0.1, confidence: 0.77, run_id: 'demo-wh-2' },
-      { class: 'bollard', x: -1.8, y: -8.0, yaw: 0, confidence: 0.95, run_id: 'demo-wh-3' },
-      { class: 'bollard', x: 1.8, y: -8.0, yaw: 0, confidence: 0.95, run_id: 'demo-wh-3' },
-      { class: 'safety_cone', x: 0.5, y: -7.5, yaw: 0, confidence: 0.9, run_id: 'demo-wh-3' },
-      { class: 'dock_door', x: 0, y: -9.35, yaw: 0, confidence: 0.88, run_id: 'demo-wh-1' },
-      { class: 'tote_bin', x: 2.0, y: -4.0, yaw: 0.5, confidence: 0.7, run_id: 'demo-wh-2' }
-    ];
+        { class: 'pallet_rack', x: 3.15, y: 0, yaw: 0, w: 1.15, h: 6, confidence: 0.9, run_id: 'demo-wh-1' },
+        { class: 'pallet', x: -1.6, y: 6.5, yaw: 0, confidence: 0.8, run_id: 'demo-wh-2' },
+        { class: 'cardboard_box', x: -1.6, y: 6.5, yaw: 0.2, confidence: 0.82, run_id: 'demo-wh-2' },
+        { class: 'crate', x: 1.7, y: 6.2, yaw: -0.1, confidence: 0.77, run_id: 'demo-wh-2' },
+        { class: 'bollard', x: -1.8, y: -8.0, yaw: 0, confidence: 0.95, run_id: 'demo-wh-3' },
+        { class: 'bollard', x: 1.8, y: -8.0, yaw: 0, confidence: 0.95, run_id: 'demo-wh-3' },
+        { class: 'safety_cone', x: 0.5, y: -7.5, yaw: 0, confidence: 0.9, run_id: 'demo-wh-3' },
+        { class: 'dock_door', x: 0, y: -9.35, yaw: 0, confidence: 0.88, run_id: 'demo-wh-1' },
+        { class: 'tote_bin', x: 2.0, y: -4.0, yaw: 0.5, confidence: 0.7, run_id: 'demo-wh-2' }
+      ];
+    }
+    // Operator-created / unknown domains: empty unless autofill / import places assets.
+    return [];
   }
+
 
   function runDemo(domainId) {
     var gen = ++instanceLoadGen;

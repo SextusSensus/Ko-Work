@@ -1650,19 +1650,36 @@
     envGroup.visible = layers.env;
   }
 
+  /**
+   * Known seed / demo domains may ship a themed shell + props.
+   * Operator-created domains must stay EMPTY (ground plane only) until Import last run /
+   * Rerun placer / autofill / ?demo_assets=1 adds content.
+   */
+  var SEEDED_ENV_DOMAIN_IDS = {
+    'assembly-factory': 'assembly',
+    'kitchen': 'assembly', // legacy id → factory shell
+    'warehouse-bay-a': 'warehouse',
+    'distribution-hub': 'hub',
+    'outdoor-patio': 'hub', // legacy id
+    'patio': 'hub',
+    'office': 'office'
+  };
+
+  /** Minimal empty shell: optional ground plane only — no racks, cones, furniture. */
+  function buildEmptyDomain() {
+    beginEnvBuild();
+    addFloor(24, 10);
+    envGroup.visible = layers.env;
+  }
+
   function buildEnvironmentFor(domainId) {
     var id = String(domainId || '').toLowerCase();
-    if (id.indexOf('office') >= 0) {
-      buildOffice();
-    } else if (id.indexOf('assembly') >= 0 || id.indexOf('factory') >= 0 || id.indexOf('kitchen') >= 0) {
-      buildAssemblyFactory(); // kitchen id legacy → factory
-    } else if (id.indexOf('distribution') >= 0 || id.indexOf('hub') >= 0) {
-      buildDistributionHub();
-    } else if (id.indexOf('patio') >= 0 || id.indexOf('outdoor') >= 0) {
-      buildDistributionHub(); // legacy ids
-    } else {
-      buildWarehouse();
-    }
+    var kind = SEEDED_ENV_DOMAIN_IDS[id];
+    if (kind === 'office') buildOffice();
+    else if (kind === 'assembly') buildAssemblyFactory();
+    else if (kind === 'hub') buildDistributionHub();
+    else if (kind === 'warehouse') buildWarehouse();
+    else buildEmptyDomain();
   }
 
   function preloadHubGltf() {
@@ -2013,21 +2030,90 @@
   function slugify(name) {
     return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || ('domain-' + Date.now());
   }
+  function emptyOccupancy(domainId) {
+    return {
+      domain_id: domainId,
+      res_m: 0.08,
+      range_m: 3.5,
+      pose: { x: 0, y: 0, yaw: 0 },
+      trail: [],
+      cells: []
+    };
+  }
+
+  function emptyInstancesPayload(domainId) {
+    return {
+      domain_id: domainId,
+      updated: new Date().toISOString(),
+      notes: 'operator-created empty domain — import a run or enable ?demo_assets=1',
+      instances: []
+    };
+  }
+
+  /** Persist a brand-new EMPTY domain (no props, no occupancy, no demo instances). */
+  function createEmptyDomain(name, opts) {
+    opts = opts || {};
+    var n = (name || '').trim();
+    if (!n) return Promise.reject(new Error('name required'));
+    var id = opts.id || slugify(n);
+    var meta = {
+      id: id,
+      name: n,
+      updated: new Date().toISOString(),
+      run_count: 0,
+      cell_count: 0
+    };
+    if (!opts.skipHost && typeof window.k1LocalMapHostCreateDomain === 'function') {
+      try {
+        window.k1LocalMapHostCreateDomain(JSON.stringify({ id: id, name: n, empty: true }));
+        return Promise.resolve(meta);
+      } catch (e) {}
+    }
+    var body = {
+      id: id,
+      name: n,
+      empty: true,
+      occupancy: emptyOccupancy(id),
+      instances: emptyInstancesPayload(id)
+    };
+    return fetch('/api/domains', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function (res) {
+      if (!res.ok) throw new Error('create domain HTTP ' + res.status);
+      return res.json().catch(function () { return body; });
+    }).catch(function () {
+      return null;
+    }).then(function () {
+      var exists = findDomain(id);
+      if (!exists) registry.domains.push(meta);
+      else {
+        exists.name = n;
+        exists.run_count = 0;
+        exists.cell_count = 0;
+        exists.updated = meta.updated;
+      }
+      registry.active = id;
+      try {
+        localStorage.setItem('k1LocalMap.instances.' + id, JSON.stringify(emptyInstancesPayload(id)));
+      } catch (e) {}
+      if (window.k1LocalMapAssets && window.k1LocalMapAssets.clearInstances) {
+        try { window.k1LocalMapAssets.clearInstances(); } catch (e2) {}
+      }
+      return switchDomain(id).then(function () {
+        setMap(emptyOccupancy(id));
+        statsEl.textContent = 'empty domain — import a run or load sample';
+        return meta;
+      });
+    });
+  }
+
   function requestNewDomain(name) {
     var n = (name || '').trim();
     if (!n) return;
-    var id = slugify(n);
-    if (typeof window.k1LocalMapHostCreateDomain === 'function') {
-      try {
-        window.k1LocalMapHostCreateDomain(JSON.stringify({ id: id, name: n }));
-        closeNewDomainModal();
-        return;
-      } catch (e) {}
-    }
-    registry.domains.push({ id: id, name: n, updated: new Date().toISOString(), run_count: 0, cell_count: 0 });
-    registry.active = id;
     closeNewDomainModal();
-    switchDomain(id);
+    createEmptyDomain(n).catch(function (e) { showErr('new domain: ' + e); });
   }
 
   document.getElementById('new-domain-cancel').addEventListener('click', closeNewDomainModal);
@@ -2120,6 +2206,7 @@
     setRegistry: setRegistry,
     refreshDomains: refreshRegistry,
     switchDomain: switchDomain,
+    createDomain: createEmptyDomain,
     openNewDomain: openNewDomainModal,
     mergeIntoActive: function (incoming) {
       var merged = mergeOccupancy(currentMap, incoming);

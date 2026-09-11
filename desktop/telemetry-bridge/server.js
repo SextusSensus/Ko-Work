@@ -113,6 +113,99 @@ function serveStatic(req, res) {
   return true;
 }
 
+function writeJsonSafe(p, obj) {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(obj, null, 2) + '\n', 'utf8');
+}
+
+function slugifyDomain(name) {
+  const s = String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return s || ('domain-' + Date.now());
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (!raw) return resolve({});
+      try {
+        resolve(JSON.parse(raw));
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+/** Create an EMPTY domain (no occupancy cells, no instances/props). */
+function createEmptyDomainOnDisk(payload) {
+  const name = String((payload && payload.name) || '').trim();
+  if (!name) {
+    const err = new Error('name required');
+    err.status = 400;
+    throw err;
+  }
+  const id = slugifyDomain((payload && payload.id) || name);
+  const dir = path.join(DATA_DIR, 'domains', id);
+  if (fs.existsSync(dir) && fs.existsSync(path.join(dir, 'manifest.json'))) {
+    const err = new Error('domain already exists');
+    err.status = 409;
+    err.id = id;
+    throw err;
+  }
+  const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  fs.mkdirSync(dir, { recursive: true });
+  const occupancy = (payload && payload.occupancy) || {
+    domain_id: id,
+    res_m: 0.08,
+    range_m: 3.5,
+    pose: { x: 0, y: 0, yaw: 0 },
+    trail: [],
+    cells: [],
+  };
+  occupancy.domain_id = id;
+  occupancy.cells = Array.isArray(occupancy.cells) ? occupancy.cells : [];
+  const instances = (payload && payload.instances) || {
+    domain_id: id,
+    updated: now,
+    notes: 'operator-created empty domain',
+    instances: [],
+  };
+  instances.domain_id = id;
+  instances.instances = [];
+  const manifest = {
+    id,
+    name,
+    created: now,
+    updated: now,
+    run_count: 0,
+    cell_count: 0,
+    notes: 'operator-created-empty',
+  };
+  writeJsonSafe(path.join(dir, 'occupancy.json'), occupancy);
+  writeJsonSafe(path.join(dir, 'instances.json'), instances);
+  writeJsonSafe(path.join(dir, 'manifest.json'), manifest);
+
+  const regPath = path.join(DATA_DIR, 'domains.json');
+  const reg = readJsonSafe(regPath) || { active: null, domains: [] };
+  if (!Array.isArray(reg.domains)) reg.domains = [];
+  const meta = { id, name, updated: now, run_count: 0, cell_count: 0 };
+  const idx = reg.domains.findIndex((d) => d && d.id === id);
+  if (idx >= 0) reg.domains[idx] = meta;
+  else reg.domains.push(meta);
+  reg.active = id;
+  writeJsonSafe(regPath, reg);
+  state.domain_id = id;
+  return { ok: true, id, name, empty: true, registry: reg };
+}
+
 function handleApi(req, res) {
   const u = new URL(req.url, 'http://127.0.0.1');
   if (u.pathname === '/api/status') {
@@ -127,6 +220,19 @@ function handleApi(req, res) {
     return true;
   }
   if (u.pathname === '/api/domains') {
+    if (req.method === 'POST') {
+      readBody(req)
+        .then((body) => {
+          try {
+            const created = createEmptyDomainOnDisk(body || {});
+            sendJson(res, 201, created);
+          } catch (e) {
+            sendJson(res, e.status || 500, { error: e.message || String(e), id: e.id });
+          }
+        })
+        .catch((e) => sendJson(res, 400, { error: 'invalid JSON', detail: String(e) }));
+      return true;
+    }
     const reg = readJsonSafe(path.join(DATA_DIR, 'domains.json')) || { active: null, domains: [] };
     sendJson(res, 200, reg);
     return true;
@@ -149,7 +255,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET,OPTIONS',
+      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
     });
     res.end();
