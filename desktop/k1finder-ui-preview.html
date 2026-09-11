@@ -247,6 +247,7 @@ ready.</div>
           <label class="chk accent"><input type="checkbox" id="mapPose" checked /> Show robot pose</label>
           <label class="chk"><input type="checkbox" id="mapFollow" checked /> Follow pose</label>
           <button class="btn-ghost">Import .stcm</button>
+          <a class="btn-primary" id="mapLiveLink" href="/localmap-viewer/index.html?live=1&domain=warehouse-bay-a" style="text-decoration:none;display:inline-flex;align-items:center">Open live 3D</a>
         </div>
         <div class="domain-bar" id="domainBar" role="tablist" aria-label="Map domains">
           <span class="label">Domain</span>
@@ -264,10 +265,10 @@ ready.</div>
   <script>
     var domains = [
       { id: 'kitchen', name: 'Kitchen', runs: 4, cells: 37, updated: '2026-09-11 08:20Z' },
-      { id: 'warehouse-bay-a', name: 'Warehouse Bay A', runs: 7, cells: 48, updated: '2026-09-10 19:42Z' },
+      { id: 'warehouse-bay-a', name: 'Warehouse Bay A', runs: 9, cells: 149, updated: '2026-09-11 08:55Z' },
       { id: 'outdoor-patio', name: 'Outdoor Patio', runs: 2, cells: 22, updated: '2026-09-09 16:05Z' }
     ];
-    var activeDomain = 'kitchen';
+    var activeDomain = 'warehouse-bay-a';
 
     var domainMaps = {
       kitchen: [
@@ -280,13 +281,18 @@ ready.</div>
         [0.90,-1.10,3],[0.98,-1.18,5],[1.06,-1.26,4]
       ],
       'warehouse-bay-a': [
-        [1.2,-1.6,5],[1.28,-1.52,7],[1.36,-1.44,8],[1.44,-1.36,6],[1.52,-1.28,4],
-        [1.2,1.6,5],[1.28,1.52,7],[1.36,1.44,8],[1.44,1.36,6],[1.52,1.28,4],
-        [2.4,-1.6,4],[2.48,-1.52,6],[2.56,-1.44,7],[2.64,-1.36,5],
-        [2.4,1.6,4],[2.48,1.52,6],[2.56,1.44,7],[2.64,1.36,5],
-        [3.6,-1.5,3],[3.68,-1.42,5],[3.76,-1.34,6],[3.6,1.5,3],[3.68,1.42,5],[3.76,1.34,6],
-        [4.2,-0.2,3],[4.28,-0.12,4],[4.36,-0.04,5],[4.28,0.04,4],[4.2,0.12,3],
-        [1.8,0,2],[2.0,0,2],[2.2,0,2],[3.0,0.08,2]
+        [2.64,-3.84,9],[-2.64,-1.92,9],[-2.64,-1.28,9],[2.64,-1.28,9],
+        [2.64,-0.64,9],[-2.64,-0.32,9],[2.64,2.56,9],[-2.64,2.88,9],
+        [-2.64,-3.2,8],[-2.64,-2.56,8],[2.64,-2.56,8],[-2.64,0.0,8],
+        [2.64,0.32,8],[2.64,1.28,8],[-2.64,1.6,8],[-2.64,3.52,8],
+        [2.64,3.84,8],[-2.72,-3.76,7],[2.72,-3.28,7],[-2.72,-2.64,7],
+        [2.72,-2.0,7],[-2.72,-1.36,7],[2.72,-1.36,7],[-2.72,-0.4,7],
+        [2.72,-0.08,7],[-2.72,0.88,7],[2.72,1.2,7],[-2.72,1.52,7],
+        [2.72,2.48,7],[-2.72,2.8,7],[2.72,3.12,7],[-2.72,3.76,7],
+        [2.72,3.76,7],[-1.92,4.0,5],[-1.44,4.0,5],[1.44,4.0,5],[1.92,4.0,5],
+        [-1.92,-4.0,5],[-1.44,-4.0,5],[1.44,-4.0,5],[1.92,-4.0,5],
+        [0.0,-7.2,6],[0.8,-7.2,5],[-0.8,-7.2,5],[1.2,-8.4,4],[-1.2,-8.4,4],
+        [-0.2,5.4,4],[-0.12,5.48,5],[0.16,2.2,3],[0.0,-0.4,3]
       ],
       'outdoor-patio': [
         [2.0,2.4,3],[2.1,2.5,4],[2.2,2.6,5],[2.3,2.5,3],
@@ -320,7 +326,7 @@ ready.</div>
       cells = [];
       var pts = domainMaps[id] || domainMaps.kitchen;
       pts.forEach(function (p) { cells.push({ x: p[0], y: p[1], hits: p[2] }); });
-      if (id === 'warehouse-bay-a') pose = { x: 0.4, y: 0, yaw: 0.05 };
+      if (id === 'warehouse-bay-a') pose = { x: 0.12, y: 2.45, yaw: 0.08 };
       else if (id === 'outdoor-patio') pose = { x: -0.2, y: 0.3, yaw: -0.4 };
       else pose = { x: 0, y: 0, yaw: 0.35 };
     }
@@ -348,6 +354,8 @@ ready.</div>
           renderDomainChips();
           updateDomainMeta();
           draw();
+          var live = document.getElementById('mapLiveLink');
+          if (live) live.href = '/localmap-viewer/index.html?live=1&domain=' + encodeURIComponent(d.id);
           document.getElementById('status').textContent = 'Active domain: ' + d.name + ' · runs merge into this map';
         });
         bar.insertBefore(btn, meta);
@@ -415,29 +423,50 @@ ready.</div>
       var w = canvas.clientWidth, h = canvas.clientHeight;
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, w, h);
+      var warehouse = activeDomain === 'warehouse-bay-a';
       ctx.strokeStyle = '#1C1C1E';
       ctx.lineWidth = 1;
-      for (var g = -5; g <= 5; g++) {
-        var a = project(g, -5, 0), b = project(g, 5, 0);
+      var span = warehouse ? 9 : 5;
+      for (var g = -span; g <= span; g++) {
+        var a = project(g, -span, 0), b = project(g, span, 0);
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-        var c = project(-5, g, 0), d = project(5, g, 0);
+        var c = project(-span, g, 0), d = project(span, g, 0);
         ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(d.x, d.y); ctx.stroke();
       }
-      ctx.strokeStyle = 'rgba(50,212,255,0.35)';
-      ctx.beginPath();
-      for (var i = 0; i <= 64; i++) {
-        var ang = (i / 64) * Math.PI * 2;
-        var p = project(Math.cos(ang) * 3.5, Math.sin(ang) * 3.5, 0.02);
-        if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+      if (warehouse) {
+        // aisle safety lines + rack faces
+        ctx.strokeStyle = 'rgba(201,162,39,0.55)';
+        ctx.lineWidth = 2;
+        [[0, -8, 0, 8], [-0.4, -8, -0.4, 8], [0.4, -8, 0.4, 8]].forEach(function (ln) {
+          var p0 = project(ln[0], ln[1], 0.02), p1 = project(ln[2], ln[3], 0.02);
+          ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
+        });
+        ctx.strokeStyle = 'rgba(120,130,140,0.45)';
+        ctx.lineWidth = 3;
+        [[-2.65, -5.5, -2.65, 5.5], [2.65, -5.5, 2.65, 5.5]].forEach(function (ln) {
+          var p0 = project(ln[0], ln[1], 0.05), p1 = project(ln[2], ln[3], 0.05);
+          ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
+        });
+      } else {
+        ctx.strokeStyle = 'rgba(50,212,255,0.35)';
+        ctx.beginPath();
+        for (var i = 0; i <= 64; i++) {
+          var ang = (i / 64) * Math.PI * 2;
+          var p = project(Math.cos(ang) * 3.5, Math.sin(ang) * 3.5, 0.02);
+          if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
       }
-      ctx.stroke();
       cells.forEach(function (cell) {
-        var hh = 0.08 + 0.08 * cell.hits;
+        var hh = 0.05 + 0.05 * cell.hits;
         var base = project(cell.x, cell.y, 0);
         var top = project(cell.x, cell.y, hh);
-        var alpha = 0.45 + 0.08 * cell.hits;
-        ctx.fillStyle = 'rgba(50,212,255,' + alpha + ')';
-        var s = Math.max(3, base.s * 0.06);
+        var hot = cell.hits >= 8;
+        var alpha = 0.35 + 0.06 * cell.hits;
+        ctx.fillStyle = hot
+          ? ('rgba(227,25,55,' + Math.min(0.85, alpha) + ')')
+          : ('rgba(106,115,125,' + Math.min(0.8, alpha) + ')');
+        var s = Math.max(3, base.s * 0.055);
         ctx.fillRect(top.x - s / 2, top.y - (base.y - top.y), s, Math.max(4, base.y - top.y + s / 2));
       });
       if (showPose) {
@@ -445,14 +474,16 @@ ready.</div>
         var nose = project(pose.x + Math.cos(pose.yaw) * 0.35, pose.y + Math.sin(pose.yaw) * 0.35, 0.3);
         ctx.fillStyle = '#F5F5F7';
         ctx.beginPath(); ctx.arc(r.x, r.y, 7, 0, Math.PI * 2); ctx.fill();
-        ctx.strokeStyle = '#26b8a8'; ctx.lineWidth = 2;
+        ctx.strokeStyle = '#32D4FF'; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(r.x, r.y); ctx.lineTo(nose.x, nose.y); ctx.stroke();
+        ctx.strokeStyle = 'rgba(50,212,255,0.45)';
+        ctx.beginPath(); ctx.arc(r.x, r.y, 12, 0, Math.PI * 2); ctx.stroke();
       }
       var d = domains.find(function (x) { return x.id === activeDomain; });
       ctx.fillStyle = '#8E8E93';
       ctx.font = '11px Cascadia Mono, Consolas, monospace';
       ctx.fillText(cells.length + ' cells · orbit drag · pan right-drag · scroll zoom', 14, 22);
-      ctx.fillStyle = '#26b8a8';
+      ctx.fillStyle = '#32D4FF';
       ctx.fillText('LOCAL MAP · ' + ((d && d.name) || activeDomain), 14, h - 16);
     }
 
@@ -504,9 +535,12 @@ ready.</div>
     }, 80);
 
     // Deep-link: ?tab=discover|tracker|map  or  #discover|#tracker|#map
+    // ?domain=<id> implies Local Map tab
     (function () {
       var params = new URLSearchParams(location.search);
-      var want = params.get('tab') || (location.hash || '').replace(/^#/, '') || 'discover';
+      var want = params.get('tab') || (location.hash || '').replace(/^#/, '') || '';
+      if (!want && params.get('domain')) want = 'map';
+      if (!want) want = 'discover';
       var btn = document.querySelector('.tab[data-tab="' + want + '"]');
       if (btn) btn.click();
       else document.querySelector('.tab[data-tab="discover"]').click();

@@ -2,45 +2,60 @@
 
 Near-black UI (`#000` / `#0A0A0A`), surfaces `#141414` / `#1C1C1E`, text `#F5F5F7`, muted `#8E8E93`, **one** electric cyan accent (`#32D4FF`), Tesla red STOP (`#E31937`). Bahnschrift / Segoe UI Variable for UI; Cascadia Mono for logs.
 
-## Local Map 3D viewer (Windows)
+## Local Map = domains
 
-The **Local Map** tab hosts an interactive Three.js scene of short-horizon occupancy (robot-local depth + odometry), not the old Aurora `.stcm` static render as primary UX.
+Domains are **separate environments** (kitchen, warehouse bay, patio). Each follow/capture run **merges** occupancy into the **active** domain — accumulate over time, do not blindly replace.
 
-### Files
+### Persistence
 
 | Path | Role |
 |------|------|
-| `desktop/localmap-viewer/index.html` | Scene shell (black / cyan) |
-| `desktop/localmap-viewer/viewer.js` | Orbit / pan / zoom + `window.k1LocalMap` API + domains |
-| `desktop/localmap-viewer/three.min.js` | Vendored Three.js (offline / `file://`) |
-| `desktop/localmap-viewer/sample.json` | Demo occupancy |
-| `desktop/localmap-viewer/feed.json` | Live feed the page polls |
-| `desktop/localmap-data/domains/` | Persisted domains (kitchen / warehouse / patio) |
+| `desktop/localmap-data/domains.json` | Registry: `active` + list (name, updated, run_count, cell_count) |
+| `desktop/localmap-data/domains/<id>/manifest.json` | Per-domain metadata |
+| `desktop/localmap-data/domains/<id>/occupancy.json` | Accumulated cells + pose |
+| `desktop/localmap-viewer/` | Three.js host (`index.html`, `viewer.js`, `three.min.js`, textures) |
+| `desktop/localmap-viewer/feed.json` | Live poll mirror of the active domain (fallback when WS is down) |
+| `desktop/telemetry-bridge/` | Realtime WebSocket bridge + static server (port **8742**) |
 
-### Hosting in K1 Finder
+### Operator UX
 
-1. **WebView2** (preferred): embed Chromium if WinForms WebView2 DLL is available next to the app or under NuGet cache.
-2. **WebBrowser** fallback: IE engine — prefer **Open in browser** for full Three.js.
-3. **Open in browser**: launches `index.html` in the default browser.
+- **Domain chips** in the 3D viewer (+ Domain combo on the WinForms toolbar): click to switch; scene reloads that domain’s map.
+- **+ New domain**: create when bringing the robot to a new environment.
+- **Import last run** / **Refresh**: pull robot dump (or sample) and **merge** into the active domain.
+- Seed data: Kitchen, Warehouse Bay A, Outdoor Patio.
+- **Live telemetry**: green HUD pill when WebSocket `/ws/telemetry` is connected; last pose + `vx/vy/wz` stay on screen across reconnects.
 
-### Controls
+### Hosting
 
-- **IP / Refresh** — pull occupancy dump when present; else sample
-- **Load sample / Clear / Reset view / Show robot pose / Follow pose**
-- **Domain** combo — switch persisted short-horizon maps
-- **Import .stcm** — advanced legacy Aurora PNG path (not primary)
+1. **WebView2** (preferred) embeds `localmap-viewer/index.html`.
+2. **WebBrowser** fallback — prefer **Open in browser** for full Three.js.
+3. HTML `+ New domain` / chip switches sync to disk via a document-title bridge polled by WinForms.
+4. **Telemetry bridge** (dev / Linux preview): see below and [`docs/realtime-telemetry.md`](../docs/realtime-telemetry.md).
 
 ### Drive safety
 
 Local Map is observe-only. Tracker DRIVE / ARM / STOP / Deadman HB wiring is unchanged.
 
-## Preview on Linux
+## Realtime telemetry (recommended preview)
+
+```bash
+cd desktop/telemetry-bridge
+npm install
+npm start
+# http://127.0.0.1:8742/localmap-viewer/index.html?live=1&domain=warehouse-bay-a
+# ws://127.0.0.1:8742/ws/telemetry
+# http://127.0.0.1:8742/api/status
+```
+
+Mock Booster-like odom walks the warehouse aisle at ~15 Hz. `feed.json` is still watched for occupancy dumps from K1 Finder.
+
+## Static preview (no WebSocket)
 
 ```bash
 cd desktop
 python3 -m http.server 8765
-# http://127.0.0.1:8765/k1finder-ui-preview.html#discover
-# http://127.0.0.1:8765/k1finder-ui-preview.html#tracker
-# http://127.0.0.1:8765/k1finder-ui-preview.html#map
+# http://127.0.0.1:8765/k1finder-ui-preview.html?domain=warehouse-bay-a
 # http://127.0.0.1:8765/localmap-viewer/index.html
 ```
+
+Textures (Poly Haven + ambientCG CC0) live under `localmap-viewer/assets/` — see `ATTRIBUTION.md`.

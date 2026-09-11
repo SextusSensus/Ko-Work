@@ -2,8 +2,8 @@
   "id": "warehouse-bay-a",
   "name": "Warehouse Bay A",
   "created": "2026-09-07T11:30:00Z",
-  "updated": "2026-09-10T19:42:00Z",
-  "run_count": 7,
-  "cell_count": 48,
+  "updated": "2026-09-11T08:55:00Z",
+  "run_count": 9,
+  "cell_count": 149,
   "notes": "Long aisle racks; merge successive bay patrols."
 }

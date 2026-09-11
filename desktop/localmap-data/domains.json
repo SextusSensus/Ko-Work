@@ -1,5 +1,5 @@
 {
-  "active": "kitchen",
+  "active": "warehouse-bay-a",
   "domains": [
     {
       "id": "kitchen",
@@ -11,9 +11,9 @@
     {
       "id": "warehouse-bay-a",
       "name": "Warehouse Bay A",
-      "updated": "2026-09-10T19:42:00Z",
-      "run_count": 7,
-      "cell_count": 48
+      "updated": "2026-09-11T08:55:00Z",
+      "run_count": 9,
+      "cell_count": 149
     },
     {
       "id": "outdoor-patio",

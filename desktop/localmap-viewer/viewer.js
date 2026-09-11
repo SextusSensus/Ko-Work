@@ -1,25 +1,24 @@
 /* K1 Local Map — warehouse-grade Three.js viewer
- * Aesthetic: Tesla × SpaceX × Apple (black glass, cyan telemetry).
+ * Aesthetic: Tesla × SpaceX × Apple (near-black, white type, cyan #32D4FF).
  * Booster K1 proxy envelope: ~0.95 m H × 0.40 m W × 0.18 m D.
  * Textures: Poly Haven CC0 (assets/ATTRIBUTION.md).
  */
 (function () {
   'use strict';
 
-  // ---- constants ----------------------------------------------------------
   var ACCENT = 0x32d4ff;
+  var DANGER = 0xe31937;
   var BG = 0x000000;
-  var RACK = 0x2a2e33;
-  var BEAM = 0xc9a227;
-  var OCC = 0x32d4ff;
+  var RACK = 0x3a424c;
+  var SAFETY = 0xc9a227;
+  var OCC_BASE = 0x6a737d;
   var K1_WHITE = 0xf2f2f7;
   var K1_DARK = 0x1c1c1e;
   var K1_H = 0.95, K1_W = 0.40, K1_D = 0.18;
-  var MAX_TRAIL = 240;
+  var MAX_TRAIL = 280;
   var DATA_ROOT = '../localmap-data';
   var DOMAINS_INDEX = DATA_ROOT + '/domains.json';
 
-  // ---- DOM ----------------------------------------------------------------
   var viewport = document.getElementById('viewport');
   var statsEl = document.getElementById('stats');
   var errEl = document.getElementById('err');
@@ -31,21 +30,31 @@
   var poseYEl = document.getElementById('pose-y');
   var poseYawEl = document.getElementById('pose-yaw');
   var poseTrailEl = document.getElementById('pose-trail');
+  var poseVxEl = document.getElementById('pose-vx');
+  var poseVyEl = document.getElementById('pose-vy');
+  var poseWzEl = document.getElementById('pose-wz');
+  var liveDotEl = document.getElementById('live-dot');
+  var liveStateEl = document.getElementById('live-state');
+  var liveDetailEl = document.getElementById('live-detail');
 
   var layers = { env: true, occ: true, robot: true, trail: true, follow: true };
 
-  // ---- three.js core ------------------------------------------------------
   var scene = new THREE.Scene();
   scene.background = new THREE.Color(BG);
-  scene.fog = new THREE.FogExp2(BG, 0.028);
+  scene.fog = new THREE.FogExp2(BG, 0.022);
 
-  var camera = new THREE.PerspectiveCamera(45, 1, 0.05, 120);
+  var camera = new THREE.PerspectiveCamera(42, 1, 0.05, 160);
   var renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setSize(viewport.clientWidth || 800, viewport.clientHeight || 600);
   if (renderer.toneMapping !== undefined) {
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = 1.08;
+  }
+  if (renderer.outputColorSpace !== undefined && THREE.SRGBColorSpace) {
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+  } else if (renderer.outputEncoding !== undefined && THREE.sRGBEncoding) {
+    renderer.outputEncoding = THREE.sRGBEncoding;
   }
   if (renderer.shadowMap) {
     renderer.shadowMap.enabled = true;
@@ -53,24 +62,28 @@
   }
   viewport.appendChild(renderer.domElement);
 
-  scene.add(new THREE.HemisphereLight(0xb0c4de, 0x1a1a1c, 0.45));
-  scene.add(new THREE.AmbientLight(0xffffff, 0.18));
-  var key = new THREE.DirectionalLight(0xffffff, 0.85);
-  key.position.set(6, 12, 4);
+  scene.add(new THREE.HemisphereLight(0xc5d4e8, 0x121214, 0.42));
+  scene.add(new THREE.AmbientLight(0xffffff, 0.16));
+  var key = new THREE.DirectionalLight(0xfff4e8, 0.95);
+  key.position.set(7, 14, 5);
   key.castShadow = true;
   if (key.shadow) {
-    key.shadow.mapSize.set(1024, 1024);
+    key.shadow.mapSize.set(2048, 2048);
     key.shadow.camera.near = 0.5;
-    key.shadow.camera.far = 40;
-    key.shadow.camera.left = -12;
-    key.shadow.camera.right = 12;
-    key.shadow.camera.top = 12;
-    key.shadow.camera.bottom = -12;
+    key.shadow.camera.far = 50;
+    key.shadow.camera.left = -16;
+    key.shadow.camera.right = 16;
+    key.shadow.camera.top = 16;
+    key.shadow.camera.bottom = -16;
+    key.shadow.bias = -0.0002;
   }
   scene.add(key);
-  var rim = new THREE.DirectionalLight(ACCENT, 0.22);
-  rim.position.set(-4, 3, -6);
+  var rim = new THREE.DirectionalLight(ACCENT, 0.18);
+  rim.position.set(-5, 4, -7);
   scene.add(rim);
+  var fill = new THREE.DirectionalLight(0xffffff, 0.22);
+  fill.position.set(-8, 6, 3);
+  scene.add(fill);
 
   var envGroup = new THREE.Group();
   var cellGroup = new THREE.Group();
@@ -82,24 +95,56 @@
   scene.add(trailGroup);
 
   var trailPoints = [];
-  var target = new THREE.Vector3(0, 0.35, 0);
-  var spherical = { radius: 9.5, theta: 0.78, phi: 0.95 };
+  var target = new THREE.Vector3(0, 0.4, 0);
+  var spherical = { radius: 11, theta: 0.85, phi: 0.92 };
   var dragging = false, panning = false, lastX = 0, lastY = 0;
 
   var registry = { active: null, domains: [] };
   var currentMap = null;
   var activeDomainId = null;
-  var floorTex = null, metalTex = null;
+  var floorTex = null, metalTex = null, plasterTex = null, concreteTex = null, concreteRough = null;
   var texLoader = new THREE.TextureLoader();
+
+  // Realtime telemetry (WebSocket) — buffer latest odom; apply in rAF
+  var lastOdom = null;
+  var pendingOdom = null;
+  var trailDirty = false;
+  var trailRebuildCooldown = 0;
+  var telem = {
+    enabled: false,
+    url: null,
+    ws: null,
+    state: 'offline', // offline | connecting | live | reconnecting
+    retries: 0,
+    timer: null,
+    lastMsgAt: 0,
+    status: null
+  };
+  var clock = typeof THREE.Clock === 'function' ? new THREE.Clock() : null;
+  var ledPulse = 0;
 
   function loadTex(url) {
     return new Promise(function (resolve) {
       texLoader.load(url, function (t) {
         t.wrapS = t.wrapT = THREE.RepeatWrapping;
-        if (THREE.sRGBEncoding !== undefined) t.encoding = THREE.sRGBEncoding;
+        if (THREE.SRGBColorSpace) t.colorSpace = THREE.SRGBColorSpace;
+        else if (THREE.sRGBEncoding !== undefined) t.encoding = THREE.sRGBEncoding;
+        t.anisotropy = Math.min(8, (renderer.capabilities && renderer.capabilities.getMaxAnisotropy)
+          ? renderer.capabilities.getMaxAnisotropy() : 1);
         resolve(t);
       }, undefined, function () { resolve(null); });
     });
+  }
+
+  function texRepeat(base, rx, ry) {
+    if (!base) return null;
+    var t = base.clone();
+    t.needsUpdate = true;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(rx, ry);
+    if (THREE.SRGBColorSpace && base.colorSpace) t.colorSpace = base.colorSpace;
+    else if (THREE.sRGBEncoding !== undefined && base.encoding !== undefined) t.encoding = base.encoding;
+    return t;
   }
 
   function applyCamera() {
@@ -153,18 +198,17 @@
   });
   renderer.domElement.addEventListener('wheel', function (e) {
     e.preventDefault();
-    spherical.radius = Math.max(2.2, Math.min(28, spherical.radius * (e.deltaY > 0 ? 1.07 : 0.93)));
+    spherical.radius = Math.max(2.4, Math.min(36, spherical.radius * (e.deltaY > 0 ? 1.07 : 0.93)));
     applyCamera();
   }, { passive: false });
   renderer.domElement.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
-  // ---- helpers ------------------------------------------------------------
   function stdMat(color, opts) {
     opts = opts || {};
     return new THREE.MeshStandardMaterial({
       color: color,
-      metalness: opts.metalness != null ? opts.metalness : 0.15,
-      roughness: opts.roughness != null ? opts.roughness : 0.65,
+      metalness: opts.metalness != null ? opts.metalness : 0.18,
+      roughness: opts.roughness != null ? opts.roughness : 0.62,
       emissive: opts.emissive || 0x000000,
       emissiveIntensity: opts.emissiveIntensity || 0,
       transparent: !!opts.transparent,
@@ -183,12 +227,15 @@
 
   function clearGroup(g) {
     while (g.children.length) {
-      var c = g.children.pop();
-      if (c.geometry) c.geometry.dispose();
-      if (c.material) {
-        if (Array.isArray(c.material)) c.material.forEach(function (mm) { mm.dispose(); });
-        else c.material.dispose();
-      }
+      var c = g.children[0];
+      g.remove(c);
+      c.traverse(function (obj) {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) {
+          if (Array.isArray(obj.material)) obj.material.forEach(function (mm) { mm.dispose(); });
+          else obj.material.dispose();
+        }
+      });
     }
   }
 
@@ -221,136 +268,367 @@
     return null;
   }
 
-  // ---- Booster K1 proxy ---------------------------------------------------
+  // ---- Realtime telemetry (WebSocket) -------------------------------------
+  function setLiveHud(state, detail) {
+    telem.state = state || 'offline';
+    if (liveStateEl) liveStateEl.textContent = String(state || 'OFFLINE').toUpperCase();
+    if (liveDetailEl) liveDetailEl.textContent = detail || '—';
+    if (!liveDotEl) return;
+    liveDotEl.className = '';
+    if (state === 'live') liveDotEl.classList.add('on');
+    else if (state === 'connecting' || state === 'reconnecting') liveDotEl.classList.add('warn');
+    else liveDotEl.classList.add('off');
+  }
+
+  function defaultWsUrl() {
+    var q = new URLSearchParams(window.location.search);
+    if (q.get('ws')) return q.get('ws');
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    if (location.hostname && location.port) {
+      return proto + '//' + location.host + '/ws/telemetry';
+    }
+    return 'ws://127.0.0.1:8742/ws/telemetry';
+  }
+
+  function wantLive() {
+    var q = new URLSearchParams(window.location.search);
+    if (q.get('live') === '0' || q.get('live') === 'false') return false;
+    if (q.get('live') === '1' || q.get('live') === 'true') return true;
+    return location.port === '8742';
+  }
+
+  function handleTelemetryMessage(msg) {
+    if (!msg || !msg.type) return;
+    telem.lastMsgAt = Date.now();
+    if (msg.type === 'odom') {
+      pendingOdom = msg;
+      lastOdom = msg;
+      return;
+    }
+    if (msg.type === 'occupancy') {
+      if (msg.domain_id && activeDomainId && msg.domain_id !== activeDomainId) {
+        if (msg.pose) {
+          pendingOdom = {
+            type: 'odom', t: Date.now() / 1000,
+            x: msg.pose.x || 0, y: msg.pose.y || 0, z: 0,
+            yaw: msg.pose.yaw || 0, vx: 0, vy: 0, wz: 0
+          };
+          lastOdom = pendingOdom;
+        }
+        return;
+      }
+      showErr('');
+      // Keep live trail; only refresh cells + soft pose from occupancy frames
+      var keepTrail = trailPoints.slice();
+      setOccupancy(msg);
+      currentMap = msg;
+      if (msg.pose && !pendingOdom) {
+        pendingOdom = {
+          type: 'odom', t: Date.now() / 1000,
+          x: msg.pose.x || 0, y: msg.pose.y || 0, z: 0,
+          yaw: msg.pose.yaw || 0, vx: 0, vy: 0, wz: 0
+        };
+      }
+      if (keepTrail.length) {
+        trailPoints = keepTrail;
+        trailDirty = true;
+      }
+      var res = msg.res_m || 0.08;
+      var cells = msg.cells || [];
+      var range = msg.range_m || 3.5;
+      var meta = findDomain(activeDomainId);
+      var bits = cells.length + ' cells · res ' + res.toFixed(2) + ' m · range ' + range.toFixed(1) + ' m · LIVE';
+      if (meta) bits += ' · ' + (meta.run_count || 0) + ' runs';
+      statsEl.textContent = bits;
+      return;
+    }
+    if (msg.type === 'status') {
+      telem.status = msg;
+      var bits = (msg.mode || 'ws') + ' · ' + (msg.hz || '?') + ' Hz';
+      if (msg.battery != null) bits += ' · bat ' + Math.round(msg.battery) + '%';
+      setLiveHud('live', bits);
+    }
+  }
+
+  function scheduleReconnect() {
+    if (!telem.enabled) return;
+    if (telem.timer) return;
+    telem.retries += 1;
+    var wait = Math.min(8000, 400 * Math.pow(1.6, Math.min(telem.retries, 8)));
+    setLiveHud('reconnecting', 'retry in ' + Math.round(wait / 100) / 10 + 's');
+    telem.timer = setTimeout(function () {
+      telem.timer = null;
+      openTelemetrySocket();
+    }, wait);
+  }
+
+  function openTelemetrySocket() {
+    if (!telem.enabled) return;
+    if (telem.ws && (telem.ws.readyState === 0 || telem.ws.readyState === 1)) return;
+    var url = telem.url || defaultWsUrl();
+    telem.url = url;
+    setLiveHud('connecting', url.replace(/^ws(s)?:\/\//, ''));
+    var ws;
+    try { ws = new WebSocket(url); } catch (e) {
+      setLiveHud('offline', String(e.message || e));
+      scheduleReconnect();
+      return;
+    }
+    telem.ws = ws;
+    ws.onopen = function () {
+      telem.retries = 0;
+      setLiveHud('live', url.replace(/^ws(s)?:\/\//, ''));
+    };
+    ws.onmessage = function (ev) {
+      try { handleTelemetryMessage(JSON.parse(ev.data)); }
+      catch (err) { /* ignore bad frame */ }
+    };
+    ws.onerror = function () { /* onclose handles retry */ };
+    ws.onclose = function () {
+      if (telem.ws === ws) telem.ws = null;
+      if (telem.enabled) scheduleReconnect();
+      else setLiveHud('offline', 'poll');
+    };
+  }
+
+  function connectTelemetry(url) {
+    telem.enabled = true;
+    if (url) telem.url = url;
+    if (telem.timer) { clearTimeout(telem.timer); telem.timer = null; }
+    if (telem.ws) {
+      try { telem.ws.close(); } catch (e) {}
+      telem.ws = null;
+    }
+    openTelemetrySocket();
+  }
+
+  function disconnectTelemetry() {
+    telem.enabled = false;
+    if (telem.timer) { clearTimeout(telem.timer); telem.timer = null; }
+    if (telem.ws) {
+      try { telem.ws.close(); } catch (e) {}
+      telem.ws = null;
+    }
+    setLiveHud('offline', 'poll');
+  }
+
+  function applyPendingOdom() {
+    if (!pendingOdom) return;
+    var msg = pendingOdom;
+    pendingOdom = null;
+    var pose = { x: msg.x || 0, y: msg.y || 0, yaw: msg.yaw || 0 };
+    // Throttled trail append — mark dirty; rebuild at most ~8 Hz
+    var x = pose.x, y = pose.y;
+    var last = trailPoints[trailPoints.length - 1];
+    if (!last || Math.hypot(last.x - x, last.y - y) >= 0.04) {
+      trailPoints.push({ x: x, y: y, yaw: pose.yaw });
+      if (trailPoints.length > MAX_TRAIL) trailPoints.shift();
+      trailDirty = true;
+    } else if (last) {
+      last.yaw = pose.yaw;
+      trailDirty = true;
+    }
+    setPose(pose, msg);
+  }
+
+  // ---- Booster K1 proxy (~95×40×18 cm) ------------------------------------
   function buildK1() {
     clearGroup(robotGroup);
-    var white = stdMat(K1_WHITE, { metalness: 0.25, roughness: 0.4 });
-    var dark = stdMat(K1_DARK, { metalness: 0.4, roughness: 0.35 });
-    var led = stdMat(ACCENT, { metalness: 0.1, roughness: 0.3, emissive: ACCENT, emissiveIntensity: 0.85 });
+    var white = stdMat(K1_WHITE, { metalness: 0.28, roughness: 0.38 });
+    var dark = stdMat(K1_DARK, { metalness: 0.45, roughness: 0.32 });
+    var led = stdMat(ACCENT, { metalness: 0.1, roughness: 0.28, emissive: ACCENT, emissiveIntensity: 0.9 });
+    led.userData.pulse = true;
 
     var foot = new THREE.Mesh(
-      new THREE.RingGeometry(K1_W * 0.55, K1_W * 0.68, 48),
-      new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.55, side: THREE.DoubleSide })
+      new THREE.RingGeometry(K1_W * 0.52, K1_W * 0.72, 64),
+      new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.5, side: THREE.DoubleSide })
     );
     foot.rotation.x = -Math.PI / 2;
-    foot.position.y = 0.012;
+    foot.position.y = 0.01;
+    foot.userData.pulseRing = true;
     robotGroup.add(foot);
 
-    robotGroup.add(makeBox(K1_W * 0.72, 0.08, K1_D * 0.95, dark, 0, 0.42, 0));
-    robotGroup.add(makeBox(K1_W * 0.62, 0.28, K1_D * 0.85, white, 0, 0.62, 0));
-    robotGroup.add(makeBox(K1_W * 0.35, 0.02, 0.01, led, 0, 0.68, K1_D * 0.43));
-    robotGroup.add(makeBox(0.12, 0.11, 0.11, white, 0, 0.86, 0.01));
-    robotGroup.add(makeBox(0.08, 0.03, 0.02, led, 0, 0.88, 0.07));
-    robotGroup.add(makeBox(K1_W * 0.95, 0.05, 0.06, dark, 0, 0.74, 0));
+    // pelvis / torso stack sized to envelope
+    robotGroup.add(makeBox(K1_W * 0.70, 0.09, K1_D * 0.92, dark, 0, 0.46, 0));
+    robotGroup.add(makeBox(K1_W * 0.62, 0.30, K1_D * 0.82, white, 0, 0.66, 0));
+    robotGroup.add(makeBox(K1_W * 0.38, 0.018, 0.012, led, 0, 0.72, K1_D * 0.42));
+    robotGroup.add(makeBox(0.11, 0.10, 0.10, white, 0, 0.88, 0.01));
+    robotGroup.add(makeBox(0.07, 0.028, 0.018, led, 0, 0.90, 0.065));
+    robotGroup.add(makeBox(K1_W * 0.92, 0.045, 0.055, dark, 0, 0.78, 0));
+
     [-1, 1].forEach(function (s) {
-      robotGroup.add(makeBox(0.05, 0.22, 0.05, white, s * K1_W * 0.42, 0.58, 0));
-      robotGroup.add(makeBox(0.045, 0.18, 0.045, dark, s * K1_W * 0.42, 0.40, 0.02));
-      robotGroup.add(makeBox(0.08, 0.22, 0.09, white, s * 0.08, 0.28, 0));
-      robotGroup.add(makeBox(0.07, 0.20, 0.08, dark, s * 0.08, 0.10, 0.01));
-      robotGroup.add(makeBox(0.09, 0.04, 0.14, dark, s * 0.08, 0.02, 0.02));
+      robotGroup.add(makeBox(0.048, 0.24, 0.048, white, s * K1_W * 0.40, 0.62, 0));
+      robotGroup.add(makeBox(0.042, 0.20, 0.042, dark, s * K1_W * 0.40, 0.42, 0.015));
+      robotGroup.add(makeBox(0.078, 0.24, 0.085, white, s * 0.085, 0.30, 0));
+      robotGroup.add(makeBox(0.068, 0.22, 0.075, dark, s * 0.085, 0.11, 0.01));
+      robotGroup.add(makeBox(0.09, 0.035, 0.14, dark, s * 0.085, 0.02, 0.02));
     });
-    var nose = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.12, 3), led);
+
+    var nose = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.11, 3), led);
     nose.rotation.x = Math.PI / 2;
-    nose.position.set(0, 0.55, K1_D * 0.55);
+    nose.position.set(0, 0.58, K1_D * 0.55);
     robotGroup.add(nose);
     robotGroup.visible = layers.robot;
   }
 
   // ---- Environments -------------------------------------------------------
   function addFloor(size, repeat) {
-    var geo = new THREE.PlaneGeometry(size, size);
-    var m;
-    if (floorTex) {
-      var t = floorTex.clone();
-      t.needsUpdate = true;
-      t.repeat.set(repeat, repeat);
-      m = new THREE.MeshStandardMaterial({ map: t, color: 0xffffff, metalness: 0.05, roughness: 0.85 });
-    } else {
-      m = stdMat(0x1a1a1c, { metalness: 0.05, roughness: 0.9 });
-    }
-    var floor = new THREE.Mesh(geo, m);
+    var map = texRepeat(floorTex, repeat, repeat);
+    var m = map
+      ? new THREE.MeshStandardMaterial({ map: map, color: 0xd8d8d8, metalness: 0.04, roughness: 0.88 })
+      : stdMat(0x1a1a1c, { metalness: 0.05, roughness: 0.9 });
+    var floor = new THREE.Mesh(new THREE.PlaneGeometry(size, size), m);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
     envGroup.add(floor);
 
-    var lineMat = new THREE.MeshBasicMaterial({ color: BEAM });
+    var lineMat = new THREE.MeshBasicMaterial({ color: SAFETY });
     return function stripe(x, z, w, d) {
       var s = new THREE.Mesh(new THREE.PlaneGeometry(w, d), lineMat);
       s.rotation.x = -Math.PI / 2;
-      s.position.set(x, 0.008, z);
+      s.position.set(x, 0.01, z);
       envGroup.add(s);
     };
   }
 
-  function rackBay(x, z, len, depth, levels) {
-    var upright = stdMat(RACK, { metalness: 0.55, roughness: 0.35 });
+  function metalMat(tint) {
     if (metalTex) {
-      upright = new THREE.MeshStandardMaterial({
-        map: metalTex, color: 0x8899aa, metalness: 0.65, roughness: 0.35
+      return new THREE.MeshStandardMaterial({
+        map: texRepeat(metalTex, 1.2, 2.4) || metalTex,
+        color: tint != null ? tint : 0x9aa7b5,
+        metalness: 0.72,
+        roughness: 0.32
       });
     }
-    var shelf = stdMat(0x3a4048, { metalness: 0.3, roughness: 0.55 });
-    var beam = stdMat(BEAM, { metalness: 0.4, roughness: 0.45, emissive: BEAM, emissiveIntensity: 0.08 });
-    var h = 2.6;
-    [[-depth / 2, -len / 2], [-depth / 2, len / 2], [depth / 2, -len / 2], [depth / 2, len / 2]].forEach(function (p) {
-      envGroup.add(makeBox(0.06, h, 0.06, upright, x + p[0], h / 2, z + p[1]));
+    return stdMat(tint != null ? tint : RACK, { metalness: 0.62, roughness: 0.34 });
+  }
+
+  function rackBay(x, z, len, depth, levels) {
+    var upright = metalMat(0x8a96a4);
+    var shelf = stdMat(0x3a4048, { metalness: 0.35, roughness: 0.52 });
+    var beam = stdMat(SAFETY, { metalness: 0.4, roughness: 0.42, emissive: SAFETY, emissiveIntensity: 0.06 });
+    var brace = stdMat(0x2e343c, { metalness: 0.5, roughness: 0.4 });
+    var h = 2.75;
+    var corners = [
+      [-depth / 2, -len / 2], [-depth / 2, len / 2],
+      [depth / 2, -len / 2], [depth / 2, len / 2]
+    ];
+    corners.forEach(function (p) {
+      envGroup.add(makeBox(0.07, h, 0.07, upright, x + p[0], h / 2, z + p[1]));
     });
+    // X-bracing on outer faces
+    for (var b = 0; b < 3; b++) {
+      var bz = z - len / 2 + (b + 0.5) * (len / 3);
+      envGroup.add(makeBox(0.03, h * 0.85, 0.03, brace, x - depth / 2, h * 0.48, bz));
+      envGroup.add(makeBox(0.03, h * 0.85, 0.03, brace, x + depth / 2, h * 0.48, bz));
+    }
     for (var i = 0; i < levels; i++) {
-      var y = 0.35 + i * (h - 0.4) / Math.max(levels - 1, 1);
-      envGroup.add(makeBox(depth, 0.04, len, shelf, x, y, z));
-      for (var k = -1; k <= 1; k++) {
-        if ((i + k + 3) % 3 === 0) continue;
-        var load = stdMat(0x6b5b4a, { metalness: 0.05, roughness: 0.8 });
-        envGroup.add(makeBox(depth * 0.7, 0.32 + (i % 3) * 0.08, len * 0.22, load, x, y + 0.22, z + k * len * 0.28));
+      var y = 0.32 + i * (h - 0.45) / Math.max(levels - 1, 1);
+      envGroup.add(makeBox(depth, 0.045, len, shelf, x, y, z));
+      envGroup.add(makeBox(0.04, 0.05, len, beam, x - depth / 2 - 0.02, y, z));
+      envGroup.add(makeBox(0.04, 0.05, len, beam, x + depth / 2 + 0.02, y, z));
+      var cartons = [0x6e5b45, 0x5a4e40, 0x7a6550, 0x4a5560, 0x8a7358];
+      for (var k = -2; k <= 2; k++) {
+        if ((i + k + 5) % 2 === 0) continue;
+        var carton = stdMat(cartons[(i + k + 5) % cartons.length], { metalness: 0.02, roughness: 0.82 });
+        var ch = 0.28 + (Math.abs(k) % 3) * 0.07;
+        envGroup.add(makeBox(depth * 0.72, ch, len * 0.16, carton, x, y + ch / 2 + 0.02, z + k * len * 0.18));
       }
     }
-    envGroup.add(makeBox(0.03, 0.04, len, beam, x - depth / 2 - 0.02, 0.9, z));
   }
 
   function buildWarehouse() {
     clearGroup(envGroup);
-    var stripe = addFloor(28, 10);
-    stripe(0, 0, 0.12, 16);
-    stripe(-0.35, 0, 0.04, 16);
-    stripe(0.35, 0, 0.04, 16);
-    stripe(0, 0, 12, 0.12);
-    stripe(0, 4, 12, 0.08);
-    stripe(0, -4, 12, 0.08);
-    rackBay(-3.2, 0, 10, 1.1, 5);
-    rackBay(3.2, 0, 10, 1.1, 5);
-    rackBay(-3.2, 7.5, 4, 1.1, 4);
-    rackBay(3.2, 7.5, 4, 1.1, 4);
-    var col = stdMat(0x2c3036, { metalness: 0.5, roughness: 0.4 });
-    [[-6, -6], [-6, 6], [6, -6], [6, 6], [0, 9], [0, -8]].forEach(function (p) {
-      envGroup.add(makeBox(0.35, 4.2, 0.35, col, p[0], 2.1, p[1]));
+    var stripe = addFloor(32, 12);
+    // center aisle safety lanes
+    stripe(0, 0, 0.14, 18);
+    stripe(-0.42, 0, 0.05, 18);
+    stripe(0.42, 0, 0.05, 18);
+    stripe(0, 0, 14, 0.12);
+    stripe(0, 4.2, 14, 0.08);
+    stripe(0, -4.2, 14, 0.08);
+    // hazard chevrons near dock
+    stripe(-1.1, -8.2, 0.9, 0.08);
+    stripe(1.1, -8.2, 0.9, 0.08);
+
+    rackBay(-3.15, 0, 11, 1.15, 5);
+    rackBay(3.15, 0, 11, 1.15, 5);
+    rackBay(-3.15, 8.2, 4.2, 1.15, 4);
+    rackBay(3.15, 8.2, 4.2, 1.15, 4);
+
+    var col = metalMat(0x6d7784);
+    [[-7, -7], [-7, 7], [7, -7], [7, 7], [0, 10.5], [0, -9]].forEach(function (p) {
+      envGroup.add(makeBox(0.38, 4.4, 0.38, col, p[0], 2.2, p[1]));
     });
-    var wall = stdMat(0x121417, { metalness: 0.1, roughness: 0.9 });
-    envGroup.add(makeBox(18, 4.2, 0.2, wall, 0, 2.1, -9));
-    envGroup.add(makeBox(3.2, 3.0, 0.15, stdMat(0x1a1f24, { metalness: 0.3, roughness: 0.5 }), 0, 1.5, -8.88));
-    var sky = stdMat(0xa8c8e8, { metalness: 0, roughness: 1, emissive: 0x88aacc, emissiveIntensity: 0.35 });
-    [-3, 0, 3].forEach(function (x) { envGroup.add(makeBox(1.2, 0.05, 14, sky, x, 4.15, 0)); });
-    envGroup.add(makeBox(2.4, 0.35, 0.08, stdMat(ACCENT, { emissive: ACCENT, emissiveIntensity: 0.4 }), 0, 3.4, -8.7));
+
+    var wallMap = texRepeat(plasterTex || concreteTex, 4, 1.2);
+    var wall = wallMap
+      ? new THREE.MeshStandardMaterial({
+          map: wallMap,
+          color: 0xb0b4b8,
+          metalness: 0.05,
+          roughness: concreteRough ? 0.85 : 0.9,
+          roughnessMap: concreteRough || null
+        })
+      : stdMat(0x14171b, { metalness: 0.08, roughness: 0.92 });
+    envGroup.add(makeBox(20, 4.4, 0.22, wall, 0, 2.2, -9.5));
+    envGroup.add(makeBox(0.22, 4.4, 22, wall, -9.5, 2.2, 0));
+    envGroup.add(makeBox(0.22, 4.4, 22, wall, 9.5, 2.2, 0));
+
+    // dock door
+    var door = stdMat(0x1a222a, { metalness: 0.35, roughness: 0.45 });
+    envGroup.add(makeBox(3.4, 3.2, 0.12, door, 0, 1.6, -9.35));
+    envGroup.add(makeBox(3.6, 0.12, 0.18, metalMat(0x8899aa), 0, 3.25, -9.32));
+    envGroup.add(makeBox(2.6, 0.28, 0.06, stdMat(ACCENT, { emissive: ACCENT, emissiveIntensity: 0.35 }), 0, 3.55, -9.2));
+
+    // skylights + soft light panes
+    var sky = stdMat(0xb7d0ea, { metalness: 0, roughness: 1, emissive: 0x88aacc, emissiveIntensity: 0.42 });
+    [-4, -1.3, 1.3, 4].forEach(function (x) {
+      envGroup.add(makeBox(1.35, 0.06, 16, sky, x, 4.35, 0));
+    });
+    // overhead joists
+    var joist = metalMat(0x707986);
+    for (var jz = -7; jz <= 8; jz += 3) {
+      envGroup.add(makeBox(18, 0.18, 0.18, joist, 0, 4.15, jz));
+    }
+
+    // bollards
+    var bollard = stdMat(SAFETY, { metalness: 0.3, roughness: 0.4, emissive: SAFETY, emissiveIntensity: 0.05 });
+    [[-1.8, -8.0], [1.8, -8.0], [-2.2, 4.2], [2.2, 4.2]].forEach(function (p) {
+      envGroup.add(makeBox(0.16, 0.55, 0.16, bollard, p[0], 0.28, p[1]));
+    });
+
+    // pallet stacks in aisle margins
+    var wood = stdMat(0x5a4632, { metalness: 0.05, roughness: 0.75 });
+    [[-1.6, 6.5], [1.7, 6.2], [-1.5, -6.0]].forEach(function (p) {
+      envGroup.add(makeBox(1.0, 0.12, 1.0, wood, p[0], 0.06, p[1]));
+      envGroup.add(makeBox(0.85, 0.55, 0.85, stdMat(0x4a5560, { roughness: 0.7 }), p[0], 0.42, p[1]));
+    });
+
     envGroup.visible = layers.env;
   }
 
   function buildKitchen() {
     clearGroup(envGroup);
     addFloor(16, 6);
-    var cab = stdMat(0x2a2a2e, { metalness: 0.2, roughness: 0.55 });
-    var counter = stdMat(0xd8d4cc, { metalness: 0.1, roughness: 0.45 });
+    var cab = stdMat(0x2a2a2e, { metalness: 0.22, roughness: 0.52 });
+    var counter = stdMat(0xd8d4cc, { metalness: 0.12, roughness: 0.42 });
     envGroup.add(makeBox(1.8, 0.9, 0.9, cab, 0, 0.45, 0.5));
     envGroup.add(makeBox(1.9, 0.04, 1.0, counter, 0, 0.92, 0.5));
     envGroup.add(makeBox(4.5, 0.9, 0.6, cab, 0, 0.45, -2.8));
     envGroup.add(makeBox(0.6, 0.9, 3.2, cab, -2.6, 0.45, -0.8));
     envGroup.add(makeBox(0.6, 0.9, 3.2, cab, 2.6, 0.45, -0.8));
-    envGroup.add(makeBox(0.7, 1.8, 0.7, stdMat(0xe8e8ea, { metalness: 0.5, roughness: 0.3 }), -2.5, 0.9, 1.6));
+    envGroup.add(makeBox(0.7, 1.8, 0.7, stdMat(0xe8e8ea, { metalness: 0.55, roughness: 0.28 }), -2.5, 0.9, 1.6));
     envGroup.visible = layers.env;
   }
 
   function buildPatio() {
     clearGroup(envGroup);
     addFloor(18, 5);
-    var grass = new THREE.Mesh(new THREE.PlaneGeometry(18, 6), stdMat(0x1a2a1c, { metalness: 0, roughness: 1 }));
+    var grass = new THREE.Mesh(
+      new THREE.PlaneGeometry(18, 6),
+      stdMat(0x1a2a1c, { metalness: 0, roughness: 1 })
+    );
     grass.rotation.x = -Math.PI / 2;
     grass.position.set(0, 0.004, 6);
     envGroup.add(grass);
@@ -372,7 +650,7 @@
     else buildWarehouse();
   }
 
-  // ---- Occupancy ----------------------------------------------------------
+  // ---- Occupancy (subtle structural hits — not toy cyan pillars) ----------
   function clearCells() { clearGroup(cellGroup); }
 
   function setOccupancy(data) {
@@ -382,21 +660,27 @@
     var cells = data.cells || [];
     var maxHits = 1;
     for (var i = 0; i < cells.length; i++) maxHits = Math.max(maxHits, cells[i].hits || 1);
-    var geo = new THREE.BoxGeometry(res * 0.88, 1, res * 0.88);
+    var geo = new THREE.BoxGeometry(res * 0.92, 1, res * 0.92);
     for (var j = 0; j < cells.length; j++) {
       var cell = cells[j];
       var hits = cell.hits || 1;
       var t = hits / maxHits;
-      var h = 0.12 + 1.1 * Math.pow(t, 0.85);
+      var h = 0.06 + 0.55 * Math.pow(t, 0.9);
+      var warm = t > 0.75;
       var m = new THREE.MeshStandardMaterial({
-        color: OCC, emissive: ACCENT, emissiveIntensity: 0.12 + 0.45 * t,
-        metalness: 0.05, roughness: 0.35, transparent: true,
-        opacity: 0.28 + 0.55 * t, depthWrite: t > 0.55
+        color: warm ? DANGER : OCC_BASE,
+        emissive: warm ? DANGER : ACCENT,
+        emissiveIntensity: warm ? 0.18 : 0.04 + 0.1 * t,
+        metalness: 0.08,
+        roughness: 0.55,
+        transparent: true,
+        opacity: 0.35 + 0.4 * t,
+        depthWrite: t > 0.6
       });
       var mesh = new THREE.Mesh(geo, m);
       mesh.position.set(cell.x || 0, h / 2, cell.y || 0);
       mesh.scale.y = h;
-      mesh.castShadow = t > 0.4;
+      mesh.castShadow = t > 0.5;
       cellGroup.add(mesh);
     }
     cellGroup.visible = layers.occ;
@@ -406,16 +690,37 @@
   function rebuildTrail() {
     clearGroup(trailGroup);
     if (trailPoints.length < 2) { trailGroup.visible = layers.trail; return; }
-    var pts = trailPoints.map(function (p) { return new THREE.Vector3(p.x, 0.04, p.y); });
+    var pts = trailPoints.map(function (p) { return new THREE.Vector3(p.x, 0.045, p.y); });
     var geo = new THREE.BufferGeometry().setFromPoints(pts);
-    trailGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.75 })));
-    var dotGeo = new THREE.SphereGeometry(0.025, 8, 8);
+    trailGroup.add(new THREE.Line(geo, new THREE.LineBasicMaterial({
+      color: ACCENT, transparent: true, opacity: 0.85
+    })));
+    // soft underglow ribbon
+    var ribbon = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(pts.map(function (p) {
+        return new THREE.Vector3(p.x, 0.02, p.z);
+      })),
+      new THREE.LineBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.28 })
+    );
+    trailGroup.add(ribbon);
+
+    var dotGeo = new THREE.SphereGeometry(0.028, 10, 10);
     var dotMat = new THREE.MeshBasicMaterial({ color: ACCENT });
-    for (var k = 0; k < trailPoints.length; k += 8) {
+    for (var k = 0; k < trailPoints.length; k += 6) {
       var d = new THREE.Mesh(dotGeo, dotMat);
-      d.position.set(trailPoints[k].x, 0.05, trailPoints[k].y);
+      d.position.set(trailPoints[k].x, 0.055, trailPoints[k].y);
       trailGroup.add(d);
     }
+    // heading tip
+    var last = trailPoints[trailPoints.length - 1];
+    var tip = new THREE.Mesh(
+      new THREE.ConeGeometry(0.05, 0.14, 4),
+      new THREE.MeshBasicMaterial({ color: ACCENT })
+    );
+    tip.rotation.x = Math.PI / 2;
+    tip.position.set(last.x, 0.07, last.y);
+    tip.rotation.z = -(last.yaw || 0);
+    trailGroup.add(tip);
     trailGroup.visible = layers.trail;
   }
 
@@ -423,13 +728,16 @@
     if (!pose) return;
     var x = pose.x || 0, y = pose.y || 0;
     var last = trailPoints[trailPoints.length - 1];
-    if (last && Math.hypot(last.x - x, last.y - y) < 0.04) return;
+    if (last && Math.hypot(last.x - x, last.y - y) < 0.035) {
+      last.yaw = pose.yaw || last.yaw || 0;
+      return;
+    }
     trailPoints.push({ x: x, y: y, yaw: pose.yaw || 0 });
     if (trailPoints.length > MAX_TRAIL) trailPoints.shift();
     rebuildTrail();
   }
 
-  function setPose(pose) {
+  function setPose(pose, odomExtras) {
     pose = pose || { x: 0, y: 0, yaw: 0 };
     robotGroup.position.set(pose.x || 0, 0, pose.y || 0);
     robotGroup.rotation.y = -(pose.yaw || 0);
@@ -438,8 +746,16 @@
     poseYEl.textContent = (pose.y || 0).toFixed(2);
     poseYawEl.textContent = (pose.yaw || 0).toFixed(2);
     poseTrailEl.textContent = String(trailPoints.length);
+    if (poseVxEl) {
+      var vx = odomExtras && odomExtras.vx != null ? odomExtras.vx : (lastOdom && lastOdom.vx) || 0;
+      var vy = odomExtras && odomExtras.vy != null ? odomExtras.vy : (lastOdom && lastOdom.vy) || 0;
+      var wz = odomExtras && odomExtras.wz != null ? odomExtras.wz : (lastOdom && lastOdom.wz) || 0;
+      poseVxEl.textContent = Number(vx).toFixed(2);
+      poseVyEl.textContent = Number(vy).toFixed(2);
+      poseWzEl.textContent = Number(wz).toFixed(2);
+    }
     if (layers.follow) {
-      target.set(pose.x || 0, 0.35, pose.y || 0);
+      target.set(pose.x || 0, 0.4, pose.y || 0);
       applyCamera();
     }
   }
@@ -501,6 +817,9 @@
     domainTitle.textContent = (meta && meta.name) ? meta.name : id;
     renderDomainChips();
     buildEnvironmentFor(id);
+    if (typeof window.k1LocalMapOnDomainChange === 'function') {
+      try { window.k1LocalMapOnDomainChange(id); } catch (e) {}
+    }
     return loadJson(occupancyUrl(id)).then(function (d) {
       showErr('');
       if (!d.domain_id) d.domain_id = id;
@@ -624,8 +943,8 @@
       statsEl.textContent = 'cleared';
     },
     resetView: function () {
-      spherical = { radius: 9.5, theta: 0.78, phi: 0.95 };
-      target.set(robotGroup.position.x, 0.35, robotGroup.position.z);
+      spherical = { radius: 11, theta: 0.85, phi: 0.92 };
+      target.set(robotGroup.position.x, 0.4, robotGroup.position.z);
       applyCamera();
     },
     setFollowPose: function (on) { layers.follow = !!on; },
@@ -656,23 +975,57 @@
       }
       return merged;
     },
-    getCurrentMap: function () { return currentMap; }
+    getCurrentMap: function () { return currentMap; },
+    connectTelemetry: connectTelemetry,
+    disconnectTelemetry: disconnectTelemetry,
+    getLastOdom: function () { return lastOdom; },
+    getTelemetryState: function () {
+      return {
+        enabled: telem.enabled,
+        state: telem.state,
+        url: telem.url,
+        lastMsgAt: telem.lastMsgAt,
+        status: telem.status,
+        lastOdom: lastOdom
+      };
+    }
   };
 
-  // ---- boot ---------------------------------------------------------------
   buildK1();
-  Promise.all([
-    loadTex('./assets/floor_diff.jpg').then(function (t) { floorTex = t; }),
-    loadTex('./assets/metal_diff.jpg').then(function (t) { metalTex = t; })
-  ]).then(function () {
-    return refreshRegistry();
+  setLiveHud('offline', 'poll');
+
+  // Domains must boot even if texture decode hangs (headless / slow GPU).
+  var q0 = new URLSearchParams(window.location.search);
+  var deepDomain = q0.get('domain');
+  refreshRegistry().then(function () {
+    if (deepDomain) return switchDomain(deepDomain);
   }).catch(function () {
     domainTitle.textContent = 'sample';
     buildWarehouse();
     window.k1LocalMap.loadSample();
+  }).then(function () {
+    if (wantLive()) connectTelemetry();
   });
 
+  function loadTexFallback(primary, secondary) {
+    return loadTex(primary).then(function (t) {
+      if (t) return t;
+      return secondary ? loadTex(secondary) : null;
+    });
+  }
+  Promise.all([
+    loadTexFallback('./assets/distribution-hub/floor_warehouse_diff.jpg', './assets/floor_diff.jpg').then(function (t) { floorTex = t; }),
+    loadTexFallback('./assets/distribution-hub/metal_plate_diff.jpg', './assets/metal_diff.jpg').then(function (t) { metalTex = t; }),
+    loadTexFallback('./assets/distribution-hub/painted_concrete_diff.jpg', './assets/plaster_diff.jpg').then(function (t) { plasterTex = t; }),
+    loadTexFallback('./assets/distribution-hub/corrugated_diff.jpg', './assets/concrete_color.jpg').then(function (t) { concreteTex = t; }),
+    loadTex('./assets/concrete_rough.jpg').then(function (t) { concreteRough = t; })
+  ]).then(function () {
+    if (activeDomainId) buildEnvironmentFor(activeDomainId);
+  }).catch(function () { /* textures optional */ });
+
   setInterval(function () {
+    // When live WS is healthy, skip feed.json poll to avoid fighting the stream
+    if (telem.enabled && telem.state === 'live' && (Date.now() - telem.lastMsgAt) < 3000) return;
     if (!activeDomainId) return;
     loadJson('./feed.json').then(function (d) {
       if (d && d.domain_id && d.domain_id !== activeDomainId) return;
@@ -684,6 +1037,26 @@
 
   (function tick() {
     requestAnimationFrame(tick);
+    applyPendingOdom();
+    if (trailDirty) {
+      trailRebuildCooldown -= 1;
+      if (trailRebuildCooldown <= 0) {
+        rebuildTrail();
+        trailDirty = false;
+        trailRebuildCooldown = 4; // ~every 4 frames at 60fps ≈ 15 Hz max rebuild
+      }
+    }
+    ledPulse += 0.04;
+    var pulse = 0.55 + 0.45 * Math.sin(ledPulse);
+    robotGroup.traverse(function (obj) {
+      if (obj.userData && obj.userData.pulseRing && obj.material) {
+        obj.material.opacity = 0.28 + 0.32 * pulse;
+        obj.scale.setScalar(0.96 + 0.06 * pulse);
+      }
+      if (obj.material && obj.material.userData && obj.material.userData.pulse) {
+        obj.material.emissiveIntensity = 0.55 + 0.5 * pulse;
+      }
+    });
     renderer.render(scene, camera);
   })();
 })();

@@ -73,6 +73,19 @@
       font-family: "SF Mono", "Cascadia Mono", "Consolas", monospace;
       font-size: 11px; color: var(--muted); line-height: 1.55;
     }
+    #live-row {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+      font-family: "SF Mono", "Cascadia Mono", Consolas, monospace; font-size: 10px;
+    }
+    #live-dot {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--muted);
+      box-shadow: none; flex: 0 0 auto;
+    }
+    #live-dot.on { background: var(--ok); box-shadow: 0 0 8px rgba(52,199,89,0.55); }
+    #live-dot.warn { background: #C8AA5A; }
+    #live-dot.off { background: var(--danger); }
+    #live-label { color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; }
+    #live-label strong { color: var(--text); font-weight: 600; letter-spacing: 0.04em; }
     #pose-readout {
       margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--stroke);
       display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
@@ -81,6 +94,13 @@
     #pose-readout .cell { background: rgba(255,255,255,0.03); border-radius: 6px; padding: 6px 6px 5px; }
     #pose-readout .k { color: var(--muted); display: block; margin-bottom: 2px; letter-spacing: 0.08em; }
     #pose-readout .v { color: var(--accent); font-size: 12px; font-weight: 600; }
+    #vel-readout {
+      margin-top: 6px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+      font-family: "SF Mono", "Cascadia Mono", Consolas, monospace; font-size: 10px;
+    }
+    #vel-readout .cell { background: rgba(255,255,255,0.03); border-radius: 6px; padding: 6px 6px 5px; }
+    #vel-readout .k { color: var(--muted); display: block; margin-bottom: 2px; letter-spacing: 0.08em; }
+    #vel-readout .v { color: var(--text); font-size: 11px; font-weight: 600; }
 
     /* Right layer toggles */
     #layers {
@@ -151,6 +171,10 @@
   </div>
 
   <div id="hud">
+    <div id="live-row">
+      <span id="live-dot" class="off" aria-hidden="true"></span>
+      <span id="live-label"><strong id="live-state">OFFLINE</strong> · <span id="live-detail">poll</span></span>
+    </div>
     <h1>Active domain <span class="accent">·</span></h1>
     <span id="domain-title">—</span>
     <p id="stats">loading…</p>
@@ -159,6 +183,11 @@
       <div class="cell"><span class="k">Y</span><span class="v" id="pose-y">0.00</span></div>
       <div class="cell"><span class="k">YAW</span><span class="v" id="pose-yaw">0.00</span></div>
       <div class="cell"><span class="k">TRAIL</span><span class="v" id="pose-trail">0</span></div>
+    </div>
+    <div id="vel-readout">
+      <div class="cell"><span class="k">VX</span><span class="v" id="pose-vx">0.00</span></div>
+      <div class="cell"><span class="k">VY</span><span class="v" id="pose-vy">0.00</span></div>
+      <div class="cell"><span class="k">WZ</span><span class="v" id="pose-wz">0.00</span></div>
     </div>
   </div>
 
@@ -170,7 +199,7 @@
     <button type="button" class="layer on" data-layer="follow"><span class="dot"></span>Follow pose</button>
   </div>
 
-  <div id="hint">LMB orbit · RMB pan · scroll zoom · Booster K1 proxy 95×40×18 cm</div>
+  <div id="hint">LMB orbit · RMB pan · scroll zoom · ?live=1 WebSocket · K1 proxy 95×40×18 cm</div>
   <div id="err"></div>
 
   <div id="new-domain-modal" aria-hidden="true">
