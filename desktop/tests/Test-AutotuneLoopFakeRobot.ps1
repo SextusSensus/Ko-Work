@@ -101,6 +101,24 @@ $o6 = & $loop @common *>&1 | Out-String
 $op.Dispose()
 Check 'L6 operator session -> no robot work this tick' (($o6 -match 'operator session active') -and ($o6 -notmatch 'processing')) ''
 
+# L7 field-block pause: while <LocalRuns>\.pause_rrd_pulls_until is in the future the .rrd pull is DEFERRED (run
+# ledgered, autotune folder kept for the retry, no pull); a past time or an unparsable file does not pause.
+$pauseFile = Join-Path $T 'local_runs\.pause_rrd_pulls_until'
+(Get-Date).AddHours(1).ToString('s') | Out-File -Encoding ascii $pauseFile
+New-FakeRun '20990107T000007Z_ggggggg'
+$o7a = & $loop @common *>&1 | Out-String
+$led = @(Get-Content $ledger -ErrorAction SilentlyContinue)
+Check 'L7a pause active -> ledgered, folder kept, no .rrd pull' (($o7a -match 'pulls paused until') -and ($o7a -notmatch 'rrd: pulling') -and ($led -contains '20990107T000007Z_ggggggg') -and (Test-Path (Join-Path $T 'autotune\20990107T000007Z_ggggggg'))) ''
+(Get-Date).AddHours(-1).ToString('s') | Out-File -Encoding ascii $pauseFile
+New-FakeRun '20990108T000008Z_hhhhhhh'
+$o7b = & $loop @common *>&1 | Out-String
+Check 'L7b pause time passed -> pulls again' (($o7b -match 'rrd: pulling') -and ($o7b -notmatch 'pulls paused')) ''
+'not a time' | Out-File -Encoding ascii $pauseFile
+New-FakeRun '20990109T000009Z_iiiiiii'
+$o7c = & $loop @common *>&1 | Out-String
+Check 'L7c unparsable pause file -> warned, pulls NOT paused' (($o7c -match 'is not a time') -and ($o7c -match 'rrd: pulling')) ''
+Remove-Item -LiteralPath $pauseFile -Force -ErrorAction SilentlyContinue
+
 "---- L1 output ----"; $o1
 "---- L3 output ----"; $o3
 Write-Host ("`n{0} failure(s); scratch in {1}" -f $fails, $T)
