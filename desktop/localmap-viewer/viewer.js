@@ -1105,13 +1105,13 @@
       envGroup.add(makeBox(0.42, 5.0, 0.42, col, p[0], 2.5, p[1]));
     });
 
-    // Skylights + industrial light bars
-    var sky = stdMat(0xb7d0ea, { metalness: 0, roughness: 1, emissive: 0x88aacc, emissiveIntensity: 0.48 });
-    [-6, -2, 2, 6].forEach(function (x) {
-      envGroup.add(makeBox(1.5, 0.06, 18, sky, x, 4.95, 0));
+    // Skylights + industrial light bars (narrower — free floor props stay readable in orbit)
+    var sky = stdMat(0xb7d0ea, { metalness: 0, roughness: 1, emissive: 0x88aacc, emissiveIntensity: 0.35 });
+    [-5.5, 5.5].forEach(function (x) {
+      envGroup.add(makeBox(0.9, 0.05, 14, sky, x, 4.95, 0));
     });
     var joist = metalMat(0x707986);
-    for (var jz = -8; jz <= 9; jz += 2.5) {
+    for (var jz = -8; jz <= 9; jz += 3.5) {
       envGroup.add(makeBox(22, 0.16, 0.16, joist, 0, 4.75, jz));
       // pendant light housings
       [-6, 0, 6].forEach(function (lx) {
@@ -1174,31 +1174,39 @@
       envGroup.add(makeBox(0.45, 0.05, 0.05, jack, p[0], 0.7, p[1] - 0.45));
     });
 
-    // Optional Kenney / Poly Haven glTF accents (loaded async into cache)
-    placeGltfClone('box-large', -6.8, 0, -5.5, 1.8, 0.2);
-    placeGltfClone('box-wide', 6.8, 0, 4.2, 1.6, -0.4);
-    placeGltfClone('cone', -2.4, 0, -8.2, 1.2, 0);
-    placeGltfClone('ph-box', -2.8, 0, -6.8, 1.0, 0.3);
-    placeGltfClone('ph-crate', 2.8, 0, -6.6, 1.0, -0.2);
-    placeGltfClone('lib-pallet', -3.2, 0, -7.4, 1.0, 0.15);
-    placeGltfClone('lib-pallet', 3.4, 0, -7.2, 1.0, -0.2);
+    // Free CC0 Kenney / Poly Haven props — dock + center aisle (orbit-readable)
+    placeGltfClone('conveyor-long', 0, 0, -4.2, 1.0, 0);
+    placeGltfClone('box-large', -1.1, 0, -4.0, 1.15, 0.15);
+    placeGltfClone('box-wide', 1.3, 0, -3.7, 1.1, -0.2);
+    placeGltfClone('box-large', -6.8, 0, -5.5, 1.1, 0.2);
+    placeGltfClone('box-wide', 6.8, 0, 4.2, 1.05, -0.4);
+    placeGltfClone('cone', -2.4, 0, -8.2, 1.15, 0);
+    placeGltfClone('lib-cone', 2.4, 0, -8.2, 1.1, 0);
+    placeGltfClone('ph-box', -2.8, 0, -6.8, 1.2, 0.3);
+    placeGltfClone('ph-crate', 2.8, 0, -6.6, 1.15, -0.2);
+    placeGltfClone('ph-box', 0.15, 0, -5.9, 1.1, -0.1);
+    placeGltfClone('lib-pallet', -3.2, 0, -7.4, 1.05, 0.15);
+    placeGltfClone('lib-pallet', 3.4, 0, -7.2, 1.05, -0.2);
+    placeGltfClone('lib-pallet', 0.5, 0, 5.5, 1.05, 0.4);
+    placeGltfClone('ph-plastic', 0.55, 0, 5.55, 1.1, 0.2);
+    placeGltfClone('ph-tote', 7.5, 0, 2.2, 1.05, 0);
     placeGltfClone('lib-barrier', -8.2, 0, -8.8, 1.0, Math.PI / 2);
     placeGltfClone('lib-crush', 8.2, 0, -8.5, 1.0, -Math.PI / 2);
-    placeGltfClone('lib-hand-truck', -0.8, 0, -6.8, 1.0, 0.4);
-    placeGltfClone('ph-rack', -8.6, 0, 2.0, 1.0, Math.PI / 2);
+    placeGltfClone('lib-hand-truck', -0.8, 0, -6.8, 1.05, 0.4);
+    placeGltfClone('ph-rack', -8.6, 0, 2.0, 1.1, Math.PI / 2);
     placeGltfClone('lib-barrier', -7.5, 0, -8.8, 1.0, 0.1);
     placeGltfClone('lib-barrier', 7.5, 0, -8.8, 1.0, -0.1);
-    placeGltfClone('lib-cone', 2.4, 0, -8.2, 1.0, 0);
     placeGltfClone('lib-crush', -8.8, 0, -4.0, 1.0, Math.PI / 2);
     placeGltfClone('lib-block', 8.8, 0, -6.5, 1.0, 0);
-    placeGltfClone('lib-handtruck', -0.9, 0, -6.5, 1.0, 0.4);
-    placeGltfClone('lib-shelves', -9.2, 0, 6.5, 1.0, Math.PI / 2);
-    placeGltfClone('lib-barrel', -7.4, 0, 5.2, 1.0, 0.2);
-    placeGltfClone('lib-barrel', -6.8, 0, 5.5, 1.0, -0.3);
+    placeGltfClone('lib-handtruck', -0.9, 0, -6.5, 1.05, 0.4);
+    placeGltfClone('lib-shelves', -9.2, 0, 6.5, 1.05, Math.PI / 2);
+    placeGltfClone('lib-barrel', -7.4, 0, 5.2, 1.05, 0.2);
+    placeGltfClone('lib-barrel', -6.8, 0, 5.5, 1.05, -0.3);
     placeGltfClone('lib-shutter', 0, 0, -10.15, 1.15, 0);
+    placeGltfClone('door-wide-open', -5.2, 0, -10.05, 1.15, 0);
     placeGltfClone('lib-light', -3.8, 3.8, 0, 1.0, 0);
     placeGltfClone('lib-light', 3.8, 3.8, 0, 1.0, 0);
-    placeGltfClone('lib-wet', 1.2, 0, -7.5, 1.0, 0.15);
+    placeGltfClone('lib-wet', 1.2, 0, -7.5, 1.05, 0.15);
 
     envGroup.visible = layers.env;
   }
