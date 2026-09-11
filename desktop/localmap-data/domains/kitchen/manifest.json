@@ -1,0 +1,9 @@
+{
+  "id": "kitchen",
+  "name": "Kitchen",
+  "created": "2026-09-08T14:00:00Z",
+  "updated": "2026-09-11T08:20:00Z",
+  "run_count": 4,
+  "cell_count": 37,
+  "notes": "Island + counters; accumulate follow runs while cooking demos."
+}

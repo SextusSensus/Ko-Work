@@ -560,7 +560,7 @@ $script:FollowStart=[datetime]::MinValue
 $script:FollowToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 
 # ============================================================================
-#  Visual system — Tesla × SpaceX × Apple (near-black / cyan accent / mission clarity)
+#  Visual system — Tesla × SpaceX × Apple (near-black / white / cyan / Tesla red STOP)
 #  Brand-first header. Tracker hierarchy: Primary > Avoidance > Advanced > Cmd.
 # ============================================================================
 function New-K1Font([string]$Family, [float]$Size, [System.Drawing.FontStyle]$Style = 'Regular') {
@@ -572,31 +572,31 @@ function New-K1Font([string]$Family, [float]$Size, [System.Drawing.FontStyle]$St
 
 $font      = New-K1Font 'Bahnschrift' 9.5
 $fontBold  = New-K1Font 'Bahnschrift' 10.5 ([System.Drawing.FontStyle]::Bold)
-$fontBrand = New-K1Font 'Bahnschrift' 22 ([System.Drawing.FontStyle]::Bold)
+$fontBrand = New-K1Font 'Bahnschrift' 20 ([System.Drawing.FontStyle]::Bold)
 $fontSub   = New-K1Font 'Bahnschrift' 9
 $fontHero  = New-K1Font 'Bahnschrift' 14 ([System.Drawing.FontStyle]::Bold)
 $fontStatus= New-K1Font 'Bahnschrift' 16 ([System.Drawing.FontStyle]::Bold)
 $mono      = New-K1Font 'Cascadia Mono' 9.25
 if (-not $mono) { $mono = New-Object System.Drawing.Font('Consolas', 9) }
 
-# Palette — pure black chassis, one electric cyan accent, Tesla red danger
-$bg        = [System.Drawing.Color]::FromArgb(0, 0, 0)          # #000000
-$surface   = [System.Drawing.Color]::FromArgb(10, 10, 10)      # #0A0A0A
-$panelBg   = [System.Drawing.Color]::FromArgb(20, 20, 20)      # #141414
-$surface2  = [System.Drawing.Color]::FromArgb(28, 28, 30)      # #1C1C1E raised
-$stroke    = [System.Drawing.Color]::FromArgb(44, 44, 46)      # hairline
+# Palette — near-black / cyan accent / Tesla red
+$bg        = [System.Drawing.Color]::FromArgb(0, 0, 0)           # pure black
+$surface   = [System.Drawing.Color]::FromArgb(10, 10, 10)       # panels
+$panelBg   = $surface                                          # group / panel fill (alias)
+$surface2  = [System.Drawing.Color]::FromArgb(28, 28, 30)      # raised (#1C1C1E)
+$stroke    = [System.Drawing.Color]::FromArgb(44, 44, 46)      # #2C2C2E
 $text      = [System.Drawing.Color]::FromArgb(245, 245, 247)   # #F5F5F7
 $muted     = [System.Drawing.Color]::FromArgb(142, 142, 147)   # #8E8E93
-$accent    = [System.Drawing.Color]::FromArgb(50, 212, 255)    # #32D4FF — ONE accent
-$green     = [System.Drawing.Color]::FromArgb(180, 230, 200)   # soft white-green (sparingly)
-$red       = [System.Drawing.Color]::FromArgb(227, 25, 55)     # #E31937 Tesla red
-$amber     = [System.Drawing.Color]::FromArgb(200, 170, 90)    # restrained caution
+$accent    = [System.Drawing.Color]::FromArgb(50, 212, 255)    # cyan #32D4FF
+$green     = [System.Drawing.Color]::FromArgb(180, 230, 200)   # ok
+$red       = [System.Drawing.Color]::FromArgb(227, 25, 55)     # Tesla STOP #E31937
+$amber     = [System.Drawing.Color]::FromArgb(200, 170, 90)    # caution
 $dark      = $bg                                                 # logs / video wells (compat alias)
 $chipBg    = [System.Drawing.Color]::FromArgb(28, 28, 30)
 
 function Set-K1PrimaryButton([System.Windows.Forms.Button]$b) {
     $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0
-    $b.BackColor = $accent; $b.ForeColor = [System.Drawing.Color]::Black; $b.Font = $fontBold
+    $b.BackColor = $accent; $b.ForeColor = $bg; $b.Font = $fontBold
     $b.Cursor = [System.Windows.Forms.Cursors]::Hand
 }
 function Set-K1DangerButton([System.Windows.Forms.Button]$b) {
@@ -611,7 +611,7 @@ function Set-K1GhostButton([System.Windows.Forms.Button]$b) {
 }
 function Set-K1OkButton([System.Windows.Forms.Button]$b) {
     $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0
-    $b.BackColor = $green; $b.ForeColor = [System.Drawing.Color]::Black; $b.Font = $fontBold
+    $b.BackColor = $green; $b.ForeColor = $bg; $b.Font = $fontBold
     $b.Cursor = [System.Windows.Forms.Cursors]::Hand
 }
 function Set-K1Field([System.Windows.Forms.TextBox]$tb) {
@@ -1185,20 +1185,26 @@ $tabTrack.Controls.Add($trackLayout)
 
 # ============================================================================
 #  TAB 7 - LOCAL MAP  (interactive 3D short-horizon occupancy — robot-local)
+#  Domains = separate environments; each follow/capture run merges into the active domain.
 #  Primary UX: WebView2 (or WebBrowser fallback) hosting desktop/localmap-viewer/
+#  Persistence: desktop/localmap-data/domains/<id>/{manifest,occupancy}.json
 #  Advanced: Import .stcm still available for legacy Aurora static renders.
 # ============================================================================
 $script:LocalMapViewerDir = Join-Path $SCRIPT_DIR 'localmap-viewer'
 $script:LocalMapIndex     = Join-Path $script:LocalMapViewerDir 'index.html'
 $script:LocalMapFeed      = Join-Path $script:LocalMapViewerDir 'feed.json'
 $script:LocalMapSample    = Join-Path $script:LocalMapViewerDir 'sample.json'
+$script:LocalMapDataDir   = Join-Path $SCRIPT_DIR 'localmap-data'
+$script:LocalMapDomainsDir= Join-Path $script:LocalMapDataDir 'domains'
+$script:LocalMapDomainsIndex = Join-Path $script:LocalMapDataDir 'domains.json'
 $script:MapHostMode       = 'none'   # webview2 | webbrowser | external
 $script:MapWebView        = $null
 $script:MapBrowser        = $null
+$script:ActiveDomainId    = 'kitchen'
 
 $mapLayout=New-Object System.Windows.Forms.TableLayoutPanel
 $mapLayout.Dock='Fill'; $mapLayout.ColumnCount=1; $mapLayout.RowCount=2; $mapLayout.Padding='12,8,12,8'; $mapLayout.BackColor=$bg
-[void]$mapLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,78)))
+[void]$mapLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute,108)))
 [void]$mapLayout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent,100)))
 
 $mapBar=New-Object System.Windows.Forms.Panel; $mapBar.Dock='Fill'; $mapBar.BackColor=$panelBg
@@ -1212,10 +1218,15 @@ $btnMapReset=New-Object System.Windows.Forms.Button; $btnMapReset.Text='Reset vi
 $chkMapPose=New-Object System.Windows.Forms.CheckBox; $chkMapPose.Text='Show robot pose'; $chkMapPose.AutoSize=$true; $chkMapPose.Location='570,14'; Set-K1Check $chkMapPose 'accent'; $chkMapPose.Checked=$true; $chkMapPose.BackColor=$panelBg; $mapBar.Controls.Add($chkMapPose)
 $chkMapFollow=New-Object System.Windows.Forms.CheckBox; $chkMapFollow.Text='Follow pose'; $chkMapFollow.AutoSize=$true; $chkMapFollow.Location='710,14'; Set-K1Check $chkMapFollow; $chkMapFollow.Checked=$true; $chkMapFollow.BackColor=$panelBg; $mapBar.Controls.Add($chkMapFollow)
 $btnMapOpen=New-Object System.Windows.Forms.Button; $btnMapOpen.Text='Open in browser'; $btnMapOpen.Size='120,30'; $btnMapOpen.Location='830,8'; Set-K1GhostButton $btnMapOpen; $mapBar.Controls.Add($btnMapOpen)
+
+$lblDomain=New-Object System.Windows.Forms.Label; $lblDomain.Text='Domain:'; $lblDomain.AutoSize=$true; $lblDomain.Location='12,48'; Set-K1Label $lblDomain 'muted'; $mapBar.Controls.Add($lblDomain)
+$cmbDomain=New-Object System.Windows.Forms.ComboBox; $cmbDomain.DropDownStyle='DropDownList'; $cmbDomain.Size='220,24'; $cmbDomain.Location='72,44'; $cmbDomain.Font=$font; $cmbDomain.FlatStyle='Flat'; $cmbDomain.BackColor=$surface2; $cmbDomain.ForeColor=$text; $mapBar.Controls.Add($cmbDomain)
+$btnDomainNew=New-Object System.Windows.Forms.Button; $btnDomainNew.Text='+ New domain'; $btnDomainNew.Size='118,28'; $btnDomainNew.Location='282,42'; Set-K1GhostButton $btnDomainNew; $mapBar.Controls.Add($btnDomainNew)
+$btnDomainImport=New-Object System.Windows.Forms.Button; $btnDomainImport.Text='Import last run'; $btnDomainImport.Size='128,28'; $btnDomainImport.Location='408,42'; Set-K1PrimaryButton $btnDomainImport; $mapBar.Controls.Add($btnDomainImport)
 # Advanced: legacy Aurora .stcm static render (kept off the primary chrome)
-$btnMapRender=New-Object System.Windows.Forms.Button; $btnMapRender.Text='Import .stcm'; $btnMapRender.Size='100,26'; $btnMapRender.Location='12,44'; Set-K1GhostButton $btnMapRender; $mapBar.Controls.Add($btnMapRender)
-$mapInfo=New-Object System.Windows.Forms.Label; $mapInfo.AutoSize=$false; $mapInfo.Size='900,26'; $mapInfo.Location='122,44'; $mapInfo.TextAlign='MiddleLeft'
-$mapInfo.Text='Local Map — short-horizon occupancy (depth + odometry). Orbit / pan / zoom in the 3D view.'
+$btnMapRender=New-Object System.Windows.Forms.Button; $btnMapRender.Text='Import .stcm'; $btnMapRender.Size='100,26'; $btnMapRender.Location='548,44'; Set-K1GhostButton $btnMapRender; $mapBar.Controls.Add($btnMapRender)
+$mapInfo=New-Object System.Windows.Forms.Label; $mapInfo.AutoSize=$false; $mapInfo.Size='980,26'; $mapInfo.Location='12,76'; $mapInfo.TextAlign='MiddleLeft'
+$mapInfo.Text='Local Map — domains accumulate occupancy per environment. Switch chips in the 3D view or use Domain above.'
 $mapInfo.ForeColor=$muted; $mapInfo.BackColor=$panelBg; $mapBar.Controls.Add($mapInfo)
 
 $mapHost=New-Object System.Windows.Forms.Panel; $mapHost.Dock='Fill'; $mapHost.BackColor=$bg
@@ -1237,7 +1248,250 @@ function Invoke-LocalMapJs([string]$js){
     return $false
 }
 
+function Get-LocalMapDomainDir([string]$id){
+    return (Join-Path $script:LocalMapDomainsDir $id)
+}
+
+function Read-LocalMapDomainsIndex{
+    if(-not (Test-Path $script:LocalMapDomainsIndex)){ return $null }
+    try{ return (Get-Content -Raw -Path $script:LocalMapDomainsIndex | ConvertFrom-Json) }catch{ return $null }
+}
+
+function Write-LocalMapDomainsIndex($index){
+    New-Item -ItemType Directory -Force -Path $script:LocalMapDataDir | Out-Null
+    $index | ConvertTo-Json -Depth 6 | Set-Content -Path $script:LocalMapDomainsIndex -Encoding UTF8
+}
+
+function Sync-LocalMapFeedFromDomain([string]$id){
+    if(-not $id){ return $false }
+    $occ = Join-Path (Get-LocalMapDomainDir $id) 'occupancy.json'
+    if(-not (Test-Path $occ)){ return $false }
+    try{
+        $raw = Get-Content -Raw -Path $occ
+        # Ensure domain_id stamped for viewer feed filter
+        if($raw -notmatch '"domain_id"'){
+            $obj = $raw | ConvertFrom-Json
+            $obj | Add-Member -NotePropertyName domain_id -NotePropertyValue $id -Force
+            $raw = ($obj | ConvertTo-Json -Depth 8)
+        }
+        Set-Content -Path $script:LocalMapFeed -Value $raw -Encoding UTF8
+        return $true
+    }catch{ return $false }
+}
+
+function Update-LocalMapDomainCombo{
+    $idx = Read-LocalMapDomainsIndex
+    $script:MapDomainComboQuiet = $true
+    try{
+        $cmbDomain.Items.Clear()
+        if(-not $idx -or -not $idx.domains){ return }
+        $script:ActiveDomainId = [string]$idx.active
+        foreach($d in $idx.domains){
+            $label = ('{0}  ·  {1} cells  ·  {2} runs' -f $d.name, $d.cell_count, $d.run_count)
+            [void]$cmbDomain.Items.Add($label)
+            if([string]$d.id -eq $script:ActiveDomainId){ $cmbDomain.SelectedIndex = $cmbDomain.Items.Count - 1 }
+        }
+        if($cmbDomain.SelectedIndex -lt 0 -and $cmbDomain.Items.Count -gt 0){ $cmbDomain.SelectedIndex = 0 }
+    } finally {
+        $script:MapDomainComboQuiet = $false
+    }
+}
+
+function Ensure-LocalMapDomains{
+    New-Item -ItemType Directory -Force -Path $script:LocalMapDomainsDir | Out-Null
+    $idx = Read-LocalMapDomainsIndex
+    if($idx -and $idx.domains -and $idx.domains.Count -gt 0){
+        $script:ActiveDomainId = [string]$idx.active
+        if(-not $script:ActiveDomainId){ $script:ActiveDomainId = [string]$idx.domains[0].id }
+        Sync-LocalMapFeedFromDomain $script:ActiveDomainId | Out-Null
+        Update-LocalMapDomainCombo
+        return
+    }
+    # Seed three demo domains if the data pack is missing
+    $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    $seeds = @(
+        @{ id='kitchen'; name='Kitchen'; runs=4 },
+        @{ id='warehouse-bay-a'; name='Warehouse Bay A'; runs=7 },
+        @{ id='outdoor-patio'; name='Outdoor Patio'; runs=2 }
+    )
+    $domains = @()
+    foreach($s in $seeds){
+        $dir = Get-LocalMapDomainDir $s.id
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $occPath = Join-Path $dir 'occupancy.json'
+        if(-not (Test-Path $occPath) -and (Test-Path $script:LocalMapSample)){
+            Copy-Item -Force $script:LocalMapSample $occPath
+        }
+        $cells = 0
+        try{ $cells = ((Get-Content -Raw $occPath | ConvertFrom-Json).cells | Measure-Object).Count }catch{}
+        $man = @{ id=$s.id; name=$s.name; created=$now; updated=$now; run_count=$s.runs; cell_count=$cells; notes='seeded' }
+        ($man | ConvertTo-Json -Depth 4) | Set-Content -Path (Join-Path $dir 'manifest.json') -Encoding UTF8
+        $domains += @{ id=$s.id; name=$s.name; updated=$now; run_count=$s.runs; cell_count=$cells }
+    }
+    $idx = @{ active='kitchen'; domains=$domains }
+    Write-LocalMapDomainsIndex $idx
+    $script:ActiveDomainId = 'kitchen'
+    Sync-LocalMapFeedFromDomain 'kitchen' | Out-Null
+    Update-LocalMapDomainCombo
+}
+
+function Get-LocalMapDomainIdByComboIndex([int]$i){
+    $idx = Read-LocalMapDomainsIndex
+    if(-not $idx -or -not $idx.domains -or $i -lt 0 -or $i -ge $idx.domains.Count){ return $null }
+    return [string]$idx.domains[$i].id
+}
+
+function Switch-LocalMapDomain([string]$id){
+    if(-not $id){ return }
+    $dir = Get-LocalMapDomainDir $id
+    if(-not (Test-Path $dir)){ $mapInfo.Text = ("Domain folder missing: {0}" -f $id); return }
+    $idx = Read-LocalMapDomainsIndex
+    if($idx){ $idx.active = $id; Write-LocalMapDomainsIndex $idx }
+    $script:ActiveDomainId = $id
+    Sync-LocalMapFeedFromDomain $id | Out-Null
+    Update-LocalMapDomainCombo
+    [void](Invoke-LocalMapJs ("window.k1LocalMap && window.k1LocalMap.switchDomain('{0}')" -f $id.Replace("'","\'")))
+    $meta = $null
+    try{ $meta = Get-Content -Raw (Join-Path $dir 'manifest.json') | ConvertFrom-Json }catch{}
+    $name = if($meta){$meta.name}else{$id}
+    $mapInfo.Text = ("Active domain: {0}  ·  switch chips in viewer or Domain combo · runs merge into this map" -f $name)
+}
+
+function New-LocalMapDomain([string]$name){
+    $n = ($name -as [string]).Trim()
+    if(-not $n){ return $null }
+    $id = ($n.ToLower() -replace '[^a-z0-9]+','-').Trim('-')
+    if(-not $id){ $id = ('domain-{0}' -f [guid]::NewGuid().ToString('N').Substring(0,8)) }
+    $dir = Get-LocalMapDomainDir $id
+    if(Test-Path $dir){
+        $mapInfo.Text = ("Domain already exists: {0}" -f $id)
+        Switch-LocalMapDomain $id
+        return $id
+    }
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    $occ = @{ domain_id=$id; res_m=0.08; range_m=3.5; pose=@{x=0;y=0;yaw=0}; cells=@() }
+    ($occ | ConvertTo-Json -Depth 6) | Set-Content -Path (Join-Path $dir 'occupancy.json') -Encoding UTF8
+    $man = @{ id=$id; name=$n; created=$now; updated=$now; run_count=0; cell_count=0; notes='operator-created' }
+    ($man | ConvertTo-Json -Depth 4) | Set-Content -Path (Join-Path $dir 'manifest.json') -Encoding UTF8
+    $idx = Read-LocalMapDomainsIndex
+    if(-not $idx){ $idx = @{ active=$id; domains=@() } }
+    if(-not $idx.domains){ $idx.domains = @() }
+    $list = @($idx.domains) + @(@{ id=$id; name=$n; updated=$now; run_count=0; cell_count=0 })
+    $idx.domains = $list
+    $idx.active = $id
+    Write-LocalMapDomainsIndex $idx
+    Switch-LocalMapDomain $id
+    [void](Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.refreshDomains()")
+    $mapInfo.Text = ("Created domain '{0}' — bring the robot here and Import last run to build it out." -f $n)
+    return $id
+}
+
+function Merge-LocalMapOccupancy($base, $incoming, [string]$domainId){
+    $res = 0.08
+    if($incoming.res_m){ $res = [double]$incoming.res_m }
+    elseif($base.res_m){ $res = [double]$base.res_m }
+    $map = @{}
+    foreach($src in @($base,$incoming)){
+        if(-not $src -or -not $src.cells){ continue }
+        foreach($c in $src.cells){
+            $kx = [int][Math]::Round(([double]$c.x) / $res)
+            $ky = [int][Math]::Round(([double]$c.y) / $res)
+            $k = '{0}:{1}' -f $kx,$ky
+            $hits = 1; if($c.hits){ $hits = [int]$c.hits }
+            if($map.ContainsKey($k)){
+                $map[$k].hits = [int]$map[$k].hits + $hits
+                $map[$k].x = ([double]$map[$k].x + [double]$c.x) / 2.0
+                $map[$k].y = ([double]$map[$k].y + [double]$c.y) / 2.0
+            } else {
+                $map[$k] = @{ x=[double]$c.x; y=[double]$c.y; hits=$hits }
+            }
+        }
+    }
+    $cells = @($map.Values)
+    $range = 3.5
+    if($base.range_m -and [double]$base.range_m -gt $range){ $range = [double]$base.range_m }
+    if($incoming.range_m -and [double]$incoming.range_m -gt $range){ $range = [double]$incoming.range_m }
+    $pose = @{ x=0; y=0; yaw=0 }
+    if($incoming.pose){ $pose = $incoming.pose }
+    elseif($base.pose){ $pose = $base.pose }
+    return @{ domain_id=$domainId; res_m=$res; range_m=$range; pose=$pose; cells=$cells }
+}
+
+function Import-LocalMapRunIntoActive([string]$ip){
+    $id = $script:ActiveDomainId
+    if(-not $id){ $mapInfo.Text='Select or create a domain first.'; return }
+    $dir = Get-LocalMapDomainDir $id
+    $occPath = Join-Path $dir 'occupancy.json'
+    $base = $null
+    if(Test-Path $occPath){ try{ $base = Get-Content -Raw $occPath | ConvertFrom-Json }catch{} }
+    $incoming = $null
+    $source = 'sample'
+    if($ip){
+        $remoteCandidates = @(
+            '/tmp/k1_localmap.json',
+            '/home/booster/localmap/latest.json',
+            '/tmp/k1_localmap_feed.json'
+        )
+        foreach($remote in $remoteCandidates){
+            try{
+                $tmp = Join-Path $env:TEMP ('k1_lm_merge_{0}.json' -f ([guid]::NewGuid().ToString('N')))
+                $psi = New-Object System.Diagnostics.ProcessStartInfo
+                $psi.FileName = 'scp'; $psi.Arguments = ("-o BatchMode=yes -o ConnectTimeout=4 {0}@{1}:{2} `"{3}`"" -f $K1_SSH_USER,$ip,$remote,$tmp)
+                $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardError = $true; $psi.RedirectStandardOutput = $true
+                $p = [System.Diagnostics.Process]::Start($psi)
+                if(-not $p.WaitForExit(6000)){ try{$p.Kill()}catch{}; continue }
+                if($p.ExitCode -eq 0 -and (Test-Path $tmp) -and ((Get-Item $tmp).Length -gt 8)){
+                    $incoming = Get-Content -Raw $tmp | ConvertFrom-Json
+                    $source = $remote
+                    Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+                    break
+                }
+                Remove-Item -Force $tmp -ErrorAction SilentlyContinue
+            }catch{}
+        }
+    }
+    if(-not $incoming){
+        if(Test-Path $script:LocalMapSample){
+            $incoming = Get-Content -Raw $script:LocalMapSample | ConvertFrom-Json
+            $source = 'sample.json (seed merge)'
+        } else {
+            $mapInfo.Text = 'No run dump on robot and no sample to merge.'
+            return
+        }
+    }
+    $merged = Merge-LocalMapOccupancy $base $incoming $id
+    ($merged | ConvertTo-Json -Depth 8) | Set-Content -Path $occPath -Encoding UTF8
+    $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    $manPath = Join-Path $dir 'manifest.json'
+    $man = $null
+    if(Test-Path $manPath){ try{ $man = Get-Content -Raw $manPath | ConvertFrom-Json }catch{} }
+    if(-not $man){ $man = @{ id=$id; name=$id; created=$now } }
+    $man.updated = $now
+    $man.cell_count = @($merged.cells).Count
+    $rc = 0; if($man.run_count){ $rc = [int]$man.run_count }
+    $man.run_count = $rc + 1
+    ($man | ConvertTo-Json -Depth 4) | Set-Content -Path $manPath -Encoding UTF8
+    $idx = Read-LocalMapDomainsIndex
+    if($idx -and $idx.domains){
+        foreach($d in $idx.domains){
+            if([string]$d.id -eq $id){
+                $d.updated = $now
+                $d.cell_count = $man.cell_count
+                $d.run_count = $man.run_count
+            }
+        }
+        $idx.active = $id
+        Write-LocalMapDomainsIndex $idx
+    }
+    Sync-LocalMapFeedFromDomain $id | Out-Null
+    Update-LocalMapDomainCombo
+    [void](Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.refreshDomains()")
+    $mapInfo.Text = ("Merged into '{0}' from {1} — {2} cells · {3} runs (accumulate, not replace)." -f $man.name,$source,$man.cell_count,$man.run_count)
+}
+
 function Write-LocalMapFeedFromSample{
+    if(Sync-LocalMapFeedFromDomain $script:ActiveDomainId){ return $true }
     if(Test-Path $script:LocalMapSample){
         Copy-Item -Force $script:LocalMapSample $script:LocalMapFeed
         return $true
@@ -1246,48 +1500,17 @@ function Write-LocalMapFeedFromSample{
 }
 
 function Refresh-LocalMapFromRobot([string]$ip){
-    # Best-effort: pull a JSON dump if the robot exposes one; otherwise reload sample + note.
-    # Real cells stream via feed.json polling once a dump path exists on-robot.
-    $mapInfo.Text = ("Refreshing local map for {0}..." -f $ip)
-    $remoteCandidates = @(
-        '/tmp/k1_localmap.json',
-        '/home/booster/localmap/latest.json',
-        '/tmp/k1_localmap_feed.json'
-    )
-    $pulled = $false
-    foreach($remote in $remoteCandidates){
-        try{
-            $tmp = Join-Path $env:TEMP ('k1_lm_pull_{0}.json' -f ([guid]::NewGuid().ToString('N')))
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = 'scp'; $psi.Arguments = ("-o BatchMode=yes -o ConnectTimeout=4 {0}@{1}:{2} `"{3}`"" -f $K1_SSH_USER,$ip,$remote,$tmp)
-            $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardError = $true; $psi.RedirectStandardOutput = $true
-            $p = [System.Diagnostics.Process]::Start($psi)
-            if(-not $p.WaitForExit(6000)){ try{$p.Kill()}catch{}; continue }
-            if($p.ExitCode -eq 0 -and (Test-Path $tmp) -and ((Get-Item $tmp).Length -gt 8)){
-                Copy-Item -Force $tmp $script:LocalMapFeed
-                $pulled = $true
-                Remove-Item -Force $tmp -ErrorAction SilentlyContinue
-                break
-            }
-            Remove-Item -Force $tmp -ErrorAction SilentlyContinue
-        }catch{}
-    }
-    if($pulled){
-        $mapInfo.Text = ("Loaded occupancy dump from {0}" -f $ip)
-        [void](Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.loadFeed('./feed.json')")
-    } else {
-        Write-LocalMapFeedFromSample | Out-Null
-        $mapInfo.Text = ("No live dump on {0} — showing sample occupancy. Enable Local map on Tracker; dump lands in /tmp/k1_localmap.json when available." -f $ip)
-        [void](Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.loadSample()")
-    }
+    # Pull dump and MERGE into the active domain (accumulate geometry over runs).
+    $mapInfo.Text = ("Refreshing → merge into domain '{0}' from {1}..." -f $script:ActiveDomainId,$ip)
+    Import-LocalMapRunIntoActive $ip
 }
 
 function Initialize-LocalMapHost{
-    $uri = ([Uri](Join-Path $script:LocalMapViewerDir 'index.html')).AbsoluteUri
     if(-not (Test-Path $script:LocalMapIndex)){
         $mapInfo.Text = 'localmap-viewer/index.html missing — open desktop/README-UI.md'
         return
     }
+    Ensure-LocalMapDomains
     Write-LocalMapFeedFromSample | Out-Null
 
     # Prefer WebView2 (Chromium). DLL may sit next to the app or in the NuGet cache.
@@ -1320,7 +1543,7 @@ function Initialize-LocalMapHost{
                 param($s,$e)
                 if($e.IsSuccess){
                     $s.CoreWebView2.Navigate(([Uri]$script:LocalMapIndex).AbsoluteUri)
-                    $mapInfo.Text = 'Local Map 3D (WebView2) — drag orbit · right-drag pan · scroll zoom'
+                    $mapInfo.Text = ('Local Map 3D · domain {0} (WebView2) — chips switch areas · Import last run merges' -f $script:ActiveDomainId)
                 } else {
                     $mapInfo.Text = ('WebView2 init failed: {0} — use Open in browser' -f $e.InitializationException.Message)
                 }
@@ -1353,15 +1576,25 @@ function Initialize-LocalMapHost{
 
 $btnMapSample.Add_Click({
     Write-LocalMapFeedFromSample | Out-Null
-    if(-not (Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.loadSample()")){
-        try{ Start-Process $script:LocalMapIndex }catch{}
+    if(-not (Invoke-LocalMapJs ("window.k1LocalMap && window.k1LocalMap.switchDomain('{0}')" -f $script:ActiveDomainId))){
+        if(-not (Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.loadSample()")){
+            try{ Start-Process $script:LocalMapIndex }catch{}
+        }
     }
-    $mapInfo.Text = 'Sample occupancy loaded.'
+    $mapInfo.Text = ('Domain occupancy reloaded ({0}).' -f $script:ActiveDomainId)
 })
 $btnMapClear.Add_Click({
     [void](Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.clear()")
+    $id = $script:ActiveDomainId
+    if($id){
+        $occ = @{ domain_id=$id; res_m=0.08; range_m=3.5; pose=@{x=0;y=0;yaw=0}; cells=@() }
+        $dir = Get-LocalMapDomainDir $id
+        if(Test-Path $dir){
+            ($occ | ConvertTo-Json -Depth 6) | Set-Content -Path (Join-Path $dir 'occupancy.json') -Encoding UTF8
+        }
+    }
     try{ if(Test-Path $script:LocalMapFeed){ Set-Content -Path $script:LocalMapFeed -Value '{"res_m":0.08,"range_m":3.5,"pose":{"x":0,"y":0,"yaw":0},"cells":[]}' -Encoding UTF8 } }catch{}
-    $mapInfo.Text = 'Cleared.'
+    $mapInfo.Text = ('Cleared active domain ({0}) occupancy (manifest run count kept).' -f $id)
 })
 $btnMapReset.Add_Click({
     [void](Invoke-LocalMapJs "window.k1LocalMap && window.k1LocalMap.resetView()")
@@ -1384,10 +1617,83 @@ $btnMapOpen.Add_Click({
     if(Test-Path $script:LocalMapIndex){ Start-Process $script:LocalMapIndex }
     else { $mapInfo.Text = 'Viewer HTML missing.' }
 })
+$script:MapDomainComboQuiet = $false
+$cmbDomain.Add_SelectedIndexChanged({
+    if($script:MapDomainComboQuiet){ return }
+    $id = Get-LocalMapDomainIdByComboIndex $cmbDomain.SelectedIndex
+    if($id -and $id -ne $script:ActiveDomainId){ Switch-LocalMapDomain $id }
+})
+$btnDomainNew.Add_Click({
+    $name = [Microsoft.VisualBasic.Interaction]::InputBox(
+        "Name this environment (kitchen, warehouse bay, patio…).`r`nFollow/capture runs will accumulate into this domain.",
+        'New Local Map domain',
+        'New area'
+    )
+    if($name){ [void](New-LocalMapDomain $name) }
+})
+$btnDomainImport.Add_Click({
+    $ip = $ipMap.Text.Trim()
+    Import-LocalMapRunIntoActive $ip
+})
+
+# Soft-bridge for viewer "+ New domain" when running in WebView2 via polling / host script injection after nav
+# Viewer calls window.k1LocalMapHostCreateDomain(json) — define a JS stub that posts back via document title heartbeat if needed.
+# For reliability we also re-inject after domain combo changes:
+function Inject-LocalMapHostBridge{
+    $js = @'
+window.k1LocalMapHostCreateDomain = function(payload){
+  try {
+    var o = (typeof payload === 'string') ? JSON.parse(payload) : payload;
+    document.title = 'k1domain:create:' + encodeURIComponent(JSON.stringify(o));
+  } catch(e) {}
+};
+window.k1LocalMapOnDomainChange = function(id){
+  document.title = 'k1domain:active:' + encodeURIComponent(id || '');
+};
+'@
+    [void](Invoke-LocalMapJs $js)
+}
 
 $mapLayout.Controls.Add($mapBar,0,0); $mapLayout.Controls.Add($mapHost,0,1)
 $tabMap.Controls.Add($mapLayout)
+# VisualBasic for InputBox (New domain)
+try{ Add-Type -AssemblyName Microsoft.VisualBasic }catch{}
+Ensure-LocalMapDomains
 Initialize-LocalMapHost
+# Poll document title for domain create/switch events from the HTML chips
+$mapDomainTimer = New-Object System.Windows.Forms.Timer
+$mapDomainTimer.Interval = 700
+$mapDomainTimer.Add_Tick({
+    try{
+        Inject-LocalMapHostBridge
+        $title = $null
+        if($script:MapHostMode -eq 'webview2' -and $script:MapWebView -and $script:MapWebView.CoreWebView2){
+            $title = $script:MapWebView.CoreWebView2.DocumentTitle
+        } elseif($script:MapHostMode -eq 'webbrowser' -and $script:MapBrowser){
+            $title = $script:MapBrowser.DocumentTitle
+        }
+        if(-not $title){ return }
+        if($title.StartsWith('k1domain:create:')){
+            $payload = [uri]::UnescapeDataString($title.Substring('k1domain:create:'.Length))
+            $obj = $payload | ConvertFrom-Json
+            if($obj.name){ [void](New-LocalMapDomain ([string]$obj.name)) }
+            [void](Invoke-LocalMapJs "document.title='K1 Local Map'")
+        } elseif($title.StartsWith('k1domain:active:')){
+            $id = [uri]::UnescapeDataString($title.Substring('k1domain:active:'.Length))
+            if($id -and $id -ne $script:ActiveDomainId){
+                $idx = Read-LocalMapDomainsIndex
+                if($idx){ $idx.active = $id; Write-LocalMapDomainsIndex $idx }
+                $script:ActiveDomainId = $id
+                Sync-LocalMapFeedFromDomain $id | Out-Null
+                $script:MapDomainComboQuiet = $true
+                Update-LocalMapDomainCombo
+                $script:MapDomainComboQuiet = $false
+            }
+            [void](Invoke-LocalMapJs "document.title='K1 Local Map'")
+        }
+    }catch{}
+})
+$mapDomainTimer.Start()
 
 # Advanced: legacy Aurora .stcm / .vslam / .ply static PNG render (not primary UX)
 $btnMapRender.Add_Click({

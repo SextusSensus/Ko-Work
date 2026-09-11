@@ -111,6 +111,29 @@
       color: var(--muted); font-size: 12px; font-family: var(--mono);
     }
     .hairline { height: 1px; background: var(--stroke); width: 100%; margin: 2px 0 6px; }
+    .domain-bar {
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      padding: 10px 16px; background: #050505; border-bottom: 1px solid var(--stroke);
+    }
+    .domain-bar .label {
+      font-size: 10px; letter-spacing: 0.14em; color: var(--muted); font-weight: 700;
+      text-transform: uppercase; margin-right: 4px;
+    }
+    .chip {
+      appearance: none; border: 1px solid var(--stroke); background: var(--raised);
+      color: var(--text); font: 600 12px/1 var(--font); padding: 8px 12px; border-radius: 2px;
+      cursor: pointer; transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .chip:hover { border-color: var(--accent); color: var(--accent); }
+    .chip.active {
+      background: rgba(50, 212, 255, 0.12); border-color: var(--accent); color: var(--accent);
+    }
+    .chip.new {
+      border-style: dashed; color: var(--accent); border-color: rgba(50,212,255,0.45); background: transparent;
+    }
+    .domain-meta {
+      margin-left: auto; font: 11px/1.3 var(--mono); color: var(--muted);
+    }
   </style>
 </head>
 <body>
@@ -202,6 +225,7 @@ ready.</div>
         <div class="toolbar">
           <label class="field">IP <input type="text" value="192.168.1.81" /></label>
           <button class="btn-primary" id="mapRefresh">Refresh</button>
+          <button class="btn-ghost" id="mapImport">Import last run</button>
           <button class="btn-ghost" id="mapSample">Load sample</button>
           <button class="btn-ghost" id="mapClear">Clear</button>
           <button class="btn-ghost" id="mapReset">Reset view</button>
@@ -209,7 +233,12 @@ ready.</div>
           <label class="chk"><input type="checkbox" id="mapFollow" checked /> Follow pose</label>
           <button class="btn-ghost">Import .stcm</button>
         </div>
-        <div class="video-well" style="margin-bottom:16px;min-height:360px;padding:0">
+        <div class="domain-bar" id="domainBar" role="tablist" aria-label="Map domains">
+          <span class="label">Domain</span>
+          <!-- chips filled by script -->
+          <span class="domain-meta" id="domainMeta"></span>
+        </div>
+        <div class="video-well" style="margin:0 16px 16px;min-height:360px;padding:0">
           <canvas id="mapCanvas"></canvas>
         </div>
       </section>
@@ -218,7 +247,41 @@ ready.</div>
   </div>
 
   <script>
-    // Tabs
+    var domains = [
+      { id: 'kitchen', name: 'Kitchen', runs: 4, cells: 37, updated: '2026-09-11 08:20Z' },
+      { id: 'warehouse-bay-a', name: 'Warehouse Bay A', runs: 7, cells: 48, updated: '2026-09-10 19:42Z' },
+      { id: 'outdoor-patio', name: 'Outdoor Patio', runs: 2, cells: 22, updated: '2026-09-09 16:05Z' }
+    ];
+    var activeDomain = 'kitchen';
+
+    var domainMaps = {
+      kitchen: [
+        [0.64,-0.16,4],[0.72,-0.08,6],[0.80,0,8],[0.72,0.08,5],[0.64,0.16,3],
+        [1.20,-0.48,3],[1.28,-0.40,5],[1.36,-0.32,7],[1.36,-0.24,6],[1.28,-0.16,4],
+        [1.60,0.72,4],[1.68,0.80,6],[1.76,0.88,5],[1.84,0.80,3],
+        [2.10,-0.10,2],[2.18,-0.02,4],[2.26,0.06,5],[2.34,0.14,3],
+        [0.40,1.20,3],[0.48,1.28,5],[0.56,1.36,4],
+        [-0.80,0.40,2],[-0.88,0.48,4],[-0.96,0.56,6],[-1.04,0.48,3],
+        [0.90,-1.10,3],[0.98,-1.18,5],[1.06,-1.26,4]
+      ],
+      'warehouse-bay-a': [
+        [1.2,-1.6,5],[1.28,-1.52,7],[1.36,-1.44,8],[1.44,-1.36,6],[1.52,-1.28,4],
+        [1.2,1.6,5],[1.28,1.52,7],[1.36,1.44,8],[1.44,1.36,6],[1.52,1.28,4],
+        [2.4,-1.6,4],[2.48,-1.52,6],[2.56,-1.44,7],[2.64,-1.36,5],
+        [2.4,1.6,4],[2.48,1.52,6],[2.56,1.44,7],[2.64,1.36,5],
+        [3.6,-1.5,3],[3.68,-1.42,5],[3.76,-1.34,6],[3.6,1.5,3],[3.68,1.42,5],[3.76,1.34,6],
+        [4.2,-0.2,3],[4.28,-0.12,4],[4.36,-0.04,5],[4.28,0.04,4],[4.2,0.12,3],
+        [1.8,0,2],[2.0,0,2],[2.2,0,2],[3.0,0.08,2]
+      ],
+      'outdoor-patio': [
+        [2.0,2.4,3],[2.1,2.5,4],[2.2,2.6,5],[2.3,2.5,3],
+        [-2.4,1.8,2],[-2.5,1.9,4],[-2.6,2.0,5],[-2.5,2.1,3],
+        [1.6,-2.2,3],[1.7,-2.3,5],[1.8,-2.4,4],
+        [0.4,1.1,2],[0.5,1.2,3],[-1.0,-1.4,2],[-1.1,-1.5,3],[-1.2,-1.6,4],
+        [3.4,0.2,2],[3.5,0.3,3],[3.6,0.2,2],[-0.5,3.0,2],[-0.4,3.1,3]
+      ]
+    };
+
     document.querySelectorAll('.tab').forEach(function (btn) {
       btn.addEventListener('click', function () {
         document.querySelectorAll('.tab').forEach(function (b) { b.setAttribute('aria-selected', 'false'); });
@@ -230,7 +293,6 @@ ready.</div>
       });
     });
 
-    // Lightweight 3D-ish Local Map mock (no Three.js dependency for preview portability)
     var canvas = document.getElementById('mapCanvas');
     var ctx = canvas.getContext('2d');
     var cells = [];
@@ -239,21 +301,65 @@ ready.</div>
     var dragging = false, panning = false, lx = 0, ly = 0;
     var showPose = true, follow = true;
 
-    function sampleCells() {
+    function loadDomainCells(id) {
       cells = [];
-      var pts = [
-        [0.64,-0.16,4],[0.72,-0.08,6],[0.80,0,8],[0.72,0.08,5],[0.64,0.16,3],
-        [1.20,-0.48,3],[1.28,-0.40,5],[1.36,-0.32,7],[1.36,-0.24,6],[1.28,-0.16,4],
-        [1.60,0.72,4],[1.68,0.80,6],[1.76,0.88,5],[1.84,0.80,3],
-        [2.10,-0.10,2],[2.18,-0.02,4],[2.26,0.06,5],[2.34,0.14,3],
-        [0.40,1.20,3],[0.48,1.28,5],[0.56,1.36,4],
-        [-0.80,0.40,2],[-0.88,0.48,4],[-0.96,0.56,6],[-1.04,0.48,3],
-        [0.90,-1.10,3],[0.98,-1.18,5],[1.06,-1.26,4]
-      ];
+      var pts = domainMaps[id] || domainMaps.kitchen;
       pts.forEach(function (p) { cells.push({ x: p[0], y: p[1], hits: p[2] }); });
-      pose = { x: 0, y: 0, yaw: 0.35 };
+      if (id === 'warehouse-bay-a') pose = { x: 0.4, y: 0, yaw: 0.05 };
+      else if (id === 'outdoor-patio') pose = { x: -0.2, y: 0.3, yaw: -0.4 };
+      else pose = { x: 0, y: 0, yaw: 0.35 };
     }
-    sampleCells();
+
+    function updateDomainMeta() {
+      var d = domains.find(function (x) { return x.id === activeDomain; });
+      var el = document.getElementById('domainMeta');
+      if (!d) { el.textContent = ''; return; }
+      el.textContent = d.cells + ' cells · ' + d.runs + ' runs · updated ' + d.updated;
+    }
+
+    function renderDomainChips() {
+      var bar = document.getElementById('domainBar');
+      Array.prototype.slice.call(bar.querySelectorAll('.chip')).forEach(function (c) { c.remove(); });
+      var meta = document.getElementById('domainMeta');
+      domains.forEach(function (d) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'chip' + (d.id === activeDomain ? ' active' : '');
+        btn.textContent = d.name;
+        btn.title = d.name + ' · ' + d.cells + ' cells · ' + d.runs + ' runs';
+        btn.addEventListener('click', function () {
+          activeDomain = d.id;
+          loadDomainCells(d.id);
+          renderDomainChips();
+          updateDomainMeta();
+          draw();
+          document.getElementById('status').textContent = 'Active domain: ' + d.name + ' · runs merge into this map';
+        });
+        bar.insertBefore(btn, meta);
+      });
+      var neu = document.createElement('button');
+      neu.type = 'button';
+      neu.className = 'chip new';
+      neu.textContent = '+ New domain';
+      neu.addEventListener('click', function () {
+        var name = window.prompt('Name this environment (kitchen, bay, patio…)', 'Lab hallway');
+        if (!name) return;
+        var id = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || ('domain-' + Date.now());
+        domains.push({ id: id, name: name.trim(), runs: 0, cells: 0, updated: 'just now' });
+        domainMaps[id] = [];
+        activeDomain = id;
+        loadDomainCells(id);
+        renderDomainChips();
+        updateDomainMeta();
+        draw();
+        document.getElementById('status').textContent = 'Created domain "' + name.trim() + '" — Import last run to build it out.';
+      });
+      bar.insertBefore(neu, meta);
+      updateDomainMeta();
+    }
+
+    loadDomainCells(activeDomain);
+    renderDomainChips();
 
     function resizeMap() {
       var well = canvas.parentElement;
@@ -286,7 +392,6 @@ ready.</div>
       var w = canvas.clientWidth, h = canvas.clientHeight;
       ctx.fillStyle = '#000';
       ctx.fillRect(0, 0, w, h);
-      // grid
       ctx.strokeStyle = '#1C1C1E';
       ctx.lineWidth = 1;
       for (var g = -5; g <= 5; g++) {
@@ -295,7 +400,6 @@ ready.</div>
         var c = project(-5, g, 0), d = project(5, g, 0);
         ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(d.x, d.y); ctx.stroke();
       }
-      // range ring
       ctx.strokeStyle = 'rgba(50,212,255,0.35)';
       ctx.beginPath();
       for (var i = 0; i <= 64; i++) {
@@ -304,7 +408,6 @@ ready.</div>
         if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
       }
       ctx.stroke();
-      // cells
       cells.forEach(function (cell) {
         var hh = 0.08 + 0.08 * cell.hits;
         var base = project(cell.x, cell.y, 0);
@@ -322,11 +425,12 @@ ready.</div>
         ctx.strokeStyle = '#32D4FF'; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(r.x, r.y); ctx.lineTo(nose.x, nose.y); ctx.stroke();
       }
+      var d = domains.find(function (x) { return x.id === activeDomain; });
       ctx.fillStyle = '#8E8E93';
       ctx.font = '11px Cascadia Mono, Consolas, monospace';
       ctx.fillText(cells.length + ' cells · orbit drag · pan right-drag · scroll zoom', 14, 22);
       ctx.fillStyle = '#32D4FF';
-      ctx.fillText('LOCAL MAP · short-horizon occupancy', 14, h - 16);
+      ctx.fillText('LOCAL MAP · ' + ((d && d.name) || activeDomain), 14, h - 16);
     }
 
     canvas.addEventListener('pointerdown', function (e) {
@@ -346,21 +450,38 @@ ready.</div>
     }, { passive: false });
     canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
-    document.getElementById('mapSample').onclick = function () { sampleCells(); draw(); };
+    document.getElementById('mapSample').onclick = function () { loadDomainCells(activeDomain); draw(); };
     document.getElementById('mapClear').onclick = function () { cells = []; draw(); };
     document.getElementById('mapReset').onclick = function () { cam = { yaw: 0.7, pitch: 0.55, dist: 7, tx: 0, ty: 0 }; draw(); };
-    document.getElementById('mapRefresh').onclick = function () { sampleCells(); pose.yaw += 0.15; draw(); };
+    document.getElementById('mapRefresh').onclick = function () { loadDomainCells(activeDomain); pose.yaw += 0.15; draw(); };
+    document.getElementById('mapImport').onclick = function () {
+      // Simulate merge: bump hits + add a cell cluster
+      cells.forEach(function (c) { c.hits = (c.hits || 1) + 1; });
+      cells.push({ x: pose.x + 0.9, y: pose.y + 0.4, hits: 3 });
+      cells.push({ x: pose.x + 0.98, y: pose.y + 0.48, hits: 4 });
+      var d = domains.find(function (x) { return x.id === activeDomain; });
+      if (d) {
+        d.runs += 1;
+        d.cells = cells.length;
+        d.updated = 'just now';
+        updateDomainMeta();
+      }
+      draw();
+      document.getElementById('status').textContent = 'Merged last run into ' + ((d && d.name) || activeDomain) + ' (accumulate, not replace).';
+    };
     document.getElementById('mapPose').onchange = function (e) { showPose = e.target.checked; draw(); };
     document.getElementById('mapFollow').onchange = function (e) { follow = e.target.checked; draw(); };
 
     window.addEventListener('resize', resizeMap);
     resizeMap();
-    // gentle motion
     setInterval(function () {
       if (document.getElementById('panel-map').classList.contains('active')) {
         pose.yaw += 0.01; draw();
       }
     }, 80);
+
+    // Open on Local Map for domain demo screenshots
+    document.querySelector('.tab[data-tab="map"]').click();
   </script>
 </body>
 </html>

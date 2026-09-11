@@ -1,4 +1,4 @@
-/* K1 Local Map — Three.js occupancy viewer (Tesla×SpaceX×Apple black/cyan) */
+/* K1 Local Map — Three.js occupancy viewer + domain switcher */
 (function () {
   'use strict';
 
@@ -8,9 +8,16 @@
   var CELL = 0x32d4ff;
   var ROBOT = 0xf5f5f7;
 
+  var DATA_ROOT = '../localmap-data';
+  var DOMAINS_INDEX = DATA_ROOT + '/domains.json';
+
   var viewport = document.getElementById('viewport');
   var statsEl = document.getElementById('stats');
   var errEl = document.getElementById('err');
+  var domainBar = document.getElementById('domain-bar');
+  var domainTitle = document.getElementById('domain-title');
+  var modal = document.getElementById('new-domain-modal');
+  var newNameInput = document.getElementById('new-domain-name');
 
   var scene = new THREE.Scene();
   scene.background = new THREE.Color(BG);
@@ -30,7 +37,6 @@
   key.position.set(4, 8, 2);
   scene.add(key);
 
-  // Ground grid (mission-control feel)
   var grid = new THREE.GridHelper(10, 20, MUTED, 0x1c1c1e);
   grid.position.y = 0;
   scene.add(grid);
@@ -62,7 +68,6 @@
   nose.position.set(0, 0.28, 0.22);
   robotGroup.add(nose);
 
-  // Orbit controls (lightweight, no OrbitControls dependency)
   var target = new THREE.Vector3(0, 0.2, 0);
   var spherical = { radius: 6.2, theta: 0.85, phi: 0.95 };
   var dragging = false;
@@ -70,6 +75,10 @@
   var lastX = 0, lastY = 0;
   var followPose = true;
   var showRobot = true;
+
+  var registry = { active: null, domains: [] };
+  var currentMap = null;
+  var activeDomainId = null;
 
   function applyCamera() {
     var x = target.x + spherical.radius * Math.sin(spherical.phi) * Math.sin(spherical.theta);
@@ -135,8 +144,25 @@
     }
   }
 
+  function findDomain(id) {
+    for (var i = 0; i < registry.domains.length; i++) {
+      if (registry.domains[i].id === id) return registry.domains[i];
+    }
+    return null;
+  }
+
+  function formatUpdated(iso) {
+    if (!iso) return '—';
+    try {
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return d.toISOString().slice(0, 16).replace('T', ' ') + 'Z';
+    } catch (_) { return iso; }
+  }
+
   function setMap(data) {
     if (!data) return;
+    currentMap = data;
     clearCells();
     var res = (data.res_m || 0.08);
     var cells = data.cells || [];
@@ -175,8 +201,14 @@
 
     var range = data.range_m || 3.5;
     ring.scale.set(range / 3.5, range / 3.5, 1);
-    statsEl.textContent = cells.length + ' cells · res ' + res.toFixed(2) + ' m · range ' + range.toFixed(1) + ' m'
+
+    var meta = findDomain(activeDomainId);
+    var metaBits = cells.length + ' cells · res ' + res.toFixed(2) + ' m · range ' + range.toFixed(1) + ' m'
       + ' · pose (' + (pose.x || 0).toFixed(2) + ', ' + (pose.y || 0).toFixed(2) + ', yaw ' + (pose.yaw || 0).toFixed(2) + ')';
+    if (meta) {
+      metaBits += ' · ' + (meta.run_count || 0) + ' runs · updated ' + formatUpdated(meta.updated);
+    }
+    statsEl.textContent = metaBits;
   }
 
   function showErr(msg) {
@@ -187,15 +219,178 @@
 
   function loadJson(url) {
     return fetch(url, { cache: 'no-store' }).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + url);
       return r.json();
     });
+  }
+
+  function occupancyUrl(id) {
+    return DATA_ROOT + '/domains/' + encodeURIComponent(id) + '/occupancy.json';
+  }
+
+  function renderDomainChips() {
+    while (domainBar.firstChild) domainBar.removeChild(domainBar.firstChild);
+    var label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = 'Domain';
+    domainBar.appendChild(label);
+
+    registry.domains.forEach(function (d) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'chip' + (d.id === activeDomainId ? ' active' : '');
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-selected', d.id === activeDomainId ? 'true' : 'false');
+      btn.dataset.domainId = d.id;
+      btn.title = (d.name || d.id) + ' · ' + (d.cell_count || 0) + ' cells · ' + (d.run_count || 0) + ' runs · ' + formatUpdated(d.updated);
+      btn.textContent = d.name || d.id;
+      btn.addEventListener('click', function () { switchDomain(d.id); });
+      domainBar.appendChild(btn);
+    });
+
+    var neu = document.createElement('button');
+    neu.type = 'button';
+    neu.className = 'chip new';
+    neu.textContent = '+ New domain';
+    neu.addEventListener('click', openNewDomainModal);
+    domainBar.appendChild(neu);
+  }
+
+  function switchDomain(id, opts) {
+    opts = opts || {};
+    if (!id) return Promise.resolve();
+    activeDomainId = id;
+    registry.active = id;
+    var meta = findDomain(id);
+    domainTitle.textContent = (meta && meta.name) ? meta.name : id;
+    renderDomainChips();
+    return loadJson(occupancyUrl(id)).then(function (d) {
+      showErr('');
+      if (!d.domain_id) d.domain_id = id;
+      setMap(d);
+      if (typeof window.k1LocalMapOnDomainChange === 'function') {
+        try { window.k1LocalMapOnDomainChange(id); } catch (_) {}
+      }
+      return d;
+    }).catch(function (e) {
+      if (!opts.quiet) showErr('domain: ' + e);
+      clearCells();
+      statsEl.textContent = 'empty domain — import a run or load sample';
+    });
+  }
+
+  function setRegistry(reg, opts) {
+    opts = opts || {};
+    registry = reg || { active: null, domains: [] };
+    if (!registry.domains) registry.domains = [];
+    var next = opts.forceId || registry.active || (registry.domains[0] && registry.domains[0].id) || null;
+    renderDomainChips();
+    if (next) return switchDomain(next, opts);
+    domainTitle.textContent = 'no domains';
+    return Promise.resolve();
+  }
+
+  function refreshRegistry() {
+    return loadJson(DOMAINS_INDEX).then(function (reg) {
+      return setRegistry(reg, { forceId: reg.active });
+    });
+  }
+
+  function openNewDomainModal() {
+    modal.classList.add('open');
+    modal.setAttribute('aria-hidden', 'false');
+    newNameInput.value = '';
+    setTimeout(function () { newNameInput.focus(); }, 30);
+  }
+  function closeNewDomainModal() {
+    modal.classList.remove('open');
+    modal.setAttribute('aria-hidden', 'true');
+  }
+
+  function slugify(name) {
+    return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || ('domain-' + Date.now());
+  }
+
+  function requestNewDomain(name) {
+    var n = (name || '').trim();
+    if (!n) return;
+    var id = slugify(n);
+    // Prefer host bridge (WinForms writes disk); else optimistic in-memory for browser preview.
+    if (typeof window.k1LocalMapHostCreateDomain === 'function') {
+      try {
+        window.k1LocalMapHostCreateDomain(JSON.stringify({ id: id, name: n }));
+        closeNewDomainModal();
+        return;
+      } catch (_) {}
+    }
+    var now = new Date().toISOString();
+    registry.domains.push({ id: id, name: n, updated: now, run_count: 0, cell_count: 0 });
+    registry.active = id;
+    activeDomainId = id;
+    currentMap = { domain_id: id, res_m: 0.08, range_m: 3.5, pose: { x: 0, y: 0, yaw: 0 }, cells: [] };
+    setMap(currentMap);
+    domainTitle.textContent = n;
+    renderDomainChips();
+    closeNewDomainModal();
+    showErr('Created in-memory (host will persist on Windows).');
+    setTimeout(function () { showErr(''); }, 2500);
+  }
+
+  document.getElementById('new-domain-cancel').addEventListener('click', closeNewDomainModal);
+  document.getElementById('new-domain-ok').addEventListener('click', function () {
+    requestNewDomain(newNameInput.value);
+  });
+  newNameInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') requestNewDomain(newNameInput.value);
+    if (e.key === 'Escape') closeNewDomainModal();
+  });
+  modal.addEventListener('click', function (e) {
+    if (e.target === modal) closeNewDomainModal();
+  });
+
+  function cellKey(c, res) {
+    var q = res || 0.08;
+    return Math.round((c.x || 0) / q) + ':' + Math.round((c.y || 0) / q);
+  }
+
+  function mergeOccupancy(base, incoming) {
+    var res = (incoming && incoming.res_m) || (base && base.res_m) || 0.08;
+    var out = {
+      domain_id: (base && base.domain_id) || (incoming && incoming.domain_id) || activeDomainId,
+      res_m: res,
+      range_m: Math.max((base && base.range_m) || 0, (incoming && incoming.range_m) || 0, 3.5),
+      pose: (incoming && incoming.pose) || (base && base.pose) || { x: 0, y: 0, yaw: 0 },
+      cells: []
+    };
+    var map = {};
+    function absorb(src) {
+      if (!src || !src.cells) return;
+      for (var i = 0; i < src.cells.length; i++) {
+        var c = src.cells[i];
+        var k = cellKey(c, res);
+        if (!map[k]) {
+          map[k] = { x: c.x || 0, y: c.y || 0, hits: c.hits || 1 };
+        } else {
+          map[k].hits = (map[k].hits || 1) + (c.hits || 1);
+          map[k].x = ((map[k].x || 0) + (c.x || 0)) / 2;
+          map[k].y = ((map[k].y || 0) + (c.y || 0)) / 2;
+        }
+      }
+    }
+    absorb(base);
+    absorb(incoming);
+    for (var k in map) if (Object.prototype.hasOwnProperty.call(map, k)) out.cells.push(map[k]);
+    return out;
   }
 
   // Public API for WinForms WebView2 / host interop
   window.k1LocalMap = {
     setMap: setMap,
-    clear: function () { clearCells(); statsEl.textContent = 'cleared'; },
+    clear: function () {
+      clearCells();
+      currentMap = { domain_id: activeDomainId, res_m: 0.08, range_m: 3.5, pose: { x: 0, y: 0, yaw: 0 }, cells: [] };
+      statsEl.textContent = 'cleared';
+    },
     resetView: function () {
       spherical = { radius: 6.2, theta: 0.85, phi: 0.95 };
       target.set(robotGroup.position.x, 0.2, robotGroup.position.z);
@@ -209,14 +404,43 @@
     loadFeed: function (path) {
       return loadJson(path || './feed.json').then(function (d) { showErr(''); setMap(d); })
         .catch(function (e) { showErr('feed: ' + e); });
-    }
+    },
+    getActiveDomain: function () { return activeDomainId; },
+    listDomains: function () { return registry.domains.slice(); },
+    setRegistry: function (reg) { return setRegistry(reg || { active: null, domains: [] }); },
+    refreshDomains: refreshRegistry,
+    switchDomain: switchDomain,
+    openNewDomain: openNewDomainModal,
+    mergeIntoActive: function (incoming) {
+      var merged = mergeOccupancy(currentMap, incoming);
+      setMap(merged);
+      var meta = findDomain(activeDomainId);
+      if (meta) {
+        meta.cell_count = (merged.cells || []).length;
+        meta.run_count = (meta.run_count || 0) + 1;
+        meta.updated = new Date().toISOString();
+        renderDomainChips();
+      }
+      return merged;
+    },
+    getCurrentMap: function () { return currentMap; }
   };
 
-  // Auto-load sample, then poll feed.json if present
-  window.k1LocalMap.loadSample();
-  var feedTimer = setInterval(function () {
-    loadJson('./feed.json').then(function (d) { showErr(''); setMap(d); }).catch(function () { /* optional */ });
-  }, 1500);
+  // Boot: domains registry → active occupancy; fall back to sample
+  refreshRegistry().catch(function () {
+    domainTitle.textContent = 'sample';
+    window.k1LocalMap.loadSample();
+  });
+
+  // Optional live feed poll (host may sync active domain → feed.json)
+  setInterval(function () {
+    if (!activeDomainId) return;
+    loadJson('./feed.json').then(function (d) {
+      if (d && d.domain_id && d.domain_id !== activeDomainId) return;
+      showErr('');
+      setMap(d);
+    }).catch(function () { /* optional */ });
+  }, 2000);
 
   function tick() {
     requestAnimationFrame(tick);

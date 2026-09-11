@@ -9,6 +9,7 @@
       --bg: #000000;
       --surface: #141414;
       --raised: #1C1C1E;
+      --stroke: #2C2C2E;
       --text: #F5F5F7;
       --muted: #8E8E93;
       --accent: #32D4FF;
@@ -17,10 +18,36 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { width: 100%; height: 100%; background: var(--bg); color: var(--text);
       font-family: "Bahnschrift", "Segoe UI Variable", "Segoe UI", sans-serif; overflow: hidden; }
-    #viewport { position: absolute; inset: 0; }
+    #viewport { position: absolute; inset: 0; top: 52px; }
+    #domain-bar {
+      position: absolute; left: 0; right: 0; top: 0; height: 52px; z-index: 3;
+      display: flex; align-items: center; gap: 8px; padding: 0 14px;
+      background: linear-gradient(180deg, #0a0a0a 0%, #000 100%);
+      border-bottom: 1px solid var(--stroke);
+      overflow-x: auto; overflow-y: hidden;
+    }
+    #domain-bar .label {
+      flex: 0 0 auto; font-size: 10px; letter-spacing: 0.14em; color: var(--muted);
+      font-weight: 700; text-transform: uppercase; margin-right: 4px;
+    }
+    .chip {
+      appearance: none; border: 1px solid var(--stroke); background: var(--raised);
+      color: var(--text); font: 600 12px/1 "Bahnschrift", "Segoe UI", sans-serif;
+      padding: 8px 12px; border-radius: 2px; cursor: pointer; white-space: nowrap;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+    .chip:hover { border-color: var(--accent); color: var(--accent); }
+    .chip.active {
+      background: rgba(50, 212, 255, 0.12); border-color: var(--accent); color: var(--accent);
+    }
+    .chip.meta { font-weight: 500; color: var(--muted); font-size: 11px; padding-left: 8px; padding-right: 8px; }
+    .chip.new {
+      border-style: dashed; color: var(--accent); border-color: rgba(50,212,255,0.45);
+      background: transparent;
+    }
     #hud {
-      position: absolute; left: 16px; top: 14px; z-index: 2;
-      pointer-events: none; max-width: min(420px, 70vw);
+      position: absolute; left: 16px; top: 66px; z-index: 2;
+      pointer-events: none; max-width: min(480px, 72vw);
     }
     #hud h1 {
       font-size: 15px; font-weight: 600; letter-spacing: 0.04em;
@@ -33,7 +60,7 @@
       position: absolute; right: 16px; bottom: 14px; z-index: 2;
       font-size: 11px; color: var(--muted);
       font-family: "Cascadia Mono", "Consolas", monospace;
-      pointer-events: none;
+      pointer-events: none; text-align: right;
     }
     #err {
       position: absolute; left: 16px; bottom: 14px; z-index: 2;
@@ -41,16 +68,54 @@
       font-family: "Cascadia Mono", "Consolas", monospace;
       display: none;
     }
+    #new-domain-modal {
+      display: none; position: absolute; inset: 0; z-index: 10;
+      background: rgba(0,0,0,0.72); align-items: center; justify-content: center;
+    }
+    #new-domain-modal.open { display: flex; }
+    #new-domain-modal .card {
+      width: min(360px, 92vw); background: var(--surface); border: 1px solid var(--stroke);
+      padding: 18px 18px 14px;
+    }
+    #new-domain-modal h2 { font-size: 16px; margin-bottom: 6px; }
+    #new-domain-modal p { font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+    #new-domain-modal input {
+      width: 100%; background: var(--raised); border: 1px solid var(--stroke);
+      color: var(--text); padding: 10px 12px; font: 13px/1 "Cascadia Mono", Consolas, monospace;
+      margin-bottom: 12px;
+    }
+    #new-domain-modal .row { display: flex; gap: 8px; justify-content: flex-end; }
+    #new-domain-modal button {
+      appearance: none; border: 0; cursor: pointer; font: 600 13px/1 inherit;
+      padding: 10px 14px; border-radius: 2px;
+    }
+    #new-domain-modal .ok { background: var(--accent); color: #000; }
+    #new-domain-modal .cancel { background: var(--raised); color: var(--text); border: 1px solid var(--stroke); }
   </style>
 </head>
 <body>
+  <div id="domain-bar" role="tablist" aria-label="Map domains">
+    <span class="label">Domain</span>
+    <!-- chips filled by viewer.js -->
+  </div>
   <div id="viewport"></div>
   <div id="hud">
-    <h1>LOCAL MAP <span class="accent">·</span> short-horizon occupancy</h1>
+    <h1>LOCAL MAP <span class="accent">·</span> <span id="domain-title">domain</span></h1>
     <p id="stats">orbit drag · pan right-drag · scroll zoom</p>
   </div>
-  <div id="hint">robot-local · depth + odometry</div>
+  <div id="hint">domains accumulate runs · robot-local depth + odometry</div>
   <div id="err"></div>
+  <div id="new-domain-modal" aria-hidden="true">
+    <div class="card">
+      <h2>New domain</h2>
+      <p>Create a separate map for a new environment (kitchen, bay, patio…). Follow/capture runs merge into the active domain.</p>
+      <input id="new-domain-name" type="text" placeholder="e.g. Lab hallway" maxlength="64" />
+      <div class="row">
+        <button type="button" class="cancel" id="new-domain-cancel">Cancel</button>
+        <button type="button" class="ok" id="new-domain-ok">Create</button>
+      </div>
+    </div>
+  </div>
   <script src="./three.min.js"></script>
   <script src="./viewer.js"></script>
 </body>
