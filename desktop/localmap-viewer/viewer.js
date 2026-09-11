@@ -89,7 +89,8 @@
     key.shadow.bias = -0.0002;
   }
   scene.add(key);
-  var rim = new THREE.DirectionalLight(ACCENT, 0.18);
+  // Neutral fill rim — do not paint env meshes with HUD cyan
+  var rim = new THREE.DirectionalLight(0xe8eef4, 0.16);
   rim.position.set(-5, 4, -7);
   scene.add(rim);
   var fill = new THREE.DirectionalLight(0xffffff, 0.22);
