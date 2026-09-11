@@ -18,6 +18,8 @@
   instanceGroup.name = 'assetInstances';
   var instances = [];
   var activeDomainId = null;
+  /** Bumps on every domain instance load so a slower prior fetch cannot place into the new domain. */
+  var instanceLoadGen = 0;
   var ready = false;
   var gltfLoader = null;
 
@@ -556,11 +558,15 @@
     });
   }
 
-  function registerDetections(dets) {
+  function registerDetections(dets, opts) {
+    opts = opts || {};
     dets = dets || [];
+    var expectDomain = opts.domainId != null ? opts.domainId : activeDomainId;
+    var expectGen = opts.gen != null ? opts.gen : instanceLoadGen;
     var chain = Promise.resolve([]);
     dets.forEach(function (d) {
       chain = chain.then(function (acc) {
+        if (expectGen !== instanceLoadGen || activeDomainId !== expectDomain) return acc;
         return assignAsset(d.class || d.label_class || d.label || d.cls, {
           x: d.x, y: d.y, yaw: d.yaw, w: d.w, h: d.h, confidence: d.confidence, run_id: d.run_id
         }, {
@@ -575,16 +581,22 @@
       });
     });
     return chain.then(function (acc) {
+      if (expectGen !== instanceLoadGen || activeDomainId !== expectDomain) return [];
       persistLocal();
       return acc;
     });
   }
 
   function loadInstancesForDomain(domainId) {
+    var gen = ++instanceLoadGen;
     activeDomainId = domainId;
     clearInstances();
+    // Empty / unknown domains: missing instances.json + no localStorage → stay empty
+    // (do not inherit meshes from a previously selected domain).
+    if (!domainId) return Promise.resolve([]);
     var url = DATA_ROOT + '/domains/' + encodeURIComponent(domainId) + '/instances.json';
     return loadJson(url).catch(function () {
+      if (gen !== instanceLoadGen || activeDomainId !== domainId) return { instances: [] };
       try {
         var raw = localStorage.getItem('k1LocalMap.instances.' + domainId);
         return raw ? JSON.parse(raw) : { instances: [] };
@@ -592,10 +604,14 @@
         return { instances: [] };
       }
     }).then(function (data) {
+      if (gen !== instanceLoadGen || activeDomainId !== domainId) return [];
       var list = (data && data.instances) || [];
+      // Re-clear in case a stale sibling load placed meshes between fetch and place.
+      clearInstances();
       var chain = Promise.resolve();
       list.forEach(function (inst) {
         chain = chain.then(function () {
+          if (gen !== instanceLoadGen || activeDomainId !== domainId) return null;
           return assignAsset(inst.label_class || inst.asset_id, {
             x: inst.x, y: inst.y, yaw: inst.yaw, w: inst.w, h: inst.h
           }, {
@@ -608,7 +624,10 @@
           });
         });
       });
-      return chain.then(function () { return instances.slice(); });
+      return chain.then(function () {
+        if (gen !== instanceLoadGen || activeDomainId !== domainId) return [];
+        return instances.slice();
+      });
     });
   }
 
@@ -684,8 +703,14 @@
   }
 
   function runDemo(domainId) {
+    var gen = ++instanceLoadGen;
+    var id = domainId || activeDomainId;
+    activeDomainId = id;
     clearInstances();
-    return registerDetections(demoSeedFor(domainId || activeDomainId));
+    return registerDetections(demoSeedFor(id), { domainId: id, gen: gen }).then(function (acc) {
+      if (gen !== instanceLoadGen || activeDomainId !== id) return [];
+      return acc;
+    });
   }
 
   // Public API merged onto k1LocalMap when ready

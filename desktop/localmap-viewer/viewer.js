@@ -143,6 +143,8 @@
   var registry = { active: null, domains: [] };
   var currentMap = null;
   var activeDomainId = null;
+  /** Bumps on every domain switch so stale occupancy / feed fetches cannot paint the wrong map. */
+  var domainSwitchGen = 0;
   var floorTex = null, metalTex = null, plasterTex = null, concreteTex = null, concreteRough = null;
   var woodTex = null, cardboardTex = null, shutterTex = null, antiSlipTex = null;
   var beltTex = null, cautionTex = null, brushMetalTex = null;
@@ -1747,10 +1749,16 @@
   function switchDomain(id, opts) {
     opts = opts || {};
     if (!id) return Promise.resolve();
+    var gen = ++domainSwitchGen;
     activeDomainId = id;
     registry.active = id;
     trailPoints = [];
     rebuildTrail();
+    // Drop previous domain's occupancy immediately so a slow/stale fetch cannot linger
+    // (and so empty/new domains stay empty until their own data arrives).
+    clearCells();
+    currentMap = { domain_id: id, res_m: 0.08, range_m: 3.5, pose: { x: 0, y: 0, yaw: 0 }, cells: [] };
+    statsEl.textContent = 'loading…';
     var meta = findDomain(id);
     domainTitle.textContent = (meta && meta.name) ? meta.name : id;
     renderDomainChips();
@@ -1758,8 +1766,10 @@
     if (typeof window.k1LocalMapOnDomainChange === 'function') {
       try { window.k1LocalMapOnDomainChange(id); } catch (e) {}
     }
-    // Label→asset fill-in: load persisted instances for this domain (reruns accumulate)
-    if (window.k1LocalMapAssets && window.k1LocalMapAssets.isReady()) {
+    // Label→asset fill-in: load persisted instances for this domain (reruns accumulate).
+    // Prefer the onDomainChange hook (index.html) when present to avoid double-fetch races;
+    // fall back here when assets boot before the hook is installed.
+    if (!window.k1LocalMapOnDomainChange && window.k1LocalMapAssets && window.k1LocalMapAssets.isReady()) {
       try {
         window.k1LocalMapAssets.attachToScene(scene);
         var qAssets = new URLSearchParams(window.location.search);
@@ -1772,11 +1782,13 @@
       } catch (e) {}
     }
     return loadJson(occupancyUrl(id)).then(function (d) {
+      if (gen !== domainSwitchGen || activeDomainId !== id) return null; // stale response
       showErr('');
       if (!d.domain_id) d.domain_id = id;
       setMap(d);
       return d;
     }).catch(function (e) {
+      if (gen !== domainSwitchGen || activeDomainId !== id) return null; // stale error
       if (!opts.quiet) showErr('domain: ' + e);
       clearCells();
       statsEl.textContent = 'empty domain — import a run or load sample';
