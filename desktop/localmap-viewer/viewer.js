@@ -165,9 +165,9 @@
     controls.screenSpacePanning = true;
     controls.minDistance = 2.4;
     controls.maxDistance = 36;
-    // Full polar orbit (near zenith ↔ near nadir); azimuth unrestricted = 360°
-    controls.minPolarAngle = 0.05;
-    controls.maxPolarAngle = Math.PI - 0.05;
+    // Keep polar off the poles so azimuth never gimbal-locks (360° drag stays usable)
+    controls.minPolarAngle = 0.18;
+    controls.maxPolarAngle = Math.PI - 0.18;
     controls.minAzimuthAngle = -Infinity;
     controls.maxAzimuthAngle = Infinity;
     controls.rotateSpeed = 0.9;
@@ -188,7 +188,11 @@
     );
     if (controls) {
       controls.target.copy(orbitTarget);
+      // Disable damping for one sync so residual sphericalDelta cannot fight the posed camera
+      var damp = controls.enableDamping;
+      controls.enableDamping = false;
       controls.update();
+      controls.enableDamping = damp;
     } else {
       camera.lookAt(orbitTarget);
     }
