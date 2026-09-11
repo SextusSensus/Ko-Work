@@ -652,24 +652,25 @@
 
   /** Place real-world cartons ON a shelf board (no giant untextured BoxGeometry slabs). */
   function placeRackCartons(x, z, len, depth, shelfTop, levelIdx) {
-    // Prefer textured GLBs; cardboardMat fallback stays ~0.4–0.55 m (never len×depth slabs)
-    var names = ['ph-box', 'lib-crate03', 'ph-crate', 'ph-box', 'box-wide', 'ph-plastic', 'ph-tote'];
-    var slotCount = Math.max(2, Math.min(5, Math.round(len / 2.4)));
+    // Poly Haven cardboard / wooden crate only — avoid Kenney toy cubes on racks
+    var names = ['ph-box', 'ph-crate', 'ph-box', 'ph-box', 'ph-crate'];
+    var slotCount = Math.max(2, Math.min(4, Math.round(len / 2.8)));
     for (var k = 0; k < slotCount; k++) {
       if ((levelIdx + k) % 3 === 0) continue; // leave empty slots
       var t = slotCount === 1 ? 0.5 : k / (slotCount - 1);
-      var along = (t - 0.5) * len * 0.72;
-      var lateral = ((k + levelIdx) % 2 === 0 ? -0.12 : 0.12) * Math.min(depth, 1.2);
-      var yaw = ((k * 0.41 + levelIdx * 0.17) % 1.2) - 0.6;
+      var along = (t - 0.5) * len * 0.68;
+      var lateral = ((k + levelIdx) % 2 === 0 ? -0.1 : 0.1) * Math.min(depth, 1.2);
+      var yaw = ((k * 0.41 + levelIdx * 0.17) % 1.0) - 0.5;
       var name = names[(levelIdx + k) % names.length];
-      if (!gltfCache[name]) name = gltfCache['ph-box'] ? 'ph-box' : (gltfCache['box-large'] ? 'box-large' : null);
+      if (!gltfCache[name]) name = gltfCache['ph-box'] ? 'ph-box' : (gltfCache['ph-crate'] ? 'ph-crate' : null);
       if (name) {
         placeOnSurface(name, x + lateral, shelfTop, z + along, null, yaw);
       } else {
-        var bw = 0.42 + (k % 3) * 0.05;
-        var bh = 0.34 + (levelIdx % 2) * 0.06;
-        var bd = 0.40 + ((k + 1) % 3) * 0.06;
-        envGroup.add(makeBox(bw, bh, bd, cardboardMat(0xc4a06a), x + lateral, shelfTop + bh / 2 + 0.002, z + along));
+        // Textured cardboard proxy at real metres (never len×depth slabs)
+        var bw = 0.42 + (k % 3) * 0.04;
+        var bh = 0.34 + (levelIdx % 2) * 0.05;
+        var bd = 0.40 + ((k + 1) % 3) * 0.04;
+        envGroup.add(makeBox(bw, bh, bd, cardboardMat(0xc4a06a), x + lateral, shelfTop + bh / 2 + 0.004, z + along));
       }
     }
   }
@@ -693,9 +694,11 @@
     root.traverse(function (o) {
       if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
     });
+    root.updateMatrixWorld(true);
     var box3 = new THREE.Box3().setFromObject(root);
-    if (isFinite(box3.min.y)) root.position.y = surfaceY - box3.min.y;
-    else root.position.y = surfaceY;
+    // Sit fully ON the board (2 mm clearance) — avoid shelf intersection
+    if (isFinite(box3.min.y)) root.position.y = surfaceY - box3.min.y + 0.002;
+    else root.position.y = surfaceY + 0.002;
     envGroup.add(root);
     return true;
   }
