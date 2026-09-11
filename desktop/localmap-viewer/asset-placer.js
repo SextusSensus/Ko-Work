@@ -225,6 +225,54 @@
         add(box(0.05, sy * 0.4, sz, safety), -sx / 2, sy * 0.45, 0);
         add(box(0.05, sy * 0.4, sz, safety), sx / 2, sy * 0.45, 0);
         break;
+      case 'conveyor_curve':
+        add(box(sx, sy * 0.25, sz * 0.55, dark), 0, sy * 0.35, -sz * 0.2);
+        add(box(sx * 0.55, sy * 0.25, sz, dark), sx * 0.2, sy * 0.35, 0);
+        add(box(0.05, sy * 0.35, sz * 0.55, safety), -sx / 2, sy * 0.4, -sz * 0.2);
+        break;
+      case 'conveyor_elevated':
+        add(box(sx, 0.08, sz, dark), 0, sy * 0.75, 0);
+        [[-1, -1], [-1, 1], [1, -1], [1, 1]].forEach(function (c) {
+          add(box(0.07, sy * 0.75, 0.07, metal), c[0] * sx * 0.4, sy * 0.38, c[1] * sz * 0.4);
+        });
+        add(box(sx * 0.95, 0.04, 0.06, safety), 0, sy * 0.8, 0);
+        break;
+      case 'assembly_station':
+        add(box(sx, 0.06, sz, metal), 0, sy * 0.85, 0);
+        [[-1, -1], [-1, 1], [1, -1], [1, 1]].forEach(function (c) {
+          add(box(0.06, sy * 0.85, 0.06, metal), c[0] * sx * 0.42, sy * 0.42, c[1] * sz * 0.4);
+        });
+        add(box(sx * 0.9, sy * 0.3, sz * 0.75, dark), 0, sy * 0.3, 0);
+        add(box(sx * 0.25, 0.04, sz * 0.3, safety), -sx * 0.3, sy * 0.9, 0);
+        break;
+      case 'robotic_arm':
+        add(box(sx * 0.7, 0.1, sz * 0.7, metal), 0, 0.05, 0);
+        add(cyl(sx * 0.22, sx * 0.22, sy * 0.28, dark), 0, sy * 0.2, 0);
+        add(box(sx * 0.2, sx * 0.2, sz * 0.7, safety), 0, sy * 0.45, sz * 0.2);
+        add(box(sx * 0.15, sx * 0.15, sz * 0.55, safety), sx * 0.05, sy * 0.55, sz * 0.45);
+        add(box(sx * 0.25, 0.05, 0.08, metal), 0, sy * 0.5, sz * 0.7);
+        break;
+      case 'parts_bin':
+        add(box(sx, sy, sz, stdMat(0x2a6a9a, { roughness: 0.45 })), 0, sy / 2, 0);
+        add(box(sx * 0.9, 0.04, sz * 0.9, dark), 0, sy * 0.95, 0);
+        break;
+      case 'safety_fence':
+        add(box(0.06, sy, 0.06, metal), -sx / 2, sy / 2, 0);
+        add(box(0.06, sy, 0.06, metal), sx / 2, sy / 2, 0);
+        add(box(sx, 0.08, 0.06, safety), 0, sy, 0);
+        add(box(sx * 0.95, sy * 0.75, 0.03, stdMat(0x9aa7b5, { metalness: 0.5, roughness: 0.35, transparent: true, opacity: 0.35 })), 0, sy * 0.5, 0);
+        break;
+      case 'control_panel':
+        add(box(sx * 0.7, sy * 0.75, sz * 0.6, metal), 0, sy * 0.38, 0);
+        add(box(sx, sy * 0.35, 0.08, dark), 0, sy * 0.9, sz * 0.15);
+        add(box(sx * 0.75, sy * 0.22, 0.03, accent), 0, sy * 0.92, sz * 0.22);
+        break;
+      case 'overhead_gantry':
+        add(box(sx, 0.12, 0.12, metal), 0, sy * 0.9, 0);
+        add(box(0.12, sy * 0.9, 0.12, metal), -sx * 0.45, sy * 0.45, 0);
+        add(box(0.12, sy * 0.9, 0.12, metal), sx * 0.45, sy * 0.45, 0);
+        add(box(0.4, 0.25, sz * 0.5, safety), 0, sy * 0.82, 0);
+        break;
       case 'bollard':
         add(cyl(sx * 0.5, sx * 0.5, sy, safety), 0, sy / 2, 0);
         break;

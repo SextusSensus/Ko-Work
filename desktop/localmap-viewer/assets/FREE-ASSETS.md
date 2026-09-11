@@ -16,8 +16,8 @@ Never `paid` / `purchase` / `link_only` / marketplace purchase targets.
 - [ambientCG](https://ambientcg.com/) — CC0 PBR materials
 - [Kenney](https://kenney.nl/) — Factory Kit CC0 ([OpenGameArt mirror](https://opengameart.org/content/factory-kit))
 - [OpenGameArt — Traffic Road Assets](https://opengameart.org/content/traffic-road-assets) (MilkAndBanana, CC0)
-- Authored CC0 stand-ins (e.g. `wooden_pallet_cc0`)
-- Procedural recipes in `viewer.js` when no free mesh exists (forklift, bollard, fridge, K1 proxy)
+- Authored CC0 stand-ins (e.g. `wooden_pallet_cc0`, caution/lane markings under `library/assembly-line/textures/`)
+- Procedural recipes in `viewer.js` / `asset-placer.js` when no free mesh exists (forklift, bollard, fridge, K1 proxy, robotic arm, assembly station, safety fence, HMI)
 
 ## Catalog + ontology
 
@@ -33,6 +33,7 @@ Never `paid` / `purchase` / `link_only` / marketplace purchase targets.
 | Kitchen appliances / cabinets | Poly Haven stove, microwave, drawer cabinet + procedural fridge/counter |
 | Warehouse Bay A | Poly Haven racks/boxes/crates + procedural aisle racks/bollards |
 | Distribution Hub | Kenney conveyors/doors + Poly Haven props + procedural forklifts/dock |
+| Assembly line (hub east zone) | Kenney Factory Kit conveyors/crane/hopper + procedural stations/arms/fence/HMI + rubber/metal/caution textures |
 | Generic indoor | Sofa, plant, procedural walls/pillars/doors |
 | Robot proxy | Procedural K1 envelope (not Booster mesh); URDF ref only |
 

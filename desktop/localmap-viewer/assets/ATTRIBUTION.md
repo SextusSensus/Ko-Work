@@ -49,9 +49,17 @@ Forklift / shrink-wrap pallet / bollard: **procedural proxies**.
 
 | Asset | Source | License |
 |-------|--------|---------|
-| Conveyors, hoppers/stations, crane (robot-arm proxy), fencing, modular shell | [Kenney Factory Kit](https://kenney.nl/assets/factory-kit) | CC0 |
-| `materials/metal032_*` | [ambientCG Metal032](https://ambientcg.com/view?id=Metal032) | CC0 |
-| Caution paint texture | Poly Haven family | CC0 |
+| Kenney `conveyor*`, `crane*`, `hopper-square`, `structure-yellow-*`, `arrow*` | [Kenney Factory Kit](https://kenney.nl/assets/factory-kit) | CC0 |
+| `textures/rubber_belt_diff.jpg` | [Poly Haven — Rubber Tiles](https://polyhaven.com/a/rubber_tiles) | CC0 |
+| `textures/rubber_mat_*.jpg` | [ambientCG — Rubber004](https://ambientcg.com/view?id=Rubber004) | CC0 |
+| `textures/brushed_metal_diff.jpg` | [Poly Haven — Metal Plate](https://polyhaven.com/a/metal_plate) | CC0 |
+| `textures/scratched_metal_*.jpg` | [ambientCG — Metal032](https://ambientcg.com/view?id=Metal032) | CC0 |
+| `textures/caution_stripes_diff.jpg`, `lane_markings_diff.jpg` | K1 Finder authored | CC0 |
+| `textures/painted_metal_diff.jpg` | [Poly Haven — Painted Metal Shutter](https://polyhaven.com/a/painted_metal_shutter) | CC0 |
+
+Robotic arm, assembly stations, safety fencing / light curtains, HMI pedestals, elevated conveyor: **procedural** stand-ins in `viewer.js` / `asset-placer.js`.
+
+See `library/assembly-line/README.md` and `kenney/LICENSE.txt`.
 
 Paid CGTrader twins → free map: [`FREE-ALTERNATIVES.md`](./FREE-ALTERNATIVES.md).
 
@@ -83,4 +91,4 @@ No paid CGTrader (or other marketplace) purchase URLs or binaries are kept in th
 
 ## `library/assembly-line/`
 
-Kenney Factory Kit subset (conveyors, hoppers, cranes, fencing structures) + ambientCG / Poly Haven metal & marking textures — **CC0**. See `assembly-line/README.md` and `kenney/LICENSE.txt`.
+Kenney Factory Kit subset (conveyors, crane/gantry, hopper, yellow structures) + Poly Haven / ambientCG rubber & metal textures + authored caution/lane markings — **CC0**. Ontology labels: `conveyor`, `conveyor_curve`, `conveyor_elevated`, `assembly_station`, `robotic_arm`, `parts_bin`, `safety_fence`, `light_curtain`, `control_panel`, `overhead_gantry`. Wired into Distribution Hub east zone via `buildAssemblyLineZone()` (OrbitControls untouched).
