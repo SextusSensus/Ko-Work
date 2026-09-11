@@ -15,6 +15,7 @@ This ships the catalog, ontology, viewer hooks, procedural fallbacks, and a mock
 |------|------|
 | `desktop/localmap-viewer/assets/catalog.json` | Machine-readable **CC0** asset list (`downloaded` / `procedural` / `free_link`) |
 | `desktop/localmap-viewer/assets/FREE-ASSETS.md` | Free-only policy + domain coverage |
+| `desktop/localmap-viewer/assets/MESHY.md` | Meshy.ai license verdict + optional local drop-in (not preferred in-repo) |
 | `desktop/localmap-viewer/assets/library/<category>/<asset-id>/` | glTF/GLB + textures |
 | `desktop/localmap-viewer/assets/ATTRIBUTION.md` | License / source courtesy |
 | `desktop/localmap-data/asset-ontology.json` | Label class → default asset + scale + domains |
@@ -84,3 +85,5 @@ Plan A / COCO classes in `robot/common.py` (`CLASS_BRAKE_*`) are first-class ont
 ## Licenses
 
 Prefer **CC0** (Poly Haven, ambientCG, Kenney, Quaternius). See `assets/ATTRIBUTION.md` and `assets/FREE-ASSETS.md`. Skipped non-CC0 / ambiguous marketplace hits (full fridge mesh, branded forklift) — procedural proxies used instead. **No paid marketplace URLs** (including CGTrader) are kept as a purchase wishlist.
+
+**Meshy.ai:** Free outputs are CC BY 4.0; Community publish is CC0; paid = private ownership. Meshy 6/7 downloads are paywalled on Free, so Meshy is **optional local drop-in only** (`library/meshy-local/`, binaries gitignored) — not a default in-repo source. Do not commit paid/watermarked Meshy assets. Details: [`desktop/localmap-viewer/assets/MESHY.md`](../desktop/localmap-viewer/assets/MESHY.md).

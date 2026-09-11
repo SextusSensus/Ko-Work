@@ -112,6 +112,10 @@ Docs: [`docs/localmap-assets.md`](../../docs/localmap-assets.md)
 
 No paid CGTrader (or other marketplace) purchase URLs or binaries are kept in this repo. Runtime uses CC0 / procedural / free_link only — see [`FREE-ASSETS.md`](./FREE-ASSETS.md).
 
+## Meshy.ai
+
+No Meshy binaries ship in this repo. Free-plan license is CC BY 4.0 (attribution required); Meshy 6/7 downloads are typically paywalled on Free; paid ownership is not a free catalog source. Optional local drop-in + policy: [`MESHY.md`](./MESHY.md).
+
 ## `library/assembly-line/`
 
 Kenney Factory Kit subset (conveyors, crane/gantry, hopper, yellow structures) + Poly Haven / ambientCG rubber & metal textures + authored caution/lane markings — **CC0**. Ontology labels: `conveyor`, `conveyor_curve`, `conveyor_elevated`, `assembly_station`, `robotic_arm`, `parts_bin`, `safety_fence`, `light_curtain`, `control_panel`, `overhead_gantry`. Wired into Distribution Hub east zone via `buildAssemblyLineZone()` (OrbitControls untouched).

@@ -20,12 +20,17 @@ Never `paid` / `purchase` / `link_only` / marketplace purchase targets.
 - [BoosterRobotics/booster_assets](https://github.com/BoosterRobotics/booster_assets) — K1 URDF/STL (**BSD-3-Clause**), converted GLB under `library/robot/k1/`
 - Procedural recipes in `viewer.js` / `asset-placer.js` when no free mesh exists (forklift, bollard, fridge, K1 fallback, robotic arm, assembly station, safety fence, HMI)
 
+## Meshy.ai (not preferred in-repo)
+
+[Meshy](https://www.meshy.ai) Free outputs are **CC BY 4.0** (redistributable with attribution); paid plans grant private ownership; Community publish is **CC0**. **Meshy 6/7 downloads are paywalled on Free**, so there is no reliable free export path for current engines. **Do not** commit paid or watermarked Meshy binaries. Prefer Poly Haven / ambientCG / Kenney. Optional machine-local GLBs: `library/meshy-local/` (binaries gitignored). Full policy: [`MESHY.md`](./MESHY.md).
+
 ## Catalog + ontology
 
 - Runtime inventory: [`catalog.json`](./catalog.json)
 - Label → asset map: [`../../localmap-data/asset-ontology.json`](../../localmap-data/asset-ontology.json)
 - Paid→free twin table: [`FREE-ALTERNATIVES.md`](./FREE-ALTERNATIVES.md)
 - Per-file credits: [`ATTRIBUTION.md`](./ATTRIBUTION.md)
+- Meshy policy: [`MESHY.md`](./MESHY.md)
 
 ## Domain coverage
 
@@ -43,8 +48,9 @@ Never `paid` / `purchase` / `link_only` / marketplace purchase targets.
 - Any **paid** marketplace listing as a purchase target (including CGTrader)
 - Marketplace “free” Royalty Free downloads when git redistribution is unclear — use Poly Haven / Kenney CC0 twins or procedural instead
 - Purchase wishlists / `link_only` shopping lists of paid URLs
+- **Meshy paid / watermarked / paywalled** exports committed as if they were free CC0 (see [`MESHY.md`](./MESHY.md))
 
-If a paid marketplace listing looks useful, scrape **free** CC0 sources (Poly Haven, Kenney, ambientCG, OpenGameArt) for an equivalent — do not keep the paid URL in-repo.
+If a paid marketplace listing (or Meshy paid export) looks useful, scrape **free** CC0 sources (Poly Haven, Kenney, ambientCG, OpenGameArt) for an equivalent — do not keep the paid URL or binary in-repo.
 
 
 ### Domains
