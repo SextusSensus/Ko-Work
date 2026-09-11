@@ -1319,8 +1319,10 @@ function Ensure-LocalMapDomains{
         $dir = Get-LocalMapDomainDir $s.id
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
         $occPath = Join-Path $dir 'occupancy.json'
-        if(-not (Test-Path $occPath) -and (Test-Path $script:LocalMapSample)){
-            Copy-Item -Force $script:LocalMapSample $occPath
+        # Never copy sample.json into seeded domains (legacy sample was Kitchen occupancy).
+        if(-not (Test-Path $occPath)){
+            $emptyOcc = @{ domain_id=$s.id; res_m=0.08; range_m=3.5; pose=@{x=0;y=0;yaw=0}; trail=@(); cells=@() }
+            ($emptyOcc | ConvertTo-Json -Depth 6) | Set-Content -Path $occPath -Encoding UTF8
         }
         $cells = 0
         try{ $cells = ((Get-Content -Raw $occPath | ConvertFrom-Json).cells | Measure-Object).Count }catch{}
@@ -1456,13 +1458,9 @@ function Import-LocalMapRunIntoActive([string]$ip){
         }
     }
     if(-not $incoming){
-        if(Test-Path $script:LocalMapSample){
-            $incoming = Get-Content -Raw $script:LocalMapSample | ConvertFrom-Json
-            $source = 'sample.json (seed merge)'
-        } else {
-            $mapInfo.Text = 'No run dump on robot and no sample to merge.'
-            return
-        }
+        # Fail closed: do not merge sample.json (would pollute empty / wrong domains).
+        $mapInfo.Text = 'No run dump on robot — connect K1 or provide a localmap JSON to merge. Sample merge disabled.'
+        return
     }
     $merged = Merge-LocalMapOccupancy $base $incoming $id
     ($merged | ConvertTo-Json -Depth 8) | Set-Content -Path $occPath -Encoding UTF8

@@ -2101,8 +2101,10 @@
       if (window.k1LocalMapAssets && window.k1LocalMapAssets.clearInstances) {
         try { window.k1LocalMapAssets.clearInstances(); } catch (e2) {}
       }
-      return switchDomain(id).then(function () {
+      // quiet: missing occupancy.json is expected for brand-new browser-created domains
+      return switchDomain(id, { quiet: true }).then(function () {
         setMap(emptyOccupancy(id));
+        showErr('');
         statsEl.textContent = 'empty domain — import a run or load sample';
         return meta;
       });

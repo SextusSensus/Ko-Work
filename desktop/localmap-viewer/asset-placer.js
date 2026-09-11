@@ -636,6 +636,8 @@
   }
 
   function clearInstances() {
+    // Invalidate in-flight assignAsset / loadInstances placements (GLTF resolve races).
+    instanceLoadGen += 1;
     while (instanceGroup.children.length) {
       instanceGroup.remove(instanceGroup.children[0]);
     }
@@ -680,7 +682,11 @@
   function assignAsset(labelClass, pose, extras) {
     extras = extras || {};
     pose = normalizePose(pose || {});
-    var resolved = resolveAsset(labelClass, activeDomainId);
+    // Capture generation + domain before any async GLTF work so a later
+    // clearInstances / switchDomain cannot leave stale racks on an empty domain.
+    var expectGen = extras.gen != null ? extras.gen : instanceLoadGen;
+    var expectDomain = extras.domain_id || activeDomainId;
+    var resolved = resolveAsset(labelClass, expectDomain || activeDomainId);
     if (!resolved || !resolved.label) {
       return Promise.reject(new Error('unknown label class: ' + labelClass));
     }
@@ -694,6 +700,9 @@
     });
     var asset = resolved.asset;
     return instantiateAsset(asset, scale).then(function (node) {
+      if (expectGen !== instanceLoadGen || (expectDomain && activeDomainId !== expectDomain)) {
+        return null; // stale — domain switched or instances cleared while GLTF loaded
+      }
       placeNode(node, placeOpts);
       var rec = recordInstance({
         id: extras.id,
@@ -746,9 +755,11 @@
           placement_method: d.placement_method,
           pose_map: d.pose_map,
           source: d.source || 'detection',
-          persist: false
+          persist: false,
+          gen: expectGen,
+          domain_id: expectDomain
         }).then(function (rec) {
-          acc.push(rec);
+          if (rec) acc.push(rec);
           return acc;
         }).catch(function () { return acc; });
       });
@@ -774,9 +785,9 @@
   }
 
   function loadInstancesForDomain(domainId) {
-    var gen = ++instanceLoadGen;
     activeDomainId = domainId;
-    clearInstances();
+    clearInstances(); // bumps instanceLoadGen — capture AFTER so assignAsset gens match
+    var gen = instanceLoadGen;
     // Empty / unknown domains: missing instances.json + no localStorage → stay empty
     // (do not inherit meshes from a previously selected domain).
     if (!domainId) return Promise.resolve([]);
@@ -793,7 +804,11 @@
       if (gen !== instanceLoadGen || activeDomainId !== domainId) return [];
       var list = (data && data.instances) || [];
       // Re-clear in case a stale sibling load placed meshes between fetch and place.
-      clearInstances();
+      // Keep the same gen so in-flight work for THIS load stays valid.
+      while (instanceGroup.children.length) {
+        instanceGroup.remove(instanceGroup.children[0]);
+      }
+      instances = [];
       var chain = Promise.resolve();
       list.forEach(function (inst) {
         chain = chain.then(function () {
@@ -813,7 +828,9 @@
             pose_map: inst.pose_map,
             source: inst.source || 'instances.json',
             persist: false,
-            scale_m: inst.scale_m
+            scale_m: inst.scale_m,
+            gen: gen,
+            domain_id: domainId
           });
         });
       });
@@ -928,10 +945,10 @@
 
 
   function runDemo(domainId) {
-    var gen = ++instanceLoadGen;
     var id = domainId || activeDomainId;
     activeDomainId = id;
-    clearInstances();
+    clearInstances(); // bumps gen — capture AFTER
+    var gen = instanceLoadGen;
     return registerDetections(demoSeedFor(id), { domainId: id, gen: gen }).then(function (acc) {
       if (gen !== instanceLoadGen || activeDomainId !== id) return [];
       return acc;

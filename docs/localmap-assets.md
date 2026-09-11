@@ -52,7 +52,7 @@ Lower-level: `window.k1LocalMapAssets` (catalog/ontology accessors, procedural b
 ```bash
 cd desktop
 python3 -m http.server 8765
-# Kitchen with seed instances:
+# Assembly Factory with seed instances:
 # http://127.0.0.1:8765/localmap-viewer/index.html?domain=assembly-factory
 # Distribution hub + force mock detections:
 # http://127.0.0.1:8765/localmap-viewer/index.html?domain=distribution-hub&demo_assets=1

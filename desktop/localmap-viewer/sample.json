@@ -1,5 +1,5 @@
 {
-  "domain_id": "kitchen",
+  "domain_id": "warehouse-bay-a",
   "res_m": 0.08,
   "range_m": 3.5,
   "pose": { "x": 0.0, "y": 0.0, "yaw": 0.35 },
