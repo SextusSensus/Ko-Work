@@ -622,7 +622,7 @@
   }
 
   function addFloor(size, repeat) {
-    var m = pbrFloorMat(floorTex || antiSlipTex, floorNorTex, floorArmTex, repeat, 0xd4d4d4);
+    var m = pbrFloorMat(antiSlipTex || floorTex, floorNorTex, floorArmTex, repeat, 0xd4d4d4);
     var floor = new THREE.Mesh(new THREE.PlaneGeometry(size, size), m);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
