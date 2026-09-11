@@ -20,6 +20,7 @@ Authored blind on a no-Python laptop -- VERIFY ON CLUSTER:
 """
 import os
 import sys
+import threading
 
 try:
     from . import jobspec
@@ -242,9 +243,32 @@ def docker_run_job(job, store, inbox_root, outbox_root, heartbeat=None, run_cont
         if job.get("entrypoint"):
             cmd += [job["entrypoint"]]
         cmd += list(job.get("args", []))
+        # Lease heartbeat for the WHOLE container run (council 2026-09-11 #4).
+        # A single pre-run ping was not enough: DEFAULT_LEASE_TIMEOUT_S is 120s while
+        # JOB_TIMEOUT_S is 90 min, so any recon/train/splat longer than the lease was
+        # reaped mid-run (duplicate lease / name collision / ignored result). Pulse
+        # every K1_LEASE_HEARTBEAT_S (default 30) while run_container blocks.
+        stop_hb = threading.Event()
+        hb_thread = None
         if heartbeat is not None:
-            heartbeat()
-        rc = run_container(cmd)
+            heartbeat()  # immediate refresh before the long block
+            period = float(os.environ.get("K1_LEASE_HEARTBEAT_S", "30"))
+
+            def _hb_loop():
+                while not stop_hb.wait(period):
+                    try:
+                        heartbeat()
+                    except Exception:  # noqa: BLE001 -- a failed ping must not kill the job
+                        pass
+
+            hb_thread = threading.Thread(target=_hb_loop, name="lease-hb-%s" % jid, daemon=True)
+            hb_thread.start()
+        try:
+            rc = run_container(cmd)
+        finally:
+            stop_hb.set()
+            if hb_thread is not None:
+                hb_thread.join(timeout=1.0)
         if rc != 0:
             return "failed", None, "container run exit %d" % rc
         manifest = _hash_tree(outbox)
@@ -433,6 +457,27 @@ def _selftest():
         s2, _, e2 = docker_run_job(djob, ls, os.path.join(root, "inbox2"), os.path.join(root, "outbox2"),
                                    run_container=lambda cmd: 7)
         assert s2 == "failed" and "exit 7" in e2
+
+        # Mid-run lease heartbeat: a slow container must ping more than once (council #4).
+        import os as _os
+        _os.environ["K1_LEASE_HEARTBEAT_S"] = "0.05"
+        _beats = []
+
+        def slow_container(cmd):
+            import time as _t
+            for i, a in enumerate(cmd):
+                if a == "-v" and str(cmd[i + 1]).endswith(":/outbox"):
+                    ob = str(cmd[i + 1])[: -len(":/outbox")]
+                    with open(_os.path.join(ob, "mesh.ply"), "w") as f:
+                        f.write("ply-bytes")
+            _t.sleep(0.18)  # >3 heartbeat periods
+            return 0
+
+        s3, _, e3 = docker_run_job(
+            djob, ls, _os.path.join(root, "inbox3"), _os.path.join(root, "outbox3"),
+            heartbeat=lambda: _beats.append(1), run_container=slow_container)
+        assert s3 == "done", (s3, e3)
+        assert len(_beats) >= 3, "expected mid-run heartbeats, got %d" % len(_beats)
 
         # detect_caps always returns at least a cpu worker with a hostname (no hardware assumptions)
         caps = detect_caps("probe")
