@@ -1,0 +1,329 @@
+{
+  "version": 1,
+  "updated": "2026-09-11T09:10:00Z",
+  "description": "Label class → Local Map 3D asset assignment. Feeds k1LocalMap.registerDetections / assignAsset. COCO ids align with robot/common.py Plan A class-brake sets.",
+  "catalog_ref": "../localmap-viewer/assets/catalog.json",
+  "placement_modes": {
+    "footprint": "Sit on floor; use w/h as ground footprint metres when present",
+    "anchor": "Place at pose without footprint scaling",
+    "wall": "Yaw faces outward from wall; ignore footprint height"
+  },
+  "label_classes": [
+    {
+      "id": "person",
+      "coco_id": 0,
+      "aliases": ["human", "operator", "bystander"],
+      "default_asset": "cross-domain/person-placeholder",
+      "placement": "footprint",
+      "scale_m": [0.45, 1.7, 0.35],
+      "domains": ["*"],
+      "tier": "P0"
+    },
+    {
+      "id": "chair",
+      "coco_id": 56,
+      "aliases": ["seat", "dining_chair"],
+      "default_asset": "kitchen/dining-chair",
+      "placement": "footprint",
+      "scale_m": [0.45, 0.95, 0.5],
+      "domains": ["kitchen", "generic", "*"],
+      "tier": "P1"
+    },
+    {
+      "id": "couch",
+      "coco_id": 57,
+      "aliases": ["sofa"],
+      "default_asset": "generic/sofa",
+      "placement": "footprint",
+      "scale_m": [1.8, 0.85, 0.85],
+      "domains": ["*"],
+      "tier": "P1"
+    },
+    {
+      "id": "bed",
+      "coco_id": 59,
+      "aliases": [],
+      "default_asset": "generic/bed",
+      "placement": "footprint",
+      "scale_m": [2.0, 0.55, 1.4],
+      "domains": ["*"],
+      "tier": "P1"
+    },
+    {
+      "id": "dining_table",
+      "coco_id": 60,
+      "aliases": ["table"],
+      "default_asset": "kitchen/dining-table",
+      "placement": "footprint",
+      "scale_m": [1.4, 0.75, 0.85],
+      "domains": ["kitchen", "*"],
+      "tier": "P1"
+    },
+    {
+      "id": "toilet",
+      "coco_id": 61,
+      "aliases": [],
+      "default_asset": "generic/toilet",
+      "placement": "footprint",
+      "scale_m": [0.4, 0.75, 0.65],
+      "domains": ["*"],
+      "tier": "P1"
+    },
+    {
+      "id": "tv",
+      "coco_id": 62,
+      "aliases": ["monitor", "television"],
+      "default_asset": "warehouse/tv-monitor",
+      "placement": "anchor",
+      "scale_m": [1.0, 0.6, 0.08],
+      "domains": ["*"],
+      "tier": "P2"
+    },
+    {
+      "id": "laptop",
+      "coco_id": 63,
+      "aliases": [],
+      "default_asset": "warehouse/laptop",
+      "placement": "anchor",
+      "scale_m": [0.35, 0.02, 0.25],
+      "domains": ["*"],
+      "tier": "P2"
+    },
+    {
+      "id": "potted_plant",
+      "coco_id": 64,
+      "aliases": ["plant"],
+      "default_asset": "generic/potted-plant",
+      "placement": "footprint",
+      "scale_m": [0.35, 0.9, 0.35],
+      "domains": ["*"],
+      "tier": "P2"
+    },
+    {
+      "id": "microwave",
+      "coco_id": 68,
+      "aliases": [],
+      "default_asset": "kitchen/microwave",
+      "placement": "anchor",
+      "scale_m": [0.5, 0.3, 0.4],
+      "domains": ["kitchen", "*"],
+      "tier": "P2"
+    },
+    {
+      "id": "oven",
+      "coco_id": 69,
+      "aliases": ["stove", "electric_stove", "range"],
+      "default_asset": "kitchen/electric-stove",
+      "placement": "footprint",
+      "scale_m": [0.6, 0.9, 0.65],
+      "domains": ["kitchen"],
+      "tier": "P2"
+    },
+    {
+      "id": "refrigerator",
+      "coco_id": 72,
+      "aliases": ["fridge"],
+      "default_asset": "kitchen/fridge",
+      "placement": "footprint",
+      "scale_m": [0.7, 1.8, 0.7],
+      "domains": ["kitchen"],
+      "tier": "P2"
+    },
+    {
+      "id": "book",
+      "coco_id": 73,
+      "aliases": [],
+      "default_asset": "generic/book",
+      "placement": "anchor",
+      "scale_m": [0.2, 0.05, 0.15],
+      "domains": ["*"],
+      "tier": "P2"
+    },
+    {
+      "id": "clock",
+      "coco_id": 74,
+      "aliases": [],
+      "default_asset": "generic/clock",
+      "placement": "wall",
+      "scale_m": [0.35, 0.35, 0.06],
+      "domains": ["*"],
+      "tier": "P2"
+    },
+    {
+      "id": "counter",
+      "aliases": ["kitchen_counter", "countertop"],
+      "default_asset": "kitchen/counter",
+      "placement": "footprint",
+      "scale_m": [1.8, 0.9, 0.65],
+      "domains": ["kitchen"]
+    },
+    {
+      "id": "cabinet",
+      "aliases": ["cupboard", "drawer_cabinet"],
+      "default_asset": "kitchen/drawer-cabinet",
+      "placement": "footprint",
+      "scale_m": [0.8, 1.0, 0.5],
+      "domains": ["kitchen"]
+    },
+    {
+      "id": "trash",
+      "aliases": ["trash_can", "garbage", "bin"],
+      "default_asset": "kitchen/trashbag",
+      "placement": "footprint",
+      "scale_m": [0.4, 0.7, 0.4],
+      "domains": ["kitchen", "warehouse-bay-a", "distribution-hub", "*"]
+    },
+    {
+      "id": "doorway",
+      "aliases": ["door", "door_frame"],
+      "default_asset": "kitchen/doorway",
+      "placement": "wall",
+      "scale_m": [1.0, 2.1, 0.15],
+      "domains": ["*"]
+    },
+    {
+      "id": "pallet_rack",
+      "aliases": ["rack", "shelving", "shelf", "worn_metal_rack"],
+      "default_asset": "warehouse/pallet-rack",
+      "placement": "footprint",
+      "scale_m": [1.2, 2.4, 0.6],
+      "domains": ["warehouse-bay-a", "distribution-hub"]
+    },
+    {
+      "id": "pallet",
+      "aliases": ["wood_pallet"],
+      "default_asset": "warehouse/pallet",
+      "placement": "footprint",
+      "scale_m": [1.2, 0.14, 1.0],
+      "domains": ["warehouse-bay-a", "distribution-hub"]
+    },
+    {
+      "id": "cardboard_box",
+      "aliases": ["box", "carton", "package"],
+      "default_asset": "warehouse/cardboard-box",
+      "placement": "footprint",
+      "scale_m": [0.45, 0.4, 0.4],
+      "domains": ["warehouse-bay-a", "distribution-hub", "*"]
+    },
+    {
+      "id": "crate",
+      "aliases": ["wooden_crate", "plastic_crate"],
+      "default_asset": "warehouse/wooden-crate",
+      "placement": "footprint",
+      "scale_m": [0.6, 0.5, 0.45],
+      "domains": ["warehouse-bay-a", "distribution-hub"]
+    },
+    {
+      "id": "tote_bin",
+      "aliases": ["tote", "bin", "plastic_container"],
+      "default_asset": "warehouse/tote-bin",
+      "placement": "footprint",
+      "scale_m": [0.55, 0.35, 0.4],
+      "domains": ["warehouse-bay-a", "distribution-hub"]
+    },
+    {
+      "id": "conveyor",
+      "aliases": ["conveyor_belt"],
+      "default_asset": "warehouse/conveyor",
+      "placement": "footprint",
+      "scale_m": [2.0, 0.85, 0.7],
+      "domains": ["distribution-hub", "warehouse-bay-a"]
+    },
+    {
+      "id": "forklift",
+      "aliases": [],
+      "default_asset": "warehouse/forklift",
+      "placement": "footprint",
+      "scale_m": [1.2, 2.1, 2.4],
+      "domains": ["warehouse-bay-a", "distribution-hub"]
+    },
+    {
+      "id": "pallet_jack",
+      "aliases": ["hand_truck", "pallet_jack"],
+      "default_asset": "warehouse/hand-truck",
+      "placement": "footprint",
+      "scale_m": [0.55, 1.2, 1.1],
+      "domains": ["warehouse-bay-a", "distribution-hub"]
+    },
+    {
+      "id": "dock_door",
+      "aliases": ["loading_door", "rollershutter", "shutter"],
+      "default_asset": "warehouse/dock-door",
+      "placement": "wall",
+      "scale_m": [3.0, 3.2, 0.25],
+      "domains": ["warehouse-bay-a", "distribution-hub"]
+    },
+    {
+      "id": "bollard",
+      "aliases": ["post", "safety_post"],
+      "default_asset": "warehouse/bollard",
+      "placement": "footprint",
+      "scale_m": [0.16, 0.55, 0.16],
+      "domains": ["warehouse-bay-a", "distribution-hub"]
+    },
+    {
+      "id": "floor_tape",
+      "aliases": ["aisle_tape", "safety_tape"],
+      "default_asset": "warehouse/floor-tape",
+      "placement": "footprint",
+      "scale_m": [0.1, 0.01, 4.0],
+      "domains": ["warehouse-bay-a", "distribution-hub"]
+    },
+    {
+      "id": "safety_cone",
+      "aliases": ["cone", "traffic_cone"],
+      "default_asset": "cross-domain/safety-cone",
+      "placement": "footprint",
+      "scale_m": [0.3, 0.7, 0.3],
+      "domains": ["*"]
+    },
+    {
+      "id": "barrel",
+      "aliases": ["drum"],
+      "default_asset": "warehouse/barrel",
+      "placement": "footprint",
+      "scale_m": [0.6, 0.9, 0.6],
+      "domains": ["warehouse-bay-a", "distribution-hub"]
+    },
+    {
+      "id": "pillar",
+      "aliases": ["column"],
+      "default_asset": "generic/pillar",
+      "placement": "footprint",
+      "scale_m": [0.4, 3.5, 0.4],
+      "domains": ["*"]
+    },
+    {
+      "id": "wall",
+      "aliases": ["wall_segment"],
+      "default_asset": "generic/wall-segment",
+      "placement": "wall",
+      "scale_m": [4.0, 3.0, 0.2],
+      "domains": ["*"]
+    },
+    {
+      "id": "stairs",
+      "aliases": [],
+      "default_asset": "generic/stairs",
+      "placement": "footprint",
+      "scale_m": [1.2, 2.5, 3.0],
+      "domains": ["*"]
+    },
+    {
+      "id": "elevator",
+      "aliases": ["lift"],
+      "default_asset": "generic/elevator",
+      "placement": "wall",
+      "scale_m": [1.2, 2.2, 0.2],
+      "domains": ["*"]
+    },
+    {
+      "id": "signage",
+      "aliases": ["sign", "wet_floor_sign"],
+      "default_asset": "cross-domain/wet-floor-sign",
+      "placement": "footprint",
+      "scale_m": [0.35, 0.9, 0.2],
+      "domains": ["*"]
+    }
+  ]
+}

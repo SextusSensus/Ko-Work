@@ -895,6 +895,11 @@
     placeGltfClone('box-wide', 6.8, 0, 4.2, 1.6, -0.4);
     placeGltfClone('cone', -2.4, 0, -8.2, 1.2, 0);
     placeGltfClone('conveyor-long', 8.4, 0, -4.5, 1.0, 0);
+    placeGltfClone('ph-box', -2.8, 0, -6.8, 1.0, 0.3);
+    placeGltfClone('ph-crate', 2.8, 0, -6.6, 1.0, -0.2);
+    placeGltfClone('ph-plastic', 7.4, 0, -0.8, 1.0, 0.5);
+    placeGltfClone('ph-tote', 7.5, 0, 2.2, 1.0, 0);
+    placeGltfClone('ph-rack', -8.6, 0, 2.0, 1.0, Math.PI / 2);
 
     envGroup.visible = layers.env;
   }
@@ -1303,9 +1308,14 @@
     loadTexFallback('./assets/distribution-hub/metal_plate_diff.jpg', './assets/metal_diff.jpg').then(function (t) { metalTex = t; }),
     loadTexFallback('./assets/distribution-hub/painted_concrete_diff.jpg', './assets/plaster_diff.jpg').then(function (t) { plasterTex = t; }),
     loadTexFallback('./assets/distribution-hub/corrugated_diff.jpg', './assets/concrete_color.jpg').then(function (t) { concreteTex = t; }),
-    loadTex('./assets/concrete_rough.jpg').then(function (t) { concreteRough = t; })
+    loadTex('./assets/concrete_rough.jpg').then(function (t) { concreteRough = t; }),
+    loadTexFallback('./assets/distribution-hub/wood_pallet_diff.jpg', './assets/distribution-hub/wood_plank_diff.jpg').then(function (t) { woodTex = t; }),
+    loadTex('./assets/distribution-hub/cardboard_diff.jpg').then(function (t) { cardboardTex = t; }),
+    loadTex('./assets/distribution-hub/shutter_diff.jpg').then(function (t) { shutterTex = t; }),
+    loadTexFallback('./assets/distribution-hub/floor_anti_slip_diff.jpg', './assets/distribution-hub/floor_warehouse_diff.jpg').then(function (t) { antiSlipTex = t; })
   ]).then(function () {
     if (activeDomainId) buildEnvironmentFor(activeDomainId);
+    return preloadHubGltf();
   }).catch(function () { /* textures optional */ });
 
   setInterval(function () {
