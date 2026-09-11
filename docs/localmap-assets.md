@@ -69,6 +69,10 @@ python3 -m http.server 8765
 
 Plan A / COCO classes in `robot/common.py` (`CLASS_BRAKE_*`) are first-class ontology entries (`person`, `chair`, `couch`, `refrigerator`, …). Warehouse labels (`pallet_rack`, `conveyor`, `dock_door`, …) are custom classes for hub/bay domains.
 
+## Exact poses from Rerun
+
+For mathematically exact placement from `.rrd` / labeling (homogeneous `T_map_cam`, depth back-project, fail-closed ground raycast), see **`docs/localmap-rerun-integration.md`**. CLI: `eval/localmap_rerun_ingest.py`, `eval/localmap_asset_placer.py`.
+
 ## Add a new label class / asset
 
 1. Drop CC0 glTF under `assets/library/<category>/<id>/` (or add a procedural recipe in `asset-placer.js`).

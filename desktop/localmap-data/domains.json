@@ -32,7 +32,11 @@
     {
       "id": "exact-lab",
       "name": "Exact Lab (Rerun fixture)",
+<<<<<<< HEAD
       "updated": "2026-09-11T10:13:13Z",
+=======
+      "updated": "2026-09-11T10:30:00Z",
+>>>>>>> cursor/localmap-rerun-exact-62e6
       "run_count": 1,
       "cell_count": 4
     }

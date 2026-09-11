@@ -1,0 +1,26 @@
+{
+  "run_id": "golden-v1",
+  "domain_id": "exact-lab",
+  "source_path": "/workspace/desktop/localmap-data/fixtures/rerun_exact_place",
+  "imported_at": "2026-09-11T10:13:13Z",
+  "frame": "odom",
+  "frame_note": "map preferred when /map/{x,y,theta} present; else odom from /odom/{x,y,theta}. Planar SE(2) on flat floor \u2014 no loop closure.",
+  "units": "meters",
+  "axis": "FLU",
+  "camera_optical_axis": "RDF",
+  "cam_h_m": 1.2,
+  "cam_pitch_deg": 0.0,
+  "pose_count": 2,
+  "poses_path": "poses.jsonl",
+  "intrinsics": {
+    "fx": 200.0,
+    "fy": 200.0,
+    "cx": 160.0,
+    "cy": 120.0,
+    "width": 320,
+    "height": 240
+  },
+  "T_base_optical": "eval/localmap_frames.T_base_optical(cam_h, cam_pitch_deg)",
+  "fixture": true,
+  "fixture_id": "rerun_exact_place_v1"
+}

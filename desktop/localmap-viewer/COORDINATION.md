@@ -14,6 +14,7 @@ Updated: 2026-09-11T09:26:00Z
 | Free-only catalog | bc-1677a491 | downloads + FREE-ASSETS.md; strip paid |
 | Free twins (no paid URLs) | bc-9406d79e | CC0/procedural equivalents only; FREE-ALTERNATIVES.md; strip paid wishlists |
 | Asset ontology / label→asset | bc-9bd2d943 | catalog schema + assignAsset API + asset-placer.js + instances.json (**shipped**) |
+| Rerun exact pose / domain ingest | bc-25df0a39 | `localmap_frames` + ingest CLI + placer math + fixture + docs (**this lane**) |
 | Distribution hub domain | bc-f69a0a82 | hub domain content |
 | Assembly line assets | bc-a078625b | library/assembly-line + ontology labels + hub east zone (no camera) |
 | Realtime telemetry | bc-137a8586 | WS bridge/feed only |
