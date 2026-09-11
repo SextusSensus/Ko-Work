@@ -536,7 +536,11 @@ $script:trackMs=$null; $script:trackLastSeq=-1; $script:trackFpsFrames=0; $scrip
 $script:TrackStart=[datetime]::MinValue
 $script:TrackRerunOn=$false      # P6.2b: did the current/last Tracker session record a .rrd? -> post-run offload
 $script:K1SessionCapSec=300      # FIELD NIGHT 2026-09-10 (plan C25, operator-approved): every app-launched follow ends at 300 s. run_follow.sh reads it as K1_MAX_SEC (default 2000). Revert to 2000 after the field block.
-$script:TrackMaxSec=2060         # UI-side hard session watchdog BACKSTOP; node --max-seconds 2000 (run_follow.sh appends it) stops first (graceful settle), this only fires if the node hangs. MUST STAY ABOVE the node's --max-seconds or the UI kills the session before the node can settle gracefully.
+# UI-side hard session watchdog BACKSTOP: must stay ABOVE K1SessionCapSec so the node can settle
+# first. Council 2026-09-11 #8: dialogs used to advertise TrackMaxSec/FollowMaxSec (2060/1260) while
+# the real cap was 300 — that lied to the operator. Watchdogs stay a short margin above the cap.
+$script:TrackMaxSec=($script:K1SessionCapSec + 30)
+$script:FollowMaxSec=($script:K1SessionCapSec + 30)
 $script:TrackToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 $ctrlSync = [hashtable]::Synchronized(@{ Log=(New-Object System.Collections.Queue); Stop=$false })
 $script:LiveProc=$null; $script:LivePS=$null; $script:LiveRS=$null; $script:LiveOn=$false
@@ -550,7 +554,6 @@ $script:MotionButtons=@()
 $followSync = [hashtable]::Synchronized(@{ Log=(New-Object System.Collections.Queue); Stop=$false })
 $script:FollowProc=$null; $script:FollowPS=$null; $script:FollowRS=$null; $script:FollowOn=$false; $script:FollowDrive=$false
 $script:FollowStart=[datetime]::MinValue
-$script:FollowMaxSec=1260        # UI-side hard session watchdog BACKSTOP; node --max-seconds 1200 stops first (graceful settle), this only fires if the node hangs. MUST STAY ABOVE the node's --max-seconds or the UI kills the session before the node can settle gracefully.
 $script:FollowToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 
 # ============================================================================
@@ -1439,7 +1442,7 @@ function Get-TrackExtraArgs {
     # 300 -> 1200 s (4x) on request. The UI backstops at TrackMaxSec/FollowMaxSec must stay ABOVE
     # this or they fire first and kill the session instead of letting the node stop gracefully --
     # they were 315 against 300, so raising this alone would have changed nothing.
-    $a += '--max-seconds 2000'   # = the cap run_follow.sh appends (it wins anyway); the UI backstop TrackMaxSec 2060 stays above it
+    $a += ('--max-seconds {0}' -f $script:K1SessionCapSec)   # matches K1_MAX_SEC; UI backstop TrackMaxSec = cap+30
     if($trackRerun -and $trackRerun.Checked){ $a += ('--rerun --rerun-mode save --rerun-dir {0} --odom-topic /odometer_state --rerun-image-every-n 5 --rerun-overrun-frames 24' -f $script:RerunDir) }
     # Deadman HB: node gates velocity on a fresh /tmp/k1_hb mtime AND env-arms the bridge's own
     # heartbeat watchdog. The app-side relay (Start-HbRelay) is started by Start-Tracker.
@@ -1734,7 +1737,7 @@ function Start-Tracker([bool]$drive){
             [System.Windows.Forms.MessageBox]::Show("Tick 'ARM MOTION' before Follow in DRIVE mode.",'Not armed','OK','Warning')|Out-Null
             return $false
         }
-        $r=[System.Windows.Forms.MessageBox]::Show("Start FOLLOW in DRIVE mode?`r`n`r`nMarker = one-time lock onto the person, then the K1 will PHYSICALLY WALK to follow THAT PERSON (re-show the marker to re-seed). Standoff $((Get-TrackStandoff)) m, max speed $((Get-TrackVxMax)) m/s. Auto-stops after ~$($script:TrackMaxSec)s, when the person is lost, or if the camera stalls. Clear the area and keep the e-stop handy.",'Confirm DRIVE follow',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
+        $r=[System.Windows.Forms.MessageBox]::Show("Start FOLLOW in DRIVE mode?`r`n`r`nMarker = one-time lock onto the person, then the K1 will PHYSICALLY WALK to follow THAT PERSON (re-show the marker to re-seed). Standoff $((Get-TrackStandoff)) m, max speed $((Get-TrackVxMax)) m/s. Auto-stops after ~$($script:K1SessionCapSec)s (session cap), when the person is lost, or if the camera stalls. Clear the area and keep the e-stop handy.",'Confirm DRIVE follow',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
         if($r -ne 'OK'){ return $false }
     }
     $ip=$ipTrack.Text.Trim(); if(-not $ip){ Add-LogTrack 'Enter the robot IP first.' $amber; return $false }
@@ -2067,7 +2070,7 @@ function Start-Follow([bool]$drive){
             [System.Windows.Forms.MessageBox]::Show("Tick 'ARM MOTION' (connection box) before Follow DRIVE.",'Not armed','OK','Warning')|Out-Null
             return $false
         }
-        $r=[System.Windows.Forms.MessageBox]::Show("Start FOLLOW in DRIVE mode?`r`n`r`nMarker = one-time lock onto the person, then the K1 will PHYSICALLY WALK to follow THAT PERSON (re-show the marker to re-seed). It auto-stops after ~$($script:FollowMaxSec)s, when the person is lost, or if the camera stalls. Clear the area and keep the e-stop handy.",'Confirm DRIVE follow',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
+        $r=[System.Windows.Forms.MessageBox]::Show("Start FOLLOW in DRIVE mode?`r`n`r`nMarker = one-time lock onto the person, then the K1 will PHYSICALLY WALK to follow THAT PERSON (re-show the marker to re-seed). It auto-stops after ~$($script:K1SessionCapSec)s (session cap), when the person is lost, or if the camera stalls. Clear the area and keep the e-stop handy.",'Confirm DRIVE follow',[System.Windows.Forms.MessageBoxButtons]::OKCancel,[System.Windows.Forms.MessageBoxIcon]::Warning)
         if($r -ne 'OK'){ return $false }
     }
     $ip=$ipCtrl.Text.Trim(); if(-not $ip){ Add-LogCtrl 'Enter the robot IP (connection box) first.' $amber; return $false }
@@ -2087,12 +2090,19 @@ function Start-Follow([bool]$drive){
     if(-not (Deploy-FollowFiles $ip)){ Add-LogCtrl ("Deploy failed: " + $(if($script:DeployErr){$script:DeployErr}else{"a helper under '$ROBOT_DIR' could not be deployed"})) $red; return $false }
     $followSync.Stop=$false; $followSync.Log.Clear()
     $mode = if($drive){'drive'}else{'preview'}
-    $remote="K1_MAX_SEC=$($script:K1SessionCapSec) bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb"
-    $argStr='-tt '+(Get-SshOptString)+" $($script:SshUser)@$ip `"$remote`""
+    # Council 2026-09-11 #6/#7: Control-tab DRIVE must satisfy the same P1.2 deadman gate as Tracker
+    # (--require-heartbeat + HB relay) and drop a half-open SSH link fast (ServerAliveCountMax=1).
+    # Without these, the node refused DRIVE (fail-closed) while the UI implied it worked, and a
+    # dropped link could leave ~15s of walking on the default CountMax.
+    $hbFlag = if($drive){' --require-heartbeat'}else{''}
+    $remote="K1_MAX_SEC=$($script:K1SessionCapSec) bash /home/booster/run_follow.sh $mode /boostercamera/head/raw/rgb$hbFlag"
+    $argStr='-tt '+(Get-SshOptString)+' -o ServerAliveCountMax=1'+" $($script:SshUser)@$ip `"$remote`""
+    # Deadman HB: start the relay BEFORE the node so /tmp/k1_hb is fresh at the first gate check.
+    if($drive){ Start-HbRelay $ip }
     $psi=New-Object System.Diagnostics.ProcessStartInfo; $psi.FileName='ssh.exe'; $psi.Arguments=$argStr
     $psi.UseShellExecute=$false; $psi.RedirectStandardInput=$true; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$false; $psi.CreateNoWindow=$true
     $proc=New-Object System.Diagnostics.Process; $proc.StartInfo=$psi
-    if(-not $proc.Start()){ Add-LogCtrl 'Failed to start ssh.' $red; return $false }
+    if(-not $proc.Start()){ Add-LogCtrl 'Failed to start ssh.' $red; if($drive){ Stop-HbRelay }; return $false }
     try{ $proc.StandardInput.AutoFlush=$true }catch{}
     try{ $proc.StandardInput.NewLine="`n" }catch{}
     $script:FollowProc=$proc
@@ -2103,8 +2113,8 @@ function Start-Follow([bool]$drive){
     $script:FollowOn=$true; $script:FollowDrive=$drive; $script:FollowStart=[datetime]::Now
     Set-FollowLockout $true
     if($drive){
-        $followStatus.Text="FOLLOW: DRIVE - marker = one-time lock onto the person, then follows that person (re-show marker to re-seed). ~10s camera warmup. Auto-stop in ~$($script:FollowMaxSec)s / person lost / camera stall."; $followStatus.ForeColor=$red
-        Add-LogCtrl 'FOLLOW DRIVE started. Show the marker to lock onto the person, then the robot WALKS to follow THAT PERSON (re-show marker to re-seed). Toggle OFF halts + returns to PREP.' $red
+        $followStatus.Text="FOLLOW: DRIVE - marker = one-time lock onto the person, then follows that person (re-show marker to re-seed). ~10s camera warmup. Auto-stop in ~$($script:K1SessionCapSec)s / person lost / camera stall."; $followStatus.ForeColor=$red
+        Add-LogCtrl 'FOLLOW DRIVE started (deadman HB armed). Show the marker to lock onto the person, then the robot WALKS to follow THAT PERSON (re-show marker to re-seed). Toggle OFF halts + returns to PREP.' $red
         $statusLbl.Text="Follow DRIVE active: $ip"
     } else {
         $followStatus.Text='FOLLOW: PREVIEW - marker = one-time lock onto the person, then tracks that person (re-show marker to re-seed). No motion. (camera ~10s warmup)'; $followStatus.ForeColor=$green
@@ -2116,6 +2126,7 @@ function Start-Follow([bool]$drive){
 
 function Stop-Follow([bool]$procAlreadyDead=$false){
     if(-not $script:FollowOn){ return }
+    Stop-HbRelay   # deadman relay dies with Control-tab follow (same contract as Tracker)
     $followSync.Stop=$true
     if(-not $procAlreadyDead){
         # Ctrl-C on the PTY -> SIGINT -> python finally -> bridge stop + ChangeMode(kPrepare).

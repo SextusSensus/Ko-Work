@@ -119,7 +119,7 @@ def _fsm_counts(state):
     return counts
 
 
-def _write_parquet(path, state, action, fps):
+def _write_parquet(path, state, action, fps, episode_index=0):
     """One episode's tabular data as deterministic parquet (mirrors rrd_to_lerobot.write_raw's schema).
     Pinned writer options (no dictionary, no per-write stats) so two mints over identical input produce
     identical bytes -- the content_hash reproducibility gate."""
@@ -127,13 +127,14 @@ def _write_parquet(path, state, action, fps):
     import pyarrow as pa
     import pyarrow.parquet as pq
     t = int(np.asarray(state).shape[0])
+    idx = int(episode_index)
     table = pa.table({
         "observation.state": pa.array(np.asarray(state, dtype=np.float32).tolist(),
                                       type=pa.list_(pa.float32())),
         "action": pa.array(np.asarray(action, dtype=np.float32).tolist(), type=pa.list_(pa.float32())),
         "timestamp": pa.array([i / float(fps) for i in range(t)], type=pa.float32()),
         "frame_index": pa.array(list(range(t)), type=pa.int64()),
-        "episode_index": pa.array([0] * t, type=pa.int64()),        # rewritten below per episode
+        "episode_index": pa.array([idx] * t, type=pa.int64()),
         "index": pa.array(list(range(t)), type=pa.int64()),
         "task_index": pa.array([0] * t, type=pa.int64()),
     })
@@ -159,7 +160,8 @@ def _content_hash(out_dir):
 
 
 def mint_dataset(episodes, out_dir, version, seed=0, val_fraction=0.2, provenance=None,
-                 excluded=None, fps=DEFAULT_FPS, task="follow the locked person", min_included=MIN_INCLUDED):
+                 excluded=None, fps=DEFAULT_FPS, task="follow the locked person", min_included=MIN_INCLUDED,
+                 allow_png_fallback=False):
     """Mint the versioned dataset from IN-MEMORY episodes (make_episodes shape). Refuses loudly (never
     silently) on: an existing out_dir, too few included episodes, a would-be empty val split, or ANY
     unmapped FSM id. Returns {content_hash, stats_hash, n_episodes, train, val, version}."""
@@ -203,9 +205,16 @@ def mint_dataset(episodes, out_dir, version, seed=0, val_fraction=0.2, provenanc
     for e in episodes:
         idx = index_of[e["run_id"]]
         _write_parquet(os.path.join(out_dir, "data", "chunk-000", "episode_%06d.parquet" % idx),
-                       e["state"], e["action"], fps)
+                       e["state"], e["action"], fps, episode_index=idx)
         vpath = os.path.join(vid_dir, "episode_%06d.mp4" % idx)
         backend = _try_video(vpath, e.get("rgb"), fps)
+        # Council #16: png-fallback must not mint as success (train_act refuses later; fail at source).
+        _rgb = e.get("rgb") or []
+        image_frame_indices_pre = [i for i, im in enumerate(_rgb) if im is not None]
+        if image_frame_indices_pre and backend != "mp4" and not allow_png_fallback:
+            raise SystemExit(
+                "REFUSE-MINT: episode %s video_backend=%r (need mp4). Install imageio-ffmpeg or pass "
+                "--allow-png-fallback for a degraded mint." % (e["run_id"], backend))
         # dims from the first real rgb frame (0 if imageless)
         for im in (e.get("rgb") or []):
             if im is not None:
@@ -215,8 +224,7 @@ def mint_dataset(episodes, out_dir, version, seed=0, val_fraction=0.2, provenanc
         # maps parquet frame t -> mp4 frame j where image_frame_indices[j] is the largest <= t
         # (nearest-earlier, mirroring assemble_episode). Without this, a decimated mp4 (fewer frames than
         # T) cannot be aligned to the parquet rows. It IS part of the content_hash (video_index is hashed).
-        _rgb = e.get("rgb") or []
-        image_frame_indices = [i for i, im in enumerate(_rgb) if im is not None]
+        image_frame_indices = image_frame_indices_pre
         video_index["episode_%06d" % idx] = {
             "run_id": e["run_id"], "frame_count": int(np.asarray(e["state"]).shape[0]),
             "source_frame_idx": [int(x) for x in e.get("frames", [])],
@@ -237,18 +245,25 @@ def mint_dataset(episodes, out_dir, version, seed=0, val_fraction=0.2, provenanc
                                   for e in episodes if e["run_id"] in train_set], axis=0)
     action_train = np.concatenate([np.asarray(e["action"], dtype=np.float64)
                                    for e in episodes if e["run_id"] in train_set], axis=0)
+    # Council #9: bind stats to the exact train run-id set so a hand-edited splits.json cannot
+    # train under TRAIN-only norms from a different split.
+    train_ids_sorted = list(train)  # _split already returns sorted
+    train_run_ids_sha256 = _sha256_bytes(("\n".join(train_ids_sorted) + "\n").encode("utf-8"))
     stats = {"observation.state": _channel_stats(state_train),
              "action": _channel_stats(action_train),
              "normalize": {"observation.state": {"zscore_idx": ZSCORE_IDX, "passthrough_idx": PASSTHROUGH_IDX,
                                                   "names": STATE_NAMES},
                            "action": {"zscore_idx": [0, 1], "passthrough_idx": [], "names": ACTION_NAMES}},
-             "over": "train_split_only", "train_episodes": len(train)}
+             "over": "train_split_only", "train_episodes": len(train),
+             "train_run_ids": train_ids_sorted,
+             "train_run_ids_sha256": train_run_ids_sha256}
     stats_bytes = _write_json(os.path.join(out_dir, "meta", "stats.json"), stats)
     stats_hash = _sha256_bytes(stats_bytes)
 
     splits = {"version": 1, "dataset_version": version, "seed": int(seed),
               "method": "seeded_shuffle_sorted_run_ids", "val_fraction": float(val_fraction),
-              "train": train, "val": val}
+              "train": train, "val": val,
+              "train_run_ids_sha256": train_run_ids_sha256}
     _write_json(os.path.join(out_dir, "meta", "splits.json"), splits)
     _write_json(os.path.join(out_dir, "meta", "video_index.json"), video_index)
     # per-episode + tasks metadata (LeRobot-v3-shaped)
@@ -272,6 +287,7 @@ def mint_dataset(episodes, out_dir, version, seed=0, val_fraction=0.2, provenanc
         "codebase_version": CODEBASE_VERSION, "dataset_version": version,
         "content_hash": content_hash, "stats_hash": stats_hash, "fps": fps,
         "fsm_states_version": fsm_groups.VERSION,
+        "train_run_ids_sha256": train_run_ids_sha256,
         "features": {
             "observation.state": {"dtype": "float32", "shape": [len(STATE_NAMES)], "names": STATE_NAMES},
             "action": {"dtype": "float32", "shape": [len(ACTION_NAMES)], "names": ACTION_NAMES},
@@ -376,7 +392,8 @@ def _verify_integrity(bundle, man):
     return None
 
 
-def ingest(runs_dir, out_dir, version, seed=0, val_fraction=0.2, include_outcomes=DEFAULT_INCLUDE):
+def ingest(runs_dir, out_dir, version, seed=0, val_fraction=0.2, include_outcomes=DEFAULT_INCLUDE,
+           allow_png_fallback=False):
     """Discover bundles under runs_dir, filter by label + integrity (LOUD exclusions), build episodes,
     mint. The P7.1 gate: included episodes == runs passing the filter; total == included + excluded."""
     include = set(include_outcomes)
@@ -422,7 +439,7 @@ def ingest(runs_dir, out_dir, version, seed=0, val_fraction=0.2, include_outcome
     prov = {"include_filter": sorted(include), "ingest_tool_sha": _git_sha(),
             "rerun_sdk_version": _rerun_version()}
     return mint_dataset(included, out_dir, version, seed=seed, val_fraction=val_fraction,
-                        provenance=prov, excluded=excluded)
+                        provenance=prov, excluded=excluded, allow_png_fallback=allow_png_fallback)
 
 
 def _git_sha():
@@ -461,8 +478,10 @@ def _selftest():
     try:
         d1 = os.path.join(base, "v1a")
         d2 = os.path.join(base, "v1b")
-        r1 = mint_dataset(valid, d1, "k1_follow_v1", seed=7, val_fraction=0.34)
-        r2 = mint_dataset(valid, d2, "k1_follow_v1", seed=7, val_fraction=0.34)
+        r1 = mint_dataset(valid, d1, "k1_follow_v1", seed=7, val_fraction=0.34,
+                          allow_png_fallback=True)
+        r2 = mint_dataset(valid, d2, "k1_follow_v1", seed=7, val_fraction=0.34,
+                          allow_png_fallback=True)
         assert r1["content_hash"] == r2["content_hash"], "content_hash must reproduce across mints"
         assert r1["stats_hash"] == r2["stats_hash"]
         assert r1["n_episodes"] == len(valid)
@@ -484,9 +503,18 @@ def _selftest():
         # per-state counts present in the card (B1)
         assert card["fsm_occupancy"]["train"], "card must carry per-state train occupancy"
         assert card["run_id_to_episode_index"] and card["stats_hash"] == r1["stats_hash"]
+        assert card.get("train_run_ids_sha256") == stats.get("train_run_ids_sha256")
+        assert stats.get("train_run_ids") == r1["train"]
         # splits.json keyed by run_id, sorted
         sp = json.load(open(os.path.join(d1, "meta", "splits.json")))
         assert sp["train"] == sorted(sp["train"]) and sp["method"] == "seeded_shuffle_sorted_run_ids"
+        assert sp.get("train_run_ids_sha256") == stats["train_run_ids_sha256"]
+        # Council #14: parquet episode_index must match filename episode_%06d
+        import pyarrow.parquet as pq
+        for rid, idx in card["run_id_to_episode_index"].items():
+            t = pq.read_table(os.path.join(d1, "data", "chunk-000", "episode_%06d.parquet" % idx))
+            ep_col = t.column("episode_index").to_pylist()
+            assert ep_col and all(v == idx for v in ep_col), (rid, idx, ep_col[:3])
 
         # REFUSALS: existing dir, too-few episodes, unmapped FSM.
         _refuses(lambda: mint_dataset(valid, d1, "k1_follow_v1"))          # dir exists
@@ -552,6 +580,8 @@ def main(argv):
     m.add_argument("--seed", type=int, default=0)
     m.add_argument("--val-fraction", type=float, default=0.2)
     m.add_argument("--include-outcomes", nargs="+", default=list(DEFAULT_INCLUDE))
+    m.add_argument("--allow-png-fallback", action="store_true",
+                   help="permit mint when video encode falls back to PNG (degraded; default refuse)")
     sub.add_parser("selftest")
     a = ap.parse_args(argv)
     if a.cmd == "selftest" or a.cmd is None:
@@ -559,7 +589,8 @@ def main(argv):
         print("INGEST-SELFTEST-OK")
         return 0
     res = ingest(a.runs, a.out, a.version, seed=a.seed, val_fraction=a.val_fraction,
-                 include_outcomes=tuple(a.include_outcomes))
+                 include_outcomes=tuple(a.include_outcomes),
+                 allow_png_fallback=bool(getattr(a, "allow_png_fallback", False)))
     print("MINTED %s: %d episodes (train=%d val=%d, excluded=%d) content_hash=%s"
           % (res["version"], res["n_episodes"], len(res["train"]), len(res["val"]),
              res["excluded"], res["content_hash"][:12]))

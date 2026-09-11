@@ -59,7 +59,8 @@ def pair_rgbd(rgb_stream, depth_stream, max_skew_s=0.06):
             rejected += 1
             continue
         box = rgb[best][2] if len(rgb[best]) > 2 else None
-        paired.append({"t": float(td), "rgb": rgb[best][1], "depth": dimg, "box": box})
+        paired.append({"t": float(td), "rgb": rgb[best][1], "depth": dimg, "box": box,
+                       "rgb_i": int(best)})
         used.append(best)
         max_kept = max(max_kept, skew)
     # RGB is decimated in the .rrd (1/N), so many depth frames can share ONE nearest RGB. Consecutive
@@ -176,19 +177,30 @@ def rgbd_odometry(frames, intr, pose_prior=None, loop_closure=True):
     pg.nodes.append(o3d.pipelines.registration.PoseGraphNode(np.eye(4)))
     odometry = np.eye(4)
     world_poses = [np.eye(4)]                 # T_run_local_camera per frame (world = cam_0)
-    n_ok = n_fail = 0
+    n_ok = n_fail = n_dup_rgb = 0
     for i in range(1, len(frames)):
         init = np.eye(4)
         if pose_prior is not None:
             # prior guess for trans (cam_{i-1} -> cam_i) = inv(prior_i) @ prior_{i-1}
             init = np.linalg.inv(pose_prior[i]) @ pose_prior[i - 1]
-        ok, T, info = o3d.pipelines.odometry.compute_rgbd_odometry(
-            rgbds[i - 1], rgbds[i], intr, init, jac, opt)
-        if not ok:
-            T = init                          # fall back to the prior delta; loud in stats
+        # Council #10 / F4: when consecutive pairs share the same decimated RGB, the photometric
+        # term is degenerate (zero colour residual → identity-biased). Skip compute_rgbd_odometry
+        # and use the prior/identity delta only.
+        same_rgb = (frames[i].get("rgb_i") is not None
+                    and frames[i].get("rgb_i") == frames[i - 1].get("rgb_i"))
+        if same_rgb:
+            T = init
+            info = np.eye(6)
+            n_dup_rgb += 1
             n_fail += 1
         else:
-            n_ok += 1
+            ok, T, info = o3d.pipelines.odometry.compute_rgbd_odometry(
+                rgbds[i - 1], rgbds[i], intr, init, jac, opt)
+            if not ok:
+                T = init                          # fall back to the prior delta; loud in stats
+                n_fail += 1
+            else:
+                n_ok += 1
         odometry = T @ odometry
         wp = np.linalg.inv(odometry)
         world_poses.append(wp)
@@ -210,6 +222,7 @@ def rgbd_odometry(frames, intr, pose_prior=None, loop_closure=True):
 
     trajectory = [np.asarray(node.pose) for node in pg.nodes]
     stats = {"frames": len(frames), "odom_edges_ok": n_ok, "odom_edges_fallback": n_fail,
+             "odom_edges_dup_rgb": n_dup_rgb,
              "loop_edges": len(loop_edges), "used_prior": pose_prior is not None}
     return {"trajectory": trajectory, "loop_edges": loop_edges, "stats": stats}
 
