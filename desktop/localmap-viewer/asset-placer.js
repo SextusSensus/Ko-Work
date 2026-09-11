@@ -38,13 +38,19 @@
 
   function stdMat(color, opts) {
     opts = opts || {};
-    return new THREE.MeshStandardMaterial({
+    var mat = new THREE.MeshStandardMaterial({
       color: color,
       metalness: opts.metalness != null ? opts.metalness : 0.15,
       roughness: opts.roughness != null ? opts.roughness : 0.55,
       emissive: opts.emissive != null ? opts.emissive : 0x000000,
       emissiveIntensity: opts.emissiveIntensity || 0
     });
+    if (opts.transparent) {
+      mat.transparent = true;
+      mat.opacity = opts.opacity != null ? opts.opacity : 0.5;
+      mat.depthWrite = false;
+    }
+    return mat;
   }
 
   function box(w, h, d, mat) {
@@ -254,6 +260,47 @@
       case 'toilet':
         add(box(sx, sy * 0.45, sz * 0.7, light), 0, sy * 0.25, 0);
         add(box(sx * 0.7, sy * 0.5, sz * 0.35, light), 0, sy * 0.65, -sz * 0.25);
+        break;
+      case 'k1_robot':
+        add(box(sx, sy * 0.55, sz, dark), 0, sy * 0.4, 0);
+        add(box(sx * 0.7, sy * 0.35, sz * 0.7, accent), 0, sy * 0.78, 0);
+        add(box(sx * 0.15, sy * 0.35, sz * 0.15, metal), -sx * 0.55, sy * 0.55, 0);
+        add(box(sx * 0.15, sy * 0.35, sz * 0.15, metal), sx * 0.55, sy * 0.55, 0);
+        break;
+      case 'barrier':
+        add(box(sx, sy * 0.55, sz, stdMat(0xc8cdd2, { roughness: 0.85 })), 0, sy * 0.3, 0);
+        add(box(sx * 0.95, sy * 0.12, sz * 1.05, safety), 0, sy * 0.55, 0);
+        break;
+      case 'fence':
+        for (var p = -1; p <= 1; p += 2) {
+          add(box(0.06, sy, 0.06, metal), p * sx * 0.48, sy / 2, 0);
+        }
+        add(box(sx, 0.04, 0.04, metal), 0, sy * 0.85, 0);
+        add(box(sx, 0.04, 0.04, metal), 0, sy * 0.45, 0);
+        add(box(sx, 0.04, 0.04, metal), 0, sy * 0.15, 0);
+        for (var bar = 0; bar < 6; bar++) {
+          var bx = -sx * 0.4 + bar * (sx * 0.8 / 5);
+          add(box(0.03, sy * 0.7, 0.03, metal), bx, sy * 0.5, 0);
+        }
+        break;
+      case 'robot_arm':
+        add(cyl(sx * 0.35, sx * 0.4, sy * 0.15, dark), 0, sy * 0.08, 0);
+        add(box(sx * 0.2, sy * 0.55, sx * 0.2, metal), 0, sy * 0.4, 0);
+        add(box(sx * 0.75, sx * 0.15, sx * 0.15, safety), sx * 0.25, sy * 0.7, 0);
+        add(box(sx * 0.12, sy * 0.35, sx * 0.12, metal), sx * 0.55, sy * 0.55, 0);
+        add(box(sx * 0.25, 0.08, 0.08, accent), sx * 0.55, sy * 0.35, 0);
+        break;
+      case 'station':
+        add(box(sx, sy * 0.15, sz, dark), 0, sy * 0.1, 0);
+        add(box(sx * 0.7, sy * 0.7, sz * 0.7, metal), 0, sy * 0.5, 0);
+        add(box(sx * 0.85, sy * 0.08, sz * 0.85, safety), 0, sy * 0.88, 0);
+        break;
+      case 'shrink_wrap':
+        add(box(sx, sy * 0.12, sz, wood), 0, sy * 0.06, 0);
+        add(box(sx * 0.9, sy * 0.7, sz * 0.9, carton), 0, sy * 0.5, 0);
+        add(box(sx * 0.95, sy * 0.75, sz * 0.95, stdMat(0xb8d4e8, {
+          transparent: true, opacity: 0.35, metalness: 0.05, roughness: 0.25
+        })), 0, sy * 0.52, 0);
         break;
       default:
         add(box(sx, sy, sz, accent), 0, sy / 2, 0);

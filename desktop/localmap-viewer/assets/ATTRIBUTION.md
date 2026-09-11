@@ -40,10 +40,20 @@ Fridge / counter / doorway: **procedural** (no light CC0 fridge GLTF in scrape s
 |-------|--------|---------|
 | `worn_metal_rack`, `wooden_crate_01`, `cardboard_box_01`, `plastic_crate_01`, `industrial_pastic_container` | Poly Haven | CC0 |
 | `steel_frame_shelves_01`, `hand_truck`, `rollershutter_door`, `Barrel_01`, `concrete_road_barrier` | Poly Haven | CC0 |
-| Kenney GLBs (`cone`, `conveyor*`, `box-*`, `structure-*`, `door-*`) | [Kenney](https://kenney.nl/) | CC0 |
+| Kenney GLBs (`cone`, `conveyor*`, `box-*`, `structure-*`, `door-*`, `crane*`, `conveyor-bars-fence*`) | [Kenney Factory Kit](https://kenney.nl/assets/factory-kit) | CC0 |
 | Distribution-hub floor / corrugated / pallet / shutter JPGs | Poly Haven family | CC0 |
 
-Forklift: **procedural proxy** (branded / non-CC0 meshes skipped).
+Forklift / shrink-wrap pallet / bollard: **procedural proxies**.
+
+## Assembly line (`library/assembly-line/`)
+
+| Asset | Source | License |
+|-------|--------|---------|
+| Conveyors, hoppers/stations, crane (robot-arm proxy), fencing, modular shell | [Kenney Factory Kit](https://kenney.nl/assets/factory-kit) | CC0 |
+| `materials/metal032_*` | [ambientCG Metal032](https://ambientcg.com/view?id=Metal032) | CC0 |
+| Caution paint texture | Poly Haven family | CC0 |
+
+Paid CGTrader twins → free map: [`FREE-ALTERNATIVES.md`](./FREE-ALTERNATIVES.md).
 
 ## Cross-domain / generic
 

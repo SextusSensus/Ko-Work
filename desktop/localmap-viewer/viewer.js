@@ -106,6 +106,7 @@
   var activeDomainId = null;
   var floorTex = null, metalTex = null, plasterTex = null, concreteTex = null, concreteRough = null;
   var woodTex = null, cardboardTex = null, shutterTex = null, antiSlipTex = null;
+  var beltTex = null, cautionTex = null, brushMetalTex = null;
   var gltfCache = {};
   var texLoader = new THREE.TextureLoader();
   var gltfLoader = (typeof THREE !== 'undefined' && THREE.GLTFLoader) ? new THREE.GLTFLoader() : null;
@@ -743,10 +744,41 @@
     }
   }
 
+  function beltMat() {
+    var map = texRepeat(beltTex, 2.2, 1.0);
+    if (map) {
+      return new THREE.MeshStandardMaterial({
+        map: map, color: 0x2a2c2e, metalness: 0.08, roughness: 0.72
+      });
+    }
+    return stdMat(0x1a1c1e, { metalness: 0.2, roughness: 0.55 });
+  }
+
+  function brushFrameMat(tint) {
+    var map = texRepeat(brushMetalTex || metalTex, 1.6, 1.6);
+    if (map) {
+      return new THREE.MeshStandardMaterial({
+        map: map, color: tint != null ? tint : 0x8a929a, metalness: 0.72, roughness: 0.32
+      });
+    }
+    return metalMat(tint != null ? tint : 0x6a7380);
+  }
+
+  function cautionMat() {
+    var map = texRepeat(cautionTex, 2.5, 1.0);
+    if (map) {
+      return new THREE.MeshStandardMaterial({
+        map: map, color: 0xffffff, metalness: 0.15, roughness: 0.55,
+        emissive: SAFETY, emissiveIntensity: 0.04
+      });
+    }
+    return stdMat(SAFETY, { metalness: 0.25, roughness: 0.45, emissive: SAFETY, emissiveIntensity: 0.08 });
+  }
+
   function conveyorSection(x, z, len, rotY) {
-    var frame = metalMat(0x6a7380);
-    var belt = stdMat(0x1a1c1e, { metalness: 0.2, roughness: 0.55 });
-    var stripe = stdMat(SAFETY, { metalness: 0.25, roughness: 0.45, emissive: SAFETY, emissiveIntensity: 0.08 });
+    var frame = brushFrameMat(0x6a7380);
+    var belt = beltMat();
+    var stripe = cautionMat();
     var g = new THREE.Group();
     g.add(makeBox(0.9, 0.08, len, belt, 0, 0.55, 0));
     g.add(makeBox(0.08, 0.55, len, frame, -0.48, 0.28, 0));
@@ -763,6 +795,182 @@
     g.position.set(x, 0, z);
     if (rotY) g.rotation.y = rotY;
     envGroup.add(g);
+  }
+
+  function conveyorElevated(x, z, len, height, rotY) {
+    var frame = brushFrameMat(0x7a8490);
+    var belt = beltMat();
+    var g = new THREE.Group();
+    var y0 = height != null ? height : 1.35;
+    g.add(makeBox(0.85, 0.07, len, belt, 0, y0, 0));
+    g.add(makeBox(0.07, 0.45, len, frame, -0.44, y0 - 0.2, 0));
+    g.add(makeBox(0.07, 0.45, len, frame, 0.44, y0 - 0.2, 0));
+    [[-0.38, -len * 0.4], [0.38, -len * 0.4], [-0.38, len * 0.4], [0.38, len * 0.4]].forEach(function (p) {
+      g.add(makeBox(0.07, y0, 0.07, frame, p[0], y0 / 2, p[1]));
+    });
+    g.add(makeBox(0.88, 0.03, 0.06, cautionMat(), 0, y0 + 0.05, 0));
+    g.position.set(x, 0, z);
+    if (rotY) g.rotation.y = rotY;
+    envGroup.add(g);
+  }
+
+  function assemblyStation(x, z, rotY) {
+    var frame = brushFrameMat(0x707880);
+    var top = stdMat(0x3a3e44, { metalness: 0.35, roughness: 0.45 });
+    var g = new THREE.Group();
+    g.add(makeBox(1.35, 0.06, 0.7, top, 0, 0.92, 0));
+    [[-0.55, -0.28], [0.55, -0.28], [-0.55, 0.28], [0.55, 0.28]].forEach(function (p) {
+      g.add(makeBox(0.06, 0.9, 0.06, frame, p[0], 0.45, p[1]));
+    });
+    g.add(makeBox(1.2, 0.35, 0.55, stdMat(0x2a2e34, { metalness: 0.25, roughness: 0.55 }), 0, 0.35, 0));
+    // tool tray + small part
+    g.add(makeBox(0.35, 0.05, 0.25, cautionMat(), -0.4, 0.98, 0.1));
+    g.add(makeBox(0.18, 0.12, 0.18, stdMat(0x4a90a8, { metalness: 0.4, roughness: 0.4 }), 0.35, 1.01, -0.05));
+    g.position.set(x, 0, z);
+    if (rotY) g.rotation.y = rotY;
+    envGroup.add(g);
+  }
+
+  function roboticArmProxy(x, z, rotY) {
+    var base = brushFrameMat(0x889099);
+    var link = stdMat(0xe0a820, { metalness: 0.45, roughness: 0.35 });
+    var dark = stdMat(0x1c1c1e, { metalness: 0.5, roughness: 0.3 });
+    var g = new THREE.Group();
+    g.add(makeBox(0.55, 0.12, 0.55, base, 0, 0.06, 0));
+    g.add(makeBox(0.28, 0.45, 0.28, dark, 0, 0.35, 0));
+    // shoulder → elbow → wrist (simple articulated proxy)
+    var arm = new THREE.Group();
+    arm.position.set(0, 0.58, 0);
+    arm.add(makeBox(0.16, 0.16, 0.55, link, 0, 0, 0.22));
+    arm.add(makeBox(0.14, 0.14, 0.45, link, 0.05, 0.12, 0.55));
+    arm.add(makeBox(0.1, 0.22, 0.1, dark, 0.05, 0.05, 0.78));
+    arm.add(makeBox(0.18, 0.04, 0.08, base, 0.05, -0.02, 0.88));
+    arm.rotation.y = 0.35;
+    g.add(arm);
+    g.position.set(x, 0, z);
+    if (rotY) g.rotation.y = rotY;
+    envGroup.add(g);
+  }
+
+  function safetyFenceRun(x, z, len, rotY) {
+    var post = brushFrameMat(0x8a929a);
+    var mesh = stdMat(0x9aa7b5, { metalness: 0.55, roughness: 0.35, transparent: true, opacity: 0.35 });
+    var caution = cautionMat();
+    var g = new THREE.Group();
+    var n = Math.max(2, Math.round(len / 1.1));
+    for (var i = 0; i < n; i++) {
+      var lz = -len / 2 + (i / (n - 1)) * len;
+      g.add(makeBox(0.06, 1.35, 0.06, post, 0, 0.68, lz));
+    }
+    g.add(makeBox(0.04, 1.1, len * 0.96, mesh, 0, 0.7, 0));
+    g.add(makeBox(0.08, 0.1, len * 0.98, caution, 0, 1.35, 0));
+    g.add(makeBox(0.08, 0.08, len * 0.98, caution, 0, 0.12, 0));
+    g.position.set(x, 0, z);
+    if (rotY) g.rotation.y = rotY;
+    envGroup.add(g);
+  }
+
+  function lightCurtain(x, z, rotY) {
+    var post = brushFrameMat(0x555a62);
+    var beam = stdMat(DANGER, { metalness: 0.2, roughness: 0.3, emissive: DANGER, emissiveIntensity: 0.55, transparent: true, opacity: 0.45 });
+    var g = new THREE.Group();
+    g.add(makeBox(0.08, 1.55, 0.08, post, -0.55, 0.78, 0));
+    g.add(makeBox(0.08, 1.55, 0.08, post, 0.55, 0.78, 0));
+    for (var i = 0; i < 8; i++) {
+      var y = 0.25 + i * 0.16;
+      g.add(makeBox(1.05, 0.015, 0.015, beam, 0, y, 0));
+    }
+    g.position.set(x, 0, z);
+    if (rotY) g.rotation.y = rotY;
+    envGroup.add(g);
+  }
+
+  function controlPanelHmi(x, z, rotY) {
+    var ped = brushFrameMat(0x6a7380);
+    var panel = stdMat(0x1a1c20, { metalness: 0.4, roughness: 0.35 });
+    var screen = stdMat(ACCENT, { metalness: 0.2, roughness: 0.25, emissive: ACCENT, emissiveIntensity: 0.35 });
+    var g = new THREE.Group();
+    g.add(makeBox(0.35, 1.05, 0.28, ped, 0, 0.52, 0));
+    g.add(makeBox(0.48, 0.42, 0.08, panel, 0, 1.25, 0.05));
+    g.add(makeBox(0.38, 0.28, 0.03, screen, 0, 1.28, 0.1));
+    g.add(makeBox(0.08, 0.08, 0.04, stdMat(0x33cc66, { emissive: 0x33cc66, emissiveIntensity: 0.4 }), -0.14, 1.08, 0.12));
+    g.add(makeBox(0.08, 0.08, 0.04, stdMat(DANGER, { emissive: DANGER, emissiveIntensity: 0.35 }), 0.0, 1.08, 0.12));
+    g.add(makeBox(0.08, 0.08, 0.04, stdMat(SAFETY, { emissive: SAFETY, emissiveIntensity: 0.3 }), 0.14, 1.08, 0.12));
+    g.position.set(x, 0, z);
+    if (rotY) g.rotation.y = rotY;
+    envGroup.add(g);
+  }
+
+  /** East-side assembly / packaging line for Distribution Hub (OrbitControls untouched). */
+  function buildAssemblyLineZone() {
+    // Lane markings along the line footprint
+    var lineMat = new THREE.MeshBasicMaterial({ color: SAFETY });
+    function lane(x, z, w, d, rotY) {
+      var s = new THREE.Mesh(new THREE.PlaneGeometry(w, d), lineMat);
+      s.rotation.x = -Math.PI / 2;
+      if (rotY) s.rotation.z = rotY;
+      s.position.set(x, 0.014, z);
+      envGroup.add(s);
+    }
+    lane(8.4, 1.0, 1.35, 14.5, 0);
+    lane(7.55, 1.0, 0.08, 14.5, 0);
+    lane(9.25, 1.0, 0.08, 14.5, 0);
+    lane(7.2, 8.4, 3.2, 1.2, 0);
+
+    // Straight + elevated + curve (procedural) — Kenney GLBs layered via placeGltfClone
+    conveyorSection(8.4, -4.5, 3.2, 0);
+    conveyorSection(8.4, -1.0, 3.2, 0);
+    conveyorSection(8.4, 2.5, 3.2, 0);
+    conveyorElevated(8.4, 5.5, 2.4, 1.25, 0);
+    conveyorSection(8.4, 7.6, 1.6, 0);
+    conveyorSection(7.0, 8.6, 2.0, Math.PI / 2);
+
+    // Workstations + robotic arms along west side of belt
+    assemblyStation(7.15, -3.2, Math.PI / 2);
+    assemblyStation(7.15, 0.2, Math.PI / 2);
+    assemblyStation(7.15, 3.6, Math.PI / 2);
+    roboticArmProxy(7.2, -1.6, Math.PI / 2);
+    roboticArmProxy(7.2, 1.8, Math.PI / 2);
+
+    // Parts bins / totes
+    var tote = stdMat(0x2a6a8a, { metalness: 0.15, roughness: 0.55 });
+    [[7.55, -4.2], [7.55, -2.5], [7.55, 0.9], [7.55, 2.8], [7.55, 4.8], [9.2, -0.5], [9.2, 2.2]].forEach(function (p) {
+      envGroup.add(makeBox(0.5, 0.32, 0.38, tote, p[0], 0.16, p[1]));
+    });
+
+    // Safety fencing + light curtains
+    safetyFenceRun(9.55, -2.0, 6.5, 0);
+    safetyFenceRun(9.55, 4.0, 5.0, 0);
+    safetyFenceRun(6.55, 0.5, 8.0, 0);
+    lightCurtain(8.4, -6.2, 0);
+    lightCurtain(8.4, 8.95, Math.PI / 2);
+
+    // HMI / control pedestals
+    controlPanelHmi(6.7, -5.0, 0.4);
+    controlPanelHmi(6.7, 6.2, -0.2);
+
+    // Overhead gantry rail (procedural beam + Kenney crane if loaded)
+    var gantry = brushFrameMat(0x9098a2);
+    envGroup.add(makeBox(0.12, 0.12, 12.5, gantry, 8.4, 3.35, 1.0));
+    envGroup.add(makeBox(1.8, 0.1, 0.1, gantry, 8.4, 3.35, -4.5));
+    envGroup.add(makeBox(1.8, 0.1, 0.1, gantry, 8.4, 3.35, 2.5));
+    envGroup.add(makeBox(1.8, 0.1, 0.1, gantry, 8.4, 3.35, 7.5));
+    envGroup.add(makeBox(0.35, 0.25, 0.55, stdMat(SAFETY, { metalness: 0.4, roughness: 0.4 }), 8.4, 3.15, 0.5));
+
+    baySign(8.4, 3.55, -6.5, 1.8);
+
+    // Free Kenney / Poly Haven accents for the line
+    placeGltfClone('asm-conveyor', 8.4, 0, -4.5, 1.0, 0);
+    placeGltfClone('asm-conveyor-long', 8.4, 0, -1.0, 1.0, 0);
+    placeGltfClone('asm-conveyor-stripe', 8.4, 0, 2.5, 1.0, 0);
+    placeGltfClone('asm-conveyor-curve', 7.0, 0, 8.6, 1.0, Math.PI);
+    placeGltfClone('asm-crane', 8.4, 0, 1.0, 1.15, 0);
+    placeGltfClone('asm-crane-lift', 8.4, 2.6, 0.5, 1.0, 0);
+    placeGltfClone('asm-hopper', 9.15, 0, 5.8, 1.0, -0.4);
+    placeGltfClone('asm-structure', 9.6, 0, -5.5, 1.0, Math.PI / 2);
+    placeGltfClone('ph-tote', 7.5, 0, 2.2, 1.0, 0);
+    placeGltfClone('ph-plastic', 7.45, 0, -0.8, 1.0, 0.5);
+    placeGltfClone('asm-arrow', 8.4, 0.02, -5.8, 1.2, 0);
   }
 
   function dockDoor(x, z, w, open) {
@@ -910,12 +1118,8 @@
       });
     }
 
-    // Conveyor run along east wall
-    conveyorSection(8.4, -4.5, 3.2, 0);
-    conveyorSection(8.4, -1.0, 3.2, 0);
-    conveyorSection(8.4, 2.5, 3.2, 0);
-    conveyorSection(8.4, 6.0, 2.6, 0);
-    conveyorSection(7.2, 8.4, 2.2, Math.PI / 2);
+    // East assembly / packaging line (conveyors, stations, arms, fencing, gantry)
+    buildAssemblyLineZone();
 
     // Staging pallets + shrink-wrap loads
     palletStack(-3.2, -7.4, 3, true);
@@ -966,17 +1170,10 @@
       envGroup.add(makeBox(0.45, 0.05, 0.05, jack, p[0], 0.7, p[1] - 0.45));
     });
 
-    // Tote bins near conveyor
-    var tote = stdMat(0x2a6a8a, { metalness: 0.15, roughness: 0.55 });
-    [[7.6, -2.5], [7.6, 0.5], [7.6, 3.5]].forEach(function (p) {
-      envGroup.add(makeBox(0.55, 0.35, 0.4, tote, p[0], 0.18, p[1]));
-    });
-
     // Optional Kenney / Poly Haven glTF accents (loaded async into cache)
     placeGltfClone('box-large', -6.8, 0, -5.5, 1.8, 0.2);
     placeGltfClone('box-wide', 6.8, 0, 4.2, 1.6, -0.4);
     placeGltfClone('cone', -2.4, 0, -8.2, 1.2, 0);
-    placeGltfClone('conveyor-long', 8.4, 0, -4.5, 1.0, 0);
     placeGltfClone('ph-box', -2.8, 0, -6.8, 1.0, 0.3);
     placeGltfClone('ph-crate', 2.8, 0, -6.6, 1.0, -0.2);
     placeGltfClone('lib-pallet', -3.2, 0, -7.4, 1.0, 0.15);
@@ -984,8 +1181,6 @@
     placeGltfClone('lib-barrier', -8.2, 0, -8.8, 1.0, Math.PI / 2);
     placeGltfClone('lib-crush', 8.2, 0, -8.5, 1.0, -Math.PI / 2);
     placeGltfClone('lib-hand-truck', -0.8, 0, -6.8, 1.0, 0.4);
-    placeGltfClone('ph-plastic', 7.4, 0, -0.8, 1.0, 0.5);
-    placeGltfClone('ph-tote', 7.5, 0, 2.2, 1.0, 0);
     placeGltfClone('ph-rack', -8.6, 0, 2.0, 1.0, Math.PI / 2);
     placeGltfClone('lib-barrier', -7.5, 0, -8.8, 1.0, 0.1);
     placeGltfClone('lib-barrier', 7.5, 0, -8.8, 1.0, -0.1);
@@ -1019,6 +1214,15 @@
       ['box-wide', './assets/distribution-hub/kenney/box-wide.glb'],
       ['cone', './assets/distribution-hub/kenney/cone.glb'],
       ['conveyor-long', './assets/distribution-hub/kenney/conveyor-long.glb'],
+      ['asm-conveyor', './assets/library/assembly-line/kenney/conveyor.glb'],
+      ['asm-conveyor-long', './assets/library/assembly-line/kenney/conveyor-long.glb'],
+      ['asm-conveyor-stripe', './assets/library/assembly-line/kenney/conveyor-long-stripe.glb'],
+      ['asm-conveyor-curve', './assets/library/assembly-line/kenney/conveyor-corner.glb'],
+      ['asm-crane', './assets/library/assembly-line/kenney/crane.glb'],
+      ['asm-crane-lift', './assets/library/assembly-line/kenney/crane-lift.glb'],
+      ['asm-hopper', './assets/library/assembly-line/kenney/hopper-square.glb'],
+      ['asm-structure', './assets/library/assembly-line/kenney/structure-yellow-tall.glb'],
+      ['asm-arrow', './assets/library/assembly-line/kenney/arrow.glb'],
       ['door-wide-open', './assets/distribution-hub/kenney/door-wide-open.glb'],
       ['ph-box', './assets/distribution-hub/polyhaven/cardboard_box_01/cardboard_box_01_1k.gltf'],
       ['ph-crate', './assets/distribution-hub/polyhaven/wooden_crate_01/wooden_crate_01_1k.gltf'],
@@ -1449,7 +1653,10 @@
     loadTexFallback('./assets/library/materials/wood_floor_diff.jpg', './assets/distribution-hub/wood_pallet_diff.jpg').then(function (t) { woodTex = t; }),
     loadTex('./assets/distribution-hub/cardboard_diff.jpg').then(function (t) { cardboardTex = t; }),
     loadTex('./assets/distribution-hub/shutter_diff.jpg').then(function (t) { shutterTex = t; }),
-    loadTexFallback('./assets/distribution-hub/floor_anti_slip_diff.jpg', './assets/distribution-hub/floor_warehouse_diff.jpg').then(function (t) { antiSlipTex = t; })
+    loadTexFallback('./assets/distribution-hub/floor_anti_slip_diff.jpg', './assets/distribution-hub/floor_warehouse_diff.jpg').then(function (t) { antiSlipTex = t; }),
+    loadTexFallback('./assets/library/assembly-line/textures/rubber_belt_diff.jpg', './assets/library/assembly-line/textures/rubber_mat_diff.jpg').then(function (t) { beltTex = t; }),
+    loadTex('./assets/library/assembly-line/textures/caution_stripes_diff.jpg').then(function (t) { cautionTex = t; }),
+    loadTexFallback('./assets/library/assembly-line/textures/brushed_metal_diff.jpg', './assets/library/assembly-line/textures/scratched_metal_diff.jpg').then(function (t) { brushMetalTex = t; })
   ]).then(function () {
     if (activeDomainId) buildEnvironmentFor(activeDomainId);
     return preloadHubGltf();

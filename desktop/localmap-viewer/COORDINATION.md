@@ -12,7 +12,7 @@ Updated: 2026-09-11T09:12:30Z
 | Scene 3D assets UI | bc-5eb7524d | placing free meshes in scene |
 | Interaction QA | bc-4e7074e9 | verify drag-orbit + assets |
 | Free-only catalog | bc-1677a491 | downloads + FREE-ASSETS.md; strip paid |
-| Free twins (no paid URLs) | bc-9406d79e | CC0/procedural equivalents only; strip paid wishlists |
+| Free twins (no paid URLs) | bc-9406d79e | CC0/procedural equivalents only; FREE-ALTERNATIVES.md; strip paid wishlists |
 | Asset ontology / label→asset | bc-9bd2d943 | catalog schema + assignAsset API + asset-placer.js + instances.json (**shipped**) |
 | Distribution hub domain | bc-f69a0a82 | hub domain content |
 | Realtime telemetry | bc-137a8586 | WS bridge/feed only |

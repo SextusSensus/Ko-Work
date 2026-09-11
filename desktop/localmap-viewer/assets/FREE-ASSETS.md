@@ -23,6 +23,7 @@ Never `paid` / `purchase` / `link_only` / marketplace purchase targets.
 
 - Runtime inventory: [`catalog.json`](./catalog.json)
 - Label → asset map: [`../../localmap-data/asset-ontology.json`](../../localmap-data/asset-ontology.json)
+- Paid→free twin table: [`FREE-ALTERNATIVES.md`](./FREE-ALTERNATIVES.md)
 - Per-file credits: [`ATTRIBUTION.md`](./ATTRIBUTION.md)
 
 ## Domain coverage
