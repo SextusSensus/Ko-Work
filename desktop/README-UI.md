@@ -6,6 +6,8 @@ Near-black UI (`#000` / `#0A0A0A`), surfaces `#141414` / `#1C1C1E`, text `#F5F5F
 
 Domains are **separate environments** (kitchen, warehouse bay, distribution hub). Each follow/capture run **merges** occupancy into the **active** domain — accumulate over time, do not blindly replace.
 
+Parallel Local Map workers: see [`localmap-viewer/COORDINATION.md`](localmap-viewer/COORDINATION.md).
+
 ### Persistence
 
 | Path | Role |
@@ -59,3 +61,39 @@ python3 -m http.server 8765
 ```
 
 Textures (Poly Haven + ambientCG CC0) live under `localmap-viewer/assets/` — see `ATTRIBUTION.md`.
+
+## CGTrader asset strategy (premium hub / kitchen props)
+
+CGTrader is the **discovery + purchase list** for premium distribution-hub and kitchen props. Paid models stay **link-only** until licensed. Free CGTrader listings are almost always **Royalty Free**, which forbids redistributing source files into this repo — do not commit those binaries.
+
+| Path | Role |
+|------|------|
+| [`localmap-viewer/assets/CGTRADER.md`](localmap-viewer/assets/CGTRADER.md) | Curated shortlist (URLs, tags, prices, formats, status) |
+| [`localmap-viewer/assets/catalog.json`](localmap-viewer/assets/catalog.json) | Machine-readable catalog |
+| [`localmap-data/asset-ontology.json`](localmap-data/asset-ontology.json) | Label classes → `cgtrader_preferred` id + CC0/procedural runtime fallback |
+
+Runtime keeps using Kenney / Poly Haven / procedural proxies. Ontology entries hold the preferred CGTrader URL so Todd can license later without remapping classes.
+
+### Purchased CGTrader → local GLB drop-in
+
+1. Buy / download the listing on [cgtrader.com](https://www.cgtrader.com) under your own account (accept their Royalty Free terms).
+2. Export or pick a **GLB** (preferred) or glTF + bin + textures.
+3. Place it at:
+
+```text
+desktop/localmap-viewer/assets/library/<catalog-id>/model.glb
+```
+
+Example: after licensing `cgt-hub-storage-kit-12`, put the rack bay GLB at  
+`assets/library/cgt-hub-storage-kit-12/model.glb`.
+
+4. In `catalog.json`, set that asset:
+
+```json
+"status": "local",
+"library_path": "library/<catalog-id>/model.glb"
+```
+
+5. Keep `url` / provenance fields. Do **not** commit unlicensed paid files. Prefer CC0 for anything we must ship in git without a Todd license on file.
+
+Statuses: `link_only` → `purchased_placeholder` (optional) → `local`. Free RF items stay `free_download` (local disk only, never git).
