@@ -560,7 +560,7 @@ $script:FollowStart=[datetime]::MinValue
 $script:FollowToggleGuard=$false  # prevents the toggle's CheckedChanged from re-entering during programmatic resets
 
 # ============================================================================
-#  Visual system — "forge steel" (dark industrial; teal action + amber caution)
+#  Visual system — Tesla × SpaceX × Apple (near-black / cyan accent / mission clarity)
 #  Brand-first header. Tracker hierarchy: Primary > Avoidance > Advanced > Cmd.
 # ============================================================================
 function New-K1Font([string]$Family, [float]$Size, [System.Drawing.FontStyle]$Style = 'Regular') {
@@ -572,31 +572,31 @@ function New-K1Font([string]$Family, [float]$Size, [System.Drawing.FontStyle]$St
 
 $font      = New-K1Font 'Bahnschrift' 9.5
 $fontBold  = New-K1Font 'Bahnschrift' 10.5 ([System.Drawing.FontStyle]::Bold)
-$fontBrand = New-K1Font 'Bahnschrift' 20 ([System.Drawing.FontStyle]::Bold)
+$fontBrand = New-K1Font 'Bahnschrift' 22 ([System.Drawing.FontStyle]::Bold)
 $fontSub   = New-K1Font 'Bahnschrift' 9
 $fontHero  = New-K1Font 'Bahnschrift' 14 ([System.Drawing.FontStyle]::Bold)
 $fontStatus= New-K1Font 'Bahnschrift' 16 ([System.Drawing.FontStyle]::Bold)
 $mono      = New-K1Font 'Cascadia Mono' 9.25
 if (-not $mono) { $mono = New-Object System.Drawing.Font('Consolas', 9) }
 
-# Palette — forge steel (graphite panels, teal action, amber caution)
-$bg        = [System.Drawing.Color]::FromArgb(14, 17, 22)       # near-black graphite
-$surface   = [System.Drawing.Color]::FromArgb(22, 27, 34)      # panels
-$panelBg   = $surface                                          # group / panel fill (alias)
-$surface2  = [System.Drawing.Color]::FromArgb(32, 39, 49)      # raised
-$stroke    = [System.Drawing.Color]::FromArgb(48, 58, 72)
-$text      = [System.Drawing.Color]::FromArgb(232, 236, 241)
-$muted     = [System.Drawing.Color]::FromArgb(138, 149, 164)
-$accent    = [System.Drawing.Color]::FromArgb(38, 184, 168)     # teal — primary action
-$green     = [System.Drawing.Color]::FromArgb(52, 196, 140)     # ok / verify
-$red       = [System.Drawing.Color]::FromArgb(224, 82, 68)      # danger / STOP
-$amber     = [System.Drawing.Color]::FromArgb(232, 168, 56)     # caution
+# Palette — pure black chassis, one electric cyan accent, Tesla red danger
+$bg        = [System.Drawing.Color]::FromArgb(0, 0, 0)          # #000000
+$surface   = [System.Drawing.Color]::FromArgb(10, 10, 10)      # #0A0A0A
+$panelBg   = [System.Drawing.Color]::FromArgb(20, 20, 20)      # #141414
+$surface2  = [System.Drawing.Color]::FromArgb(28, 28, 30)      # #1C1C1E raised
+$stroke    = [System.Drawing.Color]::FromArgb(44, 44, 46)      # hairline
+$text      = [System.Drawing.Color]::FromArgb(245, 245, 247)   # #F5F5F7
+$muted     = [System.Drawing.Color]::FromArgb(142, 142, 147)   # #8E8E93
+$accent    = [System.Drawing.Color]::FromArgb(50, 212, 255)    # #32D4FF — ONE accent
+$green     = [System.Drawing.Color]::FromArgb(180, 230, 200)   # soft white-green (sparingly)
+$red       = [System.Drawing.Color]::FromArgb(227, 25, 55)     # #E31937 Tesla red
+$amber     = [System.Drawing.Color]::FromArgb(200, 170, 90)    # restrained caution
 $dark      = $bg                                                 # logs / video wells (compat alias)
-$chipBg    = [System.Drawing.Color]::FromArgb(40, 48, 60)
+$chipBg    = [System.Drawing.Color]::FromArgb(28, 28, 30)
 
 function Set-K1PrimaryButton([System.Windows.Forms.Button]$b) {
     $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0
-    $b.BackColor = $accent; $b.ForeColor = $bg; $b.Font = $fontBold
+    $b.BackColor = $accent; $b.ForeColor = [System.Drawing.Color]::Black; $b.Font = $fontBold
     $b.Cursor = [System.Windows.Forms.Cursors]::Hand
 }
 function Set-K1DangerButton([System.Windows.Forms.Button]$b) {
@@ -611,7 +611,7 @@ function Set-K1GhostButton([System.Windows.Forms.Button]$b) {
 }
 function Set-K1OkButton([System.Windows.Forms.Button]$b) {
     $b.FlatStyle = 'Flat'; $b.FlatAppearance.BorderSize = 0
-    $b.BackColor = $green; $b.ForeColor = $bg; $b.Font = $fontBold
+    $b.BackColor = $green; $b.ForeColor = [System.Drawing.Color]::Black; $b.Font = $fontBold
     $b.Cursor = [System.Windows.Forms.Cursors]::Hand
 }
 function Set-K1Field([System.Windows.Forms.TextBox]$tb) {
