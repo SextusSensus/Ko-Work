@@ -1,0 +1,12 @@
+{
+  "id": "exact-lab",
+  "name": "Exact Lab (Rerun fixture)",
+  "created": "2026-09-11T10:13:13Z",
+  "updated": "2026-09-11T10:13:13Z",
+  "run_count": 1,
+  "cell_count": 4,
+  "runs": [
+    "golden-v1"
+  ],
+  "notes": "Golden exact-pose placements from fixtures/rerun_exact_place (no real .rrd)."
+}

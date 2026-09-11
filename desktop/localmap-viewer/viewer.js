@@ -791,7 +791,7 @@
     roboticArmProxy(-2.2, 3.0, Math.PI / 2);
     roboticArmProxy(2.2, -2.6, -Math.PI / 2);
 
-    var tote = stdMat(0x2a6a8a, { metalness: 0.15, roughness: 0.55 });
+    var tote = stdMat(PLASTIC_GRAY, { metalness: 0.18, roughness: 0.55 });
     [[-2.5, -3.2], [-2.4, 0.4], [-2.5, 2.4], [2.5, -2.8], [2.4, 0.0], [2.5, 3.0],
      [-4.2, -1.5], [4.2, 1.2], [-0.8, -3.6], [0.9, 3.4]].forEach(function (p) {
       envGroup.add(makeBox(0.48, 0.3, 0.36, tote, p[0], 0.15, p[1]));

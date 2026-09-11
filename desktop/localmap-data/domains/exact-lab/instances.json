@@ -1,0 +1,107 @@
+{
+  "domain_id": "exact-lab",
+  "updated": "2026-09-11T10:13:13Z",
+  "notes": "Exact Rerun/label placer (pose_map FLU meters)",
+  "instances": [
+    {
+      "id": "golden-v1::det-depth-A",
+      "detection_id": "det-depth-A",
+      "label": "chair",
+      "label_class": "chair",
+      "asset_id": "kitchen/dining-chair",
+      "pose_map": {
+        "x": 3.0,
+        "y": 0.0,
+        "z": 1.2,
+        "qw": 1.0,
+        "qx": 0.0,
+        "qy": 0.0,
+        "qz": 0.0
+      },
+      "x": 3.0,
+      "y": 0.0,
+      "z": 1.2,
+      "yaw": 0.0,
+      "T_source": "odom",
+      "run_id": "golden-v1",
+      "t_ns": 1000,
+      "frame_idx": 0,
+      "placement_method": "depth_backproject",
+      "confidence": 0.95,
+      "covariance": null,
+      "source": "localmap_asset_placer"
+    },
+    {
+      "id": "golden-v1::det-3d-B",
+      "detection_id": "det-3d-B",
+      "label": "dining_table",
+      "label_class": "dining_table",
+      "asset_id": "kitchen/dining-table",
+      "pose_map": {
+        "x": 2.0,
+        "y": 2.0,
+        "z": 1.2,
+        "qw": 0.7071067811865476,
+        "qx": 0.0,
+        "qy": 0.0,
+        "qz": 0.7071067811865475
+      },
+      "x": 2.0,
+      "y": 2.0,
+      "z": 1.2,
+      "yaw": 1.5707963267948966,
+      "T_source": "odom",
+      "run_id": "golden-v1",
+      "t_ns": 2000,
+      "frame_idx": 1,
+      "placement_method": "transform_3d",
+      "confidence": 0.9,
+      "covariance": null,
+      "source": "localmap_asset_placer"
+    },
+    {
+      "id": "golden-v1::det-ray-C",
+      "detection_id": "det-ray-C",
+      "label": "safety_cone",
+      "label_class": "safety_cone",
+      "asset_id": "cross-domain/safety-cone",
+      "pose_map": {
+        "x": 6.0,
+        "y": 0.0,
+        "z": 0.0,
+        "qw": 1.0,
+        "qx": 0.0,
+        "qy": 0.0,
+        "qz": 0.0
+      },
+      "x": 6.0,
+      "y": 0.0,
+      "z": 0.0,
+      "yaw": 0.0,
+      "T_source": "odom",
+      "run_id": "golden-v1",
+      "t_ns": 1000,
+      "frame_idx": 0,
+      "placement_method": "ground_raycast",
+      "confidence": 0.7,
+      "covariance": [
+        [
+          1.1550980486407219,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.1550980486407219,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0004
+        ]
+      ],
+      "source": "localmap_asset_placer"
+    }
+  ]
+}
