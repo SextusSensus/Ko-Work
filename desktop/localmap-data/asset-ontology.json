@@ -1,0 +1,1392 @@
+{
+  "version": 1,
+  "updated": "2026-09-11T10:43:09Z",
+  "description": "Label class \u2192 free Local Map asset (default_asset). Global catalog (scope:global) supports cross-domain autofill from detections.",
+  "catalog_ref": "../localmap-viewer/assets/catalog.json",
+  "placement_modes": {
+    "footprint": "Sit on floor; use w/h as ground footprint metres when present",
+    "anchor": "Place at pose without footprint scaling",
+    "wall": "Yaw faces outward from wall; ignore footprint height"
+  },
+  "label_classes": [
+    {
+      "id": "armchair",
+      "aliases": [
+        "lounge_chair"
+      ],
+      "default_asset": "office/modern-armchair",
+      "placement": "footprint",
+      "scale_m": [
+        0.75,
+        0.9,
+        0.75
+      ],
+      "domains": [
+        "office",
+        "*"
+      ]
+    },
+    {
+      "id": "assembly_station",
+      "aliases": [
+        "workstation",
+        "assembly_bench",
+        "work_bench"
+      ],
+      "default_asset": "assembly-line/assembly-station",
+      "placement": "footprint",
+      "scale_m": [
+        1.4,
+        1.1,
+        0.75
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "barrel",
+      "aliases": [
+        "drum"
+      ],
+      "default_asset": "warehouse/barrel",
+      "placement": "footprint",
+      "scale_m": [
+        0.6,
+        0.9,
+        0.6
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "bed",
+      "coco_id": 59,
+      "aliases": [],
+      "default_asset": "generic/bed",
+      "placement": "footprint",
+      "scale_m": [
+        2.0,
+        0.55,
+        1.4
+      ],
+      "domains": [
+        "*"
+      ],
+      "tier": "P1"
+    },
+    {
+      "id": "bollard",
+      "aliases": [
+        "post",
+        "safety_post"
+      ],
+      "default_asset": "warehouse/bollard",
+      "placement": "footprint",
+      "scale_m": [
+        0.18,
+        0.75,
+        0.18
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "book",
+      "coco_id": 73,
+      "aliases": [],
+      "default_asset": "generic/book",
+      "placement": "anchor",
+      "scale_m": [
+        0.2,
+        0.05,
+        0.15
+      ],
+      "domains": [
+        "*"
+      ],
+      "tier": "P2"
+    },
+    {
+      "id": "bookcase",
+      "aliases": [
+        "bookshelf",
+        "book_case"
+      ],
+      "default_asset": "office/wooden-bookshelf",
+      "placement": "footprint",
+      "scale_m": [
+        0.9,
+        2.1,
+        0.4
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "scope": "global"
+    },
+    {
+      "id": "cabinet",
+      "aliases": [
+        "cupboard",
+        "drawer_cabinet"
+      ],
+      "default_asset": "office/modern-cabinet",
+      "placement": "footprint",
+      "scale_m": [
+        0.8,
+        1.0,
+        0.5
+      ],
+      "domains": [
+        "assembly-factory"
+      ]
+    },
+    {
+      "id": "cardboard_box",
+      "aliases": [
+        "box",
+        "carton",
+        "package"
+      ],
+      "default_asset": "warehouse/cardboard-box",
+      "placement": "footprint",
+      "scale_m": [
+        0.45,
+        0.4,
+        0.4
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub",
+        "*"
+      ]
+    },
+    {
+      "id": "catwalk",
+      "aliases": [
+        "walkway"
+      ],
+      "default_asset": "assembly-line/catwalk",
+      "placement": "footprint",
+      "scale_m": [
+        1.0,
+        0.3,
+        2.0
+      ],
+      "domains": [
+        "assembly-factory"
+      ]
+    },
+    {
+      "id": "ceiling_tile",
+      "aliases": [
+        "drop_ceiling",
+        "ceiling_panel"
+      ],
+      "default_asset": "office/ceiling-tile",
+      "placement": "anchor",
+      "scale_m": [
+        0.6,
+        0.02,
+        0.6
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "scope": "global"
+    },
+    {
+      "id": "chair",
+      "coco_id": 56,
+      "aliases": [
+        "dining_chair",
+        "office_chair",
+        "seat",
+        "task_chair"
+      ],
+      "default_asset": "office/office-chair",
+      "placement": "footprint",
+      "scale_m": [
+        0.45,
+        0.95,
+        0.5
+      ],
+      "domains": [
+        "*",
+        "assembly-factory",
+        "generic",
+        "office"
+      ],
+      "tier": "P1",
+      "domain_assets": {
+        "office": "office/office-chair"
+      },
+      "scope": "global"
+    },
+    {
+      "id": "clock",
+      "coco_id": 74,
+      "aliases": [],
+      "default_asset": "generic/clock",
+      "placement": "wall",
+      "scale_m": [
+        0.35,
+        0.35,
+        0.06
+      ],
+      "domains": [
+        "*"
+      ],
+      "tier": "P2"
+    },
+    {
+      "id": "coffee_table",
+      "aliases": [],
+      "default_asset": "office/coffee-table",
+      "placement": "footprint",
+      "scale_m": [
+        1.1,
+        0.4,
+        0.6
+      ],
+      "domains": [
+        "office",
+        "*"
+      ]
+    },
+    {
+      "id": "control_panel",
+      "aliases": [
+        "hmi",
+        "hmi_pedestal",
+        "operator_panel"
+      ],
+      "default_asset": "assembly-line/control-panel",
+      "placement": "footprint",
+      "scale_m": [
+        0.45,
+        1.35,
+        0.4
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "conveyor",
+      "aliases": [
+        "conveyor_belt"
+      ],
+      "default_asset": "assembly-line/conveyor-long",
+      "placement": "footprint",
+      "scale_m": [
+        2.0,
+        0.85,
+        0.7
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "conveyor_curve",
+      "aliases": [
+        "conveyor_corner"
+      ],
+      "default_asset": "assembly-line/conveyor-curve",
+      "placement": "footprint",
+      "scale_m": [
+        1.2,
+        0.85,
+        1.2
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "conveyor_elevated",
+      "aliases": [
+        "overhead_conveyor"
+      ],
+      "default_asset": "assembly-line/conveyor-elevated",
+      "placement": "footprint",
+      "scale_m": [
+        2.4,
+        1.8,
+        0.7
+      ],
+      "domains": [
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "corner_shelf",
+      "aliases": [
+        "steel_shelf",
+        "shelving",
+        "steel_frame_shelves"
+      ],
+      "default_asset": "warehouse/steel-shelves",
+      "placement": "footprint",
+      "scale_m": [
+        1.1,
+        2.2,
+        0.5
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ],
+      "notes": "Corner steel shelf unit (~1.8\u20132.4 m H, ~0.4\u20130.6 m D) \u2014 not room-sized; not relative to K1"
+    },
+    {
+      "id": "couch",
+      "coco_id": 57,
+      "aliases": [
+        "sofa"
+      ],
+      "default_asset": "generic/sofa",
+      "placement": "footprint",
+      "scale_m": [
+        1.8,
+        0.85,
+        0.85
+      ],
+      "domains": [
+        "*",
+        "office"
+      ],
+      "tier": "P1",
+      "domain_assets": {
+        "office": "office/couch"
+      },
+      "scope": "global"
+    },
+    {
+      "id": "counter",
+      "aliases": [
+        "kitchen_counter",
+        "countertop"
+      ],
+      "default_asset": "kitchen/counter",
+      "placement": "footprint",
+      "scale_m": [
+        1.8,
+        0.9,
+        0.65
+      ],
+      "domains": [
+        "assembly-factory"
+      ]
+    },
+    {
+      "id": "crate",
+      "aliases": [
+        "wooden_crate",
+        "plastic_crate"
+      ],
+      "default_asset": "warehouse/plastic-crate-03",
+      "placement": "footprint",
+      "scale_m": [
+        0.6,
+        0.5,
+        0.45
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "cubicle",
+      "aliases": [
+        "office_partition",
+        "quiet_cube",
+        "partition",
+        "cubicle_wall",
+        "privacy_screen"
+      ],
+      "default_asset": "office/cubicle",
+      "placement": "footprint",
+      "scale_m": [
+        1.6,
+        1.5,
+        1.6
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "tier": "P1",
+      "scope": "global"
+    },
+    {
+      "id": "desk",
+      "aliases": [
+        "office_desk",
+        "work_desk",
+        "writing_desk"
+      ],
+      "default_asset": "office/metal-office-desk",
+      "placement": "footprint",
+      "scale_m": [
+        1.4,
+        0.75,
+        0.7
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "tier": "P1",
+      "scope": "global"
+    },
+    {
+      "id": "dining_table",
+      "coco_id": 60,
+      "aliases": [
+        "conference_table",
+        "meeting_table",
+        "table"
+      ],
+      "default_asset": "kitchen/dining-table",
+      "placement": "footprint",
+      "scale_m": [
+        1.4,
+        0.75,
+        0.85
+      ],
+      "domains": [
+        "*",
+        "assembly-factory",
+        "office"
+      ],
+      "tier": "P1",
+      "domain_assets": {
+        "office": "office/meeting-table"
+      },
+      "scope": "global"
+    },
+    {
+      "id": "dock_door",
+      "aliases": [
+        "loading_door",
+        "rollershutter",
+        "shutter"
+      ],
+      "default_asset": "warehouse/dock-door",
+      "placement": "wall",
+      "scale_m": [
+        3.2,
+        3.2,
+        0.25
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "doorway",
+      "aliases": [
+        "door",
+        "door_frame"
+      ],
+      "default_asset": "kitchen/doorway",
+      "placement": "wall",
+      "scale_m": [
+        1.0,
+        2.1,
+        0.15
+      ],
+      "domains": [
+        "*",
+        "office"
+      ],
+      "domain_assets": {
+        "office": "office/doorway"
+      },
+      "scope": "global"
+    },
+    {
+      "id": "drill_press",
+      "aliases": [
+        "drillpress",
+        "machine_tool"
+      ],
+      "default_asset": "assembly-line/drill-press",
+      "placement": "footprint",
+      "scale_m": [
+        0.6,
+        1.6,
+        0.7
+      ],
+      "domains": [
+        "assembly-factory"
+      ]
+    },
+    {
+      "id": "elevator",
+      "aliases": [
+        "elevator_door",
+        "lift",
+        "lift_door"
+      ],
+      "default_asset": "office/elevator-doors",
+      "placement": "wall",
+      "scale_m": [
+        1.2,
+        2.2,
+        0.2
+      ],
+      "domains": [
+        "*"
+      ],
+      "domain_assets": {
+        "office": "office/elevator-doors"
+      },
+      "scope": "global"
+    },
+    {
+      "id": "exit_sign",
+      "aliases": [
+        "exit",
+        "emergency_exit_sign"
+      ],
+      "default_asset": "office/exit-sign",
+      "placement": "wall",
+      "scale_m": [
+        0.4,
+        0.2,
+        0.06
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "scope": "global"
+    },
+    {
+      "id": "fence",
+      "aliases": [
+        "fencing",
+        "safety_fence",
+        "guardrail"
+      ],
+      "default_asset": "assembly-line/fencing",
+      "placement": "footprint",
+      "scale_m": [
+        2.0,
+        1.2,
+        0.15
+      ],
+      "domains": [
+        "assembly-line",
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "fire_extinguisher",
+      "aliases": [
+        "extinguisher"
+      ],
+      "default_asset": "assembly-line/fire-extinguisher",
+      "placement": "footprint",
+      "scale_m": [
+        0.2,
+        0.7,
+        0.2
+      ],
+      "domains": [
+        "assembly-factory",
+        "warehouse-bay-a",
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "floor_markings",
+      "aliases": [
+        "road_lines"
+      ],
+      "default_asset": "materials/floor-markings",
+      "placement": "footprint",
+      "scale_m": [
+        2,
+        0.01,
+        2
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "floor_tape",
+      "aliases": [
+        "aisle_tape",
+        "safety_tape"
+      ],
+      "default_asset": "warehouse/floor-tape",
+      "placement": "footprint",
+      "scale_m": [
+        0.1,
+        0.01,
+        4.0
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "forklift",
+      "aliases": [],
+      "default_asset": "warehouse/forklift",
+      "placement": "footprint",
+      "scale_m": [
+        1.2,
+        2.1,
+        2.4
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "hallway_carpet",
+      "aliases": [
+        "carpet",
+        "runner",
+        "carpet_runner"
+      ],
+      "default_asset": "office/carpet-pbr",
+      "placement": "footprint",
+      "scale_m": [
+        10.0,
+        0.02,
+        1.4
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "scope": "global"
+    },
+    {
+      "id": "ladder",
+      "aliases": [
+        "sectioned_ladder"
+      ],
+      "default_asset": "assembly-line/ladder-sectioned",
+      "placement": "footprint",
+      "scale_m": [
+        0.5,
+        2.5,
+        0.3
+      ],
+      "domains": [
+        "assembly-factory",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "laptop",
+      "coco_id": 63,
+      "aliases": [],
+      "default_asset": "warehouse/laptop",
+      "placement": "anchor",
+      "scale_m": [
+        0.35,
+        0.02,
+        0.25
+      ],
+      "domains": [
+        "*"
+      ],
+      "tier": "P2"
+    },
+    {
+      "id": "light_curtain",
+      "aliases": [
+        "safety_light_curtain"
+      ],
+      "default_asset": "assembly-line/safety-fence",
+      "placement": "footprint",
+      "scale_m": [
+        0.12,
+        1.6,
+        0.12
+      ],
+      "domains": [
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "microwave",
+      "coco_id": 68,
+      "aliases": [],
+      "default_asset": "kitchen/microwave",
+      "placement": "anchor",
+      "scale_m": [
+        0.5,
+        0.3,
+        0.4
+      ],
+      "domains": [
+        "assembly-factory",
+        "*"
+      ],
+      "tier": "P2"
+    },
+    {
+      "id": "oven",
+      "coco_id": 69,
+      "aliases": [
+        "stove",
+        "electric_stove",
+        "range"
+      ],
+      "default_asset": "kitchen/electric-stove",
+      "placement": "footprint",
+      "scale_m": [
+        0.6,
+        0.9,
+        0.65
+      ],
+      "domains": [
+        "assembly-factory"
+      ],
+      "tier": "P2"
+    },
+    {
+      "id": "overhead_gantry",
+      "aliases": [
+        "gantry",
+        "crane_rail",
+        "overhead_crane"
+      ],
+      "default_asset": "assembly-line/overhead-gantry",
+      "placement": "anchor",
+      "scale_m": [
+        4.0,
+        3.0,
+        0.8
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "pallet",
+      "aliases": [
+        "wood_pallet"
+      ],
+      "default_asset": "warehouse/pallet",
+      "placement": "footprint",
+      "scale_m": [
+        1.2,
+        0.14,
+        1.0
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ],
+      "notes": "CC0 authored wooden_pallet_cc0; procedural fallback"
+    },
+    {
+      "id": "pallet_jack",
+      "aliases": [
+        "hand_truck",
+        "pallet_jack"
+      ],
+      "default_asset": "warehouse/hand-truck",
+      "placement": "footprint",
+      "scale_m": [
+        0.55,
+        1.2,
+        1.1
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "pallet_rack",
+      "aliases": [
+        "rack",
+        "worn_metal_rack"
+      ],
+      "default_asset": "warehouse/pallet-rack",
+      "placement": "footprint",
+      "scale_m": [
+        1.2,
+        3.0,
+        0.9
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ],
+      "notes": "Pallet rack bay ~2.7\u20134.5 m tall; procedural rackBay uses 3.0 m. Corner steel shelves use corner_shelf."
+    },
+    {
+      "id": "parts_bin",
+      "aliases": [
+        "parts_tote",
+        "kanban_bin"
+      ],
+      "default_asset": "assembly-line/parts-bin",
+      "placement": "footprint",
+      "scale_m": [
+        0.55,
+        0.35,
+        0.4
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "person",
+      "coco_id": 0,
+      "aliases": [
+        "human",
+        "operator",
+        "bystander"
+      ],
+      "default_asset": "cross-domain/person-placeholder",
+      "placement": "footprint",
+      "scale_m": [
+        0.45,
+        1.7,
+        0.35
+      ],
+      "domains": [
+        "*"
+      ],
+      "tier": "P0",
+      "scope": "global"
+    },
+    {
+      "id": "pillar",
+      "aliases": [
+        "column"
+      ],
+      "default_asset": "generic/pillar",
+      "placement": "footprint",
+      "scale_m": [
+        0.4,
+        3.5,
+        0.4
+      ],
+      "domains": [
+        "*"
+      ],
+      "scope": "global"
+    },
+    {
+      "id": "potted_plant",
+      "coco_id": 64,
+      "aliases": [
+        "plant"
+      ],
+      "default_asset": "office/potted-plant",
+      "placement": "footprint",
+      "scale_m": [
+        0.35,
+        0.9,
+        0.35
+      ],
+      "domains": [
+        "*",
+        "office"
+      ],
+      "tier": "P2",
+      "domain_assets": {
+        "office": "office/potted-plant"
+      },
+      "scope": "global"
+    },
+    {
+      "id": "refrigerator",
+      "coco_id": 72,
+      "aliases": [
+        "fridge"
+      ],
+      "default_asset": "kitchen/fridge",
+      "placement": "footprint",
+      "scale_m": [
+        0.7,
+        1.8,
+        0.7
+      ],
+      "domains": [
+        "assembly-factory"
+      ],
+      "tier": "P2"
+    },
+    {
+      "id": "robot",
+      "aliases": [
+        "k1",
+        "booster_k1"
+      ],
+      "default_asset": "robot/k1",
+      "placement": "footprint",
+      "scale_m": [
+        0.4,
+        0.95,
+        0.18
+      ],
+      "domains": [
+        "*"
+      ],
+      "tier": "P0",
+      "scope": "global"
+    },
+    {
+      "id": "robot_arm",
+      "aliases": [
+        "arm",
+        "crane",
+        "manipulator"
+      ],
+      "default_asset": "assembly-line/robot-arm",
+      "placement": "footprint",
+      "scale_m": [
+        1.2,
+        2.4,
+        1.2
+      ],
+      "domains": [
+        "assembly-line",
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "robotic_arm",
+      "aliases": [
+        "robot_arm",
+        "manipulator",
+        "pick_place_arm"
+      ],
+      "default_asset": "assembly-line/robotic-arm",
+      "placement": "footprint",
+      "scale_m": [
+        0.7,
+        1.6,
+        0.7
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "safety_barrier",
+      "aliases": [
+        "barrier"
+      ],
+      "default_asset": "warehouse/concrete-barrier",
+      "placement": "footprint",
+      "scale_m": [
+        1.5,
+        0.9,
+        0.5
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub",
+        "*"
+      ]
+    },
+    {
+      "id": "safety_cone",
+      "aliases": [
+        "cone",
+        "traffic_cone"
+      ],
+      "default_asset": "cross-domain/safety-cone",
+      "placement": "footprint",
+      "scale_m": [
+        0.35,
+        0.7,
+        0.35
+      ],
+      "domains": [
+        "*"
+      ],
+      "notes": "Industry traffic cone ~0.45\u20130.75 m tall; real-world metres, not relative to K1"
+    },
+    {
+      "id": "safety_fence",
+      "aliases": [
+        "machine_guard",
+        "perimeter_fence"
+      ],
+      "default_asset": "assembly-line/chainlink-fence",
+      "placement": "footprint",
+      "scale_m": [
+        2.0,
+        1.4,
+        0.08
+      ],
+      "domains": [
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "security_camera",
+      "aliases": [
+        "camera"
+      ],
+      "default_asset": "cross-domain/security-camera",
+      "placement": "anchor",
+      "scale_m": [
+        0.25,
+        0.2,
+        0.3
+      ],
+      "domains": [
+        "*"
+      ]
+    },
+    {
+      "id": "shelf",
+      "aliases": [
+        "bookshelf_shelf",
+        "wall_shelf",
+        "storage_shelf"
+      ],
+      "default_asset": "office/shelf",
+      "placement": "footprint",
+      "scale_m": [
+        0.9,
+        2.1,
+        0.4
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "tier": "P1",
+      "scope": "global",
+      "notes": "Indoor shelf \u2014 warehouse steel units use corner_shelf; pallet bays use pallet_rack"
+    },
+    {
+      "id": "shrink_wrap_pallet",
+      "aliases": [
+        "shrink_wrap",
+        "wrapped_pallet",
+        "stretch_wrap"
+      ],
+      "default_asset": "warehouse/shrink-wrap-pallet",
+      "placement": "footprint",
+      "scale_m": [
+        1.2,
+        1.4,
+        1.0
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "signage",
+      "aliases": [
+        "sign",
+        "wet_floor_sign"
+      ],
+      "default_asset": "cross-domain/wet-floor-sign",
+      "placement": "footprint",
+      "scale_m": [
+        0.35,
+        0.9,
+        0.2
+      ],
+      "domains": [
+        "*"
+      ],
+      "domain_assets": {
+        "office": "office/exit-sign"
+      },
+      "scope": "global"
+    },
+    {
+      "id": "stairs",
+      "aliases": [],
+      "default_asset": "generic/stairs",
+      "placement": "footprint",
+      "scale_m": [
+        1.2,
+        2.5,
+        3.0
+      ],
+      "domains": [
+        "*"
+      ],
+      "scope": "global"
+    },
+    {
+      "id": "station",
+      "aliases": [
+        "workstation",
+        "work_station",
+        "hopper"
+      ],
+      "default_asset": "assembly-line/station",
+      "placement": "footprint",
+      "scale_m": [
+        1.0,
+        1.4,
+        1.0
+      ],
+      "domains": [
+        "assembly-line",
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "storage_cart",
+      "aliases": [
+        "cart",
+        "industrial_cart"
+      ],
+      "default_asset": "assembly-line/industrial-storage-cart",
+      "placement": "footprint",
+      "scale_m": [
+        0.8,
+        1.0,
+        1.2
+      ],
+      "domains": [
+        "assembly-factory",
+        "distribution-hub",
+        "warehouse-bay-a"
+      ]
+    },
+    {
+      "id": "toilet",
+      "coco_id": 61,
+      "aliases": [],
+      "default_asset": "generic/toilet",
+      "placement": "footprint",
+      "scale_m": [
+        0.4,
+        0.75,
+        0.65
+      ],
+      "domains": [
+        "*"
+      ],
+      "tier": "P1"
+    },
+    {
+      "id": "tool_chest",
+      "aliases": [
+        "toolchest",
+        "toolbox"
+      ],
+      "default_asset": "assembly-line/metal-tool-chest",
+      "placement": "footprint",
+      "scale_m": [
+        0.7,
+        1.0,
+        0.45
+      ],
+      "domains": [
+        "assembly-factory",
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "tote_bin",
+      "aliases": [
+        "bin",
+        "parts_bin",
+        "plastic_container",
+        "tote"
+      ],
+      "default_asset": "warehouse/tote-bin",
+      "placement": "footprint",
+      "scale_m": [
+        0.55,
+        0.35,
+        0.4
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub"
+      ]
+    },
+    {
+      "id": "trash",
+      "aliases": [
+        "trash_can",
+        "garbage",
+        "bin"
+      ],
+      "default_asset": "kitchen/trashbag",
+      "placement": "footprint",
+      "scale_m": [
+        0.4,
+        0.7,
+        0.4
+      ],
+      "domains": [
+        "assembly-factory",
+        "warehouse-bay-a",
+        "distribution-hub",
+        "*"
+      ]
+    },
+    {
+      "id": "trash_can",
+      "aliases": [
+        "bin",
+        "garbage"
+      ],
+      "default_asset": "warehouse/metal-trash-can",
+      "placement": "footprint",
+      "scale_m": [
+        0.5,
+        0.95,
+        0.5
+      ],
+      "domains": [
+        "*"
+      ]
+    },
+    {
+      "id": "tv",
+      "coco_id": 62,
+      "aliases": [
+        "computer_monitor",
+        "display",
+        "monitor",
+        "screen",
+        "television"
+      ],
+      "default_asset": "office/television",
+      "placement": "anchor",
+      "scale_m": [
+        1.0,
+        0.6,
+        0.08
+      ],
+      "domains": [
+        "*"
+      ],
+      "tier": "P2",
+      "domain_assets": {
+        "office": "office/television"
+      },
+      "scope": "global"
+    },
+    {
+      "id": "wall",
+      "aliases": [
+        "wall_segment"
+      ],
+      "default_asset": "generic/wall-segment",
+      "placement": "wall",
+      "scale_m": [
+        4.0,
+        3.0,
+        0.2
+      ],
+      "domains": [
+        "*"
+      ],
+      "domain_assets": {
+        "office": "office/wall-module"
+      },
+      "scope": "global"
+    },
+    {
+      "id": "warehouse_shell",
+      "aliases": [
+        "modular_shell",
+        "hangar",
+        "bay_shell"
+      ],
+      "default_asset": "warehouse/modular-shell",
+      "placement": "footprint",
+      "scale_m": [
+        4.0,
+        4.0,
+        4.0
+      ],
+      "domains": [
+        "warehouse-bay-a",
+        "distribution-hub",
+        "assembly-line"
+      ]
+    },
+    {
+      "id": "water_cooler",
+      "aliases": [
+        "watercooler",
+        "drinking_fountain",
+        "cooler"
+      ],
+      "default_asset": "office/water-cooler",
+      "placement": "footprint",
+      "scale_m": [
+        0.4,
+        1.2,
+        0.4
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "scope": "global"
+    },
+    {
+      "id": "window",
+      "aliases": [
+        "window_frame",
+        "office_window",
+        "glazing"
+      ],
+      "default_asset": "office/window",
+      "placement": "wall",
+      "scale_m": [
+        1.6,
+        1.4,
+        0.12
+      ],
+      "domains": [
+        "office",
+        "*"
+      ],
+      "tier": "P2",
+      "scope": "global"
+    }
+  ],
+  "policy": "no_paid_assets",
+  "docs": "../localmap-viewer/assets/FREE-ALTERNATIVES.md",
+  "global_assets_ref": "./global-assets.json"
+}

@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "skills": {
+    "shadcn": {
+      "source": "shadcn-ui/ui",
+      "sourceType": "github",
+      "skillPath": "skills/shadcn/SKILL.md",
+      "computedHash": "f615de216e085a84e31593ad0fa9062232adc40cd87b7c7ab2b8e49abf6500be"
+    },
+    "ui-ux-pro-max": {
+      "source": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "sourceType": "github",
+      "skillPath": ".cursor/skills/ui-ux-pro-max/SKILL.md",
+      "computedHash": "bd194ec3782c6270cc17bd746a6e6597504d7b1a2bc669f59631487b27a6067e"
+    },
+    "banner-design": {
+      "source": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "sourceType": "github",
+      "skillPath": ".cursor/skills/banner-design/SKILL.md",
+      "computedHash": "2d091c7f9fd9e9c2403f7e94ea30fbe6e8be37a6d8b03c4716441e1f16184da6"
+    },
+    "brand": {
+      "source": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "sourceType": "github",
+      "skillPath": ".cursor/skills/brand/SKILL.md",
+      "computedHash": "1fd43f9acaa0cde70ab949e2745a04dc2af746bcf3c0a230b8276e216a8186cb"
+    },
+    "design": {
+      "source": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "sourceType": "github",
+      "skillPath": ".cursor/skills/design/SKILL.md",
+      "computedHash": "f1312950d31788b8c914f6bb65739e8035c1d252da71fdbe53ad544fc98f9974"
+    },
+    "design-system": {
+      "source": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "sourceType": "github",
+      "skillPath": ".cursor/skills/design-system/SKILL.md",
+      "computedHash": "ae55d8b42b186c274fda4c9523d421305bb63526caa2aacec321b4328c632341"
+    },
+    "slides": {
+      "source": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "sourceType": "github",
+      "skillPath": ".cursor/skills/slides/SKILL.md",
+      "computedHash": "1249dd10019bdeb0bc76fc07f1a105c4567fc63daf112908b1866b9b8a630179"
+    },
+    "ui-styling": {
+      "source": "nextlevelbuilder/ui-ux-pro-max-skill",
+      "sourceType": "github",
+      "skillPath": ".cursor/skills/ui-styling/SKILL.md",
+      "computedHash": "94d19be2871c5463104b06ae5b036e7ada0b9372a9080e71802cb0deb3893b64"
+    }
+  }
+}

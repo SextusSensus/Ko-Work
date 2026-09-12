@@ -1,0 +1,1730 @@
+{
+  "version": 1,
+  "updated": "2026-09-11T10:43:09Z",
+  "description": "CC0 / free-only 3D asset catalog for K1 Local Map. Statuses: downloaded | procedural | free_link. NEVER paid/purchase.",
+  "license_default": "CC0",
+  "assets": [
+    {
+      "id": "assembly-line/assembly-station",
+      "name": "Assembly workstation / bench",
+      "category": "assembly-line",
+      "status": "procedural",
+      "procedural": "assembly_station",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "label_classes": [
+        "assembly_station"
+      ]
+    },
+    {
+      "id": "assembly-line/catwalk",
+      "name": "Catwalk straight",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/catwalk-straight.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "label_classes": [
+        "catwalk"
+      ]
+    },
+    {
+      "id": "assembly-line/chainlink-fence",
+      "name": "Modular chainlink fence",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/modular_chainlink_fence/modular_chainlink_fence_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/modular_chainlink_fence",
+      "fallback_procedural": "safety_fence",
+      "label_classes": [
+        "safety_fence",
+        "fence",
+        "chainlink"
+      ],
+      "real_world_m": [
+        2.0,
+        2.0,
+        0.15
+      ]
+    },
+    {
+      "id": "assembly-line/control-panel",
+      "name": "Control panel / HMI pedestal",
+      "category": "assembly-line",
+      "status": "procedural",
+      "procedural": "control_panel",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "label_classes": [
+        "control_panel"
+      ]
+    },
+    {
+      "id": "assembly-line/conveyor",
+      "name": "Assembly conveyor (Kenney)",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/conveyor-long.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "conveyor"
+    },
+    {
+      "id": "assembly-line/conveyor-curve",
+      "name": "Conveyor corner / curve",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/conveyor-corner.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "conveyor_curve",
+      "label_classes": [
+        "conveyor",
+        "conveyor_curve"
+      ]
+    },
+    {
+      "id": "assembly-line/conveyor-elevated",
+      "name": "Elevated conveyor section",
+      "category": "assembly-line",
+      "status": "procedural",
+      "procedural": "conveyor_elevated",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "label_classes": [
+        "conveyor",
+        "conveyor_elevated"
+      ]
+    },
+    {
+      "id": "assembly-line/conveyor-long",
+      "name": "Conveyor long",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/conveyor-long.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "conveyor",
+      "label_classes": [
+        "conveyor"
+      ]
+    },
+    {
+      "id": "assembly-line/conveyor-stripe",
+      "name": "Conveyor long with stripe",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/conveyor-long-stripe.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "conveyor",
+      "label_classes": [
+        "conveyor"
+      ]
+    },
+    {
+      "id": "assembly-line/crane-lift",
+      "name": "Crane lift carriage",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/crane-lift.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "overhead_gantry",
+      "label_classes": [
+        "overhead_gantry"
+      ]
+    },
+    {
+      "id": "assembly-line/drill-press",
+      "name": "Drill press",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/drill_press_01/drill_press_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/drill_press_01",
+      "label_classes": [
+        "drill_press"
+      ]
+    },
+    {
+      "id": "assembly-line/fencing",
+      "name": "Safety fencing (conveyor bars fence)",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/conveyor-bars-fence.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "fence"
+    },
+    {
+      "id": "assembly-line/fire-extinguisher",
+      "name": "Fire extinguisher",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/korean_fire_extinguisher_01/korean_fire_extinguisher_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/korean_fire_extinguisher_01",
+      "label_classes": [
+        "fire_extinguisher"
+      ]
+    },
+    {
+      "id": "assembly-line/floor-lane",
+      "name": "Assembly line floor lane marking",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/textures/lane_markings_diff.jpg",
+      "license": "CC0",
+      "source": "Sky Connect authored (CC0)",
+      "fallback_procedural": "floor_tape",
+      "label_classes": [
+        "floor_markings",
+        "floor_tape"
+      ]
+    },
+    {
+      "id": "assembly-line/hopper",
+      "name": "Parts hopper",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/hopper-square.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "parts_bin",
+      "label_classes": [
+        "parts_bin",
+        "hopper"
+      ]
+    },
+    {
+      "id": "assembly-line/hopper-round",
+      "name": "Round hopper",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/hopper-round.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "label_classes": [
+        "parts_bin",
+        "hopper"
+      ]
+    },
+    {
+      "id": "assembly-line/industrial-pipe-lamp",
+      "name": "Industrial pipe lamp",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/industrial_pipe_lamp/industrial_pipe_lamp_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/industrial_pipe_lamp",
+      "label_classes": [
+        "overhead_light",
+        "pipe_lamp"
+      ]
+    },
+    {
+      "id": "assembly-line/industrial-storage-cart",
+      "name": "Industrial storage cart",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/industrial_storage_cart/industrial_storage_cart_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/industrial_storage_cart",
+      "label_classes": [
+        "storage_cart"
+      ]
+    },
+    {
+      "id": "assembly-line/ladder-sectioned",
+      "name": "Sectioned ladder",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/ladder_sectioned_01/ladder_sectioned_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/ladder_sectioned_01",
+      "label_classes": [
+        "ladder"
+      ]
+    },
+    {
+      "id": "assembly-line/metal-tool-chest",
+      "name": "Metal tool chest",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/polyhaven/metal_tool_chest/metal_tool_chest_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/metal_tool_chest",
+      "label_classes": [
+        "tool_chest"
+      ]
+    },
+    {
+      "id": "assembly-line/overhead-gantry",
+      "name": "Overhead gantry / crane rail",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/crane.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "overhead_gantry",
+      "label_classes": [
+        "overhead_gantry",
+        "gantry"
+      ]
+    },
+    {
+      "id": "assembly-line/parts-bin",
+      "name": "Parts bin / tote",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/industrial_pastic_container/industrial_pastic_container_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/industrial_pastic_container",
+      "fallback_procedural": "parts_bin",
+      "label_classes": [
+        "parts_bin",
+        "tote_bin"
+      ]
+    },
+    {
+      "id": "assembly-line/robot-arm",
+      "name": "Robot arm proxy (Kenney crane)",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/crane.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "robot_arm",
+      "notes": "Low-poly crane stand-in for industrial robot arm"
+    },
+    {
+      "id": "assembly-line/robotic-arm",
+      "name": "Robotic arm proxy",
+      "category": "assembly-line",
+      "status": "procedural",
+      "procedural": "robotic_arm",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in (no free articulated arm mesh shipped)",
+      "label_classes": [
+        "robotic_arm"
+      ]
+    },
+    {
+      "id": "assembly-line/safety-fence",
+      "name": "Safety fencing / light curtain",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "label_classes": [
+        "safety_fence",
+        "light_curtain"
+      ],
+      "path": "assets/library/assembly-line/polyhaven/modular_chainlink_fence/modular_chainlink_fence_1k.gltf",
+      "source_url": "https://polyhaven.com/a/modular_chainlink_fence",
+      "fallback_procedural": "safety_fence"
+    },
+    {
+      "id": "assembly-line/station",
+      "name": "Work station / hopper",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/hopper-square.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "station"
+    },
+    {
+      "id": "assembly-line/structure-shell",
+      "name": "Modular factory structure",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/structure-yellow-tall.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "wall"
+    },
+    {
+      "id": "assembly-line/structure-wall",
+      "name": "Factory structure wall",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/structure-wall.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "label_classes": [
+        "wall"
+      ]
+    },
+    {
+      "id": "assembly-line/structure-yellow",
+      "name": "Yellow industrial structure",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/structure-yellow-tall.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "safety_fence",
+      "label_classes": [
+        "safety_fence"
+      ]
+    },
+    {
+      "id": "assembly-line/tex-brushed-metal",
+      "name": "Brushed metal texture",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/textures/brushed_metal_diff.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/metal_plate"
+    },
+    {
+      "id": "assembly-line/tex-caution",
+      "name": "Caution yellow/black stripes",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/textures/caution_stripes_diff.jpg",
+      "license": "CC0",
+      "source": "Sky Connect authored (CC0)"
+    },
+    {
+      "id": "assembly-line/tex-rubber-belt",
+      "name": "Rubber belt texture",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/textures/rubber_belt_diff.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/rubber_tiles"
+    },
+    {
+      "id": "assembly-line/tex-rubber-mat",
+      "name": "Rubber mat (ambientCG)",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/textures/rubber_mat_diff.jpg",
+      "license": "CC0",
+      "source": "ambientCG",
+      "source_url": "https://ambientcg.com/view?id=Rubber004"
+    },
+    {
+      "id": "assembly-line/tex-scratched-metal",
+      "name": "Scratched / brushed metal (ambientCG)",
+      "category": "assembly-line",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/textures/scratched_metal_diff.jpg",
+      "license": "CC0",
+      "source": "ambientCG",
+      "source_url": "https://ambientcg.com/view?id=Metal032"
+    },
+    {
+      "id": "cross-domain/caged-hanging-light",
+      "name": "Caged hanging light",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/caged_hanging_light/caged_hanging_light_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/caged_hanging_light",
+      "fallback_procedural": "hanging_light",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/crush-barrier",
+      "name": "Crush barrier",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/traffic/Crush_Barrier.glb",
+      "license": "CC0",
+      "source": "OpenGameArt Traffic Road Assets",
+      "source_url": "https://opengameart.org/content/traffic-road-assets",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/fluorescent-lights",
+      "name": "Mounted fluorescent lights",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/mounted_fluorescent_lights/mounted_fluorescent_lights_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/mounted_fluorescent_lights",
+      "label_classes": [
+        "light_fixture",
+        "fluorescent"
+      ],
+      "real_world_m": [
+        1.2,
+        0.12,
+        0.25
+      ]
+    },
+    {
+      "id": "cross-domain/k1-robot-proxy",
+      "name": "Booster K1 dimension proxy",
+      "category": "cross-domain",
+      "status": "procedural",
+      "procedural": "k1_robot",
+      "license": "internal",
+      "source": "URDF-accurate fallback (~0.95\u00d70.40\u00d70.18 m) when robot/k1 GLB missing",
+      "source_url": "https://github.com/BoosterRobotics/booster_assets",
+      "fallback_of": "robot/k1",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/metal-fence-quaternius",
+      "name": "Quaternius metal fence twin",
+      "category": "cross-domain",
+      "status": "free_link",
+      "license": "CC0",
+      "source": "Quaternius via Poly Pizza",
+      "source_url": "https://poly.pizza/m/qWKhREFj7H",
+      "fallback_procedural": "fence",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/person-placeholder",
+      "name": "Person placeholder",
+      "category": "cross-domain",
+      "status": "procedural",
+      "procedural": "person",
+      "license": "CC0",
+      "source": "procedural capsule",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/road-block",
+      "name": "Road block",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/traffic/Road_Block.glb",
+      "license": "CC0",
+      "source": "OpenGameArt Traffic Road Assets",
+      "source_url": "https://opengameart.org/content/traffic-road-assets",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/safety-cone",
+      "name": "Safety cone",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/kenney/cone.glb",
+      "license": "CC0",
+      "source": "Kenney Prototype Pack",
+      "source_url": "https://kenney.nl/",
+      "fallback_procedural": "cone",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/security-camera",
+      "name": "Security camera",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/security_camera_01/security_camera_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/security_camera_01",
+      "label_classes": [
+        "security_camera",
+        "camera"
+      ],
+      "real_world_m": [
+        0.25,
+        0.2,
+        0.3
+      ]
+    },
+    {
+      "id": "cross-domain/traffic-cone-oga",
+      "name": "Traffic cone",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/traffic/Traffic_Cone.glb",
+      "license": "CC0",
+      "source": "OpenGameArt Traffic Road Assets",
+      "source_url": "https://opengameart.org/content/traffic-road-assets",
+      "fallback_procedural": "cone",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/warning-triangle",
+      "name": "Warning triangle",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/traffic/Warning_Triangle.glb",
+      "license": "CC0",
+      "source": "OpenGameArt Traffic Road Assets",
+      "source_url": "https://opengameart.org/content/traffic-road-assets",
+      "scope": "global"
+    },
+    {
+      "id": "cross-domain/wet-floor-sign",
+      "name": "Wet floor sign",
+      "category": "cross-domain",
+      "status": "downloaded",
+      "path": "assets/library/cross-domain/WetFloorSign_01/WetFloorSign_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/WetFloorSign_01",
+      "fallback_procedural": "sign_wet",
+      "scope": "global"
+    },
+    {
+      "id": "generic/bed",
+      "name": "Bed",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "bed",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/book",
+      "name": "Book stack",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "book",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/clock",
+      "name": "Wall clock",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "clock",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/elevator",
+      "name": "Elevator door",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "elevator",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/pillar",
+      "name": "Structural pillar",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "pillar",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/potted-plant",
+      "name": "Potted plant",
+      "category": "generic",
+      "status": "downloaded",
+      "path": "assets/library/generic/potted_plant_01/potted_plant_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/potted_plant_01",
+      "fallback_procedural": "plant",
+      "scope": "global"
+    },
+    {
+      "id": "generic/signage",
+      "name": "Wall signage",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "signage",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/sofa",
+      "name": "Sofa",
+      "category": "generic",
+      "status": "downloaded",
+      "path": "assets/library/generic/Sofa_01/Sofa_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Sofa_01",
+      "fallback_procedural": "sofa",
+      "scope": "global"
+    },
+    {
+      "id": "generic/stairs",
+      "name": "Stairs",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "stairs",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/toilet",
+      "name": "Toilet",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "toilet",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "generic/wall-segment",
+      "name": "Wall segment",
+      "category": "generic",
+      "status": "procedural",
+      "procedural": "wall",
+      "license": "CC0",
+      "source": "procedural",
+      "scope": "global"
+    },
+    {
+      "id": "kitchen/counter",
+      "name": "Kitchen counter",
+      "category": "kitchen",
+      "status": "procedural",
+      "procedural": "counter",
+      "license": "CC0",
+      "source": "procedural"
+    },
+    {
+      "id": "kitchen/dining-chair",
+      "name": "Dining chair",
+      "category": "kitchen",
+      "status": "downloaded",
+      "path": "assets/library/kitchen/dining_chair_02/dining_chair_02_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/dining_chair_02",
+      "fallback_procedural": "chair"
+    },
+    {
+      "id": "kitchen/dining-table",
+      "name": "Dining table",
+      "category": "kitchen",
+      "status": "downloaded",
+      "path": "assets/library/kitchen/dining_table/dining_table_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/dining_table",
+      "fallback_procedural": "table"
+    },
+    {
+      "id": "kitchen/doorway",
+      "name": "Door frame",
+      "category": "kitchen",
+      "status": "procedural",
+      "procedural": "door_frame",
+      "license": "CC0",
+      "source": "procedural"
+    },
+    {
+      "id": "kitchen/drawer-cabinet",
+      "name": "Drawer cabinet",
+      "category": "kitchen",
+      "status": "downloaded",
+      "path": "assets/library/kitchen/drawer_cabinet/drawer_cabinet_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/drawer_cabinet",
+      "fallback_procedural": "cabinet"
+    },
+    {
+      "id": "kitchen/electric-stove",
+      "name": "Electric stove",
+      "category": "kitchen",
+      "status": "downloaded",
+      "path": "assets/library/kitchen/electric_stove/electric_stove_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/electric_stove",
+      "fallback_procedural": "stove"
+    },
+    {
+      "id": "kitchen/fridge",
+      "name": "Refrigerator (procedural)",
+      "category": "kitchen",
+      "status": "procedural",
+      "procedural": "fridge",
+      "license": "CC0",
+      "source": "procedural \u2014 no light CC0 fridge GLTF in scrape set",
+      "notes": "Linked alternatives: Sketchfab CC0 searches skipped (license ambiguity)."
+    },
+    {
+      "id": "kitchen/microwave",
+      "name": "Vintage microwave",
+      "category": "kitchen",
+      "status": "downloaded",
+      "path": "assets/library/kitchen/vintage_microwave/vintage_microwave_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/vintage_microwave",
+      "fallback_procedural": "microwave"
+    },
+    {
+      "id": "kitchen/stool",
+      "name": "Wooden stool",
+      "category": "kitchen",
+      "status": "downloaded",
+      "path": "assets/library/kitchen/wooden_stool_01/wooden_stool_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/wooden_stool_01",
+      "fallback_procedural": "stool"
+    },
+    {
+      "id": "kitchen/trashbag",
+      "name": "Trash bag",
+      "category": "kitchen",
+      "status": "downloaded",
+      "path": "assets/library/kitchen/trashbag/trashbag_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/trashbag",
+      "fallback_procedural": "trash"
+    },
+    {
+      "id": "materials/concrete-floor-painted",
+      "name": "Painted concrete floor (PBR)",
+      "category": "materials",
+      "status": "downloaded",
+      "path": "assets/library/materials/concrete_floor_painted_diff_1k.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/concrete_floor_painted"
+    },
+    {
+      "id": "materials/floor-concrete",
+      "name": "Concrete floor painted",
+      "category": "materials",
+      "status": "downloaded",
+      "path": "assets/floor_diff.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/concrete_floor_painted"
+    },
+    {
+      "id": "materials/floor-markings",
+      "name": "Road / aisle line markings",
+      "category": "materials",
+      "status": "downloaded",
+      "path": "assets/library/materials/markings/road_lines_007_color.jpg",
+      "license": "CC0",
+      "source": "ambientCG",
+      "source_url": "https://ambientcg.com/view?id=RoadLines007"
+    },
+    {
+      "id": "materials/floor-wood",
+      "name": "Wood floor",
+      "category": "materials",
+      "status": "downloaded",
+      "path": "assets/library/materials/wood_floor_diff.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/wood_floor"
+    },
+    {
+      "id": "materials/metal-plate",
+      "name": "Metal plate",
+      "category": "materials",
+      "status": "downloaded",
+      "path": "assets/library/materials/metal_plate_diff.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/metal_plate"
+    },
+    {
+      "id": "materials/metal032",
+      "name": "Industrial metal (ambientCG Metal032)",
+      "category": "materials",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/materials/metal032_color.jpg",
+      "license": "CC0",
+      "source": "ambientCG",
+      "source_url": "https://ambientcg.com/view?id=Metal032"
+    },
+    {
+      "id": "materials/painted-plaster-wall",
+      "name": "Painted plaster wall (PBR)",
+      "category": "materials",
+      "status": "downloaded",
+      "path": "assets/library/materials/painted_plaster_wall_diff_1k.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/painted_plaster_wall"
+    },
+    {
+      "id": "materials/wall-tiles",
+      "name": "Long white tiles",
+      "category": "materials",
+      "status": "downloaded",
+      "path": "assets/library/materials/long_white_tiles_diff.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/long_white_tiles"
+    },
+    {
+      "id": "office/bookcase",
+      "name": "Worn wooden bookshelf",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/wooden_bookshelf_worn/wooden_bookshelf_worn_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/wooden_bookshelf_worn",
+      "fallback_procedural": "bookcase",
+      "scope": "global",
+      "label_classes": [
+        "bookcase"
+      ],
+      "real_world_m": [
+        0.9,
+        2.1,
+        0.4
+      ]
+    },
+    {
+      "id": "office/carpet-pbr",
+      "name": "Dirty carpet PBR (Poly Haven)",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/textures/carpet_ph_diff_1k.jpg",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/dirty_carpet",
+      "label_classes": [
+        "hallway_carpet",
+        "carpet"
+      ]
+    },
+    {
+      "id": "office/ceiling-tile",
+      "name": "Ceiling tile",
+      "category": "office",
+      "status": "downloaded",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/ceiling_interior",
+      "scope": "global",
+      "label_classes": [
+        "ceiling_tile"
+      ],
+      "real_world_m": [
+        0.6,
+        0.02,
+        0.6
+      ],
+      "texture": "assets/library/office/textures/ceiling_tile_diff.jpg",
+      "path": "assets/library/office/textures/ceiling_ph_diff_1k.jpg"
+    },
+    {
+      "id": "office/coffee-table",
+      "name": "Modern coffee table",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/modern_coffee_table_01/modern_coffee_table_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/modern_coffee_table_01",
+      "scope": "global",
+      "label_classes": [
+        "coffee_table"
+      ],
+      "real_world_m": [
+        1.1,
+        0.4,
+        0.6
+      ]
+    },
+    {
+      "id": "office/couch",
+      "name": "Lounge sofa",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/generic/Sofa_01/Sofa_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Sofa_01",
+      "fallback_procedural": "sofa",
+      "scope": "global",
+      "label_classes": [
+        "couch",
+        "sofa"
+      ],
+      "real_world_m": [
+        1.8,
+        0.85,
+        0.85
+      ]
+    },
+    {
+      "id": "office/cubicle",
+      "name": "Cubicle partition",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "cubicle",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "cubicle",
+        "office_partition",
+        "quiet_cube"
+      ],
+      "real_world_m": [
+        1.6,
+        1.5,
+        1.6
+      ]
+    },
+    {
+      "id": "office/doorway",
+      "name": "Office doorway",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "door_frame",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "doorway",
+        "door"
+      ],
+      "real_world_m": [
+        1.0,
+        2.1,
+        0.15
+      ]
+    },
+    {
+      "id": "office/elevator-doors",
+      "name": "Elevator doors",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "elevator",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "elevator",
+        "elevator_door"
+      ],
+      "real_world_m": [
+        1.2,
+        2.2,
+        0.2
+      ]
+    },
+    {
+      "id": "office/exit-sign",
+      "name": "Exit sign",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "exit_sign",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "exit_sign"
+      ],
+      "real_world_m": [
+        0.4,
+        0.2,
+        0.06
+      ]
+    },
+    {
+      "id": "office/hallway-carpet",
+      "name": "Hallway carpet",
+      "category": "office",
+      "status": "downloaded",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/dirty_carpet",
+      "scope": "global",
+      "label_classes": [
+        "hallway_carpet",
+        "carpet"
+      ],
+      "real_world_m": [
+        10.0,
+        0.02,
+        1.4
+      ],
+      "texture": "assets/library/office/textures/carpet_diff.jpg",
+      "path": "assets/library/office/textures/carpet_ph_diff_1k.jpg"
+    },
+    {
+      "id": "office/meeting-table",
+      "name": "Meeting / side table",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/SchoolDesk_01/SchoolDesk_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/SchoolDesk_01",
+      "fallback_procedural": "table",
+      "scope": "global",
+      "label_classes": [
+        "dining_table",
+        "table",
+        "meeting_table"
+      ],
+      "real_world_m": [
+        1.2,
+        0.75,
+        0.7
+      ]
+    },
+    {
+      "id": "office/metal-office-desk",
+      "name": "Metal office desk",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/metal_office_desk/metal_office_desk_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/metal_office_desk",
+      "fallback_procedural": "desk",
+      "scope": "global",
+      "label_classes": [
+        "desk",
+        "office_desk"
+      ],
+      "real_world_m": [
+        1.4,
+        0.75,
+        0.7
+      ]
+    },
+    {
+      "id": "office/modern-armchair",
+      "name": "Modern armchair",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/modern_arm_chair_01/modern_arm_chair_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/modern_arm_chair_01",
+      "scope": "global",
+      "label_classes": [
+        "armchair",
+        "lounge_chair"
+      ],
+      "real_world_m": [
+        0.75,
+        0.9,
+        0.75
+      ]
+    },
+    {
+      "id": "office/modern-cabinet",
+      "name": "Modern wooden cabinet",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/modern_wooden_cabinet/modern_wooden_cabinet_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/modern_wooden_cabinet",
+      "scope": "global",
+      "label_classes": [
+        "cabinet",
+        "sideboard"
+      ],
+      "real_world_m": [
+        1.0,
+        0.85,
+        0.45
+      ]
+    },
+    {
+      "id": "office/office-chair",
+      "name": "Office chair",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/plastic_monobloc_chair_01/plastic_monobloc_chair_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/plastic_monobloc_chair_01",
+      "fallback_procedural": "chair",
+      "scope": "global",
+      "label_classes": [
+        "chair",
+        "office_chair"
+      ],
+      "real_world_m": [
+        0.5,
+        0.9,
+        0.5
+      ]
+    },
+    {
+      "id": "office/painted-cabinet",
+      "name": "Painted wooden cabinet",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/painted_wooden_cabinet/painted_wooden_cabinet_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/painted_wooden_cabinet",
+      "scope": "global",
+      "label_classes": [
+        "cabinet",
+        "storage_cabinet"
+      ],
+      "real_world_m": [
+        0.9,
+        1.6,
+        0.45
+      ]
+    },
+    {
+      "id": "office/potted-plant",
+      "name": "Office potted plant",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/potted_plant_02/potted_plant_02_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/potted_plant_02",
+      "fallback_procedural": "plant",
+      "scope": "global",
+      "label_classes": [
+        "potted_plant",
+        "plant"
+      ],
+      "real_world_m": [
+        0.4,
+        1.0,
+        0.4
+      ]
+    },
+    {
+      "id": "office/shelf",
+      "name": "Office shelf",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/Shelf_01/Shelf_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Shelf_01",
+      "fallback_procedural": "shelf",
+      "scope": "global",
+      "label_classes": [
+        "shelf",
+        "bookcase"
+      ],
+      "real_world_m": [
+        0.9,
+        2.1,
+        0.4
+      ]
+    },
+    {
+      "id": "office/television",
+      "name": "TV / monitor",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/Television_01/Television_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Television_01",
+      "fallback_procedural": "tv",
+      "scope": "global",
+      "label_classes": [
+        "tv",
+        "monitor",
+        "television"
+      ],
+      "real_world_m": [
+        1.0,
+        0.6,
+        0.1
+      ]
+    },
+    {
+      "id": "office/wall-module",
+      "name": "Interior wall module",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "wall",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "wall",
+        "wall_segment"
+      ],
+      "real_world_m": [
+        4.0,
+        3.0,
+        0.2
+      ]
+    },
+    {
+      "id": "office/water-cooler",
+      "name": "Water cooler",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "water_cooler",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "water_cooler"
+      ],
+      "real_world_m": [
+        0.4,
+        1.2,
+        0.4
+      ]
+    },
+    {
+      "id": "office/window",
+      "name": "Window module",
+      "category": "office",
+      "status": "procedural",
+      "procedural": "window",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in",
+      "scope": "global",
+      "label_classes": [
+        "window"
+      ],
+      "real_world_m": [
+        1.6,
+        1.4,
+        0.12
+      ]
+    },
+    {
+      "id": "office/wooden-bookshelf",
+      "name": "Worn wooden bookshelf",
+      "category": "office",
+      "status": "downloaded",
+      "path": "assets/library/office/wooden_bookshelf_worn/wooden_bookshelf_worn_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/wooden_bookshelf_worn",
+      "scope": "global",
+      "label_classes": [
+        "bookcase",
+        "bookshelf"
+      ],
+      "real_world_m": [
+        0.95,
+        2.0,
+        0.4
+      ]
+    },
+    {
+      "id": "robot/k1",
+      "name": "Booster K1 (official URDF mesh)",
+      "category": "robot",
+      "status": "downloaded",
+      "path": "assets/library/robot/k1/k1_22dof.glb",
+      "license": "BSD-3-Clause",
+      "source": "BoosterRobotics/booster_assets K1_22dof",
+      "source_url": "https://github.com/BoosterRobotics/booster_assets",
+      "scale_m": [
+        0.5,
+        0.95,
+        0.22
+      ],
+      "fallback_procedural": "k1_robot",
+      "notes": "Assembled from official STL visuals; rebuild via scripts/fetch-k1-mesh.sh"
+    },
+    {
+      "id": "warehouse/barrel",
+      "name": "Barrel",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/Barrel_01/Barrel_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Barrel_01",
+      "fallback_procedural": "barrel"
+    },
+    {
+      "id": "warehouse/barrel-02",
+      "name": "Barrel 02",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/Barrel_02/Barrel_02_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/Barrel_02",
+      "label_classes": [
+        "barrel",
+        "drum"
+      ],
+      "real_world_m": [
+        0.6,
+        0.9,
+        0.6
+      ]
+    },
+    {
+      "id": "warehouse/bollard",
+      "name": "Safety bollard",
+      "category": "warehouse",
+      "status": "procedural",
+      "procedural": "bollard",
+      "license": "CC0",
+      "source": "procedural"
+    },
+    {
+      "id": "warehouse/cardboard-box",
+      "name": "Cardboard box",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/cardboard_box_01/cardboard_box_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/cardboard_box_01",
+      "fallback_procedural": "box"
+    },
+    {
+      "id": "warehouse/concrete-barrier",
+      "name": "Concrete road barrier",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/concrete_road_barrier/concrete_road_barrier_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/concrete_road_barrier",
+      "fallback_procedural": "barrier"
+    },
+    {
+      "id": "warehouse/conveyor",
+      "name": "Conveyor segment",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/kenney/conveyor-long.glb",
+      "license": "CC0",
+      "source": "Kenney",
+      "source_url": "https://kenney.nl/",
+      "fallback_procedural": "conveyor"
+    },
+    {
+      "id": "warehouse/crane-proxy",
+      "name": "Warehouse crane / arm proxy",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/kenney/crane.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "robot_arm"
+    },
+    {
+      "id": "warehouse/dock-door",
+      "name": "Rollershutter dock door",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/rollershutter_door/rollershutter_door_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/rollershutter_door",
+      "fallback_procedural": "dock_door"
+    },
+    {
+      "id": "warehouse/door-kenney",
+      "name": "Industrial door (Kenney)",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/assembly-line/kenney/door-wide-closed.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "door_frame"
+    },
+    {
+      "id": "warehouse/floor-tape",
+      "name": "Floor safety tape",
+      "category": "warehouse",
+      "status": "procedural",
+      "procedural": "floor_tape",
+      "license": "CC0",
+      "source": "procedural"
+    },
+    {
+      "id": "warehouse/forklift",
+      "name": "Forklift proxy",
+      "category": "warehouse",
+      "status": "procedural",
+      "procedural": "forklift",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in"
+    },
+    {
+      "id": "warehouse/hand-truck",
+      "name": "Hand truck / pallet jack proxy",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/hand_truck/hand_truck_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/hand_truck",
+      "fallback_procedural": "hand_truck"
+    },
+    {
+      "id": "warehouse/kenney-box-large",
+      "name": "Kenney box large",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/kenney/box-large.glb",
+      "license": "CC0",
+      "source": "Kenney",
+      "source_url": "https://kenney.nl/",
+      "fallback_procedural": "box"
+    },
+    {
+      "id": "warehouse/kenney-structure-tall",
+      "name": "Kenney rack structure",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/kenney/structure-tall.glb",
+      "license": "CC0",
+      "source": "Kenney",
+      "source_url": "https://kenney.nl/",
+      "fallback_procedural": "pallet_rack"
+    },
+    {
+      "id": "warehouse/laptop",
+      "name": "Laptop",
+      "category": "warehouse",
+      "status": "procedural",
+      "procedural": "laptop",
+      "license": "CC0",
+      "source": "procedural"
+    },
+    {
+      "id": "warehouse/metal-trash-can",
+      "name": "Metal trash can",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/metal_trash_can/metal_trash_can_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/metal_trash_can",
+      "label_classes": [
+        "trash_can",
+        "bin"
+      ],
+      "real_world_m": [
+        0.5,
+        0.95,
+        0.5
+      ]
+    },
+    {
+      "id": "warehouse/modular-shell",
+      "name": "Modular warehouse shell bay",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/kenney/structure-tall.glb",
+      "license": "CC0",
+      "source": "Kenney",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "wall"
+    },
+    {
+      "id": "warehouse/pallet",
+      "name": "Wood pallet (CC0 authored)",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/wooden_pallet_cc0/wooden_pallet_cc0.gltf",
+      "license": "CC0",
+      "source": "Sky Connect authored stand-in",
+      "fallback_procedural": "pallet"
+    },
+    {
+      "id": "warehouse/pallet-quaternius-link",
+      "name": "Quaternius pallet twin",
+      "category": "warehouse",
+      "status": "free_link",
+      "license": "CC0",
+      "source": "Quaternius via Poly Pizza",
+      "source_url": "https://poly.pizza/m/cUAsYHDqfD"
+    },
+    {
+      "id": "warehouse/pallet-rack",
+      "name": "Pallet rack / worn metal rack",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/worn_metal_rack/worn_metal_rack_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/worn_metal_rack",
+      "fallback_procedural": "pallet_rack"
+    },
+    {
+      "id": "warehouse/plastic-crate",
+      "name": "Plastic crate (Poly Haven 03)",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/plastic_crate_03/plastic_crate_03_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/plastic_crate_03",
+      "fallback_procedural": "crate",
+      "notes": "Preferred sharp Poly Haven twin over plastic_crate_01"
+    },
+    {
+      "id": "warehouse/plastic-crate-03",
+      "name": "Plastic crate 03 (Poly Haven)",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/plastic_crate_03/plastic_crate_03_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/plastic_crate_03",
+      "label_classes": [
+        "crate",
+        "plastic_crate",
+        "tote"
+      ],
+      "real_world_m": [
+        0.5,
+        0.35,
+        0.6
+      ]
+    },
+    {
+      "id": "warehouse/propane-tank",
+      "name": "Propane tank",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/propane_tank/propane_tank_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/propane_tank",
+      "label_classes": [
+        "propane_tank",
+        "gas_cylinder"
+      ],
+      "real_world_m": [
+        0.4,
+        1.2,
+        0.4
+      ]
+    },
+    {
+      "id": "warehouse/safety-fence",
+      "name": "Warehouse safety fence",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/kenney/conveyor-bars-fence.glb",
+      "license": "CC0",
+      "source": "Kenney Factory Kit",
+      "source_url": "https://kenney.nl/assets/factory-kit",
+      "fallback_procedural": "fence"
+    },
+    {
+      "id": "warehouse/shrink-wrap-pallet",
+      "name": "Shrink-wrapped pallet load",
+      "category": "warehouse",
+      "status": "procedural",
+      "procedural": "shrink_wrap",
+      "license": "CC0",
+      "source": "procedural Three.js stand-in (pallet + translucent wrap)"
+    },
+    {
+      "id": "warehouse/steel-shelves",
+      "name": "Steel frame shelves",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/steel_frame_shelves_01/steel_frame_shelves_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/steel_frame_shelves_01",
+      "fallback_procedural": "pallet_rack"
+    },
+    {
+      "id": "warehouse/tote-bin",
+      "name": "Industrial plastic tote",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/industrial_pastic_container/industrial_pastic_container_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/industrial_pastic_container",
+      "fallback_procedural": "tote"
+    },
+    {
+      "id": "warehouse/tv-monitor",
+      "name": "TV / monitor box",
+      "category": "warehouse",
+      "status": "procedural",
+      "procedural": "tv",
+      "license": "CC0",
+      "source": "procedural"
+    },
+    {
+      "id": "warehouse/wooden-crate",
+      "name": "Wooden crate",
+      "category": "warehouse",
+      "status": "downloaded",
+      "path": "assets/library/warehouse/wooden_crate_01/wooden_crate_01_1k.gltf",
+      "license": "CC0",
+      "source": "Poly Haven",
+      "source_url": "https://polyhaven.com/a/wooden_crate_01",
+      "fallback_procedural": "crate"
+    }
+  ],
+  "policy": {
+    "no_paid_assets": true,
+    "allowed_statuses": [
+      "downloaded",
+      "procedural",
+      "free_link"
+    ],
+    "forbidden_statuses": [
+      "paid",
+      "purchase",
+      "purchased_placeholder",
+      "link_only",
+      "free_download"
+    ],
+    "preferred_sources": [
+      "Poly Haven",
+      "ambientCG",
+      "Kenney.nl",
+      "Quaternius",
+      "OpenGameArt",
+      "procedural Three.js"
+    ]
+  }
+}

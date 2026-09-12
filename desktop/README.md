@@ -1,4 +1,4 @@
-# K1 Finder
+# Sky Connect
 
 A zero-dependency Windows desktop app that scans your local network to discover a
 **Booster K1** humanoid robot and hands you the exact connection details.
@@ -153,8 +153,8 @@ walking requires **DRIVE (walk)** + **ARM MOTION** + a typed confirm.
 
 ## How to run
 
-- Double-click **`Launch K1 Finder (no console).vbs`** for the clean, window-only experience.
-- Or double-click **`K1 Finder.bat`** if you want to see console/debug output too.
+- Double-click **`Launch Sky Connect (no console).vbs`** for the clean, window-only experience.
+- Or double-click **`Sky Connect.bat`** if you want to see console/debug output too.
 
 Either one opens the app window. Click **Scan for K1**, or type the robot's IP and
 click **Verify / Connect**.

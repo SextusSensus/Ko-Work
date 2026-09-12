@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>K1 Local Map</title>
+  <style>
+    :root {
+      --bg: #000000;
+      --panel: rgba(10, 10, 12, 0.82);
+      --raised: #141416;
+      --stroke: rgba(255,255,255,0.10);
+      --text: #F5F5F7;
+      --muted: #8E8E93;
+      --accent: #32D4FF;
+      --danger: #E31937;
+      --ok: #34C759;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%; background: var(--bg); color: var(--text);
+      font-family: "SF Pro Display", "Bahnschrift", "Segoe UI Variable", "Segoe UI", sans-serif;
+      overflow: hidden; -webkit-font-smoothing: antialiased;
+    }
+    #viewport { position: absolute; inset: 0; touch-action: none; overscroll-behavior: none; }
+    canvas { display: block; touch-action: none; user-select: none; -webkit-user-select: none; }
+
+    /* Top mission bar */
+    #chrome {
+      position: absolute; left: 0; right: 0; top: 0; z-index: 5;
+      pointer-events: none;
+      background: linear-gradient(180deg, rgba(0,0,0,0.92) 0%, rgba(0,0,0,0.55) 70%, transparent 100%);
+      padding: 14px 16px 28px;
+    }
+    #chrome .row { display: flex; align-items: center; gap: 12px; pointer-events: auto; }
+    #brand {
+      flex: 0 0 auto; letter-spacing: 0.18em; font-size: 11px; font-weight: 700;
+      color: var(--muted); text-transform: uppercase;
+    }
+    #brand strong { color: var(--text); font-weight: 700; letter-spacing: 0.12em; }
+    #domain-bar {
+      flex: 1 1 auto; display: flex; align-items: center; gap: 6px;
+      overflow-x: auto; scrollbar-width: none;
+    }
+    #domain-bar::-webkit-scrollbar { display: none; }
+    .chip {
+      appearance: none; border: 1px solid var(--stroke); background: var(--raised);
+      color: var(--text); font: 600 12px/1 inherit; padding: 8px 12px; border-radius: 2px;
+      cursor: pointer; white-space: nowrap; transition: border-color .15s, color .15s, background .15s, box-shadow .15s;
+    }
+    .chip:hover { border-color: rgba(50,212,255,0.45); color: var(--accent); }
+    .chip.active {
+      background: rgba(50,212,255,0.12); border-color: var(--accent); color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(50,212,255,0.15);
+    }
+    .chip.new {
+      border-style: dashed; color: var(--accent); border-color: rgba(50,212,255,0.4); background: transparent;
+    }
+
+    /* Left telemetry HUD */
+    #hud {
+      position: absolute; left: 16px; top: 64px; z-index: 4; width: min(300px, 86vw);
+      background: var(--panel); border: 1px solid var(--stroke); backdrop-filter: blur(16px);
+      border-radius: 12px; padding: 14px 14px 12px; pointer-events: none;
+    }
+    #hud h1 {
+      font-size: 13px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+      margin-bottom: 2px;
+    }
+    #hud h1 .accent { color: var(--accent); }
+    #domain-title { color: var(--text); font-weight: 600; letter-spacing: 0; text-transform: none; font-size: 18px; display: block; margin: 4px 0 10px; }
+    #stats {
+      font-family: "SF Mono", "Cascadia Mono", "Consolas", monospace;
+      font-size: 11px; color: var(--muted); line-height: 1.55;
+    }
+    #live-row {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+      font-family: "SF Mono", "Cascadia Mono", Consolas, monospace; font-size: 10px;
+    }
+    #live-dot {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--muted);
+      box-shadow: none; flex: 0 0 auto;
+    }
+    #live-dot.on { background: var(--ok); box-shadow: 0 0 8px rgba(52,199,89,0.55); }
+    #live-dot.warn { background: #C8AA5A; }
+    #live-dot.off { background: var(--danger); }
+    #live-label { color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; }
+    #live-label strong { color: var(--text); font-weight: 600; letter-spacing: 0.04em; }
+    #pose-readout {
+      margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--stroke);
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+      font-family: "SF Mono", "Cascadia Mono", Consolas, monospace; font-size: 10px;
+    }
+    #pose-readout .cell { background: rgba(255,255,255,0.03); border-radius: 6px; padding: 6px 6px 5px; }
+    #pose-readout .k { color: var(--muted); display: block; margin-bottom: 2px; letter-spacing: 0.08em; }
+    #pose-readout .v { color: var(--accent); font-size: 12px; font-weight: 600; }
+    #vel-readout {
+      margin-top: 6px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+      font-family: "SF Mono", "Cascadia Mono", Consolas, monospace; font-size: 10px;
+    }
+    #vel-readout .cell { background: rgba(255,255,255,0.03); border-radius: 6px; padding: 6px 6px 5px; }
+    #vel-readout .k { color: var(--muted); display: block; margin-bottom: 2px; letter-spacing: 0.08em; }
+    #vel-readout .v { color: var(--text); font-size: 11px; font-weight: 600; }
+
+    /* Right layer toggles */
+    #layers {
+      position: absolute; right: 16px; top: 64px; z-index: 4;
+      display: flex; flex-direction: column; gap: 6px; pointer-events: auto;
+    }
+    .layer {
+      appearance: none; border: 1px solid var(--stroke); background: var(--panel);
+      color: var(--muted); font: 600 11px/1 inherit; letter-spacing: 0.08em; text-transform: uppercase;
+      padding: 10px 12px; border-radius: 2px; cursor: pointer; text-align: left;
+      backdrop-filter: blur(16px); transition: color .15s, border-color .15s, background .15s;
+      min-width: 128px;
+    }
+    .layer.on { color: var(--text); border-color: rgba(50,212,255,0.55); background: rgba(50,212,255,0.10); }
+    .layer .dot {
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--muted); margin-right: 8px; vertical-align: 1px;
+    }
+    .layer.on .dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+    #hint {
+      position: absolute; right: 16px; bottom: 14px; z-index: 4;
+      font-size: 11px; color: var(--muted);
+      font-family: "SF Mono", "Cascadia Mono", Consolas, monospace;
+      text-align: right; pointer-events: none;
+    }
+    #err {
+      position: absolute; left: 16px; bottom: 14px; z-index: 4;
+      font-size: 11px; color: var(--danger);
+      font-family: "SF Mono", Consolas, monospace; display: none;
+      max-width: 50vw;
+    }
+
+    #new-domain-modal {
+      display: none; position: absolute; inset: 0; z-index: 20;
+      background: rgba(0,0,0,0.72); align-items: center; justify-content: center;
+    }
+    #new-domain-modal.open { display: flex; }
+    #new-domain-modal .card {
+      width: min(380px, 92vw); background: #111113; border: 1px solid var(--stroke);
+      border-radius: 14px; padding: 20px 18px 16px;
+    }
+    #new-domain-modal h2 { font-size: 17px; margin-bottom: 6px; font-weight: 600; }
+    #new-domain-modal p { font-size: 12px; color: var(--muted); margin-bottom: 14px; line-height: 1.45; }
+    #new-domain-modal input {
+      width: 100%; background: #0a0a0c; border: 1px solid var(--stroke); border-radius: 8px;
+      color: var(--text); padding: 12px 12px; font: 13px/1 "SF Mono", Consolas, monospace;
+      margin-bottom: 14px; outline: none;
+    }
+    #new-domain-modal input:focus { border-color: var(--accent); }
+    #new-domain-modal .row { display: flex; gap: 8px; justify-content: flex-end; }
+    #new-domain-modal button {
+      appearance: none; border: 0; cursor: pointer; font: 600 13px/1 inherit;
+      padding: 11px 14px; border-radius: 8px;
+    }
+    #new-domain-modal .ok { background: var(--accent); color: #000; }
+    #new-domain-modal .cancel { background: #1c1c1e; color: var(--text); border: 1px solid var(--stroke); }
+
+    /* embed=1: Three.js canvas only — shadcn React chrome hosts HUD/chips/dialogs */
+    body.embed #chrome,
+    body.embed #hud,
+    body.embed #layers,
+    body.embed #hint,
+    body.embed #new-domain-modal { display: none !important; }
+    body.embed #err { left: 12px; bottom: 12px; }
+  </style>
+  <script>
+    (function () {
+      var q = new URLSearchParams(location.search);
+      if (q.get('embed') === '1' || q.get('chrome') === '0') {
+        document.documentElement.classList.add('embed');
+        document.addEventListener('DOMContentLoaded', function () {
+          document.body.classList.add('embed');
+        });
+      }
+    })();
+  </script>
+</head>
+<body>
+  <div id="viewport"></div>
+
+  <div id="chrome">
+    <div class="row">
+      <div id="brand"><strong>K1</strong> Local Map</div>
+      <div id="domain-bar" role="tablist" aria-label="Map domains"></div>
+    </div>
+  </div>
+
+  <div id="hud">
+    <div id="live-row">
+      <span id="live-dot" class="off" aria-hidden="true"></span>
+      <span id="live-label"><strong id="live-state">OFFLINE</strong> · <span id="live-detail">poll</span></span>
+    </div>
+    <h1>Active domain <span class="accent">·</span></h1>
+    <span id="domain-title">—</span>
+    <p id="stats">loading…</p>
+    <div id="pose-readout">
+      <div class="cell"><span class="k">X</span><span class="v" id="pose-x">0.00</span></div>
+      <div class="cell"><span class="k">Y</span><span class="v" id="pose-y">0.00</span></div>
+      <div class="cell"><span class="k">YAW</span><span class="v" id="pose-yaw">0.00</span></div>
+      <div class="cell"><span class="k">TRAIL</span><span class="v" id="pose-trail">0</span></div>
+    </div>
+    <div id="vel-readout">
+      <div class="cell"><span class="k">VX</span><span class="v" id="pose-vx">0.00</span></div>
+      <div class="cell"><span class="k">VY</span><span class="v" id="pose-vy">0.00</span></div>
+      <div class="cell"><span class="k">WZ</span><span class="v" id="pose-wz">0.00</span></div>
+    </div>
+  </div>
+
+  <div id="layers" aria-label="Layer toggles">
+    <button type="button" class="layer on" data-layer="env"><span class="dot"></span>Environment</button>
+    <button type="button" class="layer" data-layer="occ"><span class="dot"></span>Occupancy</button>
+    <button type="button" class="layer on" data-layer="robot"><span class="dot"></span>Robot</button>
+    <button type="button" class="layer on" data-layer="trail"><span class="dot"></span>Odom trail</button>
+    <button type="button" class="layer on" data-layer="follow"><span class="dot"></span>Follow pose</button>
+    <button type="button" class="layer on" data-layer="exterior" title="Show/hide building envelope walls. Default ON (interior-friendly)."><span class="dot"></span>Exterior</button>
+  </div>
+
+  <div id="hint">Drag to orbit · Scroll zoom</div>
+  <div id="err"></div>
+
+  <div id="new-domain-modal" aria-hidden="true">
+    <div class="card">
+      <h2>New domain</h2>
+      <p>Separate map for a new environment. Follow / capture runs merge into the active domain over time.</p>
+      <input id="new-domain-name" type="text" placeholder="e.g. Warehouse Bay B" maxlength="64" />
+      <div class="row">
+        <button type="button" class="cancel" id="new-domain-cancel">Cancel</button>
+        <button type="button" class="ok" id="new-domain-ok">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./three.min.js"></script>
+  <script src="./OrbitControls.js"></script>
+  <script src="./GLTFLoader.js"></script>
+  <script src="./STLLoader.js"></script>
+  <script src="./URDFLoader.js"></script>
+  <script src="./viewer.js"></script>
+  <script src="./asset-placer.js"></script>
+  <script>
+    (function () {
+      function bootAssets() {
+        if (!window.k1LocalMapAssets || !window.k1LocalMap) return;
+        window.k1LocalMapAssets.init({}).then(function () {
+          if (window.k1LocalMap._scene) {
+            window.k1LocalMapAssets.attachToScene(window.k1LocalMap._scene);
+          }
+          var q = new URLSearchParams(window.location.search);
+          var domain = (window.k1LocalMap.getActiveDomain && window.k1LocalMap.getActiveDomain()) || q.get('domain');
+          function loadFor(id) {
+            if (!id) return;
+            var demo = q.get('demo_assets') === '1' || q.get('assets') === 'demo';
+            // Prefer seed instances.json; ?demo_assets=1 forces mock detections API path
+            if (demo) return window.k1LocalMap.runAssetDemo(id);
+            return window.k1LocalMapAssets.loadInstancesForDomain(id);
+          }
+          window.k1LocalMapOnDomainChange = function (id) { loadFor(id); };
+          loadFor(domain);
+        });
+      }
+      if (document.readyState === 'complete') setTimeout(bootAssets, 80);
+      else window.addEventListener('load', function () { setTimeout(bootAssets, 80); });
+    })();
+  </script>
+</body>
+</html>

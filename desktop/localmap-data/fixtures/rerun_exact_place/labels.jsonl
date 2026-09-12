@@ -1,0 +1,4 @@
+{"detection_id": "det-depth-A", "frame_idx": 0, "label": "chair", "box_xyxy": [140, 100, 180, 140], "confidence": 0.95, "expected_xyz": [3.0, 0.0, 1.2], "expected_method": "depth_backproject"}
+{"detection_id": "det-3d-B", "frame_idx": 1, "label": "dining_table", "xyz": [0.0, 0.0, 1.0], "xyz_frame": "camera", "confidence": 0.9, "yaw": 1.5707963267948966, "expected_xyz": [2.0, 2.0, 1.2], "expected_method": "transform_3d"}
+{"detection_id": "det-ray-C", "frame_idx": 0, "label": "safety_cone", "box_xyxy": [155.0, 155.0, 165.0, 165.0], "confidence": 0.7, "needs_ground_raycast": true, "expected_xyz": [6.0, 0.0, 0.0], "expected_method": "ground_raycast"}
+{"detection_id": "det-refuse-D", "frame_idx": 0, "label": "person", "box_xyxy": [10, 10, 50, 80], "confidence": 0.8, "expected_refuse": true}

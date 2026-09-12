@@ -1,0 +1,48 @@
+{
+  "id": "rerun_exact_place_v1",
+  "frame": "odom",
+  "units": "meters",
+  "axis": "FLU",
+  "camera_optical_axis": "RDF",
+  "cam_h_m": 1.2,
+  "cam_pitch_deg": 0.0,
+  "intrinsics": {
+    "fx": 200.0,
+    "fy": 200.0,
+    "cx": 160.0,
+    "cy": 120.0,
+    "width": 320,
+    "height": 240
+  },
+  "allow_ground_raycast": true,
+  "notes": "Tiny synthetic golden: known T_map_cam, depth ROI, 3D cam point, ground raycast. No .rrd.",
+  "expected": {
+    "det-depth-A": {
+      "xyz": [
+        3.0,
+        0.0,
+        1.2
+      ],
+      "tol": 1e-06
+    },
+    "det-3d-B": {
+      "xyz": [
+        2.0,
+        2.0,
+        1.2
+      ],
+      "tol": 1e-06
+    },
+    "det-ray-C": {
+      "xyz": [
+        6.0,
+        0.0,
+        0.0
+      ],
+      "tol": 1e-06
+    },
+    "det-refuse-D": {
+      "refuse": true
+    }
+  }
+}
