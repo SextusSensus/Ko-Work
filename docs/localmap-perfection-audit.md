@@ -1,4 +1,4 @@
-# Local Map / K1 Finder — Perfection Audit
+# Local Map / Sky Connect — Perfection Audit
 
 **Branch:** `cursor/k1finder-ui-85c6`  
 **Tip audited:** `1d580ceb` (+ follow-up fixes on this branch)  

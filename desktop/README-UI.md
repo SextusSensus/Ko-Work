@@ -1,4 +1,4 @@
-# K1 Finder UI (Tesla × SpaceX × Apple)
+# Sky Connect UI (Space Tech × Liquid Glass)
 
 Near-black UI (`#000` / `#0A0A0A`), surfaces `#141414` / `#1C1C1E`, text `#F5F5F7`, muted `#8E8E93`, **one** electric cyan accent (`#32D4FF`), Tesla red STOP (`#E31937`). Bahnschrift / Segoe UI Variable for UI; Cascadia Mono for logs.
 
@@ -64,7 +64,7 @@ npm start
 # http://127.0.0.1:8742/api/status
 ```
 
-Mock Booster-like odom walks the warehouse aisle at ~15 Hz. `feed.json` is still watched for occupancy dumps from K1 Finder.
+Mock Booster-like odom walks the warehouse aisle at ~15 Hz. `feed.json` is still watched for occupancy dumps from Sky Connect.
 
 ## Static preview (no WebSocket)
 

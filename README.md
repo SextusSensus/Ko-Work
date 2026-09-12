@@ -5,7 +5,7 @@ Tooling for discovering, connecting to, and running follow-behaviours on a
 
 The repo is two layers that work together:
 
-1. **K1 Finder** — a zero-install Windows desktop app (PowerShell + Windows Forms)
+1. **Sky Connect** — a zero-install Windows desktop app (PowerShell + Windows Forms)
    that finds the robot on your LAN, opens an SSH shell, streams the head camera,
    drives loco commands, and toggles the follow behaviours.
 2. **Robot-side autonomy stack** — the Python nodes and C++ bridges that actually
@@ -24,7 +24,7 @@ Organized by **deploy target** (P2.1):
 
 | Path | What it is |
 |---|---|
-| `desktop/K1Finder.ps1` · `K1 Finder.bat` · `Launch K1 Finder (no console).vbs` | The Windows K1 Finder app (main entry point) + launchers. |
+| `desktop/K1Finder.ps1` · `Sky Connect.bat` · `Launch Sky Connect (no console).vbs` | The Windows Sky Connect app (main entry point) + launchers. |
 | `desktop/README.md` | **Full app documentation** (all six tabs, in detail). |
 | `desktop/localmap-viewer/` · `telemetry-bridge/` | Local Map Three.js viewer + realtime WebSocket telemetry bridge (see `docs/realtime-telemetry.md`). |
 | `robot/follow_person_k1.py` | Robot-side markerless person-follow (lock-and-handoff: ArUco/gesture is a one-time trigger, then YOLO tracks the person). |
@@ -37,14 +37,14 @@ Organized by **deploy target** (P2.1):
 
 ---
 
-## Quick start (K1 Finder app)
+## Quick start (Sky Connect app)
 
 Requires only **Windows 11** — no Python or Node install needed; the app uses
 built-in PowerShell, Windows Forms, and the OpenSSH client.
 
 1. Power on the K1 and put your PC on the **same subnet** (wired is recommended).
-2. In `desktop/`, double-click **`Launch K1 Finder (no console).vbs`** (clean
-   window) or **`K1 Finder.bat`** (with console/debug output).
+2. In `desktop/`, double-click **`Launch Sky Connect (no console).vbs`** (clean
+   window) or **`Sky Connect.bat`** (with console/debug output).
 3. Click **Scan for K1** — or type the robot IP and click **Verify / Connect**.
 
 From there the app's six tabs cover discovery, SSH/file upload, live camera view,

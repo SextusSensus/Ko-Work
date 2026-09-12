@@ -1,4 +1,4 @@
-' Launch K1 Finder with no console window (double-click this for the clean experience).
+' Launch Sky Connect with no console window (double-click this for the clean experience).
 Dim shell, scriptDir
 Set shell = CreateObject("WScript.Shell")
 scriptDir = Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\"))

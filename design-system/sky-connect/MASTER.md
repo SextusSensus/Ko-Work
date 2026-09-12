@@ -6,7 +6,7 @@
 
 ---
 
-**Project:** K1 Finder  
+**Project:** Sky Connect  
 **Led by:** UI/UX Pro Max  
 **Category:** Space Tech / Aerospace × Liquid Glass × Bento  
 **Updated:** 2026-09-12  

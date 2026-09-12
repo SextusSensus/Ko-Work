@@ -379,7 +379,7 @@ setInterval(() => {
   });
 }, 2000);
 
-// Watch feed.json — when K1 Finder writes occupancy, push to clients
+// Watch feed.json — when Sky Connect writes occupancy, push to clients
 let feedMtime = 0;
 function pollFeed() {
   fs.stat(FEED_PATH, (err, st) => {

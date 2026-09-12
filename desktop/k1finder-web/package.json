@@ -2,6 +2,7 @@
   "name": "k1finder-web",
   "private": true,
   "version": "0.0.1",
+  "description": "Sky Connect operator chrome (Vite + React + shadcn/ui)",
   "type": "module",
   "scripts": {
     "dev": "vite",

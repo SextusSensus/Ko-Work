@@ -58,7 +58,7 @@ Forklift / shrink-wrap pallet / bollard: **procedural proxies**.
 | `textures/rubber_mat_*.jpg` | [ambientCG — Rubber004](https://ambientcg.com/view?id=Rubber004) | CC0 |
 | `textures/brushed_metal_diff.jpg` | [Poly Haven — Metal Plate](https://polyhaven.com/a/metal_plate) | CC0 |
 | `textures/scratched_metal_*.jpg` | [ambientCG — Metal032](https://ambientcg.com/view?id=Metal032) | CC0 |
-| `textures/caution_stripes_diff.jpg`, `lane_markings_diff.jpg` | K1 Finder authored | CC0 |
+| `textures/caution_stripes_diff.jpg`, `lane_markings_diff.jpg` | Sky Connect authored | CC0 |
 | `textures/painted_metal_diff.jpg` | [Poly Haven — Painted Metal Shutter](https://polyhaven.com/a/painted_metal_shutter) | CC0 |
 
 Robotic arm, assembly stations, safety fencing / light curtains, HMI pedestals, elevated conveyor: **procedural** stand-ins in `viewer.js` / `asset-placer.js`.

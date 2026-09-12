@@ -1,5 +1,5 @@
 # ============================================================================
-#  K1 Finder - Booster K1 discovery, SSH/files, live camera view & control
+#  Sky Connect - Booster K1 discovery, SSH/files, live camera view & control
 #  Native Windows desktop app (PowerShell + Windows Forms, zero dependencies)
 #
 #  Tabs:
@@ -655,7 +655,7 @@ function Set-K1Log([System.Windows.Forms.RichTextBox]$rtb) {
 #  Form + header + tabs + status
 # ============================================================================
 $form=New-Object System.Windows.Forms.Form
-$form.Text='K1 Finder'
+$form.Text='Sky Connect'
 $form.Size=New-Object System.Drawing.Size(1180,860)
 $form.MinimumSize=New-Object System.Drawing.Size(1000,740)
 $form.StartPosition='CenterScreen'; $form.Font=$font; $form.BackColor=$bg
@@ -669,7 +669,7 @@ $headerAccent=New-Object System.Windows.Forms.Panel
 $headerAccent.Dock='Top'; $headerAccent.Height=3; $headerAccent.BackColor=$accent
 $header.Controls.Add($headerAccent)
 $title=New-Object System.Windows.Forms.Label
-$title.Text='K1 Finder'
+$title.Text='Sky Connect'
 $title.ForeColor=$text
 $title.Font=$fontBrand
 $title.AutoSize=$true; $title.Location=New-Object System.Drawing.Point(20,14)
@@ -3045,7 +3045,7 @@ Target robot IP : $ip
 =======================================================
 "@ }
 function Do-Verify([string]$ip){
-    if(-not $ip){ [System.Windows.Forms.MessageBox]::Show('No IP.','K1 Finder','OK','Warning')|Out-Null; return }
+    if(-not $ip){ [System.Windows.Forms.MessageBox]::Show('No IP.','Sky Connect','OK','Warning')|Out-Null; return }
     $statusLbl.Text="Verifying $ip ..."; Add-Log ("--- Verifying {0} ---" -f $ip) $accent; $form.Cursor='WaitCursor'
     $r=Test-K1Reachable $ip; $form.Cursor='Default'
     Add-Log ("  Ping     : {0}" -f $(if($r.Ping){'reachable'}else{'no reply'}))
@@ -3068,7 +3068,7 @@ function Add-UploadFiles { $d=New-Object System.Windows.Forms.OpenFileDialog; $d
 function Add-UploadFolder { $d=New-Object System.Windows.Forms.FolderBrowserDialog; if($d.ShowDialog() -eq 'OK'){ if(-not $fileList.Items.Contains($d.SelectedPath)){[void]$fileList.Items.Add($d.SelectedPath)} } }
 function Do-Upload {
     $ip=$ip2Box.Text.Trim(); if(-not $ip){return}
-    if($fileList.Items.Count -eq 0){ [System.Windows.Forms.MessageBox]::Show('Add files first.','K1 Finder','OK','Warning')|Out-Null; return }
+    if($fileList.Items.Count -eq 0){ [System.Windows.Forms.MessageBox]::Show('Add files first.','Sky Connect','OK','Warning')|Out-Null; return }
     $remote=$remoteBox.Text.Trim(); if(-not $remote){$remote='/home/booster/'}
     $files=@($fileList.Items | ForEach-Object { [string]$_ }); $spec=('{0}@{1}:{2}' -f $K1_SSH_USER,$ip,$remote)
     if($pwlessChk.Checked){
@@ -3479,7 +3479,7 @@ if(Test-Path $LAST_TARGET_FILE){ $last=(Get-Content $LAST_TARGET_FILE -EA Silent
 $timer.Start(); $mediaTimer.Start(); $fpsTimer.Start()
 
 $form.Add_Shown({
-    Add-Log 'K1 Finder ready. Scan or enter the K1 IP, then Verify.' $accent
+    Add-Log 'Sky Connect ready. Scan or enter the K1 IP, then Verify.' $accent
     Add-Log2 'SSH & Files ready.' $accent
     Add-LogLive 'Live View: set IP, pick a camera topic, click Start. Frames appear when the camera is publishing.' $accent
     Add-LogCtrl 'Control: Connect (iface 127.0.0.1), Test link (gft), then ARM to enable motion. DAMPING/STOP always live.' $accent

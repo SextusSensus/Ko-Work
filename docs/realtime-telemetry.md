@@ -19,7 +19,7 @@ Three.js Local Map viewer without jank.
 battery over WebSocket (~8 Hz). ROS2 conventions expose `/odometer_state`,
 `/k1/joint_states`, `/cmd_vel`. This cloud VM cannot reach the robot LAN, so
 the bridge **simulates Booster-like odom** and can **tail** `feed.json` when
-K1 Finder writes occupancy dumps.
+Sky Connect writes occupancy dumps.
 
 **Assets (CC0):** Poly Haven (floor / metal / plaster), ambientCG (concrete).
 See `desktop/localmap-viewer/assets/ATTRIBUTION.md`.
@@ -80,4 +80,4 @@ On the K1 LAN (not this cloud VM):
    `nav_msgs/Odometry` → `{type:"odom",...}` for the existing viewer client.
 
 Foxglove / Rerun remain complementary for deep debugging; Local Map stays the
-operator HUD inside K1 Finder.
+operator HUD inside Sky Connect.

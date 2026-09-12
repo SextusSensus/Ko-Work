@@ -1,6 +1,6 @@
-# K1 Finder web (shadcn/ui)
+# Sky Connect web (shadcn/ui)
 
-Vite + React + Tailwind v4 + **shadcn/ui** operator chrome for K1 Finder. Theme tokens: near-black, white type, cyan `#32D4FF`, Tesla red `#E31937`.
+Vite + React + Tailwind v4 + **shadcn/ui** operator chrome for Sky Connect. Theme tokens: OLED blacks, star-white primary, launch-blue accent.
 
 Local Map embeds `../localmap-viewer` (Three.js + OrbitControls) with `?embed=1`. Drive safety stays in `K1Finder.ps1`.
 

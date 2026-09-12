@@ -1,6 +1,6 @@
 # Local Map — overrides
 
-Inherits `design-system/k1-finder/MASTER.md` (UI/UX Pro Max · Space Tech / Aerospace).
+Inherits `design-system/sky-connect/MASTER.md` (UI/UX Pro Max · Space Tech / Aerospace).
 
 ## Overrides
 - Soften HUD / domain chips to `rounded-2xl` / `rounded-xl`

@@ -187,7 +187,7 @@
       "status": "downloaded",
       "path": "assets/library/assembly-line/textures/lane_markings_diff.jpg",
       "license": "CC0",
-      "source": "K1 Finder authored (CC0)",
+      "source": "Sky Connect authored (CC0)",
       "fallback_procedural": "floor_tape",
       "label_classes": [
         "floor_markings",
@@ -411,7 +411,7 @@
       "status": "downloaded",
       "path": "assets/library/assembly-line/textures/caution_stripes_diff.jpg",
       "license": "CC0",
-      "source": "K1 Finder authored (CC0)"
+      "source": "Sky Connect authored (CC0)"
     },
     {
       "id": "assembly-line/tex-rubber-belt",
@@ -1567,7 +1567,7 @@
       "status": "downloaded",
       "path": "assets/library/warehouse/wooden_pallet_cc0/wooden_pallet_cc0.gltf",
       "license": "CC0",
-      "source": "K1 Finder authored stand-in",
+      "source": "Sky Connect authored stand-in",
       "fallback_procedural": "pallet"
     },
     {

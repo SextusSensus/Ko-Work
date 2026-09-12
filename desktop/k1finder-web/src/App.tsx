@@ -34,7 +34,7 @@ export function App() {
                 </div>
                 <div>
                   <h1 className="font-heading text-3xl leading-none font-semibold tracking-[-0.03em] text-foreground sm:text-4xl">
-                    K1 Finder
+                    Sky Connect
                   </h1>
                   <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground sm:text-[15px]">
                     Discover robots, drive with intent, observe the local map —

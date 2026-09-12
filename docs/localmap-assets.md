@@ -2,7 +2,7 @@
 
 Foundation for Todd’s future loop:
 
-1. **Create domain** (viewer `+ New domain` / K1 Finder)
+1. **Create domain** (viewer `+ New domain` / Sky Connect)
 2. **Robot maps** over follow/capture runs → occupancy merges into `domains/<id>/occupancy.json`
 3. **Rerun / labeling** (Batch-Label, Plan A YOLO classes, or live detect) emits detections `{class, x, y, yaw, w, h, confidence, run_id}`
 4. **Assign 3D asset** from ontology → instance appears on Local Map and accumulates in `domains/<id>/instances.json`
