@@ -1,4 +1,4 @@
-# Booster K1 — official mesh (Local Map)
+# Booster K1 — official URDF (Local Map)
 
 | Field | Value |
 |-------|--------|
@@ -8,15 +8,15 @@
 | License | **BSD 3-Clause** (see `LICENSE`) |
 | Copyright | (c) 2025, BoosterRobotics |
 
-## Packaged asset
+## Viewer usage
 
-- `k1_22dof.glb` — visual links from the 22-DoF URDF, assembled at **real-world meters**, Y-up (Three.js), feet on y=0, standing pose (arms at sides).
-- Height ≈ **0.95 m** (matches public K1 spec / URDF).
+Local Map loads **`K1_22dof.urdf`** at runtime via `URDFLoader` + `STLLoader` (real-world metres).  
+There is **no** separate character GLB — the URDF package is the source of truth.
 
-## Rebuild
+## Sync / refresh
 
 ```bash
-./scripts/fetch-k1-mesh.sh
+./scripts/fetch-k1-urdf.sh
 ```
 
-Redistribution of the converted GLB is permitted under the BSD 3-Clause terms of `booster_assets` (retain copyright notice and disclaimer — shipped as `LICENSE` beside this file).
+Redistribution of the URDF + STL package is permitted under the BSD 3-Clause terms of `booster_assets` (retain copyright notice and disclaimer — shipped as `LICENSE` beside this file).

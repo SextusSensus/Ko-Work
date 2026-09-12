@@ -158,7 +158,26 @@
     }
     #new-domain-modal .ok { background: var(--accent); color: #000; }
     #new-domain-modal .cancel { background: #1c1c1e; color: var(--text); border: 1px solid var(--stroke); }
+
+    /* embed=1: Three.js canvas only — shadcn React chrome hosts HUD/chips/dialogs */
+    body.embed #chrome,
+    body.embed #hud,
+    body.embed #layers,
+    body.embed #hint,
+    body.embed #new-domain-modal { display: none !important; }
+    body.embed #err { left: 12px; bottom: 12px; }
   </style>
+  <script>
+    (function () {
+      var q = new URLSearchParams(location.search);
+      if (q.get('embed') === '1' || q.get('chrome') === '0') {
+        document.documentElement.classList.add('embed');
+        document.addEventListener('DOMContentLoaded', function () {
+          document.body.classList.add('embed');
+        });
+      }
+    })();
+  </script>
 </head>
 <body>
   <div id="viewport"></div>
@@ -218,6 +237,8 @@
   <script src="./three.min.js"></script>
   <script src="./OrbitControls.js"></script>
   <script src="./GLTFLoader.js"></script>
+  <script src="./STLLoader.js"></script>
+  <script src="./URDFLoader.js"></script>
   <script src="./viewer.js"></script>
   <script src="./asset-placer.js"></script>
   <script>

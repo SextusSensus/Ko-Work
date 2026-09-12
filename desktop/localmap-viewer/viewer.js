@@ -1,7 +1,7 @@
 /* K1 Local Map — warehouse-grade Three.js viewer
  * Aesthetic: Tesla × SpaceX × Apple (near-black, white type, cyan #32D4FF).
- * Booster K1: official URDF mesh (BSD-3) at assets/library/robot/k1/k1_22dof.glb
- * (~0.95 m H × ~0.40–0.50 m W × ~0.18 m D). Procedural fallback if load fails.
+ * Booster K1: official K1_22dof.urdf + meshes/*.STL only (BSD-3) — no character GLB.
+ * (~0.95 m H). Procedural proxy only if URDF load fails.
  * Textures: Poly Haven CC0 (assets/ATTRIBUTION.md).
  */
 (function () {
@@ -135,7 +135,38 @@
   function setExteriorVisible(on) {
     layers.exterior = !!on;
     applyExteriorVisibility();
+    notifyParent({ type: 'k1-layers', layers: Object.assign({}, layers) });
     return layers.exterior;
+  }
+
+  function setLayer(id, on) {
+    if (!Object.prototype.hasOwnProperty.call(layers, id)) return false;
+    layers[id] = !!on;
+    var btn = document.querySelector('#layers .layer[data-layer="' + id + '"]');
+    if (btn) btn.classList.toggle('on', layers[id]);
+    if (id === 'env') {
+      envGroup.visible = layers.env;
+      applyExteriorVisibility();
+    } else if (id === 'exterior') {
+      applyExteriorVisibility();
+    } else if (id === 'occ') {
+      cellGroup.visible = layers.occ;
+    } else if (id === 'robot') {
+      robotGroup.visible = layers.robot;
+    } else if (id === 'trail') {
+      trailGroup.visible = layers.trail;
+    }
+    // follow is read in the animation loop; no mesh toggle
+    notifyParent({ type: 'k1-layers', layers: Object.assign({}, layers) });
+    return layers[id];
+  }
+
+  function notifyParent(payload) {
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(Object.assign({ source: 'k1-localmap' }, payload), '*');
+      }
+    } catch (e) {}
   }
 
   var trailPoints = [];
@@ -505,13 +536,24 @@
     setPose(pose, msg);
   }
 
-  // ---- Booster K1 (official GLB + URDF-accurate procedural fallback) ------
-  // Spec / URDF: ~95 cm H, body ~40×18 cm, leg length ~46 cm, arm span ~39 cm
-  var K1_MESH_URL = './assets/library/robot/k1/k1_22dof.glb';
+  // ---- Booster K1 from official URDF only (no separate character GLB) ----
+  // Source of truth: assets/library/robot/k1/K1_22dof.urdf + meshes/*.STL
+  var K1_URDF_URL = './assets/library/robot/k1/K1_22dof.urdf';
+  var K1_URDF_DIR = './assets/library/robot/k1/';
   var k1MeshLoaded = false;
+  var k1UrdfRobot = null;
+
+  // Neutral standing pose (radians) — exact joint names from K1_22dof.urdf
+  var K1_STAND_Q = {
+    left_shoulder_roll_joint: -1.15,
+    right_shoulder_roll_joint: 1.15,
+    aaleft_shoulder_pitch_joint: 0.2,
+    aaright_shoulder_pitch_joint: 0.2,
+    left_elbow_pitch_joint: 0.35,
+    right_elbow_pitch_joint: 0.35
+  };
 
   function addK1FootRing() {
-    // High-segment ring (telemetry chrome only) — avoid blocky low-poly look
     var foot = new THREE.Mesh(
       new THREE.RingGeometry(K1_W * 0.52, K1_W * 0.72, 96),
       new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0.42, side: THREE.DoubleSide })
@@ -529,9 +571,6 @@
     var led = stdMat(ACCENT, { metalness: 0.1, roughness: 0.28, emissive: ACCENT, emissiveIntensity: 0.9 });
     led.userData.pulse = true;
     addK1FootRing();
-
-    // URDF-ish proportions: trunk ~0.18 W × 0.12 D; hips ±0.096; shoulders ±0.077
-    // Legs ~0.46 m (public spec); torso stack to overall 0.95 m
     var hipY = 0.46;
     var trunkH = 0.28;
     var trunkW = 0.18;
@@ -549,7 +588,6 @@
       robotGroup.add(makeBox(0.06, 0.20, 0.07, dark, s * 0.085, 0.10, 0.01));
       robotGroup.add(makeBox(0.09, 0.03, 0.14, dark, s * 0.085, 0.02, 0.02));
     });
-
     var nose = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.10, 3), led);
     nose.rotation.x = Math.PI / 2;
     nose.position.set(0, hipY + 0.12, trunkD * 0.7);
@@ -557,11 +595,30 @@
     robotGroup.visible = layers.robot;
   }
 
-  function attachK1Mesh(sceneRoot) {
+  function applyK1StandPose(robot) {
+    if (!robot) return;
+    Object.keys(K1_STAND_Q).forEach(function (name) {
+      var q = K1_STAND_Q[name];
+      if (typeof robot.setJointValue === 'function') {
+        try { robot.setJointValue(name, q); return; } catch (e) {}
+      }
+      var j = robot.joints && robot.joints[name];
+      if (j && typeof j.setJointValue === 'function') j.setJointValue(q);
+      else if (j && typeof j.setAngle === 'function') j.setAngle(q);
+    });
+  }
+
+  function attachK1Urdf(robot) {
     clearGroup(robotGroup);
     addK1FootRing();
-    var root = sceneRoot.clone(true);
-    root.traverse(function (obj) {
+    k1UrdfRobot = robot;
+    applyK1StandPose(robot);
+    // URDF is Z-up; Local Map is Y-up
+    robot.rotation.x = -Math.PI / 2;
+    robot.updateMatrixWorld(true);
+    var box = new THREE.Box3().setFromObject(robot);
+    if (isFinite(box.min.y)) robot.position.y -= box.min.y;
+    robot.traverse(function (obj) {
       if (obj.isMesh) {
         obj.castShadow = true;
         obj.receiveShadow = true;
@@ -569,30 +626,40 @@
           var mats = Array.isArray(obj.material) ? obj.material : [obj.material];
           mats.forEach(function (mat) {
             if (!mat) return;
+            if (mat.color && mat.color.getHex && mat.color.getHex() === 0xffffff) {
+              mat.color.setHex(K1_WHITE);
+            }
             mat.metalness = mat.metalness != null ? mat.metalness : 0.35;
             mat.roughness = mat.roughness != null ? mat.roughness : 0.45;
           });
         }
       }
     });
-    robotGroup.add(root);
+    robotGroup.add(robot);
     robotGroup.visible = layers.robot;
     k1MeshLoaded = true;
   }
 
   function buildK1() {
+    // Procedural stand-in until / unless URDF loads — never a separate character GLB
     buildK1Procedural();
-    if (gltfCache['k1-robot']) {
-      attachK1Mesh(gltfCache['k1-robot']);
+    if (typeof URDFLoader === 'undefined') {
+      console.warn('[k1] URDFLoader missing — procedural fallback only');
       return;
     }
-    if (!gltfLoader) return;
-    gltfLoader.load(K1_MESH_URL, function (gltf) {
-      gltfCache['k1-robot'] = gltf.scene;
-      attachK1Mesh(gltf.scene);
-    }, undefined, function () {
+    try {
+      var loader = new URDFLoader();
+      loader.workingPath = K1_URDF_DIR;
+      loader.load(K1_URDF_URL, function (robot) {
+        attachK1Urdf(robot);
+      }, undefined, function (err) {
+        console.warn('[k1] URDF load failed; keeping procedural proxy', err);
+        k1MeshLoaded = false;
+      });
+    } catch (e) {
+      console.warn('[k1] URDFLoader error', e);
       k1MeshLoaded = false;
-    });
+    }
   }
 
   // ---- Environments -------------------------------------------------------
@@ -1747,8 +1814,7 @@
       ['lib-barrel2', './assets/library/warehouse/Barrel_02/Barrel_02_1k.gltf'],
       ['lib-fluorescent', './assets/library/cross-domain/mounted_fluorescent_lights/mounted_fluorescent_lights_1k.gltf'],
       ['lib-cam', './assets/library/cross-domain/security_camera_01/security_camera_01_1k.gltf'],
-      ['ph-fence', './assets/library/assembly-line/polyhaven/modular_chainlink_fence/modular_chainlink_fence_1k.gltf'],
-      ['k1-robot', './assets/library/robot/k1/k1_22dof.glb']
+      ['ph-fence', './assets/library/assembly-line/polyhaven/modular_chainlink_fence/modular_chainlink_fence_1k.gltf']
     ];
     return Promise.all(jobs.map(function (pair) {
       return new Promise(function (resolve) {
@@ -1763,7 +1829,7 @@
       Object.keys(gltfCache).forEach(function (k) { if (gltfCache[k]) loaded++; });
       syncOccLayerDefault(loaded > 0);
       if (activeDomainId) buildEnvironmentFor(activeDomainId);
-      if (gltfCache['k1-robot'] && !k1MeshLoaded) attachK1Mesh(gltfCache['k1-robot']);
+      // Robot avatar is URDF-only (buildK1) — never attach a character GLB here
     });
   }
 
@@ -1970,6 +2036,13 @@
     if (typeof window.k1LocalMapOnDomainChange === 'function') {
       try { window.k1LocalMapOnDomainChange(id); } catch (e) {}
     }
+    notifyParent({
+      type: 'k1-domain',
+      active: id,
+      domains: registry.domains.slice(),
+      title: (meta && meta.name) ? meta.name : id,
+      stats: statsEl ? statsEl.textContent : ''
+    });
     // Label→asset fill-in: load persisted instances for this domain (reruns accumulate).
     // Prefer the onDomainChange hook (index.html) when present to avoid double-fetch races;
     // fall back here when assets boot before the hook is installed.
@@ -2191,10 +2264,12 @@
         new THREE.Vector3(robotGroup.position.x, 0.4, robotGroup.position.z));
     },
     getControls: function () { return controls; },
-    setFollowPose: function (on) { layers.follow = !!on; },
-    setShowRobot: function (on) { layers.robot = !!on; robotGroup.visible = layers.robot; },
+    setFollowPose: function (on) { return setLayer('follow', !!on); },
+    setShowRobot: function (on) { return setLayer('robot', !!on); },
     setExteriorVisible: setExteriorVisible,
     getExteriorVisible: function () { return !!layers.exterior; },
+    setLayer: setLayer,
+    getLayers: function () { return Object.assign({}, layers); },
     setPose: function (pose) { pushTrail(pose); setPose(pose); },
     loadSample: function () {
       return loadJson('./sample.json').then(setMap).catch(function (e) { showErr(String(e)); });
@@ -2223,6 +2298,37 @@
       return merged;
     },
     getCurrentMap: function () { return currentMap; },
+    getHudSnapshot: function () {
+      return {
+        active: activeDomainId,
+        title: domainTitle ? domainTitle.textContent : '',
+        stats: statsEl ? statsEl.textContent : '',
+        domains: registry.domains.slice(),
+        layers: Object.assign({}, layers),
+        pose: {
+          x: poseXEl ? poseXEl.textContent : '0.00',
+          y: poseYEl ? poseYEl.textContent : '0.00',
+          yaw: poseYawEl ? poseYawEl.textContent : '0.00',
+          trail: poseTrailEl ? poseTrailEl.textContent : '0',
+          vx: poseVxEl ? poseVxEl.textContent : '0.00',
+          vy: poseVyEl ? poseVyEl.textContent : '0.00',
+          wz: poseWzEl ? poseWzEl.textContent : '0.00'
+        },
+        live: {
+          state: liveStateEl ? liveStateEl.textContent : 'OFFLINE',
+          detail: liveDetailEl ? liveDetailEl.textContent : 'poll',
+          className: liveDotEl ? liveDotEl.className : 'off'
+        },
+        telemetry: {
+          enabled: telem.enabled,
+          state: telem.state,
+          url: telem.url,
+          lastMsgAt: telem.lastMsgAt,
+          status: telem.status,
+          lastOdom: lastOdom
+        }
+      };
+    },
     connectTelemetry: connectTelemetry,
     disconnectTelemetry: disconnectTelemetry,
     getLastOdom: function () { return lastOdom; },
@@ -2237,6 +2343,8 @@
       };
     }
   };
+
+  notifyParent({ type: 'k1-ready' });
 
   buildK1();
   setLiveHud('offline', 'poll');
