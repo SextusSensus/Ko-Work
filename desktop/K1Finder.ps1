@@ -70,6 +70,11 @@ $LAST_TARGET_FILE = Join-Path $SCRIPT_DIR 'last_target.txt'
 $WORK             = Join-Path $env:TEMP 'k1finder'
 New-Item -ItemType Directory -Force -Path $WORK | Out-Null
 
+# Web shell (k1finder-web/dist) is the default operator UI for a uniform modern look.
+# Set SKY_CONNECT_CLASSIC=1 to keep the legacy WinForms tab chrome.
+$script:K1FinderWebDist = Join-Path $SCRIPT_DIR 'k1finder-web\dist\index.html'
+$script:SkyShellMode = ((Test-Path $script:K1FinderWebDist) -and ($env:SKY_CONNECT_CLASSIC -ne '1'))
+
 $script:RobotIP  = $K1_DEFAULT_IP
 $script:SshUser  = $K1_SSH_USER
 $script:SshPass  = $K1_SSH_PASS
@@ -722,6 +727,15 @@ $tabMap=New-Object System.Windows.Forms.TabPage; $tabMap.Text='Local Map'; $tabM
 
 $form.Controls.Add($header); $form.Controls.Add($status); $form.Controls.Add($tabs); $tabs.BringToFront()
 
+# Uniform design: hide classic WinForms chrome immediately when the React shell is available
+# so launch never flashes the old tab UI.
+if($script:SkyShellMode){
+    $header.Visible = $false
+    $tabs.Visible = $false
+    $status.Visible = $false
+    $form.Text = 'Sky Connect'
+}
+
 # ============================================================================
 #  TAB 1 - DISCOVER
 # ============================================================================
@@ -1193,8 +1207,13 @@ $tabTrack.Controls.Add($trackLayout)
 $script:LocalMapViewerDir = Join-Path $SCRIPT_DIR 'localmap-viewer'
 $script:LocalMapIndexLegacy = Join-Path $script:LocalMapViewerDir 'index.html'
 # Prefer shadcn React shell (WebView2) when built; falls back to vanilla Three.js viewer.
-$script:K1FinderWebDist = Join-Path $SCRIPT_DIR 'k1finder-web\dist\index.html'
+if(-not $script:K1FinderWebDist){
+    $script:K1FinderWebDist = Join-Path $SCRIPT_DIR 'k1finder-web\dist\index.html'
+}
 $script:LocalMapIndex = if(Test-Path $script:K1FinderWebDist){ $script:K1FinderWebDist } else { $script:LocalMapIndexLegacy }
+if($null -eq $script:SkyShellMode){
+    $script:SkyShellMode = ((Test-Path $script:K1FinderWebDist) -and ($env:SKY_CONNECT_CLASSIC -ne '1'))
+}
 $script:LocalMapFeed      = Join-Path $script:LocalMapViewerDir 'feed.json'
 $script:LocalMapSample    = Join-Path $script:LocalMapViewerDir 'sample.json'
 $script:LocalMapDataDir   = Join-Path $SCRIPT_DIR 'localmap-data'
@@ -1510,6 +1529,52 @@ function Refresh-LocalMapFromRobot([string]$ip){
     Import-LocalMapRunIntoActive $ip
 }
 
+function Get-SkyConnectShellUri([string]$tab = 'discover'){
+    $path = if(Test-Path $script:K1FinderWebDist){ $script:K1FinderWebDist } else { $script:LocalMapIndex }
+    $u = [Uri]$path
+    return ('{0}?host=webview&tab={1}' -f $u.AbsoluteUri, $tab)
+}
+
+function Try-LoadWebView2Assembly{
+    try{
+        $wvAsm = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq 'Microsoft.Web.WebView2.WinForms' } | Select-Object -First 1
+        if($wvAsm){ return $true }
+        $searchRoots = @($SCRIPT_DIR, (Join-Path $env:USERPROFILE '.nuget\packages\microsoft.web.webview2'))
+        foreach($root in $searchRoots){
+            if(-not (Test-Path $root)){ continue }
+            $hit = Get-ChildItem -Path $root -Recurse -Filter 'Microsoft.Web.WebView2.WinForms.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if($hit){
+                Add-Type -Path $hit.FullName
+                $core = Join-Path $hit.DirectoryName 'Microsoft.Web.WebView2.Core.dll'
+                if(Test-Path $core){ Add-Type -Path $core }
+                return $true
+            }
+        }
+    }catch{}
+    return $false
+}
+
+function New-SkyWebView2([System.Windows.Forms.Control]$parent, [string]$uri, [scriptblock]$onReady = $null){
+    if(-not (Try-LoadWebView2Assembly)){ return $null }
+    try{
+        $wv = New-Object Microsoft.Web.WebView2.WinForms.WebView2
+        $wv.Dock = 'Fill'
+        $parent.Controls.Add($wv)
+        $wv.BringToFront()
+        # Register completion handler BEFORE EnsureCoreWebView2Async to avoid a race
+        # where initialization finishes before the handler is attached (blank / old chrome).
+        $wv.Add_CoreWebView2InitializationCompleted({
+            param($s,$e)
+            if($e.IsSuccess){
+                $s.CoreWebView2.Navigate($uri)
+                if($onReady){ & $onReady $s $e }
+            }
+        }.GetNewClosure())
+        [void]$wv.EnsureCoreWebView2Async($null)
+        return $wv
+    }catch{ return $null }
+}
+
 function Initialize-LocalMapHost{
     if(-not (Test-Path $script:LocalMapIndex)){
         $mapInfo.Text = 'Local Map UI missing — build desktop/k1finder-web or see desktop/README-UI.md'
@@ -1518,46 +1583,17 @@ function Initialize-LocalMapHost{
     Ensure-LocalMapDomains
     Write-LocalMapFeedFromSample | Out-Null
 
-    # Prefer WebView2 (Chromium). DLL may sit next to the app or in the NuGet cache.
-    $wvLoaded = $false
-    try{
-        $wvAsm = [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GetName().Name -eq 'Microsoft.Web.WebView2.WinForms' } | Select-Object -First 1
-        if(-not $wvAsm){
-            $searchRoots = @($SCRIPT_DIR, (Join-Path $env:USERPROFILE '.nuget\packages\microsoft.web.webview2'))
-            foreach($root in $searchRoots){
-                if(-not (Test-Path $root)){ continue }
-                $hit = Get-ChildItem -Path $root -Recurse -Filter 'Microsoft.Web.WebView2.WinForms.dll' -ErrorAction SilentlyContinue | Select-Object -First 1
-                if($hit){
-                    Add-Type -Path $hit.FullName
-                    $core = Join-Path $hit.DirectoryName 'Microsoft.Web.WebView2.Core.dll'
-                    if(Test-Path $core){ Add-Type -Path $core }
-                    $wvLoaded = $true
-                    break
-                }
-            }
-        } else { $wvLoaded = $true }
-        if($wvLoaded -or $wvAsm){
-            $wv = New-Object Microsoft.Web.WebView2.WinForms.WebView2
-            $wv.Dock = 'Fill'
-            $mapHost.Controls.Add($wv)
-            $wv.BringToFront()
-            $script:MapWebView = $wv
-            $script:MapHostMode = 'webview2'
-            [void]$wv.EnsureCoreWebView2Async($null)
-            $wv.Add_CoreWebView2InitializationCompleted({
-                param($s,$e)
-                if($e.IsSuccess){
-                    $s.CoreWebView2.Navigate(([Uri]$script:LocalMapIndex).AbsoluteUri)
-                    $hostLabel = if(Test-Path $script:K1FinderWebDist){ 'shadcn + Three.js' } else { 'Three.js' }
-                    $mapInfo.Text = ('Local Map 3D ({0}) · domain {1} (WebView2) — chips switch areas · Import last run merges' -f $hostLabel,$script:ActiveDomainId)
-                } else {
-                    $mapInfo.Text = ('WebView2 init failed: {0} — use Open in browser' -f $e.InitializationException.Message)
-                }
-            })
-            return
-        }
-    }catch{
-        # fall through to WebBrowser
+    $mapUri = if(Test-Path $script:K1FinderWebDist){ Get-SkyConnectShellUri 'map' } else { ([Uri]$script:LocalMapIndex).AbsoluteUri }
+
+    $wv = New-SkyWebView2 $mapHost $mapUri {
+        param($s,$e)
+        $hostLabel = if(Test-Path $script:K1FinderWebDist){ 'shadcn + Three.js' } else { 'Three.js' }
+        $mapInfo.Text = ('Local Map 3D ({0}) · domain {1} (WebView2) — chips switch areas · Import last run merges' -f $hostLabel,$script:ActiveDomainId)
+    }
+    if($wv){
+        $script:MapWebView = $wv
+        $script:MapHostMode = 'webview2'
+        return
     }
 
     try{
@@ -1566,7 +1602,7 @@ function Initialize-LocalMapHost{
         $mapHost.Controls.Add($wb); $wb.BringToFront()
         $script:MapBrowser = $wb
         $script:MapHostMode = 'webbrowser'
-        $wb.Navigate(([Uri]$script:LocalMapIndex).AbsoluteUri)
+        $wb.Navigate($mapUri)
         $mapInfo.Text = 'Local Map hosted in WebBrowser (IE engine). Prefer WebView2 or Open in browser for full Three.js.'
         return
     }catch{}
@@ -1578,6 +1614,53 @@ function Initialize-LocalMapHost{
     $fallback.Text = "3D viewer ready`r`nClick  Open in browser  — see desktop/README-UI.md"
     $mapHost.Controls.Add($fallback)
     $mapInfo.Text = 'No embedded browser — Open in browser launches the Three.js Local Map viewer.'
+}
+
+function Initialize-SkyConnectShell{
+    if(-not $script:SkyShellMode){ return $false }
+    if(-not (Test-Path $script:K1FinderWebDist)){ return $false }
+
+    Ensure-LocalMapDomains
+    Write-LocalMapFeedFromSample | Out-Null
+
+    $shellHost = New-Object System.Windows.Forms.Panel
+    $shellHost.Dock = 'Fill'
+    $shellHost.BackColor = $bg
+    $form.Controls.Add($shellHost)
+    $shellHost.BringToFront()
+
+    $uri = Get-SkyConnectShellUri 'discover'
+    $wv = New-SkyWebView2 $shellHost $uri {
+        $statusLbl.Text = 'Sky Connect shell ready.'
+    }
+    if($wv){
+        $script:MapWebView = $wv
+        $script:MapHostMode = 'webview2'
+        $header.Visible = $false
+        $tabs.Visible = $false
+        $statusLbl.Text = 'Sky Connect (web shell). Set SKY_CONNECT_CLASSIC=1 for legacy tabs.'
+        return $true
+    }
+
+    # No WebView2 DLL — still prefer the new shell via IE WebBrowser (better than classic tabs).
+    try{
+        $wb = New-Object System.Windows.Forms.WebBrowser
+        $wb.Dock = 'Fill'
+        $wb.ScriptErrorsSuppressed = $true
+        $shellHost.Controls.Add($wb)
+        $wb.BringToFront()
+        $script:MapBrowser = $wb
+        $script:MapHostMode = 'webbrowser'
+        $wb.Navigate($uri)
+        $header.Visible = $false
+        $tabs.Visible = $false
+        $statusLbl.Text = 'Sky Connect (WebBrowser fallback). Install WebView2 Runtime for best results.'
+        return $true
+    }catch{}
+
+    try{ Start-Process $uri }catch{}
+    $statusLbl.Text = 'Opened Sky Connect in browser. Classic tabs remain (no embedded browser).'
+    return $false
 }
 
 $btnMapSample.Add_Click({
@@ -1665,12 +1748,15 @@ $tabMap.Controls.Add($mapLayout)
 # VisualBasic for InputBox (New domain)
 try{ Add-Type -AssemblyName Microsoft.VisualBasic }catch{}
 Ensure-LocalMapDomains
-Initialize-LocalMapHost
+if(-not $script:SkyShellMode){
+    Initialize-LocalMapHost
+}
 # Poll document title for domain create/switch events from the HTML chips
 $mapDomainTimer = New-Object System.Windows.Forms.Timer
 $mapDomainTimer.Interval = 700
 $mapDomainTimer.Add_Tick({
     try{
+        if($script:SkyShellMode){ return }
         Inject-LocalMapHostBridge
         $title = $null
         if($script:MapHostMode -eq 'webview2' -and $script:MapWebView -and $script:MapWebView.CoreWebView2){
@@ -3479,6 +3565,13 @@ if(Test-Path $LAST_TARGET_FILE){ $last=(Get-Content $LAST_TARGET_FILE -EA Silent
 $timer.Start(); $mediaTimer.Start(); $fpsTimer.Start()
 
 $form.Add_Shown({
+    if($script:SkyShellMode){
+        if(-not (Initialize-SkyConnectShell)){
+            # Fall back to classic Local Map host if shell WebView2 failed.
+            if(-not $script:MapWebView){ Initialize-LocalMapHost }
+        }
+        return
+    }
     Add-Log 'Sky Connect ready. Scan or enter the K1 IP, then Verify.' $accent
     Add-Log2 'SSH & Files ready.' $accent
     Add-LogLive 'Live View: set IP, pick a camera topic, click Start. Frames appear when the camera is publishing.' $accent

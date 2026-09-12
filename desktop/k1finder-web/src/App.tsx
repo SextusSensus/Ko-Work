@@ -10,8 +10,8 @@ function initialTab() {
   const q = new URLSearchParams(window.location.search)
   const tab = q.get("tab")
   if (tab === "discover" || tab === "tracker" || tab === "map") return tab
-  if (q.get("host") === "webview") return "map"
-  return "map"
+  // Primary shell defaults to Discover; Local Map host passes ?tab=map.
+  return "discover"
 }
 
 export function App() {
