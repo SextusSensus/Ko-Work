@@ -83,20 +83,23 @@ export function DiscoverPanel() {
                 Stop
               </Button>
             </div>
-            <FieldGroup className="flex-row flex-wrap items-end gap-3">
-              <Field className="gap-2">
-                <FieldLabel htmlFor="k1-ip">Or enter K1 IP</FieldLabel>
+            <FieldGroup className="flex w-full flex-col items-center gap-3">
+              <Field className="w-full gap-2">
+                <FieldLabel htmlFor="k1-ip" className="sr-only">
+                  IP address
+                </FieldLabel>
                 <Input
                   id="k1-ip"
                   defaultValue="192.168.1.81"
-                  className="h-10 w-44 rounded-xl font-mono"
+                  placeholder="Enter IP"
+                  className="h-10 w-full min-w-44 rounded-xl font-mono"
                 />
               </Field>
               <Button
                 type="button"
                 size="lg"
                 variant="outline"
-                className="h-10 rounded-xl px-5"
+                className="h-10 w-full rounded-xl px-5"
               >
                 Verify
               </Button>
