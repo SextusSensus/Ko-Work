@@ -131,8 +131,8 @@ cd desktop && python3 -m http.server 8765
 ```
 
 ```js
-// Exact instances already in instances.json load with the domain.
-// Live / re-merge:
+// Exact Lab ships empty — Import -Fixture (or a real .rrd) writes instances.json.
+// Live / re-merge after a place:
 k1LocalMap.importExactInstances([/* placer JSON rows */]);
 ```
 
