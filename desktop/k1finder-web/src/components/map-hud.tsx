@@ -9,7 +9,7 @@ type Props = {
 }
 
 function liveTone(className: string) {
-  if (className.includes("on")) return "bg-success shadow-[0_0_8px_color-mix(in_oklab,var(--success)_55%,transparent)]"
+  if (className.includes("on")) return "bg-success"
   if (className.includes("warn")) return "bg-warning"
   return "bg-destructive"
 }
@@ -19,7 +19,7 @@ export function MapHud({ hud }: Props) {
   const live = hud?.live
 
   return (
-    <Card className="pointer-events-none w-[min(300px,86vw)] border-border/80 bg-card/80 shadow-none backdrop-blur-md">
+    <Card className="pointer-events-none w-[min(300px,86vw)] rounded-2xl border-border/70 bg-card/85 shadow-none backdrop-blur-md">
       <CardHeader className="gap-2 pb-2">
         <div className="flex items-center gap-2 font-mono text-[10px] tracking-[0.1em] text-muted-foreground uppercase">
           <span
@@ -33,9 +33,9 @@ export function MapHud({ hud }: Props) {
           </span>
         </div>
         <CardTitle className="text-xs font-semibold tracking-[0.06em] text-muted-foreground uppercase">
-          Active domain <span className="text-primary">·</span>
+          Active domain <span className="text-muted-foreground/70">·</span>
         </CardTitle>
-        <p className="text-lg font-semibold tracking-tight text-foreground">
+        <p className="font-heading text-lg font-semibold tracking-tight text-foreground">
           {hud?.title || "—"}
         </p>
       </CardHeader>
@@ -53,9 +53,9 @@ export function MapHud({ hud }: Props) {
               ["TRAIL", pose?.trail],
             ] as const
           ).map(([k, v]) => (
-            <div key={k} className="rounded-md bg-secondary/60 px-1.5 py-1.5">
+            <div key={k} className="rounded-xl bg-secondary/70 px-1.5 py-1.5">
               <span className="mb-0.5 block tracking-wider text-muted-foreground">{k}</span>
-              <span className="text-xs font-semibold text-primary">{v || "0.00"}</span>
+              <span className="text-xs font-semibold text-foreground">{v || "0.00"}</span>
             </div>
           ))}
         </div>
@@ -67,13 +67,13 @@ export function MapHud({ hud }: Props) {
               ["WZ", pose?.wz],
             ] as const
           ).map(([k, v]) => (
-            <div key={k} className="rounded-md bg-secondary/60 px-1.5 py-1.5">
+            <div key={k} className="rounded-xl bg-secondary/70 px-1.5 py-1.5">
               <span className="mb-0.5 block tracking-wider text-muted-foreground">{k}</span>
               <span className="text-[11px] font-semibold text-foreground">{v || "0.00"}</span>
             </div>
           ))}
         </div>
-        <Badge variant="secondary" className="w-fit font-mono text-[10px]">
+        <Badge variant="secondary" className="w-fit rounded-full font-mono text-[10px]">
           observe only · drive gates unchanged
         </Badge>
       </CardContent>

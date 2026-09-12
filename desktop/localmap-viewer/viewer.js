@@ -7,7 +7,7 @@
 (function () {
   'use strict';
 
-  var ACCENT = 0x32d4ff; // HUD / robot telemetry only — never env prop fill
+  var ACCENT = 0x3b82f6; // launch blue telemetry — never env prop fill
   var DANGER = 0xe31937; // STOP / e-stop chrome only — never occupancy blobs
   var BG = 0x000000;
   var RACK = 0x3a424c;
@@ -608,6 +608,20 @@
     });
   }
 
+  function snapK1ToFloor(robot) {
+    if (!robot) return false;
+    // Reset then measure so repeated snaps do not drift as STLs stream in.
+    robot.position.y = 0;
+    robot.updateMatrixWorld(true);
+    var box = new THREE.Box3().setFromObject(robot);
+    if (!isFinite(box.min.y) || !isFinite(box.max.y)) return false;
+    var height = box.max.y - box.min.y;
+    // Incomplete mesh loads produce tiny boxes — wait for STLs.
+    if (height < 0.45) return false;
+    robot.position.y = -box.min.y + 0.002;
+    return true;
+  }
+
   function attachK1Urdf(robot) {
     clearGroup(robotGroup);
     addK1FootRing();
@@ -615,9 +629,7 @@
     applyK1StandPose(robot);
     // URDF is Z-up; Local Map is Y-up
     robot.rotation.x = -Math.PI / 2;
-    robot.updateMatrixWorld(true);
-    var box = new THREE.Box3().setFromObject(robot);
-    if (isFinite(box.min.y)) robot.position.y -= box.min.y;
+    snapK1ToFloor(robot);
     robot.traverse(function (obj) {
       if (obj.isMesh) {
         obj.castShadow = true;
@@ -638,6 +650,14 @@
     robotGroup.add(robot);
     robotGroup.visible = layers.robot;
     k1MeshLoaded = true;
+    // Re-snap for several frames while async STL meshes finish loading.
+    var tries = 0;
+    function resnap() {
+      snapK1ToFloor(robot);
+      tries += 1;
+      if (tries < 90) requestAnimationFrame(resnap);
+    }
+    requestAnimationFrame(resnap);
   }
 
   function buildK1() {
@@ -648,10 +668,17 @@
       return;
     }
     try {
-      var loader = new URDFLoader();
+      var manager = new THREE.LoadingManager();
+      var pending = null;
+      manager.onLoad = function () {
+        if (pending) snapK1ToFloor(pending);
+      };
+      var loader = new URDFLoader(manager);
       loader.workingPath = K1_URDF_DIR;
       loader.load(K1_URDF_URL, function (robot) {
+        pending = robot;
         attachK1Urdf(robot);
+        snapK1ToFloor(robot);
       }, undefined, function (err) {
         console.warn('[k1] URDF load failed; keeping procedural proxy', err);
         k1MeshLoaded = false;

@@ -58,8 +58,8 @@ export function DomainChips({ domains, activeId, onSelect, onCreate }: Props) {
             title={`${d.name || d.id} · ${d.cell_count || 0} cells · ${d.run_count || 0} runs`}
             onClick={() => onSelect(d.id)}
             className={cn(
-              "shrink-0 rounded-sm",
-              active && "shadow-[0_0_0_1px_color-mix(in_oklab,var(--primary)_35%,transparent)]"
+              "shrink-0 cursor-pointer rounded-xl transition-colors duration-200",
+              active && "ring-1 ring-foreground/25"
             )}
           >
             {d.name || d.id}
@@ -70,7 +70,7 @@ export function DomainChips({ domains, activeId, onSelect, onCreate }: Props) {
         type="button"
         size="sm"
         variant="outline"
-        className="shrink-0 rounded-sm border-dashed border-primary/40 text-primary"
+        className="shrink-0 cursor-pointer rounded-xl border-dashed border-border text-muted-foreground hover:text-foreground"
         onClick={() => setOpen(true)}
       >
         <PlusIcon data-icon="inline-start" />

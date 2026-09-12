@@ -111,7 +111,7 @@ export function LocalMapPanel() {
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border bg-card/60 px-3 py-2 backdrop-blur-sm">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border/80 bg-card/50 px-3 py-2.5 backdrop-blur-md">
         <div className="text-[11px] font-bold tracking-[0.18em] text-muted-foreground uppercase">
           <span className="text-foreground">K1</span> Local Map
         </div>
