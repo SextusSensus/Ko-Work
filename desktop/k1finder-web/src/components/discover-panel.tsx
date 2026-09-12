@@ -34,7 +34,7 @@ export function DiscoverPanel() {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-5 p-6 sm:p-8">
       <section className="rounded-3xl border border-white/8 bg-white/[0.03] p-5 sm:p-6">
-        <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between xl:gap-8">
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-center xl:justify-between xl:gap-6">
           <div className="shrink-0 space-y-1.5">
             <p className="font-mono text-[10px] tracking-[0.18em] text-muted-foreground uppercase">
               Network discovery
@@ -48,15 +48,15 @@ export function DiscoverPanel() {
           </div>
 
           <div
-            className="flex min-w-0 flex-1 items-end justify-center gap-3 sm:gap-5 md:gap-8"
+            className="flex min-w-0 flex-1 items-center justify-center gap-4 sm:gap-6 md:gap-10"
             aria-label="Supported humanoid platforms"
           >
             {robots.map((robot) => (
               <figure
                 key={robot.id}
-                className="group flex w-[28%] max-w-[140px] flex-col items-center gap-2 sm:max-w-[160px] md:max-w-[180px]"
+                className="group flex w-[28%] max-w-[140px] items-center justify-center sm:max-w-[160px] md:max-w-[180px]"
               >
-                <div className="relative flex h-28 w-full items-end justify-center sm:h-36 md:h-40">
+                <div className="relative flex h-24 w-full items-center justify-center sm:h-32 md:h-36">
                   <img
                     src={robot.src}
                     alt={robot.name}
@@ -71,7 +71,7 @@ export function DiscoverPanel() {
           <div className="flex shrink-0 flex-wrap items-end gap-3 xl:flex-col xl:items-stretch 2xl:flex-row 2xl:items-end">
             <div className="flex flex-wrap items-end gap-3">
               <Button type="button" size="lg" className="h-10 rounded-xl px-5">
-                Scan for K1
+                Scan For Clanker
               </Button>
               <Button
                 type="button"
