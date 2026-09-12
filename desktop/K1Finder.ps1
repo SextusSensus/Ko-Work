@@ -1565,6 +1565,24 @@ function New-SkyWebView2([System.Windows.Forms.Control]$parent, [string]$uri, [s
     try{
         $wv = New-Object Microsoft.Web.WebView2.WinForms.WebView2
         $wv.Dock = 'Fill'
+        # WebView2's default user-data folder sits next to powershell.exe (System32), which is not writable:
+        # initialization then fails with E_ACCESSDENIED and the window stays blank. Use a per-user folder.
+        $udf = Join-Path $env:LOCALAPPDATA 'SkyConnect\WebView2'
+        if(-not (Test-Path $udf)){ New-Item -ItemType Directory -Force -Path $udf | Out-Null }
+        $cp = New-Object Microsoft.Web.WebView2.WinForms.CoreWebView2CreationProperties
+        $cp.UserDataFolder = $udf
+        $wv.CreationProperties = $cp
+        # Chromium refuses ES module scripts over file:// (origin 'null'), so the Vite build under
+        # k1finder-web/dist renders an empty #root. Serve this folder under a virtual https host instead.
+        $root = $SCRIPT_DIR
+        $navUri = $uri
+        try{
+            $u = [Uri]$uri
+            if($u.IsFile -and $u.LocalPath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)){
+                $rel = $u.LocalPath.Substring($root.Length).TrimStart('\').Replace('\','/')
+                $navUri = 'https://skyconnect.local/' + $rel + $u.Query
+            }
+        }catch{}
         $parent.Controls.Add($wv)
         $wv.BringToFront()
         # Register completion handler BEFORE EnsureCoreWebView2Async to avoid a race
@@ -1572,8 +1590,21 @@ function New-SkyWebView2([System.Windows.Forms.Control]$parent, [string]$uri, [s
         $wv.Add_CoreWebView2InitializationCompleted({
             param($s,$e)
             if($e.IsSuccess){
-                $s.CoreWebView2.Navigate($uri)
+                if($navUri -like 'https://skyconnect.local/*'){
+                    $s.CoreWebView2.SetVirtualHostNameToFolderMapping('skyconnect.local', $root,
+                        [Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind]::Allow)
+                }
+                $s.CoreWebView2.Navigate($navUri)
                 if($onReady){ & $onReady $s $e }
+            } else {
+                # Never leave a blank window: drop the failed web view and bring the classic tabs back.
+                $msg = if($e.InitializationException){ $e.InitializationException.Message } else { 'unknown error' }
+                try{ $parent.Controls.Remove($s) }catch{}
+                if($parent -ne $mapHost){
+                    $parent.Visible = $false
+                    $header.Visible = $true; $tabs.Visible = $true; $status.Visible = $true
+                }
+                $statusLbl.Text = ('WebView2 init failed ({0}) -- showing the classic tabs.' -f $msg)
             }
         }.GetNewClosure())
         [void]$wv.EnsureCoreWebView2Async($null)
