@@ -1665,6 +1665,205 @@ function Initialize-LocalMapHost{
     $mapInfo.Text = 'No embedded browser — Open in browser launches the Three.js Local Map viewer.'
 }
 
+# ============================================================================
+#  Sky Connect web shell <-> host bridge
+# ============================================================================
+# The web shell (desktop/k1finder-web) is a skin over the classic controls below, which stay the single
+# source of truth. Every web action drives the SAME WinForms control and runs the SAME handler (Start-Scan,
+# Do-Verify, Start-Tracker, Stop-Tracker, the ARM confirmation, ...), so the launch pre-flight, the
+# operator-session contract, the confirmations and STOP behave exactly as in the classic tabs. The host
+# pushes a snapshot of these controls, the scan results, the logs and the Tracker preview frame back.
+#   page -> host : {t:'hello'} | {t:'click',id} | {t:'set',id,v} | {t:'row',i,verify}
+#   host -> page : {t:'state',...} | {t:'log',ch,text,reset} | {t:'frame',src}
+function Get-SkyControls{
+    return [ordered]@{
+        # Discover
+        scanBtn=$scanBtn; stopBtn=$stopBtn; ipBox=$ipBox; verifyBtn=$verifyBtn; connectBtn=$connectBtn; useBtn=$useBtn
+        # Tracker: primary
+        trackToggle=$trackToggle; trackStopBtn=$trackStopBtn; trackDriveChk=$trackDriveChk; trackArmChk=$trackArmChk
+        trackMuteChk=$trackMuteChk; ipTrack=$ipTrack; distTrack=$distTrack; spdTrack=$spdTrack
+        # Tracker: avoidance
+        trackGap=$trackGap; trackScan=$trackScan; trackHitBox=$trackHitBox; trackEscape=$trackEscape
+        trackObstacle=$trackObstacle; trackClassBrake=$trackClassBrake; trackFloor=$trackFloor
+        trackLocalMap=$trackLocalMap; trackMapAssist=$trackMapAssist; trackHeadProbe=$trackHeadProbe
+        # Tracker: advanced
+        trackApp=$trackApp; trackCoast=$trackCoast; trackReacq=$trackReacq; trackFence=$trackFence
+        trackArmReloc=$trackArmReloc; trackHbChk=$trackHbChk
+        # Tracker: acquisition
+        chkGesture=$chkGesture; chkAB=$chkAB; chkCrowd=$chkCrowd; chkVoice=$chkVoice
+        # Tracker: recording + commands
+        trackRerun=$trackRerun; trackCtrlRun=$trackCtrlRun
+        btnWait=$btnWait; btnResume=$btnResume; btnPark=$btnPark; btnStatus=$btnStatus; btnFollowCmd=$btnFollowCmd; btnRrd=$btnRrd
+    }
+}
+
+function Get-SkyColorHex($color){
+    if(-not $color){ return '' }
+    try{ return ('#{0:X2}{1:X2}{2:X2}' -f $color.R, $color.G, $color.B) }catch{ return '' }
+}
+
+function Invoke-SkyClick([System.Windows.Forms.Button]$button, [bool]$force){
+    # Button.PerformClick() does nothing on a hidden control (CanSelect is false), so raise Click directly.
+    # A disabled button stays inert, exactly as in the classic tab -- except STOP ($force), which must never
+    # be blocked by a stale Enabled state.
+    if(-not $button){ return }
+    if(-not $force -and -not $button.Enabled){ return }
+    $onClick = [System.Windows.Forms.Button].GetMethod('OnClick', [System.Reflection.BindingFlags]'NonPublic,Instance')
+    [void]$onClick.Invoke($button, @([EventArgs]::Empty))
+}
+
+function Set-SkyValue([string]$id, $value){
+    $x = $script:SkyControls[$id]
+    if(-not $x -or -not $x.Enabled){ return }
+    if($x -is [System.Windows.Forms.CheckBox]){
+        $x.Checked = [bool]$value   # CheckedChanged runs: the ARM confirmation, Start-Tracker / Stop-Tracker, ...
+    } elseif($x -is [System.Windows.Forms.ComboBox]){
+        $s = [string]$value
+        if($x.Items.Contains($s)){ $x.SelectedItem = $s }
+    } elseif($x -is [System.Windows.Forms.TrackBar]){
+        $n = 0; if([int]::TryParse([string]$value, [ref]$n)){ $x.Value = [Math]::Max($x.Minimum, [Math]::Min($x.Maximum, $n)) }
+    } elseif($x -is [System.Windows.Forms.TextBox]){
+        $x.Text = [string]$value
+        if($id -eq 'ipTrack' -and $x.Text.Trim()){ $script:RobotIP = $x.Text.Trim() }   # same as its Leave handler
+    }
+}
+
+function Select-SkyRow([int]$index, [bool]$verify){
+    if($index -lt 0 -or $index -ge $list.Items.Count){ return }
+    foreach($it in $list.Items){ if($it.Selected){ $it.Selected = $false } }
+    $list.Items[$index].Selected = $true   # SelectedIndexChanged copies its IP into the Discover IP box
+    $ip = $list.Items[$index].SubItems[1].Text
+    if($ip){ $ipBox.Text = $ip }   # same as that handler, in case it has not run
+    if($verify){ Do-Verify $ip }
+}
+
+function Send-SkyJson([string]$json){
+    $view = $script:SkyBridge.View
+    if(-not $view -or -not $view.CoreWebView2){ return }
+    try{ $view.CoreWebView2.PostWebMessageAsJson($json) }catch{}
+}
+
+function Send-SkyState([bool]$force){
+    if(-not $script:SkyBridge){ return }
+    $c = [ordered]@{}
+    foreach($k in $script:SkyControls.Keys){
+        $x = $script:SkyControls[$k]
+        if(-not $x){ continue }
+        $o = [ordered]@{ e = [bool]$x.Enabled }
+        if($x -is [System.Windows.Forms.CheckBox]){ $o.k = [bool]$x.Checked; $o.x = [string]$x.Text }
+        elseif($x -is [System.Windows.Forms.ComboBox]){ $o.v = [string]$x.SelectedItem; $o.o = @($x.Items | ForEach-Object { [string]$_ }) }
+        elseif($x -is [System.Windows.Forms.TrackBar]){ $o.v = [int]$x.Value; $o.min = [int]$x.Minimum; $o.max = [int]$x.Maximum }
+        elseif($x -is [System.Windows.Forms.TextBox]){ $o.v = [string]$x.Text }
+        else { $o.x = [string]$x.Text }
+        $c[$k] = $o
+    }
+    $rows = New-Object System.Collections.ArrayList
+    foreach($it in $list.Items){
+        [void]$rows.Add([ordered]@{ c = $it.SubItems[0].Text; ip = $it.SubItems[1].Text; h = $it.SubItems[2].Text; b = $it.SubItems[3].Text; w = $it.SubItems[4].Text; sel = [bool]$it.Selected })
+    }
+    $state = [ordered]@{
+        t = 'state'; c = $c; rows = @($rows.ToArray())
+        status = [string]$statusLbl.Text
+        progress = [ordered]@{ v = [int]$progress.Value; max = [int]$progress.Maximum }
+        subnets = [string]$subnetLbl.Text
+        scanning = [bool]$sync.Running
+        trackOn = [bool]$script:TrackOn
+        badge = [ordered]@{ x = [string]$trackBadge.Text; bg = (Get-SkyColorHex $trackBadge.BackColor) }
+        reid = [ordered]@{ x = [string]$reidBadge.Text; bg = (Get-SkyColorHex $reidBadge.BackColor) }
+        dist = (Get-TrackStandoff); spd = (Get-TrackVxMax)
+    }
+    $json = ConvertTo-Json -InputObject $state -Depth 6 -Compress
+    if($force -or $json -ne $script:SkyBridge.LastJson){
+        $script:SkyBridge.LastJson = $json
+        Send-SkyJson $json
+    }
+}
+
+function Send-SkyLogs([bool]$reset){
+    if(-not $script:SkyBridge){ return }
+    foreach($ch in @('discover', 'tracker')){
+        $box = if($ch -eq 'discover'){ $logBox } else { $trackLog }
+        if(-not $box){ continue }
+        $n = [int]$box.TextLength
+        if(-not $reset -and $n -eq [int]$script:SkyBridge.LogLen[$ch]){ continue }
+        $t = [string]$box.Text
+        $prev = [int]$script:SkyBridge.LogText[$ch]
+        $msg = $null
+        if($reset -or $t.Length -lt $prev){
+            $tail = if($t.Length -gt 20000){ $t.Substring($t.Length - 20000) } else { $t }
+            $msg = [ordered]@{ t = 'log'; ch = $ch; reset = $true; text = $tail }
+        } elseif($t.Length -gt $prev){
+            $msg = [ordered]@{ t = 'log'; ch = $ch; reset = $false; text = $t.Substring($prev) }
+        }
+        $script:SkyBridge.LogLen[$ch] = $n
+        $script:SkyBridge.LogText[$ch] = $t.Length
+        if($msg){ Send-SkyJson (ConvertTo-Json -InputObject $msg -Compress) }
+    }
+}
+
+function Send-SkyFrame{
+    if(-not $script:SkyBridge){ return }
+    $img = $trackPic.Image
+    if(-not $img){
+        if($script:SkyBridge.HadFrame){
+            $script:SkyBridge.HadFrame = $false; $script:SkyBridge.LastImg = $null
+            Send-SkyJson '{"t":"frame","src":null}'
+        }
+        return
+    }
+    if([object]::ReferenceEquals($img, $script:SkyBridge.LastImg)){ return }
+    if(((Get-Date) - $script:SkyBridge.LastFrameAt).TotalMilliseconds -lt 180){ return }   # <= ~5 fps to the page
+    try{
+        $ms = New-Object System.IO.MemoryStream
+        $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+        $src = 'data:image/jpeg;base64,' + [Convert]::ToBase64String($ms.ToArray())
+        $ms.Dispose()
+        $script:SkyBridge.LastImg = $img; $script:SkyBridge.LastFrameAt = Get-Date; $script:SkyBridge.HadFrame = $true
+        Send-SkyJson (ConvertTo-Json -InputObject ([ordered]@{ t = 'frame'; src = $src }) -Compress)
+    }catch{}
+}
+
+function Invoke-SkyMessage([string]$json){
+    $m = $null
+    try{ $m = $json | ConvertFrom-Json }catch{ return }
+    if(-not $m){ return }
+    switch([string]$m.t){
+        'hello' { Send-SkyLogs $true; Send-SkyState $true; return }
+        'click' {
+            $id = [string]$m.id
+            $b = $script:SkyControls[$id]
+            if($b -is [System.Windows.Forms.Button]){ Invoke-SkyClick $b ($id -eq 'trackStopBtn') }
+        }
+        'set' { Set-SkyValue ([string]$m.id) $m.v }
+        'row' { Select-SkyRow ([int]$m.i) ([bool]$m.verify) }
+    }
+    Send-SkyState $false
+}
+
+function Start-SkyBridge($view){
+    if(-not $view -or -not $view.CoreWebView2){ return }
+    $script:SkyControls = Get-SkyControls
+    # The classic tabs stay hidden in shell mode, so the Discover ListView never gets a window handle. Without
+    # one it reports no SelectedItems and never raises SelectedIndexChanged, which breaks Verify Selected and
+    # Use this IP everywhere. Create the handle now.
+    try{ $null = $list.Handle }catch{}
+    $script:SkyBridge = @{ View = $view; LastJson = ''; LogLen = @{ discover = -1; tracker = -1 }; LogText = @{ discover = 0; tracker = 0 }; LastImg = $null; LastFrameAt = [datetime]::MinValue; HadFrame = $false; Tick = 0 }
+    $script:SkyInbox = New-Object System.Collections.Queue
+    # Only queue inside the WebView2 event: the handlers it triggers can open modal dialogs (the ARM
+    # confirmation) or block on ssh, and WebView2 must not be re-entered from its own event callback.
+    $view.CoreWebView2.add_WebMessageReceived({ param($s, $e) try{ $script:SkyInbox.Enqueue($e.WebMessageAsJson) }catch{} })
+    if(-not $script:SkyBridgeTimer){
+        $script:SkyBridgeTimer = New-Object System.Windows.Forms.Timer
+        $script:SkyBridgeTimer.Interval = 75
+        $script:SkyBridgeTimer.Add_Tick({
+            while($script:SkyInbox.Count -gt 0){ Invoke-SkyMessage ([string]$script:SkyInbox.Dequeue()) }
+            $script:SkyBridge.Tick++
+            if(($script:SkyBridge.Tick % 4) -eq 0){ Send-SkyState $false; Send-SkyLogs $false; Send-SkyFrame }
+        })
+        $script:SkyBridgeTimer.Start()
+    }
+}
+
 function Initialize-SkyConnectShell{
     if(-not $script:SkyShellMode){ return $false }
     if(-not (Test-Path $script:K1FinderWebDist)){ return $false }
@@ -1680,7 +1879,9 @@ function Initialize-SkyConnectShell{
 
     $uri = Get-SkyConnectShellUri 'discover'
     $wv = New-SkyWebView2 $shellHost $uri {
+        param($s,$e)
         $statusLbl.Text = 'Sky Connect shell ready.'
+        Start-SkyBridge $s   # web buttons drive the classic controls; their state streams back to the page
     }
     if($wv){
         $script:MapWebView = $wv
