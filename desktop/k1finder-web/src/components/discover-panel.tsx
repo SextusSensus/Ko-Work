@@ -40,7 +40,7 @@ export function DiscoverPanel() {
               Network discovery
             </p>
             <h2 className="font-heading text-xl font-semibold tracking-tight">
-              Find K1 on the LAN
+              Find Clanker Over LAN
             </h2>
             <p className="text-sm text-muted-foreground">
               Subnets · 192.168.1.0/24 · 10.0.0.0/24
