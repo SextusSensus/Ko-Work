@@ -1,6 +1,6 @@
 {
   "domain_id": "exact-lab",
   "updated": "2026-09-12T00:00:00Z",
-  "notes": "Exact Lab stays empty until Import-RerunToDomain / Rerun placer writes instances. Use: Import-RerunToDomain.ps1 -Domain exact-lab -Fixture",
+  "notes": "Empty until Import-Rerun / Rerun placer writes instances.",
   "instances": []
 }

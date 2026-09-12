@@ -803,6 +803,14 @@
     }).then(function (data) {
       if (gen !== instanceLoadGen || activeDomainId !== domainId) return [];
       var list = (data && data.instances) || [];
+      // Keep localStorage in sync with disk so emptied domains stay empty after a prior demo/fixture.
+      try {
+        if (!list.length) localStorage.removeItem('k1LocalMap.instances.' + domainId);
+        else localStorage.setItem('k1LocalMap.instances.' + domainId, JSON.stringify({
+          domain_id: domainId,
+          instances: list
+        }));
+      } catch (e) {}
       // Re-clear in case a stale sibling load placed meshes between fetch and place.
       // Keep the same gen so in-flight work for THIS load stays valid.
       while (instanceGroup.children.length) {

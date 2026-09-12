@@ -2,11 +2,9 @@
   "id": "exact-lab",
   "name": "Exact Lab (Rerun fixture)",
   "created": "2026-09-11T10:13:13Z",
-  "updated": "2026-09-11T10:13:13Z",
-  "run_count": 1,
-  "cell_count": 4,
-  "runs": [
-    "golden-v1"
-  ],
-  "notes": "Golden exact-pose placements from fixtures/rerun_exact_place (no real .rrd)."
+  "updated": "2026-09-12T00:00:00Z",
+  "run_count": 0,
+  "cell_count": 0,
+  "runs": [],
+  "notes": "Empty by default. Place with Import-RerunToDomain.ps1 -Domain exact-lab -Fixture (or a real .rrd)."
 }
