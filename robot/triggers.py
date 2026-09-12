@@ -676,6 +676,15 @@ _BODY_STEPS = ("R_UP", "L_UP", "BOTH_UP", "ONE_UP", "DOWN")
 _HAND_STEPS = tuple("F%d" % n for n in range(6))
 DEFAULT_2FA_STEPS = "R_UP,BOTH_UP,L_UP,DOWN"        # works with the body pose model alone
 COUNTDOWN_2FA_STEPS = "F5,F4,F3,F2,F1,F0"             # needs --hand-model
+# The node seeds only after --seed-frames (3) CONSECUTIVE frames carry a lock hint. A completed
+# sequence is one event, so the hint is LATCHED while the same tracked body stays in view: for
+# seed_frames + LATCH_RETRIES offers (the seed attempt plus a couple of retries), and never longer
+# than LATCH_S. The identity check in _seed_from runs on every attempt. Dropped the moment the body
+# leaves the tracker's person list (nobody else can inherit it) or the offers run out -- a REFUSED
+# sequence (identity or bystander check) must be done again from the start, and pose (paused while
+# latched) resumes quickly for everyone else.
+LATCH_S = 2.0
+LATCH_RETRIES = 2
 
 
 def parse_2fa_steps(spec):
@@ -711,6 +720,7 @@ class SequenceGestureTrigger(GestureTrigger):
         self.step_floor = max(1, int(getattr(args, "gesture_hold_floor", 3)))
         self._seq = {}            # track_id -> step state
         self._last_seen = {}      # track_id -> monotonic time of the last pose match
+        self._latch = None        # completed sequence waiting to seed: {"tid", "until"}
         if needs_hand_model(self.steps) and (hand is None or not getattr(hand, "ok", False)):
             log("GESTURE-2FA REFUSED: steps %s need the hand model and none is loaded -> trigger disabled"
                 % ",".join(self.steps))
@@ -768,8 +778,26 @@ class SequenceGestureTrigger(GestureTrigger):
             self._stationary_since = None
             if self._seq:
                 self._seq = {}; self._last_seen = {}
+            self._latch = None
             return None
         now = time.monotonic()
+        # A completed sequence stays offered to the seed funnel for LATCH_S while the SAME tracked
+        # body is in view (the funnel needs --seed-frames consecutive hints). No pose runs while
+        # latched; the box follows the tracker. Leaving view or timing out drops it.
+        if self._latch is not None:
+            _lt = self._latch
+            _body = next((p for p in persons if p.get("track_id") == _lt["tid"]), None)
+            if _body is None or now > _lt["until"] or _lt["left"] <= 0:
+                log("GESTURE-2FA-LATCH-DROP tid=%s (%s) -> sequence needed again"
+                    % (_lt["tid"], "left view" if _body is None
+                       else "refused by the seed checks" if _lt["left"] <= 0
+                       else "not seeded in %.1fs" % LATCH_S))
+                self._latch = None
+            else:
+                _lt["left"] -= 1
+                x1, y1, x2, y2 = _body["box"]
+                return LockHint(((x1 + x2) * 0.5, y1 + 0.6 * max(y2 - y1, 1.0)), _body["box"],
+                                _lt["tid"], "gesture", "gesture")
         if self._stationary_since is None:
             self._stationary_since = now
         _dwell = max(0.0, float(getattr(self.a, "gesture_dwell_s", 0.0)))
@@ -829,6 +857,9 @@ class SequenceGestureTrigger(GestureTrigger):
         point = ((x1 + x2) * 0.5, y1 + 0.6 * bh)
         log("GESTURE-2FA-COMPLETE tid=%s %s in %.1fs -> lock hint (identity check follows)"
             % (tid, ",".join(self.steps), now - st["started"]))
+        # this completion hint is offer 1 of seed_frames + LATCH_RETRIES
+        self._latch = {"tid": tid, "until": now + LATCH_S,
+                       "left": max(1, int(getattr(self.a, "seed_frames", 3))) + LATCH_RETRIES - 1}
         return LockHint(point, st["box"], tid, "gesture", "gesture")
 
 

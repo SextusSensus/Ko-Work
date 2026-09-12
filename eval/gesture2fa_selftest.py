@@ -13,6 +13,8 @@ Covers, with a FAKE pose model and a controllable clock (no robot, no camera, no
   S8  a non-stationary state runs nothing and clears every partial sequence
   N1  node defaults are inert (switch floors 0, aruco trigger); --profile crowd loads; a
       finger-step config without --hand-model is REFUSED; auto re-lock with gesture2fa is REFUSED
+  N3  end-to-end through Follower._process_frame: the sequence seeds, a stranger copying it after a
+      loss is refused by identity, the operator re-seeds
   N2  _associate: with --switch-anchor-floor a stranger on another tracker id below the floor is
       NOT followed when the bound body is absent; the bound body itself keeps the normal floor;
       floor 0 reproduces the old behaviour (documents the hole)
@@ -389,6 +391,106 @@ def test_switch_floor(m):
     check("another id at 0.80 (>= floor) may be followed", best is not None and best["track_id"] == 2)
 
 
+# ---------------------------------------------------------------- end-to-end (FSM)
+def test_e2e(m):
+    """N3: the whole acquisition path in the real Follower._process_frame -- trigger -> hint ->
+    --seed-frames streak -> _try_seed -> _seed_from -> TRACK -- then loss -> REACQUIRE, a stranger
+    who copies the sequence is refused by identity, and the operator re-seeds. Synthetic frames
+    (operator painted red, stranger blue) so the default HS appearance separates them; a fake pose
+    model scripts the gestures; the replay harness supplies the stub node and a fake clock."""
+    print("N3 end-to-end through Follower._process_frame")
+    import copy
+    import time as _t
+    sys.path.insert(0, HERE)
+    import replay_eval as rv
+    clock = rv.FakeClock()
+    real_mono = _t.monotonic
+    _t.monotonic = clock.monotonic
+    logs = []
+    cap = lambda msg: logs.append(str(msg))
+    saved = (m.log, triggers.log, triggers.time)
+    m.log = cap; triggers.log = cap
+    triggers.time = _t          # the unit tests above swapped in their own Clock; use the node's fake clock
+    try:
+        argv = ["--preview", "--topic", "/t", "--lock-trigger", "gesture2fa", "--gesture-model", "none.onnx",
+                "--gesture-2fa-step-s", "0.25", "--gesture-2fa-gap-s", "1.5", "--gesture-dwell-s", "0",
+                "--reseed-anchor-floor", "0.55", "--switch-anchor-floor", "0.55", "--switch-anchor-frames", "8",
+                "--no-search-on-loss", "--lost-grace", "4"]
+        a = m.parse_args(argv)
+        f = m.Follower(a)
+        f.node = rv.StubNode(clock, 10.0)
+        scene = {"persons": []}
+
+        class Det:
+            ok = True
+
+            def detect(self, frame):
+                return [copy.deepcopy(p) for p in scene["persons"]]
+
+        f.det = Det()
+        pose_now = {}
+
+        class Pose:
+            def predict(self, frame, verbose=False):
+                ps = [(pose_for(p, **pose_now.get(p["_who"], {})), p["box"]) for p in scene["persons"]]
+                if not ps:
+                    return [FakeResult(np.zeros((0, 17, 3)), np.zeros((0, 4)))]
+                return [FakeResult(np.stack([k for k, _ in ps]), np.array([b for _, b in ps], dtype=float))]
+
+        f._lock_trigger = triggers.SequenceGestureTrigger("none.onnx", a, every_n=1, _model_override=Pose())
+
+        op = dict(person(None, 100), _who="op"); st = dict(person(None, 420), _who="st")
+        colors = {"op": (0, 0, 220), "st": (220, 60, 0)}
+
+        def frame_of(ps):
+            img = np.full((480, 640, 3), 90, dtype=np.uint8)
+            for p in ps:
+                x1, y1, x2, y2 = [int(v) for v in p["box"]]
+                img[y1:y2, x1:x2] = colors[p["_who"]]
+            return img
+
+        def step(n, ps, poses):
+            scene["persons"] = ps
+            pose_now.clear(); pose_now.update(poses)
+            for _ in range(n):
+                clock.tick(0.1)
+                f._process_frame(frame_of(ps))
+
+        def do_seq(who, ps):
+            for s_ in ["R_UP", "BOTH_UP", "L_UP", "DOWN"]:
+                step(5, ps, {who: STEP_POSE[s_]})
+
+        step(3, [op, st], {})
+        check("starts in SEARCH", f.state == m.S_SEARCH, f.state)
+        do_seq("op", [op, st])
+        step(4, [op, st], {})                           # latch window: >= seed_frames consecutive hints
+        check("operator's sequence SEEDS (latched hint reaches seed_frames)", f.state == m.S_TRACK and f.seed is not None,
+              (f.state, [l for l in logs if "2FA" in l or "SEED" in l][-4:]))
+        op_tid = f.seed.track_id if f.seed is not None else None
+        check("seeded on the operator's body", op_tid is not None and f.seed.box[0] < 300, f.seed.box if f.seed else None)
+
+        step(12, [st], {})                             # operator gone -> loss
+        check("operator out of view -> REACQUIRE (stranger NOT followed)", f.state == m.S_REACQUIRE, f.state)
+        n0 = len(logs)
+        do_seq("st", [st])
+        step(6, [st], {})
+        check("stranger copying the sequence is REFUSED by identity",
+              f.state == m.S_REACQUIRE and any("identity-mismatch" in l for l in logs[n0:]),
+              (f.state, [l for l in logs[n0:] if "SEED" in l or "2FA" in l][-3:]))
+        check("latch drops after the window, no lingering hint",
+              f._lock_trigger._latch is None or clock.now <= f._lock_trigger._latch["until"])
+
+        op2 = dict(person(None, 100), _who="op")
+        step(3, [op2, st], {})
+        do_seq("op", [op2, st])
+        step(4, [op2, st], {})
+        check("operator re-seeds with the sequence", f.state == m.S_TRACK and f.seed is not None and f.seed.box[0] < 300,
+              (f.state, [l for l in logs if "SEED" in l or "2FA" in l][-4:]))
+    finally:
+        _t.monotonic = real_mono
+        m.log, triggers.log, triggers.time = saved
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--node", default=NODE_DEFAULT)
@@ -397,7 +499,7 @@ def main():
     test_steps(); test_fingers(); test_body_sequence(); test_wrong_order(); test_two_bodies()
     test_timeout(); test_countdown(); test_state_gate()
     m = load_node(args.node)
-    test_node_config(m); test_switch_floor(m)
+    test_node_config(m); test_switch_floor(m); test_e2e(m)
     if FAILS:
         print("GESTURE2FA-SELFTEST-FAIL %d: %s" % (len(FAILS), "; ".join(FAILS)))
         sys.exit(1)
