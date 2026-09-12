@@ -2,6 +2,19 @@
 
 Near-black UI (`#000` / `#0A0A0A`), surfaces `#141414` / `#1C1C1E`, text `#F5F5F7`, muted `#8E8E93`, **one** electric cyan accent (`#32D4FF`), Tesla red STOP (`#E31937`). Bahnschrift / Segoe UI Variable for UI; Cascadia Mono for logs.
 
+
+## shadcn/ui web shell (`k1finder-web/`)
+
+Operator chrome (Discover / Tracker / Local Map) is a **Vite + React + Tailwind + shadcn/ui** app. The Local Map tab embeds the existing Three.js viewer (`localmap-viewer/`) with `?embed=1` so OrbitControls, domain scenes, free assets, and Rerun placer APIs stay unchanged. WinForms/WebView2 prefers `k1finder-web/dist/index.html` when built; otherwise it falls back to `localmap-viewer/index.html`.
+
+```bash
+cd desktop/k1finder-web
+npm install
+npm run dev          # http://127.0.0.1:5173/?tab=map
+npm run build        # writes dist/ for WebView2 / static hosting
+npm run preview
+```
+
 ## Local Map = domains
 
 Domains are **separate environments** (assembly factory, warehouse bay, distribution hub). Each follow/capture run **merges** occupancy into the **active** domain — accumulate over time, do not blindly replace.
@@ -15,6 +28,7 @@ Parallel Local Map workers: see [`localmap-viewer/COORDINATION.md`](localmap-vie
 | `desktop/localmap-data/domains.json` | Registry: `active` + list (name, updated, run_count, cell_count) |
 | `desktop/localmap-data/domains/<id>/manifest.json` | Per-domain metadata |
 | `desktop/localmap-data/domains/<id>/occupancy.json` | Accumulated cells + pose |
+| `desktop/k1finder-web/` | shadcn React shell (chrome + HUD + dialogs) |
 | `desktop/localmap-viewer/` | Three.js host (`index.html`, `viewer.js`, `three.min.js`, textures) |
 | `desktop/localmap-viewer/feed.json` | Live poll mirror of the active domain (fallback when WS is down) |
 | `desktop/telemetry-bridge/` | Realtime WebSocket bridge + static server (port **8742**) |
@@ -29,9 +43,9 @@ Parallel Local Map workers: see [`localmap-viewer/COORDINATION.md`](localmap-vie
 
 ### Hosting
 
-1. **WebView2** (preferred) embeds `localmap-viewer/index.html`.
+1. **WebView2** (preferred) embeds `k1finder-web/dist/index.html` when present, else `localmap-viewer/index.html`.
 2. **WebBrowser** fallback — prefer **Open in browser** for full Three.js.
-3. HTML `+ New domain` / chip switches sync to disk via a document-title bridge polled by WinForms.
+3. HTML `+ New domain` / chip switches sync to disk via a document-title bridge polled by WinForms (React shell forwards title events from the embed).
 4. **Telemetry bridge** (dev / Linux preview): see below and [`docs/realtime-telemetry.md`](../docs/realtime-telemetry.md).
 
 ### Drive safety
@@ -45,6 +59,7 @@ cd desktop/telemetry-bridge
 npm install
 npm start
 # http://127.0.0.1:8742/localmap-viewer/index.html?live=1&domain=warehouse-bay-a
+# http://127.0.0.1:8742/k1finder-web/dist/index.html?tab=map&live=1
 # ws://127.0.0.1:8742/ws/telemetry
 # http://127.0.0.1:8742/api/status
 ```
@@ -54,10 +69,11 @@ Mock Booster-like odom walks the warehouse aisle at ~15 Hz. `feed.json` is still
 ## Static preview (no WebSocket)
 
 ```bash
-cd desktop
+cd desktop/k1finder-web && npm run build && cd ..
 python3 -m http.server 8765
-# http://127.0.0.1:8765/k1finder-ui-preview.html?domain=warehouse-bay-a
+# http://127.0.0.1:8765/k1finder-web/dist/index.html?tab=map
 # http://127.0.0.1:8765/localmap-viewer/index.html
+# legacy: http://127.0.0.1:8765/k1finder-ui-preview.html
 ```
 
 Textures and free meshes (Poly Haven / ambientCG / Kenney / OpenGameArt CC0) live under `localmap-viewer/assets/` — see [`ATTRIBUTION.md`](localmap-viewer/assets/ATTRIBUTION.md) and [`FREE-ASSETS.md`](localmap-viewer/assets/FREE-ASSETS.md).

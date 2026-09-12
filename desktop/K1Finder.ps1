@@ -1191,7 +1191,10 @@ $tabTrack.Controls.Add($trackLayout)
 #  Advanced: Import .stcm still available for legacy Aurora static renders.
 # ============================================================================
 $script:LocalMapViewerDir = Join-Path $SCRIPT_DIR 'localmap-viewer'
-$script:LocalMapIndex     = Join-Path $script:LocalMapViewerDir 'index.html'
+$script:LocalMapIndexLegacy = Join-Path $script:LocalMapViewerDir 'index.html'
+# Prefer shadcn React shell (WebView2) when built; falls back to vanilla Three.js viewer.
+$script:K1FinderWebDist = Join-Path $SCRIPT_DIR 'k1finder-web\dist\index.html'
+$script:LocalMapIndex = if(Test-Path $script:K1FinderWebDist){ $script:K1FinderWebDist } else { $script:LocalMapIndexLegacy }
 $script:LocalMapFeed      = Join-Path $script:LocalMapViewerDir 'feed.json'
 $script:LocalMapSample    = Join-Path $script:LocalMapViewerDir 'sample.json'
 $script:LocalMapDataDir   = Join-Path $SCRIPT_DIR 'localmap-data'
@@ -1509,7 +1512,7 @@ function Refresh-LocalMapFromRobot([string]$ip){
 
 function Initialize-LocalMapHost{
     if(-not (Test-Path $script:LocalMapIndex)){
-        $mapInfo.Text = 'localmap-viewer/index.html missing — open desktop/README-UI.md'
+        $mapInfo.Text = 'Local Map UI missing — build desktop/k1finder-web or see desktop/README-UI.md'
         return
     }
     Ensure-LocalMapDomains
@@ -1545,7 +1548,8 @@ function Initialize-LocalMapHost{
                 param($s,$e)
                 if($e.IsSuccess){
                     $s.CoreWebView2.Navigate(([Uri]$script:LocalMapIndex).AbsoluteUri)
-                    $mapInfo.Text = ('Local Map 3D · domain {0} (WebView2) — chips switch areas · Import last run merges' -f $script:ActiveDomainId)
+                    $hostLabel = if(Test-Path $script:K1FinderWebDist){ 'shadcn + Three.js' } else { 'Three.js' }
+                    $mapInfo.Text = ('Local Map 3D ({0}) · domain {1} (WebView2) — chips switch areas · Import last run merges' -f $hostLabel,$script:ActiveDomainId)
                 } else {
                     $mapInfo.Text = ('WebView2 init failed: {0} — use Open in browser' -f $e.InitializationException.Message)
                 }
