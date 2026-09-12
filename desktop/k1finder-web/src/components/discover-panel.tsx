@@ -117,7 +117,7 @@ export function DiscoverPanel() {
             <p className="mt-1 text-sm text-muted-foreground">Ranked by confidence</p>
           </div>
           <Badge variant="secondary" className="rounded-full px-3 py-1 font-mono text-[10px]">
-            2 hosts
+            0 hosts
           </Badge>
         </div>
         <ScrollArea className="min-h-0 flex-1">
@@ -133,28 +133,9 @@ export function DiscoverPanel() {
                 </TableRow>
               </TableHeader>
               <TableBody className="font-mono text-xs">
-                <TableRow className="border-white/6">
-                  <TableCell className="px-4 py-4">
-                    <Badge className="rounded-full">High</Badge>
-                  </TableCell>
-                  <TableCell className="px-4 py-4">192.168.1.81</TableCell>
-                  <TableCell className="px-4 py-4">booster-k1</TableCell>
-                  <TableCell className="px-4 py-4">OpenSSH_8.9</TableCell>
-                  <TableCell className="px-4 py-4 text-muted-foreground">
-                    banner + hostname match
-                  </TableCell>
-                </TableRow>
-                <TableRow className="border-white/6">
-                  <TableCell className="px-4 py-4">
-                    <Badge variant="secondary" className="rounded-full text-warning">
-                      Medium
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="px-4 py-4">192.168.1.44</TableCell>
-                  <TableCell className="px-4 py-4">orin-dev</TableCell>
-                  <TableCell className="px-4 py-4">OpenSSH_8.2</TableCell>
-                  <TableCell className="px-4 py-4 text-muted-foreground">
-                    open 22 only
+                <TableRow className="border-white/6 hover:bg-transparent">
+                  <TableCell colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
+                    No robots found yet. Press Scan For Clanker, or enter an IP and Verify.
                   </TableCell>
                 </TableRow>
               </TableBody>
@@ -172,9 +153,7 @@ export function DiscoverPanel() {
       </section>
 
       <pre className="h-40 overflow-auto rounded-3xl border border-white/8 bg-black/35 p-5 font-mono text-xs leading-relaxed text-muted-foreground">
-{`--- Starting scan ---
-[+] 192.168.1.81  High  booster-k1
-ready.`}
+{`ready.`}
       </pre>
     </div>
   )
