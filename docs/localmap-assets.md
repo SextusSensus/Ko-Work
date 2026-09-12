@@ -52,12 +52,14 @@ Lower-level: `window.k1LocalMapAssets` (catalog/ontology accessors, procedural b
 ```bash
 cd desktop
 python3 -m http.server 8765
-# Assembly Factory with seed instances:
+# Assembly Factory env shell (overlay instances empty by default):
 # http://127.0.0.1:8765/localmap-viewer/index.html?domain=assembly-factory
 # Distribution hub + force mock detections:
 # http://127.0.0.1:8765/localmap-viewer/index.html?domain=distribution-hub&demo_assets=1
 # Office + force mock detections:
 # http://127.0.0.1:8765/localmap-viewer/index.html?domain=office&demo_assets=1
+# Exact Lab stays empty until Import -Fixture / place:
+# http://127.0.0.1:8765/localmap-viewer/index.html?domain=exact-lab
 ```
 
 ## How label → asset works
