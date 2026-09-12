@@ -92,9 +92,8 @@ export function App() {
           </TabsContent>
         </Tabs>
 
-        <footer className="flex items-center justify-between gap-3 border-t border-white/6 px-6 py-3.5 font-mono text-[11px] text-muted-foreground sm:px-8">
+        <footer className="flex items-center border-t border-white/6 px-6 py-3.5 font-mono text-[11px] text-muted-foreground sm:px-8">
           <span>Ready</span>
-          <span className="opacity-70">Space Tech · Liquid Glass · Local Map</span>
         </footer>
       </div>
       <Toaster theme="dark" />
