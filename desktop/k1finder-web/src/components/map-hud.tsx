@@ -19,11 +19,11 @@ export function MapHud({ hud }: Props) {
   const live = hud?.live
 
   return (
-    <Card className="pointer-events-none w-[min(300px,86vw)] rounded-2xl border-border/70 bg-card/85 shadow-none backdrop-blur-md">
-      <CardHeader className="gap-2 pb-2">
-        <div className="flex items-center gap-2 font-mono text-[10px] tracking-[0.1em] text-muted-foreground uppercase">
+    <Card className="pointer-events-none w-[min(320px,88vw)] rounded-3xl border-white/10 bg-card/70 shadow-[0_16px_40px_rgb(0_0_0/0.35)] backdrop-blur-xl">
+      <CardHeader className="gap-3 px-5 pt-5 pb-3">
+        <div className="flex items-center gap-2.5 font-mono text-[10px] tracking-[0.12em] text-muted-foreground uppercase">
           <span
-            className={cn("size-1.5 rounded-full", liveTone(live?.className || "off"))}
+            className={cn("size-2 rounded-full", liveTone(live?.className || "off"))}
             aria-hidden
           />
           <span>
@@ -32,19 +32,21 @@ export function MapHud({ hud }: Props) {
             {live?.detail || "poll"}
           </span>
         </div>
-        <CardTitle className="text-xs font-semibold tracking-[0.06em] text-muted-foreground uppercase">
-          Active domain <span className="text-muted-foreground/70">·</span>
-        </CardTitle>
-        <p className="font-heading text-lg font-semibold tracking-tight text-foreground">
-          {hud?.title || "—"}
-        </p>
+        <div>
+          <CardTitle className="text-[11px] font-medium tracking-[0.14em] text-muted-foreground uppercase">
+            Active domain
+          </CardTitle>
+          <p className="font-heading mt-1.5 text-xl font-semibold tracking-tight text-foreground">
+            {hud?.title || "—"}
+          </p>
+        </div>
       </CardHeader>
-      <CardContent className="flex flex-col gap-3 pt-0">
+      <CardContent className="flex flex-col gap-4 px-5 pt-0 pb-5">
         <p className="font-mono text-[11px] leading-relaxed text-muted-foreground">
           {hud?.stats || "loading…"}
         </p>
-        <Separator />
-        <div className="grid grid-cols-4 gap-1.5 font-mono text-[10px]">
+        <Separator className="bg-white/8" />
+        <div className="grid grid-cols-4 gap-2 font-mono text-[10px]">
           {(
             [
               ["X", pose?.x],
@@ -53,13 +55,13 @@ export function MapHud({ hud }: Props) {
               ["TRAIL", pose?.trail],
             ] as const
           ).map(([k, v]) => (
-            <div key={k} className="rounded-xl bg-secondary/70 px-1.5 py-1.5">
-              <span className="mb-0.5 block tracking-wider text-muted-foreground">{k}</span>
+            <div key={k} className="rounded-2xl bg-secondary/80 px-2.5 py-2.5">
+              <span className="mb-1 block tracking-wider text-muted-foreground">{k}</span>
               <span className="text-xs font-semibold text-foreground">{v || "0.00"}</span>
             </div>
           ))}
         </div>
-        <div className="grid grid-cols-3 gap-1.5 font-mono text-[10px]">
+        <div className="grid grid-cols-3 gap-2 font-mono text-[10px]">
           {(
             [
               ["VX", pose?.vx],
@@ -67,13 +69,16 @@ export function MapHud({ hud }: Props) {
               ["WZ", pose?.wz],
             ] as const
           ).map(([k, v]) => (
-            <div key={k} className="rounded-xl bg-secondary/70 px-1.5 py-1.5">
-              <span className="mb-0.5 block tracking-wider text-muted-foreground">{k}</span>
+            <div key={k} className="rounded-2xl bg-secondary/80 px-2.5 py-2.5">
+              <span className="mb-1 block tracking-wider text-muted-foreground">{k}</span>
               <span className="text-[11px] font-semibold text-foreground">{v || "0.00"}</span>
             </div>
           ))}
         </div>
-        <Badge variant="secondary" className="w-fit rounded-full font-mono text-[10px]">
+        <Badge
+          variant="secondary"
+          className="w-fit rounded-full px-3 py-1 font-mono text-[10px]"
+        >
           observe only · drive gates unchanged
         </Badge>
       </CardContent>

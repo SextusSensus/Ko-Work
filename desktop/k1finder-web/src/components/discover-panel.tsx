@@ -14,73 +14,108 @@ import {
 
 export function DiscoverPanel() {
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-3 border-b border-border bg-card px-4 py-3">
-        <p className="text-sm text-muted-foreground">
-          Subnets: 192.168.1.0/24 · 10.0.0.0/24
-        </p>
-        <div className="flex w-full flex-wrap items-end gap-2">
-          <Button type="button">Scan for K1</Button>
-          <Button type="button" variant="outline" disabled>
-            Stop
-          </Button>
-          <FieldGroup className="flex-row items-end gap-2">
-            <Field className="gap-1.5">
-              <FieldLabel htmlFor="k1-ip">Or enter K1 IP</FieldLabel>
-              <Input id="k1-ip" defaultValue="192.168.1.81" className="w-40 font-mono" />
-            </Field>
-            <Button type="button" variant="outline">
-              Verify
+    <div className="flex min-h-0 flex-1 flex-col gap-5 p-6 sm:p-8">
+      <section className="rounded-3xl border border-white/8 bg-white/[0.03] p-5 sm:p-6">
+        <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div className="space-y-1.5">
+            <p className="font-mono text-[10px] tracking-[0.18em] text-muted-foreground uppercase">
+              Network discovery
+            </p>
+            <h2 className="font-heading text-xl font-semibold tracking-tight">
+              Find K1 on the LAN
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Subnets · 192.168.1.0/24 · 10.0.0.0/24
+            </p>
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <Button type="button" size="lg" className="h-10 rounded-xl px-5">
+              Scan for K1
             </Button>
-          </FieldGroup>
+            <Button type="button" size="lg" variant="outline" className="h-10 rounded-xl px-5" disabled>
+              Stop
+            </Button>
+            <FieldGroup className="flex-row flex-wrap items-end gap-3">
+              <Field className="gap-2">
+                <FieldLabel htmlFor="k1-ip">Or enter K1 IP</FieldLabel>
+                <Input
+                  id="k1-ip"
+                  defaultValue="192.168.1.81"
+                  className="h-10 w-44 rounded-xl font-mono"
+                />
+              </Field>
+              <Button type="button" size="lg" variant="outline" className="h-10 rounded-xl px-5">
+                Verify
+              </Button>
+            </FieldGroup>
+          </div>
         </div>
-      </div>
+      </section>
 
-      <ScrollArea className="min-h-0 flex-1 px-4 py-2">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Confidence</TableHead>
-              <TableHead>IP Address</TableHead>
-              <TableHead>Hostname</TableHead>
-              <TableHead>SSH Banner</TableHead>
-              <TableHead>Why</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody className="font-mono text-xs">
-            <TableRow>
-              <TableCell>
-                <Badge>High</Badge>
-              </TableCell>
-              <TableCell>192.168.1.81</TableCell>
-              <TableCell>booster-k1</TableCell>
-              <TableCell>OpenSSH_8.9</TableCell>
-              <TableCell className="text-muted-foreground">banner + hostname match</TableCell>
-            </TableRow>
-            <TableRow>
-              <TableCell>
-                <Badge variant="secondary" className="text-warning">
-                  Medium
-                </Badge>
-              </TableCell>
-              <TableCell>192.168.1.44</TableCell>
-              <TableCell>orin-dev</TableCell>
-              <TableCell>OpenSSH_8.2</TableCell>
-              <TableCell className="text-muted-foreground">open 22 only</TableCell>
-            </TableRow>
-          </TableBody>
-        </Table>
-      </ScrollArea>
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-white/8 bg-black/20">
+        <div className="flex items-center justify-between border-b border-white/6 px-5 py-4 sm:px-6">
+          <div>
+            <p className="font-mono text-[10px] tracking-[0.16em] text-muted-foreground uppercase">
+              Candidates
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">Ranked by confidence</p>
+          </div>
+          <Badge variant="secondary" className="rounded-full px-3 py-1 font-mono text-[10px]">
+            2 hosts
+          </Badge>
+        </div>
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="px-2 py-2 sm:px-4">
+            <Table>
+              <TableHeader>
+                <TableRow className="border-white/6 hover:bg-transparent">
+                  <TableHead className="h-11 px-4">Confidence</TableHead>
+                  <TableHead className="h-11 px-4">IP Address</TableHead>
+                  <TableHead className="h-11 px-4">Hostname</TableHead>
+                  <TableHead className="h-11 px-4">SSH Banner</TableHead>
+                  <TableHead className="h-11 px-4">Why</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody className="font-mono text-xs">
+                <TableRow className="border-white/6">
+                  <TableCell className="px-4 py-4">
+                    <Badge className="rounded-full">High</Badge>
+                  </TableCell>
+                  <TableCell className="px-4 py-4">192.168.1.81</TableCell>
+                  <TableCell className="px-4 py-4">booster-k1</TableCell>
+                  <TableCell className="px-4 py-4">OpenSSH_8.9</TableCell>
+                  <TableCell className="px-4 py-4 text-muted-foreground">
+                    banner + hostname match
+                  </TableCell>
+                </TableRow>
+                <TableRow className="border-white/6">
+                  <TableCell className="px-4 py-4">
+                    <Badge variant="secondary" className="rounded-full text-warning">
+                      Medium
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="px-4 py-4">192.168.1.44</TableCell>
+                  <TableCell className="px-4 py-4">orin-dev</TableCell>
+                  <TableCell className="px-4 py-4">OpenSSH_8.2</TableCell>
+                  <TableCell className="px-4 py-4 text-muted-foreground">
+                    open 22 only
+                  </TableCell>
+                </TableRow>
+              </TableBody>
+            </Table>
+          </div>
+        </ScrollArea>
+        <div className="flex flex-wrap gap-3 border-t border-white/6 px-5 py-4 sm:px-6">
+          <Button type="button" variant="secondary" className="h-10 rounded-xl px-5">
+            Verify Selected
+          </Button>
+          <Button type="button" variant="outline" className="h-10 rounded-xl px-5">
+            Use this IP everywhere
+          </Button>
+        </div>
+      </section>
 
-      <div className="flex flex-wrap gap-2 border-t border-border px-4 py-3">
-        <Button type="button" variant="secondary">
-          Verify Selected
-        </Button>
-        <Button type="button" variant="outline">
-          Use this IP everywhere
-        </Button>
-      </div>
-      <pre className="mx-4 mb-4 h-36 overflow-auto border border-border bg-secondary/40 p-3 font-mono text-xs leading-relaxed text-primary">
+      <pre className="h-40 overflow-auto rounded-3xl border border-white/8 bg-black/35 p-5 font-mono text-xs leading-relaxed text-muted-foreground">
 {`--- Starting scan ---
 [+] 192.168.1.81  High  booster-k1
 ready.`}

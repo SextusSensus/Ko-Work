@@ -3,7 +3,6 @@ import * as React from "react"
 import { DiscoverPanel } from "@/components/discover-panel"
 import { LocalMapPanel } from "@/components/local-map-panel"
 import { TrackerPanel } from "@/components/tracker-panel"
-import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Toaster } from "@/components/ui/sonner"
 
@@ -19,64 +18,85 @@ export function App() {
   const [tab, setTab] = React.useState(initialTab)
 
   return (
-    <div className="mx-auto flex min-h-svh max-w-[1200px] flex-col border-x border-border/80 bg-background/95">
-      <div className="h-px bg-gradient-to-r from-transparent via-foreground/40 to-transparent" />
-      <header className="animate-in fade-in slide-in-from-top-2 px-5 pt-5 pb-3 duration-500">
-        <p className="font-mono text-[10px] tracking-[0.22em] text-muted-foreground uppercase">
-          Mission control
-        </p>
-        <h1 className="font-heading mt-1 text-[28px] leading-none font-semibold tracking-[-0.02em] text-foreground">
-          K1 Finder
-        </h1>
-        <p className="mt-1.5 text-[13px] tracking-wide text-muted-foreground">
-          Discover · drive · observe
-        </p>
-      </header>
-      <Separator className="opacity-60" />
-      <Tabs
-        value={tab}
-        onValueChange={setTab}
-        className="flex min-h-0 flex-1 flex-col gap-0"
-      >
-        <TabsList
-          variant="line"
-          className="h-auto w-full justify-start rounded-none border-b border-border/80 bg-transparent px-2"
+    <div className="relative mx-auto flex min-h-svh w-full max-w-[1280px] flex-col px-4 py-5 sm:px-6 sm:py-7 lg:px-8">
+      <div className="glass-panel flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.75rem]">
+        <Tabs
+          value={tab}
+          onValueChange={setTab}
+          className="flex min-h-0 flex-1 flex-col gap-0"
         >
-          <TabsTrigger
+          <header className="flex flex-col gap-6 px-6 pt-7 pb-5 sm:px-8 sm:pt-8">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="space-y-3">
+                <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 font-mono text-[10px] tracking-[0.22em] text-muted-foreground uppercase">
+                  <span className="size-1.5 rounded-full bg-success" aria-hidden />
+                  Mission control
+                </div>
+                <div>
+                  <h1 className="font-heading text-3xl leading-none font-semibold tracking-[-0.03em] text-foreground sm:text-4xl">
+                    K1 Finder
+                  </h1>
+                  <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground sm:text-[15px]">
+                    Discover robots, drive with intent, observe the local map —
+                    quiet chrome for serious work.
+                  </p>
+                </div>
+              </div>
+              <div className="rounded-2xl border border-white/8 bg-black/25 px-4 py-3 font-mono text-[11px] text-muted-foreground">
+                <div className="text-[10px] tracking-[0.16em] uppercase opacity-70">
+                  Status
+                </div>
+                <div className="mt-1 text-sm text-foreground">Systems nominal</div>
+              </div>
+            </div>
+
+            <TabsList className="h-auto w-full justify-start gap-1 rounded-2xl border border-white/8 bg-black/30 p-1.5">
+              <TabsTrigger
+                value="discover"
+                className="cursor-pointer rounded-xl px-4 py-2.5 text-sm text-muted-foreground transition-all duration-200 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
+              >
+                Discover
+              </TabsTrigger>
+              <TabsTrigger
+                value="tracker"
+                className="cursor-pointer rounded-xl px-4 py-2.5 text-sm text-muted-foreground transition-all duration-200 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
+              >
+                Tracker
+              </TabsTrigger>
+              <TabsTrigger
+                value="map"
+                className="cursor-pointer rounded-xl px-4 py-2.5 text-sm text-muted-foreground transition-all duration-200 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
+              >
+                Local Map
+              </TabsTrigger>
+            </TabsList>
+          </header>
+
+          <TabsContent
             value="discover"
-            className="cursor-pointer rounded-none px-4 py-3.5 text-muted-foreground transition-colors duration-200 after:bg-foreground data-[state=active]:text-foreground"
+            className="mt-0 flex min-h-0 flex-1 flex-col border-t border-white/6"
           >
-            Discover
-          </TabsTrigger>
-          <TabsTrigger
+            <DiscoverPanel />
+          </TabsContent>
+          <TabsContent
             value="tracker"
-            className="cursor-pointer rounded-none px-4 py-3.5 text-muted-foreground transition-colors duration-200 after:bg-foreground data-[state=active]:text-foreground"
+            className="mt-0 flex min-h-0 flex-1 flex-col border-t border-white/6"
           >
-            Tracker
-          </TabsTrigger>
-          <TabsTrigger
+            <TrackerPanel />
+          </TabsContent>
+          <TabsContent
             value="map"
-            className="cursor-pointer rounded-none px-4 py-3.5 text-muted-foreground transition-colors duration-200 after:bg-foreground data-[state=active]:text-foreground"
+            className="mt-0 flex min-h-0 flex-1 flex-col border-t border-white/6 data-[state=inactive]:hidden"
           >
-            Local Map
-          </TabsTrigger>
-        </TabsList>
-        <TabsContent value="discover" className="mt-0 flex min-h-0 flex-1 flex-col">
-          <DiscoverPanel />
-        </TabsContent>
-        <TabsContent value="tracker" className="mt-0 flex min-h-0 flex-1 flex-col">
-          <TrackerPanel />
-        </TabsContent>
-        <TabsContent
-          value="map"
-          className="mt-0 flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden"
-        >
-          <LocalMapPanel />
-        </TabsContent>
-      </Tabs>
-      <footer className="border-t border-border/80 bg-[#0b0b10] px-4 py-2.5 font-mono text-[11px] text-muted-foreground">
-        Ready · Space Tech chrome · Local Map embed
-      </footer>
+            <LocalMapPanel />
+          </TabsContent>
+        </Tabs>
+
+        <footer className="flex items-center justify-between gap-3 border-t border-white/6 px-6 py-3.5 font-mono text-[11px] text-muted-foreground sm:px-8">
+          <span>Ready</span>
+          <span className="opacity-70">Space Tech · Liquid Glass · Local Map</span>
+        </footer>
+      </div>
       <Toaster theme="dark" />
     </div>
   )

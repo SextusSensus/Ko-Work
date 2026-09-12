@@ -110,10 +110,15 @@ export function LocalMapPanel() {
   }
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-border/80 bg-card/50 px-3 py-2.5 backdrop-blur-md">
-        <div className="text-[11px] font-bold tracking-[0.18em] text-muted-foreground uppercase">
-          <span className="text-foreground">K1</span> Local Map
+    <div className="relative flex min-h-0 flex-1 flex-col gap-4 p-5 sm:gap-5 sm:p-7">
+      <div className="flex flex-col gap-4 rounded-3xl border border-white/8 bg-white/[0.03] p-4 sm:flex-row sm:items-center sm:p-5">
+        <div className="shrink-0 space-y-1">
+          <p className="font-mono text-[10px] tracking-[0.18em] text-muted-foreground uppercase">
+            Spatial
+          </p>
+          <h2 className="font-heading text-lg font-semibold tracking-tight">
+            Local Map
+          </h2>
         </div>
         <DomainChips
           domains={domains}
@@ -126,11 +131,12 @@ export function LocalMapPanel() {
             pullHud()
           }}
         />
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
           <Button
             type="button"
             size="sm"
             variant="outline"
+            className="h-9 rounded-xl px-3.5"
             onClick={() => void api()?.loadSample()}
           >
             <RefreshCwIcon data-icon="inline-start" />
@@ -140,6 +146,7 @@ export function LocalMapPanel() {
             type="button"
             size="sm"
             variant="outline"
+            className="h-9 rounded-xl px-3.5"
             onClick={() => api()?.resetView()}
           >
             <RotateCcwIcon data-icon="inline-start" />
@@ -149,6 +156,7 @@ export function LocalMapPanel() {
             type="button"
             size="sm"
             variant="destructive"
+            className="h-9 rounded-xl px-3.5"
             onClick={() => api()?.clear()}
           >
             <Trash2Icon data-icon="inline-start" />
@@ -157,7 +165,7 @@ export function LocalMapPanel() {
         </div>
       </div>
 
-      <div className="relative min-h-[520px] flex-1 bg-black">
+      <div className="relative min-h-[560px] flex-1 overflow-hidden rounded-3xl border border-white/8 bg-black shadow-[inset_0_1px_0_rgb(255_255_255/0.04)]">
         <iframe
           ref={iframeRef}
           title="K1 Local Map Three.js"
@@ -165,10 +173,10 @@ export function LocalMapPanel() {
           className="absolute inset-0 size-full border-0"
           allow="fullscreen"
         />
-        <div className="pointer-events-none absolute top-4 left-4 z-10">
+        <div className="pointer-events-none absolute top-5 left-5 z-10">
           <MapHud hud={hud} />
         </div>
-        <div className="absolute top-4 right-4 z-10">
+        <div className="absolute top-5 right-5 z-10">
           <MapLayersPanel
             layers={layers}
             onToggle={(id, on) => {
@@ -177,8 +185,8 @@ export function LocalMapPanel() {
             }}
           />
         </div>
-        <p className="pointer-events-none absolute right-4 bottom-3 z-10 font-mono text-[11px] text-muted-foreground">
-          Drag to orbit · Scroll zoom
+        <p className="pointer-events-none absolute right-5 bottom-4 z-10 rounded-full border border-white/8 bg-black/45 px-3 py-1.5 font-mono text-[11px] text-muted-foreground backdrop-blur">
+          Drag to orbit · Scroll to zoom
         </p>
       </div>
     </div>
