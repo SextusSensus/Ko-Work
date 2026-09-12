@@ -152,6 +152,18 @@ class RawLeRobotV3FollowDataset(torch.utils.data.Dataset):
             self.stats = json.load(f)
         if "normalize" not in self.stats:
             raise SystemExit("REFUSE: stats.json has no normalize block")
+        # Council #9: splits train set must match the TRAIN-only norms baked into stats.
+        _bound = self.stats.get("train_run_ids_sha256") or self.card.get("train_run_ids_sha256")
+        if _bound:
+            import hashlib
+            _got = hashlib.sha256(("\n".join(run_ids) + "\n").encode("utf-8")).hexdigest()
+            if split == "train" and _got != _bound:
+                raise SystemExit(
+                    "REFUSE: splits.json train run-ids sha256 %s != stats/card train_run_ids_sha256 %s "
+                    "(hand-edited splits under stale TRAIN-only norms)" % (_got[:12], _bound[:12]))
+            _listed = self.stats.get("train_run_ids")
+            if split == "train" and isinstance(_listed, list) and list(run_ids) != list(_listed):
+                raise SystemExit("REFUSE: splits.json train run-ids != stats.train_run_ids")
         self.norm = Normalizer(self.stats)
         with open(os.path.join(root, "meta", "video_index.json")) as f:
             self.vindex = json.load(f)

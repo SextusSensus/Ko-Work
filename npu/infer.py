@@ -103,8 +103,8 @@ def _letterbox(img, size):
 
 def task_detect(runner, frames, out_dir, conf=0.30):
     """YOLO11n -> person (class 0) boxes per frame -> masks/person_boxes.jsonl. Standard YOLO11 output
-    [1, 84, N] (4 box + 80 cls, transposed); person = class 0. NMS omitted here for brevity -- the exact
-    decode is VERIFY WITH MODEL (yolo11n.onnx input 640). Artifact: one JSON line per frame."""
+    [1, 84, N] (4 box + 80 cls, transposed); person = class 0. Greedy NMS (IoU 0.45) after score
+    filter. Artifact: one JSON line per frame."""
     size = 640
     os.makedirs(os.path.join(out_dir, "masks"), exist_ok=True)
     path = os.path.join(out_dir, "masks", "person_boxes.jsonl")
@@ -120,9 +120,10 @@ def task_detect(runner, frames, out_dir, conf=0.30):
     return {"artifact": "masks/person_boxes.jsonl", "frames": n_frames, "note": "all-person (bystanders incl.)"}
 
 
-def _yolo_person_boxes(out, scale, conf):
-    """Parse YOLO11 output for class-0 (person) boxes, un-letterboxed to original px. Best-effort +
-    tolerant of the [1,84,N] / [1,N,84] layout ambiguity; exact validation is VERIFY WITH MODEL."""
+def _yolo_person_boxes(out, scale, conf, iou_thres=0.45):
+    """Parse YOLO11 output for class-0 (person) boxes, un-letterboxed to original px, then NMS.
+    Best-effort + tolerant of the [1,84,N] / [1,N,84] layout ambiguity; exact validation is
+    VERIFY WITH MODEL. Council #15: without NMS, duplicate/overlapping boxes poison masks."""
     a = np.asarray(out)
     a = a[0] if a.ndim == 3 else a
     if a.shape[0] in (84, 85):                        # [84,N] -> transpose to [N,84]
@@ -136,7 +137,33 @@ def _yolo_person_boxes(out, scale, conf):
             continue
         cx, cy, w, h = [float(v) / max(scale, 1e-9) for v in row[:4]]
         boxes.append([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, person_score])
-    return boxes
+    return _nms_xyxy(boxes, iou_thres)
+
+
+def _nms_xyxy(boxes, iou_thres):
+    """Greedy NMS on [x1,y1,x2,y2,score]. Pure numpy; never raises."""
+    if not boxes:
+        return []
+    arr = np.asarray(boxes, dtype=np.float64)
+    order = arr[:, 4].argsort()[::-1]
+    keep = []
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(boxes[i])
+        if order.size == 1:
+            break
+        rest = order[1:]
+        xx1 = np.maximum(arr[i, 0], arr[rest, 0])
+        yy1 = np.maximum(arr[i, 1], arr[rest, 1])
+        xx2 = np.minimum(arr[i, 2], arr[rest, 2])
+        yy2 = np.minimum(arr[i, 3], arr[rest, 3])
+        inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
+        area_i = max(0.0, (arr[i, 2] - arr[i, 0]) * (arr[i, 3] - arr[i, 1]))
+        area_r = np.maximum(0.0, (arr[rest, 2] - arr[rest, 0]) * (arr[rest, 3] - arr[rest, 1]))
+        union = area_i + area_r - inter + 1e-9
+        iou = inter / union
+        order = rest[iou <= iou_thres]
+    return keep
 
 
 def task_depth(runner, frames, out_dir):
@@ -210,6 +237,14 @@ def _selftest():
         assert np.allclose(out, [[0.0, 2.0, 0.0, 4.0]]), out
         assert r.provider_used in available_providers()
         assert select_providers()[-1] == "CPUExecutionProvider"     # CPU always the final fallback
+        # Council #15: NMS suppresses a near-duplicate person box.
+        raw = [
+            [0.0, 0.0, 10.0, 10.0, 0.9],
+            [1.0, 1.0, 11.0, 11.0, 0.8],   # high IoU with first
+            [50.0, 50.0, 60.0, 60.0, 0.7],
+        ]
+        kept = _nms_xyxy(raw, 0.45)
+        assert len(kept) == 2 and kept[0][4] == 0.9 and kept[1][4] == 0.7, kept
         print("  ran a trivial ONNX via", r.provider_used, "-> OK")
     finally:
         import shutil

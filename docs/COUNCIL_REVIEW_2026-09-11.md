@@ -189,12 +189,22 @@ is **REFUTED (fixed)**. Commands now emit from the `_drive_vel` chokepoint.
 | 3 | RGBD `msg.header.stamp` timeline | **DONE** — `robot/perception.py` `_stamp_wall` |
 | 4 | Cluster mid-run lease heartbeat | **DONE** — `cluster/worker.py` (+ selftest) |
 | 5 | `UNTETHERED_FOLLOW.md` body rewrite (gate stays closed) | **DONE** |
+| 6–8 | Control DRIVE HB + `ServerAliveCountMax=1` + honest 300s dialogs/watchdogs | **DONE** — `desktop/K1Finder.ps1` |
+| 9 | `splits` ↔ `stats` train-run-id bind | **DONE** — `eval/batch_ingest.py` + `eval/train_act.py` |
+| 10 | F4 odom skip on duplicate-RGB pairs | **DONE** — `desktop/recon/geom.py` |
+| 11 | F7 depth-sanity subsample (iterate/release; read_rrd residual) | **PARTIAL** — `desktop/recon/cli.py` |
+| 13 | `replay_eval compare` depth injection | **DONE** — `eval/replay_eval.py` |
+| 14 | Parquet `episode_index` | **DONE** — `eval/batch_ingest.py` |
+| 15 | NPU detect NMS | **DONE** — `npu/infer.py` |
+| 16 | Mint refuse `png-fallback` (opt-in `--allow-png-fallback`) | **DONE** — `eval/batch_ingest.py` |
+| 17 | `docs/SECURITY_CREDENTIALS.md` | **DONE** |
 
 ## Still open (ranked by leverage)
 
 1. **HB-restore / post-kPrepare re-ARM** — stay disarmed until explicit ARM (untethered blocker).
-2. **Wire Control DRIVE to the HB path or disable it in UI**; add `ServerAliveCountMax=1`; fix DRIVE dialog caps.
-3. **Selftests for Aurora bridge + `_map_assist_confirm`**; bind `splits`→`stats`; odom-on-RGB-distinct keyframes (F4 deeper).
+2. **Selftests for Aurora bridge + `_map_assist_confirm`** (#12).
+3. **F7 residual** — stream depth inside `read_rrd` itself (sanity path improved only).
+4. LOW doc drift (#18–22) — sector map-assist posture, unused `LOOP_FITNESS_MIN`, `camera_gaps` path, comment/doc scrub.
 
 ---
 

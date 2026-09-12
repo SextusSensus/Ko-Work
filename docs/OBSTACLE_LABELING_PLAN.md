@@ -136,9 +136,12 @@ The **OBSTACLE-BRAKE reflex** in `follow_person_k1.py` (`--obstacle-brake`, defa
 - Observability: throttled `CLEARANCE` line + `/reflex/clearance_m` & `/reflex/vx_cap` Rerun scalars.
 - **BYTE-IDENTICAL when off: PROVEN** (`replay_eval compare --flags-b=--obstacle-brake` -> COMPARE-OK,
   twice); compiles on robot py3.10.
-- **STILL TODO:** unfilter-COCO class-awareness (brake earlier for a person; geometry-first modifier);
-  the loop-cost gate + auto-disable backstop before `--rerun`+`--drive`; a live drive validation with
-  a deliberate intervening obstacle (blocked so far by gesture-lock flakiness = no TRACK to observe).
+- **Plan A (class-aware brake):** see `docs/PLAN_A_CLASS_AWARE_BRAKE.md`. Live flag
+  `--obstacle-class-brake on` (default **off**): COCO class may only **tighten** the geometry
+  vx cap (bystander person earlier than furniture); never loosen; never class-only without a
+  depth clearance. Follow path stays person-filtered. Gap steer is out of scope (Plan B).
+- **STILL TODO:** loop-cost auto-shed for class-brake under budget pressure; live drive validation
+  with a deliberate intervening obstacle + Batch-Label readiness tally on field `runs\`.
 
 ### Phase 4 — Capture tier (thesis) — pipeline-proof ONLY — effort S
 `obstacles.jsonl` + rgb/depth → a structured environment-labeled dataset. **Honest scope:** single
@@ -151,7 +154,8 @@ plumbing the real rig will need, and gives the QA/labeling viewer (Rerun) a real
   watchdog, e-stop) stays in ops. A planning/labeling bug must not be able to reason the floor away.
 - **Labeling is NEVER a safety dependency:** a model crash / missing weights degrades to the existing
   depth-clearance (or stop) — the same contract as Rerun (`_NullRR`).
-- **Never steer around** (swings the operator out of the ~70° FOV → loses the lock). Graded brake only.
+- **Plan A brake stays yaw-untouched.** Gap steer (Follow-The-Gap) shipped later as a separate
+  yaw-only reflex; class-aware brake must not own steering. Graded brake only for Plan A.
 - Compose with `forbid_forward` (the sacred vx≤0 keystone), never a second forward-authorizing path.
 
 ## Honest limits (keep stapled on — embodied-ai-advisor)

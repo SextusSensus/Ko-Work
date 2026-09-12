@@ -156,20 +156,28 @@ def stage_ingest(bundle, out_dir, params):
     if not depth:
         return "failed", 1, {"error": "no /camera/depth frames in the .rrd (not P8-usable)",
                              "intrinsics_source": intr_src, "artifacts": []}, intr_src
-    # Bounded subsample for the median/in-range sanity: concatenating every depth pixel of a long
-    # capture (frames x 448x544 float64) is a real OOM; an evenly-spaced sample is statistically
-    # identical for a median. Cap total samples regardless of run length.
-    frames_d = list(depth.values())
-    per = max(1, 2_000_000 // max(1, len(frames_d)))
+    # Bounded subsample for the median/in-range sanity. Council #11 / F7: do NOT hold every depth
+    # frame array then subsample — iterate and release, float32, hard sample cap. (read_rrd still
+    # loads the .rrd depth stream once; this only limits the *sanity* materialization.)
     samp = []
-    for d in frames_d:
-        a = np.asarray(d, dtype=np.float64).ravel()
+    n_kept = 0
+    sample_cap = 2_000_000
+    n_depth = 0
+    for _k in list(depth.keys()):
+        d = depth.pop(_k) if isinstance(depth, dict) else depth[_k]
+        n_depth += 1
+        a = np.asarray(d, dtype=np.float32).ravel()
         a = a[np.isfinite(a) & (a > 0.0)]
-        if a.size:
-            if a.size > per:
-                a = a[np.linspace(0, a.size - 1, per).astype(np.int64)]
-            samp.append(a)
-    finite_pos = np.concatenate(samp) if samp else np.empty(0)
+        if a.size == 0:
+            continue
+        remain = sample_cap - n_kept
+        if remain <= 0:
+            break
+        if a.size > remain:
+            a = a[np.linspace(0, a.size - 1, remain).astype(np.int64)]
+        samp.append(a)
+        n_kept += int(a.size)
+    finite_pos = np.concatenate(samp) if samp else np.empty(0, dtype=np.float32)
     if finite_pos.size == 0:
         return "failed", 1, {"error": "no finite positive depth values",
                              "intrinsics_source": intr_src, "artifacts": []}, intr_src
@@ -179,7 +187,7 @@ def stage_ingest(bundle, out_dir, params):
         return ("failed", 1, {"error": "depth median %.3f outside [%.2f, %.2f] m -- likely a mm-vs-m "
                              "unit bug" % (med, DEPTH_MIN_M, DEPTH_MAX_M), "depth_median_m": med,
                              "intrinsics_source": intr_src, "artifacts": []}, intr_src)
-    metrics.update({"files_verified": n_ver, "depth_frames": len(depth), "depth_median_m": med,
+    metrics.update({"files_verified": n_ver, "depth_frames": n_depth, "depth_median_m": med,
                     "depth_in_range_frac": in_range, "depth_scale_m_per_unit": 1.0,
                     "intrinsics_source": intr_src})
     return "ok", 0, metrics, intr_src

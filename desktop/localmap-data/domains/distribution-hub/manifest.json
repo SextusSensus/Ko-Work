@@ -1,0 +1,9 @@
+{
+  "id": "distribution-hub",
+  "name": "Distribution Hub",
+  "created": "2026-09-11T09:00:00Z",
+  "updated": "2026-09-11T09:05:00Z",
+  "run_count": 6,
+  "cell_count": 202,
+  "notes": "Multi-aisle fulfillment floor \u2014 pallet racks, dock doors, conveyor staging. Occupancy merges along rack faces and dock apron."
+}

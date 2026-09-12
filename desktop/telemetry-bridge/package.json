@@ -1,0 +1,17 @@
+{
+  "name": "k1-telemetry-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local Map realtime telemetry bridge (WebSocket + static + mock odom)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "start:feed": "node server.js --no-mock"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

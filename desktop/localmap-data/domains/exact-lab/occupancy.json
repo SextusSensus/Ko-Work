@@ -1,0 +1,10 @@
+{
+  "domain_id": "exact-lab",
+  "res_m": 0.25,
+  "pose": {
+    "x": 0,
+    "y": 0,
+    "yaw": 0
+  },
+  "cells": []
+}

@@ -30,6 +30,13 @@ DEPTH_FRESH_S  = 0.5    # depth age <= this == FRESH (matches latest_depth() def
 DEPTH_DOWN_S   = 2.0    # depth age >  this == DOWN (between FRESH_S and DOWN_S == STALE)
 
 PERSON_CLS    = 0             # COCO person class id
+
+# Plan A class-aware brake — COCO ids that may TIGHTEN the geometry vx cap (never loosen).
+# Furniture / boxy short list from OBSTACLE_LABELING_PLAN + PLAN_A_CLASS_AWARE_BRAKE.md.
+CLASS_BRAKE_PERSON_IDS = (0,)
+CLASS_BRAKE_FURNITURE_IDS = (56, 57, 59, 60, 61)          # chair couch bed dining-table toilet
+CLASS_BRAKE_APPLIANCE_IDS = (62, 63, 68, 69, 72, 73, 74)  # tv laptop microwave oven fridge book clock
+CLASS_BRAKE_ALL_IDS = CLASS_BRAKE_PERSON_IDS + CLASS_BRAKE_FURNITURE_IDS + CLASS_BRAKE_APPLIANCE_IDS
 LL_DARK_THRESH = 90.0         # mean luma (0-255) below this -> low-light (parse_args default + low_light_boost)
 
 # One-time lock hint the acquisition triggers hand to the FSM.

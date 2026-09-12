@@ -1,0 +1,21 @@
+# Offline Autotune / rrd_label deps for Linux cloud or desktop analysis venv.
+# CUDA preferred (Autotune-Stage hard-requires it). CPU ok for a tiny --allow-cpu sample.
+#
+# Install (CPU cloud box):
+#   python3 -m venv .venv-analysis
+#   .venv-analysis/bin/pip install -U pip
+#   .venv-analysis/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#   .venv-analysis/bin/pip install -r requirements-label.txt
+#
+# Install (CUDA 12.6 Ampere / desktop):
+#   pip install torch==2.12.1+cu126 torchvision==0.28.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+#   pip install -r requirements-label.txt
+
+rerun-sdk>=0.33,<0.34
+numpy>=2.0,<3
+scipy>=1.16,<1.19
+ultralytics>=8.3,<9
+transformers>=4.44,<5
+Pillow>=10,<12
+opencv-python-headless>=4.10,<5
+# torch / torchvision installed separately (CPU or cu126) -- see header.
