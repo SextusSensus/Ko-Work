@@ -70,3 +70,4 @@ autotune/
 # Offline analysis venv (rerun 0.23.1 + CUDA torch + ultralytics) and NPU venv
 .venv-analysis/
 .venv-npu/
+__pycache__/
