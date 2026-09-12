@@ -5,7 +5,13 @@ Near-black UI (`#000` / `#0A0A0A`), surfaces `#141414` / `#1C1C1E`, text `#F5F5F
 
 ## shadcn/ui web shell (`k1finder-web/`)
 
-Operator chrome (Discover / Tracker / Local Map) is a **Vite + React + Tailwind + shadcn/ui** app. The Local Map tab embeds the existing Three.js viewer (`localmap-viewer/`) with `?embed=1` so OrbitControls, domain scenes, free assets, and Rerun placer APIs stay unchanged. WinForms/WebView2 prefers `k1finder-web/dist/index.html` when built; otherwise it falls back to `localmap-viewer/index.html`.
+Operator chrome (Discover / Tracker / Local Map) is a **Vite + React + Tailwind + shadcn/ui** app. The Local Map tab embeds the existing Three.js viewer (`localmap-viewer/`) with `?embed=1` so OrbitControls, domain scenes, free assets, and Rerun placer APIs stay unchanged.
+
+**Default launch (uniform UI):** `Sky Connect.bat` and `Launch Sky Connect (no console).vbs` start `K1Finder.ps1`, which hosts `k1finder-web/dist/index.html` **full-window** in WebView2 (Discover first). The legacy WinForms tab strip is hidden so the desktop launcher matches the web design.
+
+- Auto-builds `k1finder-web` on launch if `dist/` is missing.
+- Force classic WinForms tabs: `set SKY_CONNECT_CLASSIC=1` then relaunch.
+- Rebuild the shell manually: `cd desktop/k1finder-web && npm install && npm run build`
 
 ```bash
 cd desktop/k1finder-web
