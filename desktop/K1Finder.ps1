@@ -23,6 +23,17 @@ Set-StrictMode -Off
 $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+# High DPI: Windows PowerShell 5.1 is DPI-unaware, so on a 200% display Windows draws this app at half
+# resolution and stretches it (blurry). Opt in to system DPI awareness before any window exists; the form is
+# scaled by the system DPI right before it is shown, and WebView2 renders crisp on its own.
+try{
+    Add-Type -Namespace SkyConnect -Name Dpi -ErrorAction Stop -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(System.IntPtr value);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern uint GetDpiForSystem();
+'@
+    if(-not [SkyConnect.Dpi]::SetProcessDpiAwarenessContext([IntPtr](-2))){ [void][SkyConnect.Dpi]::SetProcessDPIAware() }   # -2 = SYSTEM_AWARE
+}catch{}
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 # ---- Known K1 facts / config ------------------------------------------------
@@ -660,6 +671,7 @@ function Set-K1Log([System.Windows.Forms.RichTextBox]$rtb) {
 #  Form + header + tabs + status
 # ============================================================================
 $form=New-Object System.Windows.Forms.Form
+$form.AutoScaleMode=[System.Windows.Forms.AutoScaleMode]::None   # layout is authored at 96 dpi; scaled once before ShowDialog
 $form.Text='Sky Connect'
 $form.Size=New-Object System.Drawing.Size(1180,860)
 $form.MinimumSize=New-Object System.Drawing.Size(1000,740)
@@ -3635,4 +3647,18 @@ $form.Add_FormClosing({
     try{ if($sync.PS){ $sync.PS.Stop() } }catch{}
 })
 
+# High DPI: the layout is authored in 96-dpi pixels and AutoScale does not scale this code-built form, so scale
+# the form and every classic control once by the system DPI (2x at 200%). Fonts are in points and already
+# render at the right size. Then keep the window inside the screen's working area.
+try{
+    $dpiScale = [SkyConnect.Dpi]::GetDpiForSystem() / 96.0
+    if($dpiScale -gt 1.01){
+        $form.Scale((New-Object System.Drawing.SizeF([single]$dpiScale, [single]$dpiScale)))
+        $form.MinimumSize = New-Object System.Drawing.Size([int](1000 * $dpiScale), [int](740 * $dpiScale))
+        $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        if($form.MinimumSize.Height -gt $wa.Height -or $form.MinimumSize.Width -gt $wa.Width){ $form.MinimumSize = New-Object System.Drawing.Size([Math]::Min($form.MinimumSize.Width, $wa.Width), [Math]::Min($form.MinimumSize.Height, $wa.Height)) }
+        if($form.Width -gt $wa.Width){ $form.Width = [int]($wa.Width * 0.95) }
+        if($form.Height -gt $wa.Height){ $form.Height = [int]($wa.Height * 0.95) }
+    }
+}catch{}
 [void]$form.ShowDialog()
