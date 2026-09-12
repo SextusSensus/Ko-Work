@@ -50,6 +50,15 @@ export function App() {
               </div>
             </div>
 
+            <div className="flex items-center justify-center py-2 sm:py-3">
+              <img
+                src="./robots/hero-galbot.png"
+                alt="Galbot"
+                className="h-44 w-auto max-w-[min(100%,280px)] object-contain drop-shadow-[0_24px_48px_rgba(0,0,0,0.55)] sm:h-52 md:h-60"
+                draggable={false}
+              />
+            </div>
+
             <TabsList className="h-auto w-full justify-start gap-1 rounded-2xl border border-white/8 bg-black/30 p-1.5">
               <TabsTrigger
                 value="discover"
