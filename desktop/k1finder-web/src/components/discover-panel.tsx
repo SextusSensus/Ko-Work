@@ -64,9 +64,6 @@ export function DiscoverPanel() {
                     draggable={false}
                   />
                 </div>
-                <figcaption className="font-mono text-[10px] tracking-[0.16em] text-muted-foreground uppercase">
-                  {robot.name}
-                </figcaption>
               </figure>
             ))}
           </div>
