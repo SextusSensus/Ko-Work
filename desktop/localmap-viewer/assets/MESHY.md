@@ -84,7 +84,7 @@ desktop/localmap-viewer/assets/library/<category>/<asset-id>/<asset-id>.glb
   "default_asset": "warehouse/meshy-tote-01",
   "placement": "footprint",
   "scale_m": [0.6, 0.4, 0.4],
-  "domains": ["warehouse-bay-a", "distribution-hub"]
+  "domains": ["*"]
 }
 ```
 

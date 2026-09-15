@@ -3,8 +3,8 @@
 #
 # Examples:
 #   .\Import-RerunToDomain.ps1 -Domain exact-lab -Fixture
-#   .\Import-RerunToDomain.ps1 -Domain kitchen -Rrd D:\runs\cap.rrd -Labels D:\runs\labels.jsonl -Place
-#   .\Import-RerunToDomain.ps1 -Domain kitchen -RunDir D:\runs\2026-09-11_follow -Place -AllowGroundRaycast
+#   .\Import-RerunToDomain.ps1 -Domain exact-lab -Rrd D:\runs\cap.rrd -Labels D:\runs\labels.jsonl -Place
+#   .\Import-RerunToDomain.ps1 -Domain exact-lab -RunDir D:\runs\2026-09-11_follow -Place -AllowGroundRaycast
 
 param(
   [Parameter(Mandatory = $true)][string]$Domain,

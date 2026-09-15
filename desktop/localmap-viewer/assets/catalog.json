@@ -968,27 +968,6 @@
       ]
     },
     {
-      "id": "office/couch",
-      "name": "Lounge sofa",
-      "category": "office",
-      "status": "downloaded",
-      "path": "assets/library/generic/Sofa_01/Sofa_01_1k.gltf",
-      "license": "CC0",
-      "source": "Poly Haven",
-      "source_url": "https://polyhaven.com/a/Sofa_01",
-      "fallback_procedural": "sofa",
-      "scope": "global",
-      "label_classes": [
-        "couch",
-        "sofa"
-      ],
-      "real_world_m": [
-        1.8,
-        0.85,
-        0.85
-      ]
-    },
-    {
       "id": "office/cubicle",
       "name": "Cubicle partition",
       "category": "office",
@@ -1006,25 +985,6 @@
         1.6,
         1.5,
         1.6
-      ]
-    },
-    {
-      "id": "office/doorway",
-      "name": "Office doorway",
-      "category": "office",
-      "status": "procedural",
-      "procedural": "door_frame",
-      "license": "CC0",
-      "source": "procedural Three.js stand-in",
-      "scope": "global",
-      "label_classes": [
-        "doorway",
-        "door"
-      ],
-      "real_world_m": [
-        1.0,
-        2.1,
-        0.15
       ]
     },
     {
@@ -1084,28 +1044,6 @@
       ],
       "texture": "assets/library/office/textures/carpet_diff.jpg",
       "path": "assets/library/office/textures/carpet_ph_diff_1k.jpg"
-    },
-    {
-      "id": "office/meeting-table",
-      "name": "Meeting / side table",
-      "category": "office",
-      "status": "downloaded",
-      "path": "assets/library/office/SchoolDesk_01/SchoolDesk_01_1k.gltf",
-      "license": "CC0",
-      "source": "Poly Haven",
-      "source_url": "https://polyhaven.com/a/SchoolDesk_01",
-      "fallback_procedural": "table",
-      "scope": "global",
-      "label_classes": [
-        "dining_table",
-        "table",
-        "meeting_table"
-      ],
-      "real_world_m": [
-        1.2,
-        0.75,
-        0.7
-      ]
     },
     {
       "id": "office/metal-office-desk",
@@ -1271,25 +1209,6 @@
         1.0,
         0.6,
         0.1
-      ]
-    },
-    {
-      "id": "office/wall-module",
-      "name": "Interior wall module",
-      "category": "office",
-      "status": "procedural",
-      "procedural": "wall",
-      "license": "CC0",
-      "source": "procedural Three.js stand-in",
-      "scope": "global",
-      "label_classes": [
-        "wall",
-        "wall_segment"
-      ],
-      "real_world_m": [
-        4.0,
-        3.0,
-        0.2
       ]
     },
     {

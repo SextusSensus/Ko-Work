@@ -5,6 +5,8 @@
 **Date:** 2026-09-11  
 **Auditor:** Cloud agent (code + selftest + headless WebGL screenshots)
 
+> **Superseded 2026-09-15:** the Office / Assembly Factory / Warehouse Bay A / Distribution Hub demo domains audited below were removed; `exact-lab` is the only shipped domain. Findings and evidence screenshots that mention those domains describe the pre-removal tree.
+
 ## Sibling branches
 
 All previously parallel Local Map lanes are **merged into tip** (ancestors of `1d580ceb`):

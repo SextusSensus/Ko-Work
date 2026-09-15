@@ -42,8 +42,8 @@ keep occupancy merges on a slower cadence.
 
 ```json
 { "type": "odom", "t": 1710000000.12, "x": 0.4, "y": 0.1, "z": 0, "yaw": 0.2, "vx": 0.3, "vy": 0, "wz": 0.05 }
-{ "type": "occupancy", "domain_id": "warehouse-bay-a", "res_m": 0.08, "range_m": 4.5, "pose": { "x": 0.4, "y": 0.1, "yaw": 0.2 }, "cells": [ { "x": 1.2, "y": -1.6, "hits": 5 } ] }
-{ "type": "status", "t": 1710000000.12, "mode": "mock", "connected": true, "hz": 15, "domain_id": "warehouse-bay-a", "battery": 87 }
+{ "type": "occupancy", "domain_id": "exact-lab", "res_m": 0.08, "range_m": 4.5, "pose": { "x": 0.4, "y": 0.1, "yaw": 0.2 }, "cells": [ { "x": 1.2, "y": -1.6, "hits": 5 } ] }
+{ "type": "status", "t": 1710000000.12, "mode": "mock", "connected": true, "hz": 15, "domain_id": "exact-lab", "battery": 87 }
 ```
 
 ## How to run
@@ -56,8 +56,8 @@ npm start            # http://127.0.0.1:8742  ·  ws://127.0.0.1:8742/ws/telemet
 
 Open:
 
-- Live map: http://127.0.0.1:8742/localmap-viewer/index.html?live=1&domain=warehouse-bay-a
-- UI preview: http://127.0.0.1:8742/k1finder-ui-preview.html?domain=warehouse-bay-a
+- Live map: http://127.0.0.1:8742/localmap-viewer/index.html?live=1&domain=exact-lab
+- UI preview: http://127.0.0.1:8742/k1finder-ui-preview.html?domain=exact-lab
 - Status JSON: http://127.0.0.1:8742/api/status
 
 Env / flags:
@@ -65,10 +65,11 @@ Env / flags:
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `PORT` | `8742` | HTTP + WS port |
-| `--mock` | on | Simulate walking odom in warehouse |
+| `--mock` | on | Simulate walking odom |
 | `--no-mock` | | Only broadcast when feed/occupancy changes |
 | `--hz 15` | 15 | Mock odom rate |
 | `--feed <path>` | `../localmap-viewer/feed.json` | File to watch / merge |
+| `--domain <id>` | `exact-lab` | Domain id for status/occupancy messages |
 
 ## Path to real robot
 

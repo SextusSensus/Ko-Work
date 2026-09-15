@@ -30,7 +30,7 @@ function flag(name, def) {
 const MOCK = !args.includes('--no-mock');
 const HZ = Number(flag('--hz', 15)) || 15;
 const FEED_PATH = path.resolve(String(flag('--feed', DEFAULT_FEED)));
-const DOMAIN = String(flag('--domain', 'warehouse-bay-a'));
+const DOMAIN = String(flag('--domain', 'exact-lab'));
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -322,7 +322,7 @@ wss.on('connection', (ws) => {
 
 function stepMock(dt) {
   phase += dt;
-  // gentle warehouse aisle walk: forward with slow yaw weave
+  // gentle mock walk: forward with slow yaw weave
   const speed = 0.42 + 0.08 * Math.sin(phase * 0.35);
   odom.wz = 0.18 * Math.sin(phase * 0.55);
   odom.vx = speed;

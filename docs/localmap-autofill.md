@@ -30,7 +30,7 @@ Building a **new domain from scratch**: create the domain → merge occupancy fr
 1. Detection `class` / `label` / COCO id (`coco:56`) → `desktop/localmap-data/asset-ontology.json` `label_classes` (id + aliases).
 2. Same keys also live in `desktop/localmap-data/global-assets.json` `label_aliases` (cross-domain; loaded by `asset-placer.js`).
 3. `default_asset` selects a row in `desktop/localmap-viewer/assets/catalog.json`.
-4. If the active domain has `domain_assets[domainId]`, that asset wins (e.g. office chairs vs kitchen dining chairs).
+4. If the active domain has `domain_assets[domainId]`, that asset wins (per-domain override of the global default).
 5. `status: downloaded` loads glTF at real-world `scale_m`; failure → `fallback_procedural`. `status: procedural` builds a metre-scale stand-in.
 
 ## API
@@ -47,20 +47,9 @@ k1LocalMap.assignAsset('cubicle', { x: 2.0, y: 0, yaw: 0, w: 1.6, h: 1.6 });
 
 k1LocalMap.getAssetInstances();
 k1LocalMap.getGlobalAssets(); // scope:global catalog slice + label_aliases
-k1LocalMap.runAssetDemo();    // or ?demo_assets=1
 ```
 
 Coordinates are **map metres** (FLU): `x`/`y` on the floor plane; viewer maps `y` → Three.js `z`. Scales are absolute metres — **not** relative to K1.
-
-## Office demo
-
-```bash
-cd desktop
-python3 -m http.server 8765
-# http://127.0.0.1:8765/localmap-viewer/index.html?domain=office&demo_assets=1
-```
-
-Seeded domain: `desktop/localmap-data/domains/office/` (`instances.json` + occupancy). Primary domain id: **`office`**.
 
 ## Files
 
@@ -69,8 +58,8 @@ Seeded domain: `desktop/localmap-data/domains/office/` (`instances.json` + occup
 | `desktop/localmap-data/global-assets.json` | `scope: "global"` asset list + `label_aliases` for autofill |
 | `desktop/localmap-data/asset-ontology.json` | Canonical label classes, aliases, `domain_assets`, `scale_m` |
 | `desktop/localmap-viewer/assets/catalog.json` | CC0 / procedural / free_link inventory (`scope` field) |
-| `desktop/localmap-viewer/asset-placer.js` | Runtime resolve + place + demo seeds |
-| `docs/localmap-assets.md` | Catalog policy + domain coverage |
+| `desktop/localmap-viewer/asset-placer.js` | Runtime resolve + place |
+| `docs/localmap-assets.md` | Catalog policy + label→asset flow |
 
 ## Free-only policy
 

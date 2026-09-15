@@ -1240,7 +1240,7 @@ $script:LocalMapDomainsIndex = Join-Path $script:LocalMapDataDir 'domains.json'
 $script:MapHostMode       = 'none'   # webview2 | webbrowser | external
 $script:MapWebView        = $null
 $script:MapBrowser        = $null
-$script:ActiveDomainId    = 'warehouse-bay-a'
+$script:ActiveDomainId    = 'exact-lab'
 
 $mapLayout=New-Object System.Windows.Forms.TableLayoutPanel
 $mapLayout.Dock='Fill'; $mapLayout.ColumnCount=1; $mapLayout.RowCount=2; $mapLayout.Padding='12,8,12,8'; $mapLayout.BackColor=$bg
@@ -1337,43 +1337,47 @@ function Update-LocalMapDomainCombo{
     }
 }
 
+# Retired synthetic demo scenes (procedural layouts, made-up run counts): never seeded, and dropped
+# from an existing domains.json on launch so old installs come up on exact-lab.
+# ponytail: id + manifest-notes check -- a domain the operator later creates with the same id
+# (New-LocalMapDomain writes notes='operator-created-empty') stays listed.
+$script:RetiredDemoDomainIds = @('office','assembly-factory','warehouse-bay-a','distribution-hub')
+
+function Test-LocalMapDomainListed([string]$id){
+    if(-not $id){ return $false }   # before Join-Path: PS 5.1 Join-Path throws on an empty ChildPath
+    $dir = Get-LocalMapDomainDir $id
+    if(-not (Test-Path $dir)){ return $false }
+    if($script:RetiredDemoDomainIds -notcontains $id){ return $true }
+    try{ return ((Get-Content -Raw (Join-Path $dir 'manifest.json') | ConvertFrom-Json).notes -eq 'operator-created-empty') }catch{ return $false }
+}
+
 function Ensure-LocalMapDomains{
     New-Item -ItemType Directory -Force -Path $script:LocalMapDomainsDir | Out-Null
     $idx = Read-LocalMapDomainsIndex
-    if($idx -and $idx.domains -and $idx.domains.Count -gt 0){
-        $script:ActiveDomainId = [string]$idx.active
-        if(-not $script:ActiveDomainId){ $script:ActiveDomainId = [string]$idx.domains[0].id }
-        Sync-LocalMapFeedFromDomain $script:ActiveDomainId | Out-Null
-        Update-LocalMapDomainCombo
-        return
-    }
-    # Seed three demo domains if the data pack is missing
-    $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-    $seeds = @(
-        @{ id='assembly-factory'; name='Assembly Factory'; runs=6 },
-        @{ id='warehouse-bay-a'; name='Warehouse Bay A'; runs=7 },
-        @{ id='distribution-hub'; name='Distribution Hub'; runs=6 }
-    )
     $domains = @()
-    foreach($s in $seeds){
-        $dir = Get-LocalMapDomainDir $s.id
+    if($idx -and $idx.domains){ $domains = @($idx.domains | Where-Object { Test-LocalMapDomainListed ([string]$_.id) }) }
+    $changed = (-not $idx) -or ($domains.Count -ne @($idx.domains).Count)
+    if(-not ($domains | Where-Object { [string]$_.id -eq 'exact-lab' })){
+        # exact-lab is the default domain: create it EMPTY if missing. Never seed demo scenes.
+        $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $dir = Get-LocalMapDomainDir 'exact-lab'
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
         $occPath = Join-Path $dir 'occupancy.json'
-        # Never copy sample.json into seeded domains (legacy sample was Kitchen occupancy).
         if(-not (Test-Path $occPath)){
-            $emptyOcc = @{ domain_id=$s.id; res_m=0.08; range_m=3.5; pose=@{x=0;y=0;yaw=0}; trail=@(); cells=@() }
-            ($emptyOcc | ConvertTo-Json -Depth 6) | Set-Content -Path $occPath -Encoding UTF8
+            (@{ domain_id='exact-lab'; res_m=0.08; range_m=3.5; pose=@{x=0;y=0;yaw=0}; trail=@(); cells=@() } | ConvertTo-Json -Depth 6) | Set-Content -Path $occPath -Encoding UTF8
         }
-        $cells = 0
-        try{ $cells = ((Get-Content -Raw $occPath | ConvertFrom-Json).cells | Measure-Object).Count }catch{}
-        $man = @{ id=$s.id; name=$s.name; created=$now; updated=$now; run_count=$s.runs; cell_count=$cells; notes='seeded' }
-        ($man | ConvertTo-Json -Depth 4) | Set-Content -Path (Join-Path $dir 'manifest.json') -Encoding UTF8
-        $domains += @{ id=$s.id; name=$s.name; updated=$now; run_count=$s.runs; cell_count=$cells }
+        $manPath = Join-Path $dir 'manifest.json'
+        if(-not (Test-Path $manPath)){   # never overwrite the tracked exact-lab manifest
+            (@{ id='exact-lab'; name='Exact Lab (Rerun fixture)'; created=$now; updated=$now; run_count=0; cell_count=0; notes='seeded' } | ConvertTo-Json -Depth 4) | Set-Content -Path $manPath -Encoding UTF8
+        }
+        $domains = @(@{ id='exact-lab'; name='Exact Lab (Rerun fixture)'; updated=$now; run_count=0; cell_count=0 }) + $domains
+        $changed = $true
     }
-    $idx = @{ active='warehouse-bay-a'; domains=$domains }
-    Write-LocalMapDomainsIndex $idx
-    $script:ActiveDomainId = 'warehouse-bay-a'
-    Sync-LocalMapFeedFromDomain 'warehouse-bay-a' | Out-Null
+    $active = if($idx){ [string]$idx.active } else { '' }
+    if(-not ($domains | Where-Object { [string]$_.id -eq $active })){ $active = 'exact-lab'; $changed = $true }
+    if($changed){ Write-LocalMapDomainsIndex @{ active=$active; domains=$domains } }
+    $script:ActiveDomainId = $active
+    Sync-LocalMapFeedFromDomain $active | Out-Null
     Update-LocalMapDomainCombo
 }
 
@@ -1411,7 +1415,7 @@ function New-LocalMapDomain([string]$name){
         return $id
     }
     # Always start EMPTY: no occupancy cells, no asset instances, no copied seed props.
-    # Content arrives via Import last run / Rerun placer / autofill / ?demo_assets=1.
+    # Content arrives via Import last run / Rerun placer / autofill.
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     $occ = @{ domain_id=$id; res_m=0.08; range_m=3.5; pose=@{x=0;y=0;yaw=0}; trail=@(); cells=@() }
@@ -1964,7 +1968,7 @@ $cmbDomain.Add_SelectedIndexChanged({
 })
 $btnDomainNew.Add_Click({
     $name = [Microsoft.VisualBasic.Interaction]::InputBox(
-        "Name this environment (assembly factory, warehouse bay, distribution hub…).`r`nFollow/capture runs will accumulate into this domain.",
+        "Name this environment (e.g. lab hallway).`r`nFollow/capture runs will accumulate into this domain.",
         'New Local Map domain',
         'New area'
     )
