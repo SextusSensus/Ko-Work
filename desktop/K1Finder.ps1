@@ -1432,7 +1432,7 @@ function New-LocalMapDomain([string]$name){
     $idx.active = $id
     Write-LocalMapDomainsIndex $idx
     Switch-LocalMapDomain $id
-    [void](Invoke-LocalMapJs ("window.k1LocalMap && window.k1LocalMap.refreshDomains && window.k1LocalMap.refreshDomains({ forceId: '{0}' })" -f $id.Replace("'","\'")))
+    [void](Invoke-LocalMapJs ("window.k1LocalMap && window.k1LocalMap.refreshDomains && window.k1LocalMap.refreshDomains({{ forceId: '{0}' }})" -f $id.Replace("'","\'")))
     $mapInfo.Text = ("Created empty domain '{0}' — Import last run / Rerun placer / autofill to add content." -f $n)
     return $id
 }
