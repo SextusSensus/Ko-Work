@@ -1410,9 +1410,9 @@ function New-LocalMapDomain([string]$name){
     if(-not $id){ $id = ('domain-{0}' -f [guid]::NewGuid().ToString('N').Substring(0,8)) }
     $dir = Get-LocalMapDomainDir $id
     if(Test-Path $dir){
-        $mapInfo.Text = ("Domain already exists: {0}" -f $id)
-        Switch-LocalMapDomain $id
-        return $id
+        if(Test-LocalMapDomainListed $id){ $mapInfo.Text = ("Domain already exists: {0}" -f $id); Switch-LocalMapDomain $id; return $id }
+        # Leftover retired-demo folder (e.g. 'office'): never reuse or overwrite it; start a fresh empty domain.
+        $id = '{0}-{1}' -f $id, [guid]::NewGuid().ToString('N').Substring(0,4); $dir = Get-LocalMapDomainDir $id
     }
     # Always start EMPTY: no occupancy cells, no asset instances, no copied seed props.
     # Content arrives via Import last run / Rerun placer / autofill.
