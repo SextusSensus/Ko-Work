@@ -10,6 +10,7 @@
 #    5. Files       - robot SDK file browser
 #    6. Tracker     - marker-seeded person-follow cockpit
 #    7. Local Map   - interactive 3D short-horizon occupancy (WebView2 / browser)
+#    Autotune Viz   - improve-backend board in the Sky Connect web shell (tab=autotune)
 #
 #  Verified against the robot's own SDK (booster_robotics_sdk):
 #    - Loco CLI: b1_loco_example_client <iface>; loopback 127.0.0.1 reaches the
@@ -1678,7 +1679,127 @@ function Initialize-LocalMapHost{
 # operator-session contract, the confirmations and STOP behave exactly as in the classic tabs. The host
 # pushes a snapshot of these controls, the scan results, the logs and the Tracker preview frame back.
 #   page -> host : {t:'hello'} | {t:'click',id} | {t:'set',id,v} | {t:'row',i,verify}
-#   host -> page : {t:'state',...} | {t:'log',ch,text,reset} | {t:'frame',src}
+#   host -> page : {t:'state',...} | {t:'log',ch,text,reset} | {t:'frame',src} | {t:'autotune',...}
+function Read-AutotuneJson($path){
+    if(-not (Test-Path $path)){ return $null }
+    try{ return Get-Content -LiteralPath $path -Raw | ConvertFrom-Json }catch{ return $null }
+}
+
+function Get-AutotuneGateWhy($val){
+    if(-not $val -or -not $val.checks){ return '' }
+    foreach($p in $val.checks.PSObject.Properties){
+        $c = $p.Value
+        $st = [string]$c.status
+        if($st -eq 'FAIL' -or $st -eq 'INCONCLUSIVE'){
+            $why = [string]$c.why
+            if($why){ return $why }
+        }
+    }
+    return ''
+}
+
+function Get-AutotuneVizSnapshot{
+    # Folder layout matches Auto-Tune-Loop / Autotune-Stage (repo-root autotune/<run_id>/).
+    $repo = Split-Path $SCRIPT_DIR -Parent
+    $aut = Join-Path $repo 'autotune'
+    $runs = Join-Path $repo 'runs'
+    $cards = New-Object System.Collections.ArrayList
+    $activity = New-Object System.Collections.ArrayList
+    $progress = $null
+    $seen = @{}
+    $ledger = @{}
+    $lp = Join-Path $runs '.auto_tune_processed.txt'
+    if(Test-Path $lp){
+        Get-Content -LiteralPath $lp -ErrorAction SilentlyContinue | ForEach-Object {
+            $n = $_.Trim(); if($n){ $ledger[$n] = $true }
+        }
+    }
+
+    if(Test-Path $aut){
+        foreach($dir in @(Get-ChildItem -LiteralPath $aut -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^[0-9]{8}T[0-9]{6}Z_' } |
+            Sort-Object Name -Descending | Select-Object -First 48)){
+            $rid = $dir.Name
+            $seen[$rid] = $true
+            $d = $dir.FullName
+            $lock = Join-Path $d '.labelling'
+            $val = Read-AutotuneJson (Join-Path $d 'label_validation.json')
+            $sum = Read-AutotuneJson (Join-Path $d 'obstacle_summary.json')
+            $sent = Test-Path (Join-Path $d '.sent_to_robot')
+            $held = Test-Path (Join-Path $d '.no_send')
+            $st = if($val){ [string]$val.status } else { '' }
+            $gv = if($val -and $null -ne $val.gate_version){ [string]$val.gate_version } else { '' }
+
+            if(Test-Path $lock){
+                $lk = ([string](Get-Content -LiteralPath $lock -ErrorAction SilentlyContinue | Select-Object -First 1)).Trim()
+                $att = [int]((Get-Content -LiteralPath (Join-Path $d '.label_attempts') -ErrorAction SilentlyContinue | Select-Object -First 1) -as [int])
+                if($att -lt 1){ $att = 1 }
+                $progress = [ordered]@{ label = ('Labelling {0} · GPU pass {1}/3' -f $rid, $att); v = $att; max = 3; hint = 'in flight' }
+                [void]$cards.Add(@{ id=$rid; column='trainer'; title='Labelling now'; tone='accent'; body = ('GPU labeller active · {0}' -f $lk) })
+                continue
+            }
+            if($st -eq 'FAIL' -or $st -eq 'INCONCLUSIVE'){
+                $why = Get-AutotuneGateWhy $val
+                $meta = if($why){ '{0} · {1}' -f $st, $why } else { $st }
+                [void]$cards.Add(@{ id=$rid; column='queue'; title='Gate result'; tone='danger'; badge=$st; body = ('Gate {0} · gate v{1}' -f $st, $gv); meta=$meta })
+                continue
+            }
+            if($st -eq 'PASS' -and -not $sent -and -not $held){
+                $uniq = $null
+                if($sum -and $null -ne $sum.unique){ $uniq = [int]$sum.unique }
+                $meta = if($null -ne $uniq){ 'PASS · {0} unique obstacles · clearance OK' -f $uniq } else { 'PASS · waiting to send' }
+                [void]$cards.Add(@{ id=$rid; column='robot'; title='In flight → robot'; tone='accent'; badge='PASS'; body='PASS — waiting to send PASS bundle to robot'; meta=$meta })
+                continue
+            }
+            if($sent){
+                [void]$cards.Add(@{ id=$rid; column='robot'; title='Hints on robot'; tone='success'; body='Tune hints ledgered — advisory YAML on robot' })
+                continue
+            }
+            if($held -and $st -eq 'PASS'){
+                [void]$cards.Add(@{ id=$rid; column='queue'; title='Held'; tone='muted'; badge='HOLD'; body='PASS bundle held (.no_send) — not sending' })
+                continue
+            }
+            [void]$cards.Add(@{ id=$rid; column='queue'; title='Awaiting analyse'; body='Pulled run waiting for Auto-Tune analyse' })
+        }
+    }
+
+    if(Test-Path $runs){
+        foreach($dir in @(Get-ChildItem -LiteralPath $runs -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^[0-9]{8}T[0-9]{6}Z_' } |
+            Sort-Object Name -Descending | Select-Object -First 24)){
+            $rid = $dir.Name
+            if($seen[$rid]){ continue }
+            $hasReport = Test-Path (Join-Path $dir.FullName 'tune_report.json')
+            $hasErr = Test-Path (Join-Path $dir.FullName 'k1_follow.err')
+            if($hasReport -or $ledger.ContainsKey($rid)){
+                [void]$cards.Add(@{ id=$rid; column='robot'; title='Hints on robot'; tone='success'; body='Tune hints ledgered — advisory YAML on robot' })
+            } elseif($hasErr){
+                [void]$cards.Add(@{ id=$rid; column='queue'; title='Awaiting analyse'; body='Pulled run waiting for Auto-Tune analyse' })
+            }
+        }
+    }
+
+    $logdir = Join-Path $runs '_autotune_logs'
+    if(Test-Path $logdir){
+        $log = Get-ChildItem -LiteralPath $logdir -Filter 'autotune_*.log' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if($log){
+            Get-Content -LiteralPath $log.FullName -Tail 16 -ErrorAction SilentlyContinue | ForEach-Object {
+                $line = $_.Trim()
+                if($line){ [void]$activity.Add($line) }
+            }
+        }
+    }
+
+    return [ordered]@{
+        t = 'autotune'
+        source = 'feed'
+        progress = $progress
+        cards = @($cards.ToArray())
+        activity = @($activity.ToArray())
+    }
+}
+
 function Get-SkyControls{
     return [ordered]@{
         # Discover
@@ -1827,12 +1948,24 @@ function Send-SkyFrame{
     }catch{}
 }
 
+function Send-SkyAutotune([bool]$force){
+    if(-not $script:SkyBridge){ return }
+    try{
+        $snap = Get-AutotuneVizSnapshot
+        $json = ConvertTo-Json -InputObject $snap -Depth 8 -Compress
+        if($force -or $json -ne $script:SkyBridge.LastAutotune){
+            $script:SkyBridge.LastAutotune = $json
+            Send-SkyJson $json
+        }
+    }catch{}
+}
+
 function Invoke-SkyMessage([string]$json){
     $m = $null
     try{ $m = $json | ConvertFrom-Json }catch{ return }
     if(-not $m){ return }
     switch([string]$m.t){
-        'hello' { Send-SkyLogs $true; Send-SkyState $true; return }
+        'hello' { Send-SkyLogs $true; Send-SkyState $true; Send-SkyAutotune $true; return }
         'click' {
             $id = [string]$m.id
             $b = $script:SkyControls[$id]
@@ -1851,7 +1984,7 @@ function Start-SkyBridge($view){
     # one it reports no SelectedItems and never raises SelectedIndexChanged, which breaks Verify Selected and
     # Use this IP everywhere. Create the handle now.
     try{ $null = $list.Handle }catch{}
-    $script:SkyBridge = @{ View = $view; LastJson = ''; LogLen = @{ discover = -1; tracker = -1 }; LogText = @{ discover = 0; tracker = 0 }; LastImg = $null; LastFrameAt = [datetime]::MinValue; HadFrame = $false; Tick = 0 }
+    $script:SkyBridge = @{ View = $view; LastJson = ''; LastAutotune = ''; LogLen = @{ discover = -1; tracker = -1 }; LogText = @{ discover = 0; tracker = 0 }; LastImg = $null; LastFrameAt = [datetime]::MinValue; HadFrame = $false; Tick = 0 }
     $script:SkyInbox = New-Object System.Collections.Queue
     # Only queue inside the WebView2 event: the handlers it triggers can open modal dialogs (the ARM
     # confirmation) or block on ssh, and WebView2 must not be re-entered from its own event callback.
@@ -1863,6 +1996,7 @@ function Start-SkyBridge($view){
             while($script:SkyInbox.Count -gt 0){ Invoke-SkyMessage ([string]$script:SkyInbox.Dequeue()) }
             $script:SkyBridge.Tick++
             if(($script:SkyBridge.Tick % 4) -eq 0){ Send-SkyState $false; Send-SkyLogs $false; Send-SkyFrame }
+            if(($script:SkyBridge.Tick % 20) -eq 0){ Send-SkyAutotune $false }
         })
         $script:SkyBridgeTimer.Start()
     }

@@ -7,8 +7,10 @@
 // of those controls, the scan results, the logs and the Tracker preview frame.
 //
 // Messages to the host:   {t:"hello"} | {t:"click", id} | {t:"set", id, v} | {t:"row", i, verify}
-// Messages from the host: {t:"state", ...HostState} | {t:"log", ch, text, reset} | {t:"frame", src}
+// Messages from the host: {t:"state", ...HostState} | {t:"log", ch, text, reset} | {t:"frame", src} | {t:"autotune", ...AutotuneSnapshot}
 import * as React from "react"
+
+import { type AutotuneSnapshot } from "@/lib/autotune"
 
 export type Ctl = {
   e: boolean // enabled
@@ -20,7 +22,14 @@ export type Ctl = {
   max?: number
 }
 
-export type Row = { c: string; ip: string; h: string; b: string; w: string; sel: boolean }
+export type Row = {
+  c: string
+  ip: string
+  h: string
+  b: string
+  w: string
+  sel: boolean
+}
 
 export type HostState = {
   c: Record<string, Ctl>
@@ -38,7 +47,10 @@ export type HostState = {
 
 type WebView = {
   postMessage: (message: unknown) => void
-  addEventListener: (type: "message", listener: (event: MessageEvent) => void) => void
+  addEventListener: (
+    type: "message",
+    listener: (event: MessageEvent) => void
+  ) => void
 }
 
 function webview(): WebView | null {
@@ -49,9 +61,15 @@ function webview(): WebView | null {
 let hostState: HostState | null = null
 const logs: Record<string, string> = { discover: "", tracker: "" }
 let frame: string | null = null
+let autotune: AutotuneSnapshot | null = null
 let version = 0
 let started = false
 const listeners = new Set<() => void>()
+
+function asArray<T>(value: T | T[] | null | undefined): T[] {
+  if (value == null) return []
+  return Array.isArray(value) ? value : [value]
+}
 
 function emit() {
   version++
@@ -77,6 +95,15 @@ function start() {
     } else if (m.t === "frame") {
       frame = typeof m.src === "string" ? m.src : null
       emit()
+    } else if (m.t === "autotune") {
+      const raw = m as AutotuneSnapshot
+      autotune = {
+        source: "feed",
+        progress: raw.progress ?? null,
+        cards: asArray(raw.cards),
+        activity: asArray(raw.activity).map((line) => String(line)),
+      }
+      emit()
     }
   })
   view.postMessage({ t: "hello" })
@@ -98,12 +125,19 @@ export const click = (id: string) => send({ t: "click", id })
 /** Set a classic CheckBox / ComboBox / TrackBar / TextBox (its change handler runs as if the user did it). */
 export const setValue = (id: string, v: unknown) => send({ t: "set", id, v })
 /** Select a Discover candidate row; verify=true also runs Verify on it. */
-export const selectRow = (i: number, verify = false) => send({ t: "row", i, verify })
+export const selectRow = (i: number, verify = false) =>
+  send({ t: "row", i, verify })
 
 export function useHost() {
   start()
   React.useSyncExternalStore(subscribe, () => version)
-  return { state: hostState, logs, frame, available: webview() !== null }
+  return {
+    state: hostState,
+    logs,
+    frame,
+    autotune,
+    available: webview() !== null,
+  }
 }
 
 /** A text box that follows the host value, except while the user is typing in it. */

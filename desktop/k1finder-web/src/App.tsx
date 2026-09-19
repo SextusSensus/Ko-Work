@@ -1,5 +1,6 @@
 import * as React from "react"
 
+import { AutotunePanel } from "@/components/autotune-panel"
 import { DiscoverPanel } from "@/components/discover-panel"
 import { LocalMapPanel } from "@/components/local-map-panel"
 import { TrackerPanel } from "@/components/tracker-panel"
@@ -7,10 +8,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Toaster } from "@/components/ui/sonner"
 import { useHost } from "@/lib/host"
 
-function initialTab() {
+const TABS = ["discover", "tracker", "map", "autotune"] as const
+type Tab = (typeof TABS)[number]
+
+function initialTab(): Tab {
   const q = new URLSearchParams(window.location.search)
   const tab = q.get("tab")
-  if (tab === "discover" || tab === "tracker" || tab === "map") return tab
+  if (tab && (TABS as readonly string[]).includes(tab)) return tab as Tab
   // Primary shell defaults to Discover; Local Map host passes ?tab=map.
   return "discover"
 }
@@ -24,35 +28,52 @@ export function App() {
       <div className="glass-panel flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.75rem]">
         <Tabs
           value={tab}
-          onValueChange={setTab}
+          onValueChange={(value) => {
+            if (
+              value === "discover" ||
+              value === "tracker" ||
+              value === "map" ||
+              value === "autotune"
+            ) {
+              setTab(value)
+            }
+          }}
           className="flex min-h-0 flex-1 flex-col gap-0"
         >
           <header className="flex flex-col gap-6 px-6 pt-7 pb-5 sm:px-8 sm:pt-8">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="space-y-3">
-                <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 font-mono text-[10px] tracking-[0.22em] text-muted-foreground uppercase">
-                  <span className="size-1.5 rounded-full bg-success" aria-hidden />
-                  Mission control
+            {tab !== "autotune" ? (
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="space-y-3">
+                  <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 font-mono text-[10px] tracking-[0.22em] text-muted-foreground uppercase">
+                    <span
+                      className="size-1.5 rounded-full bg-success"
+                      aria-hidden
+                    />
+                    Mission control
+                  </div>
+                  <div>
+                    <h1 className="font-heading text-3xl leading-none font-semibold tracking-[-0.03em] text-foreground sm:text-4xl">
+                      Sky Connect
+                    </h1>
+                    <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground sm:text-[15px]">
+                      Discover robots, drive with intent, observe the local map
+                      — quiet chrome for serious work.
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <h1 className="font-heading text-3xl leading-none font-semibold tracking-[-0.03em] text-foreground sm:text-4xl">
-                    Sky Connect
-                  </h1>
-                  <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted-foreground sm:text-[15px]">
-                    Discover robots, drive with intent, observe the local map —
-                    quiet chrome for serious work.
-                  </p>
+                <div className="rounded-2xl border border-white/8 bg-black/25 px-4 py-3 font-mono text-[11px] text-muted-foreground">
+                  <div className="text-[10px] tracking-[0.16em] uppercase opacity-70">
+                    Status
+                  </div>
+                  <div
+                    className="mt-1 max-w-72 truncate text-sm text-foreground"
+                    title={state?.status}
+                  >
+                    {state?.status || "Systems nominal"}
+                  </div>
                 </div>
               </div>
-              <div className="rounded-2xl border border-white/8 bg-black/25 px-4 py-3 font-mono text-[11px] text-muted-foreground">
-                <div className="text-[10px] tracking-[0.16em] uppercase opacity-70">
-                  Status
-                </div>
-                <div className="mt-1 max-w-72 truncate text-sm text-foreground" title={state?.status}>
-                  {state?.status || "Systems nominal"}
-                </div>
-              </div>
-            </div>
+            ) : null}
 
             <TabsList className="h-auto w-full justify-start gap-1 rounded-2xl border border-white/8 bg-black/30 p-1.5">
               <TabsTrigger
@@ -72,6 +93,12 @@ export function App() {
                 className="cursor-pointer rounded-xl px-4 py-2.5 text-sm text-muted-foreground transition-all duration-200 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
               >
                 Local Map
+              </TabsTrigger>
+              <TabsTrigger
+                value="autotune"
+                className="cursor-pointer rounded-xl px-4 py-2.5 text-sm text-muted-foreground transition-all duration-200 data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
+              >
+                Autotune
               </TabsTrigger>
             </TabsList>
           </header>
@@ -93,6 +120,12 @@ export function App() {
             className="mt-0 flex min-h-0 flex-1 flex-col border-t border-white/6 data-[state=inactive]:hidden"
           >
             <LocalMapPanel />
+          </TabsContent>
+          <TabsContent
+            value="autotune"
+            className="mt-0 flex min-h-0 flex-1 flex-col border-t border-white/6"
+          >
+            <AutotunePanel />
           </TabsContent>
         </Tabs>
 

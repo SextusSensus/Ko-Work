@@ -10,6 +10,7 @@ Operator chrome (Discover / Tracker / Local Map) is a **Vite + React + Tailwind 
 **Default launch (uniform UI):** `Sky Connect.bat` and `Launch Sky Connect (no console).vbs` start `K1Finder.ps1`, which hosts `k1finder-web/dist/index.html` **full-window** in WebView2 (Discover first). The legacy WinForms tab strip is hidden so the desktop launcher matches the web design.
 
 - Auto-builds `k1finder-web` on launch if `dist/` is missing.
+- Autotune Viz: `?tab=autotune` (or the Autotune tab in the shell).
 - Force classic WinForms tabs: `set SKY_CONNECT_CLASSIC=1` then relaunch.
 - Rebuild the shell manually: `cd desktop/k1finder-web && npm install && npm run build`
 
@@ -19,6 +20,7 @@ npm install
 npm run dev          # http://127.0.0.1:5173/?tab=map
 npm run build        # writes dist/ for WebView2 / static hosting
 npm run preview
+# Autotune Viz: http://127.0.0.1:5173/?tab=autotune
 ```
 
 ## Local Map = domains
@@ -46,6 +48,7 @@ Parallel Local Map workers: see [`localmap-viewer/COORDINATION.md`](localmap-vie
 - **Import last run** / **Refresh**: pull robot dump (or sample) and **merge** into the active domain.
 - Ships one empty domain, **Exact Lab** (`exact-lab`, Rerun fixture target), the default active domain. No demo scenes; create a domain per real environment.
 - **Live telemetry**: green HUD pill when WebSocket `/ws/telemetry` is connected; last pose + `vx/vy/wz` stay on screen across reconnects.
+- **Autotune Viz** (`?tab=autotune`): improve-backend board — in-flight PASS bundles, GPU labelling, and the analyse/gate queue. Defaults to the designed **Mock** feed; **feed** streams a snapshot from `K1Finder.ps1` (autotune folders + Auto-Tune-Loop logs) when the web shell is hosted in WebView2.
 
 ### Hosting
 
@@ -66,6 +69,7 @@ npm install
 npm start
 # http://127.0.0.1:8742/localmap-viewer/index.html?live=1&domain=exact-lab
 # http://127.0.0.1:8742/k1finder-web/dist/index.html?tab=map&live=1
+# http://127.0.0.1:8742/k1finder-web/dist/index.html?tab=autotune
 # ws://127.0.0.1:8742/ws/telemetry
 # http://127.0.0.1:8742/api/status
 ```
