@@ -1,6 +1,0 @@
-{
-  "domain_id": "distribution-hub",
-  "updated": "2026-09-12T00:00:00Z",
-  "notes": "Env shell only \u2014 no overlay instances. Place via Import / autofill / ?demo_assets=1.",
-  "instances": []
-}

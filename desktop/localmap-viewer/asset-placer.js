@@ -472,7 +472,7 @@
     var lc = resolveLabel(labelClass);
     if (!lc) return null;
     var assetId = lc.default_asset;
-    // Domain-specific override (office desks/chairs) — else global catalog default
+    // Per-domain override (domain_assets[domainId]) — else global catalog default
     if (lc.domain_assets && domainId && lc.domain_assets[domainId]) {
       assetId = lc.domain_assets[domainId];
     }
@@ -869,100 +869,6 @@
     });
   }
 
-  function demoSeedFor(domainId) {
-    var id = String(domainId || '').toLowerCase();
-    if (id === 'office') {
-      return [
-        { class: 'elevator', x: -5.4, y: 4.6, yaw: 0, w: 1.2, h: 0.25, confidence: 0.94, run_id: 'demo-office-1' },
-        { class: 'elevator', x: -3.8, y: 4.6, yaw: 0, w: 1.2, h: 0.25, confidence: 0.93, run_id: 'demo-office-1' },
-        { class: 'door', x: 5.5, y: -0.2, yaw: 1.57, w: 1.0, h: 0.15, confidence: 0.9, run_id: 'demo-office-1' },
-        { class: 'window', x: -2.5, y: 4.9, yaw: 0, w: 1.6, h: 0.12, confidence: 0.88, run_id: 'demo-office-1' },
-        { class: 'window', x: 2.5, y: 4.9, yaw: 0, w: 1.6, h: 0.12, confidence: 0.87, run_id: 'demo-office-1' },
-        { class: 'desk', x: -3.0, y: -1.2, yaw: 0, w: 1.4, h: 0.7, confidence: 0.91, run_id: 'demo-office-2' },
-        { class: 'desk', x: -1.0, y: -1.2, yaw: 0, w: 1.4, h: 0.7, confidence: 0.9, run_id: 'demo-office-2' },
-        { class: 'desk', x: 1.0, y: -1.2, yaw: 0, w: 1.4, h: 0.7, confidence: 0.89, run_id: 'demo-office-2' },
-        { class: 'chair', x: -3.0, y: -0.45, yaw: 3.14, confidence: 0.86, run_id: 'demo-office-2' },
-        { class: 'chair', x: -1.0, y: -0.45, yaw: 3.14, confidence: 0.85, run_id: 'demo-office-2' },
-        { class: 'cubicle', x: -2.0, y: 0.0, yaw: 0, w: 1.6, h: 1.6, confidence: 0.82, run_id: 'demo-office-2' },
-        { class: 'cubicle', x: 2.0, y: 0.0, yaw: 0, w: 1.6, h: 1.6, confidence: 0.81, run_id: 'demo-office-2' },
-        { class: 'monitor', x: -3.0, y: -1.45, yaw: 0, w: 0.55, h: 0.08, confidence: 0.8, run_id: 'demo-office-2' },
-        { class: 'shelf', x: 5.2, y: 2.5, yaw: 1.57, w: 0.4, h: 1.2, confidence: 0.87, run_id: 'demo-office-3' },
-        { class: 'bookcase', x: 5.2, y: -2.8, yaw: 1.57, w: 0.4, h: 1.0, confidence: 0.85, run_id: 'demo-office-3' },
-        { class: 'table', x: -3.5, y: 2.8, yaw: 0.2, w: 1.6, h: 0.9, confidence: 0.86, run_id: 'demo-office-3' },
-        { class: 'couch', x: 3.2, y: 3.2, yaw: -0.4, w: 1.8, h: 0.85, confidence: 0.84, run_id: 'demo-office-3' },
-        { class: 'plant', x: 4.6, y: 4.2, yaw: 0, confidence: 0.78, run_id: 'demo-office-3' },
-        { class: 'water_cooler', x: 4.8, y: -4.2, yaw: 0, confidence: 0.8, run_id: 'demo-office-3' },
-        { class: 'exit_sign', x: 5.5, y: 0.6, yaw: 1.57, confidence: 0.95, run_id: 'demo-office-1' },
-        { class: 'hallway_carpet', x: 0, y: -3.8, yaw: 0, w: 10, h: 1.4, confidence: 0.99, run_id: 'demo-office-1' },
-        { class: 'person', x: 0.4, y: -3.2, yaw: 0.5, confidence: 0.92, run_id: 'demo-office-3' }
-      ];
-    }
-    if (id === 'assembly-factory' || id === 'kitchen') {
-      return [
-        { class: 'conveyor', x: -3.4, y: 0, yaw: 0, w: 0.9, h: 8, confidence: 0.93, run_id: 'demo-factory-1' },
-        { class: 'conveyor', x: 0, y: 0, yaw: 0, w: 0.9, h: 8, confidence: 0.91, run_id: 'demo-factory-1' },
-        { class: 'conveyor', x: 3.4, y: 0, yaw: 0, w: 0.9, h: 8, confidence: 0.92, run_id: 'demo-factory-1' },
-        { class: 'assembly_station', x: -2.2, y: -2.0, yaw: 1.57, confidence: 0.88, run_id: 'demo-factory-2' },
-        { class: 'assembly_station', x: 2.2, y: 2.0, yaw: -1.57, confidence: 0.85, run_id: 'demo-factory-2' },
-        { class: 'robotic_arm', x: -2.15, y: -0.4, yaw: 1.57, confidence: 0.78, run_id: 'demo-factory-2' },
-        { class: 'robotic_arm', x: 2.15, y: 0.5, yaw: -1.57, confidence: 0.76, run_id: 'demo-factory-2' },
-        { class: 'parts_bin', x: -2.4, y: -3.2, yaw: 0.2, confidence: 0.82, run_id: 'demo-factory-3' },
-        { class: 'safety_fence', x: -4.6, y: 0, yaw: 0, confidence: 0.9, run_id: 'demo-factory-3' },
-        { class: 'control_panel', x: -1.0, y: -4.8, yaw: 0.2, confidence: 0.84, run_id: 'demo-factory-3' },
-        { class: 'overhead_gantry', x: 0, y: 0.5, yaw: 0, confidence: 0.75, run_id: 'demo-factory-1' },
-        { class: 'person', x: 0.2, y: -1.5, yaw: 0.3, confidence: 0.9, run_id: 'demo-factory-4' }
-      ];
-    }
-    if (id === 'distribution-hub' || id === 'outdoor-patio' || id === 'patio') {
-      return [
-        { class: 'pallet_rack', x: -3.2, y: -2, yaw: 0, w: 1.2, h: 4, confidence: 0.9, run_id: 'demo-hub-1' },
-        { class: 'pallet_rack', x: 3.2, y: 1, yaw: 0, w: 1.2, h: 4, confidence: 0.88, run_id: 'demo-hub-1' },
-        { class: 'conveyor', x: 0, y: -6.5, yaw: 0, w: 4, h: 0.7, confidence: 0.85, run_id: 'demo-hub-1' },
-        { class: 'dock_door', x: 0, y: -9.2, yaw: 0, w: 3, h: 0.3, confidence: 0.92, run_id: 'demo-hub-1' },
-        { class: 'pallet', x: -1.5, y: 6.2, yaw: 0.1, w: 1.2, h: 1.0, confidence: 0.8, run_id: 'demo-hub-2' },
-        { class: 'cardboard_box', x: -1.5, y: 6.2, yaw: 0.1, w: 0.5, h: 0.45, confidence: 0.81, run_id: 'demo-hub-2' },
-        { class: 'crate', x: 1.8, y: 5.8, yaw: -0.2, w: 0.6, h: 0.5, confidence: 0.78, run_id: 'demo-hub-2' },
-        { class: 'tote_bin', x: 1.2, y: -3.5, yaw: 0.4, w: 0.55, h: 0.4, confidence: 0.76, run_id: 'demo-hub-2' },
-        { class: 'bollard', x: -1.8, y: -8.0, yaw: 0, confidence: 0.95, run_id: 'demo-hub-3' },
-        { class: 'bollard', x: 1.8, y: -8.0, yaw: 0, confidence: 0.95, run_id: 'demo-hub-3' },
-        { class: 'safety_cone', x: 0.9, y: -7.2, yaw: 0, confidence: 0.9, run_id: 'demo-hub-3' },
-        { class: 'pallet_jack', x: 2.2, y: -5.5, yaw: 1.2, confidence: 0.7, run_id: 'demo-hub-3' },
-        { class: 'forklift', x: -4.5, y: -7.5, yaw: 0.3, confidence: 0.65, run_id: 'demo-hub-3' },
-        { class: 'barrel', x: 4.2, y: 3.5, yaw: 0, confidence: 0.74, run_id: 'demo-hub-3' },
-        { class: 'floor_tape', x: 0, y: 0, yaw: 0, w: 0.12, h: 12, confidence: 0.99, run_id: 'demo-hub-1' }
-      ];
-    }
-    if (id === 'warehouse-bay-a') {
-      return [
-        { class: 'corner_shelf', x: -8.6, y: 2.5, yaw: 1.57, confidence: 0.9, run_id: 'demo-wh-1' },
-        { class: 'pallet_rack', x: -3.15, y: 0, yaw: 0, w: 1.15, h: 6, confidence: 0.9, run_id: 'demo-wh-1' },
-        { class: 'pallet_rack', x: 3.15, y: 0, yaw: 0, w: 1.15, h: 6, confidence: 0.9, run_id: 'demo-wh-1' },
-        { class: 'pallet', x: -1.6, y: 6.5, yaw: 0, confidence: 0.8, run_id: 'demo-wh-2' },
-        { class: 'cardboard_box', x: -1.6, y: 6.5, yaw: 0.2, confidence: 0.82, run_id: 'demo-wh-2' },
-        { class: 'crate', x: 1.7, y: 6.2, yaw: -0.1, confidence: 0.77, run_id: 'demo-wh-2' },
-        { class: 'bollard', x: -1.8, y: -8.0, yaw: 0, confidence: 0.95, run_id: 'demo-wh-3' },
-        { class: 'bollard', x: 1.8, y: -8.0, yaw: 0, confidence: 0.95, run_id: 'demo-wh-3' },
-        { class: 'safety_cone', x: 0.5, y: -7.5, yaw: 0, confidence: 0.9, run_id: 'demo-wh-3' },
-        { class: 'dock_door', x: 0, y: -9.35, yaw: 0, confidence: 0.88, run_id: 'demo-wh-1' },
-        { class: 'tote_bin', x: 2.0, y: -4.0, yaw: 0.5, confidence: 0.7, run_id: 'demo-wh-2' }
-      ];
-    }
-    // Operator-created / unknown domains: empty unless autofill / import places assets.
-    return [];
-  }
-
-
-  function runDemo(domainId) {
-    var id = domainId || activeDomainId;
-    activeDomainId = id;
-    clearInstances(); // bumps gen — capture AFTER
-    var gen = instanceLoadGen;
-    return registerDetections(demoSeedFor(id), { domainId: id, gen: gen }).then(function (acc) {
-      if (gen !== instanceLoadGen || activeDomainId !== id) return [];
-      return acc;
-    });
-  }
-
   // Public API merged onto k1LocalMap when ready
   var api = {
     init: init,
@@ -992,8 +898,6 @@
     exportInstances: persistLocal,
     loadInstancesForDomain: loadInstancesForDomain,
     importExactInstances: importExactInstances,
-    runAssetDemo: runDemo,
-    demoSeedFor: demoSeedFor,
     instanceGroup: instanceGroup,
     isReady: function () { return ready; }
   };
@@ -1010,7 +914,6 @@
     k.getAssetInstances = function () { return api.getInstances(); };
     k.exportAssetInstances = function () { return api.exportInstances(); };
     k.loadAssetInstances = function (domainId) { return api.loadInstancesForDomain(domainId || k.getActiveDomain()); };
-    k.runAssetDemo = function (domainId) { return api.runDemo(domainId || k.getActiveDomain()); };
     k.getAssetCatalog = function () { return api.getCatalog(); };
     k.getAssetOntology = function () { return api.getOntology(); };
     k.getGlobalAssets = function () { return api.getGlobalAssets(); };

@@ -13,16 +13,17 @@ Ontology (label → asset): [`../../localmap-data/asset-ontology.json`](../../lo
 | File | Source | License |
 |------|--------|---------|
 | `floor_diff.jpg` | [Poly Haven — Concrete Floor Painted](https://polyhaven.com/a/concrete_floor_painted) | CC0 |
-| `metal_diff.jpg` / `library/materials/metal_plate_diff.jpg` | [Poly Haven — Metal Plate](https://polyhaven.com/a/metal_plate) | CC0 |
-| `plaster_diff.jpg` | [Poly Haven — Painted Plaster Wall](https://polyhaven.com/a/painted_plaster_wall) | CC0 |
-| `concrete_color.jpg` / `concrete_rough.jpg` | [ambientCG — Concrete034](https://ambientcg.com/view?id=Concrete034) | CC0 |
+| `library/materials/metal_diff.jpg` / `library/materials/metal_plate_diff.jpg` | [Poly Haven — Metal Plate](https://polyhaven.com/a/metal_plate) | CC0 |
+| `library/materials/plaster_diff.jpg` | [Poly Haven — Painted Plaster Wall](https://polyhaven.com/a/painted_plaster_wall) | CC0 |
+| `library/materials/concrete_color.jpg` / `concrete_rough.jpg` | [ambientCG — Concrete034](https://ambientcg.com/view?id=Concrete034) | CC0 |
 | `library/materials/wood_floor_diff.jpg` | [Poly Haven — Wood Floor](https://polyhaven.com/a/wood_floor) | CC0 |
 | `library/materials/wooden_planks_diff.jpg` | [Poly Haven — Wooden Planks](https://polyhaven.com/a/wooden_planks) | CC0 |
 | `library/materials/long_white_tiles_diff.jpg` | [Poly Haven — Long White Tiles](https://polyhaven.com/a/long_white_tiles) | CC0 |
+| `library/materials/floor_anti_slip_diff.jpg` (default Local Map floor) | Poly Haven family | CC0 |
 
 ## Kitchen library (`library/kitchen/`) — optional props only
 
-> Primary Kitchen **domain** removed; seed domain is **assembly-factory**. Kitchen meshes remain for Plan A COCO labels.
+> Kitchen is an asset category, not a Local Map domain. Kitchen meshes remain for Plan A COCO labels.
 
 ## Kitchen (`library/kitchen/`)
 
@@ -38,14 +39,13 @@ Ontology (label → asset): [`../../localmap-data/asset-ontology.json`](../../lo
 
 Fridge / counter / doorway: **procedural** (no light CC0 fridge GLTF in scrape set).
 
-## Warehouse / distribution hub (`library/warehouse/` + `distribution-hub/`)
+## Warehouse (`library/warehouse/`)
 
 | Asset | Source | License |
 |-------|--------|---------|
 | `worn_metal_rack`, `wooden_crate_01`, `cardboard_box_01`, `plastic_crate_01`, `industrial_pastic_container` | Poly Haven | CC0 |
 | `steel_frame_shelves_01`, `hand_truck`, `rollershutter_door`, `Barrel_01`, `concrete_road_barrier` | Poly Haven | CC0 |
 | Kenney GLBs (`cone`, `conveyor*`, `box-*`, `structure-*`, `door-*`, `crane*`, `conveyor-bars-fence*`) | [Kenney Factory Kit](https://kenney.nl/assets/factory-kit) | CC0 |
-| Distribution-hub floor / corrugated / pallet / shutter JPGs | Poly Haven family | CC0 |
 
 Forklift / shrink-wrap pallet / bollard: **procedural proxies**.
 
@@ -61,14 +61,14 @@ Forklift / shrink-wrap pallet / bollard: **procedural proxies**.
 | `textures/caution_stripes_diff.jpg`, `lane_markings_diff.jpg` | Sky Connect authored | CC0 |
 | `textures/painted_metal_diff.jpg` | [Poly Haven — Painted Metal Shutter](https://polyhaven.com/a/painted_metal_shutter) | CC0 |
 
-Robotic arm, assembly stations, safety fencing / light curtains, HMI pedestals, elevated conveyor: **procedural** stand-ins in `viewer.js` / `asset-placer.js`.
+Robotic arm, assembly stations, safety fencing / light curtains, HMI pedestals, elevated conveyor: **procedural** stand-ins in `asset-placer.js`.
 
 See `library/assembly-line/README.md` and `kenney/LICENSE.txt`.
 
 Paid CGTrader twins → free map: [`FREE-ALTERNATIVES.md`](./FREE-ALTERNATIVES.md).
 
 
-## Assembly Factory Poly Haven (`library/assembly-line/polyhaven/`)
+## Assembly line Poly Haven (`library/assembly-line/polyhaven/`)
 
 | Asset | Source | License |
 |-------|--------|---------|
@@ -130,7 +130,7 @@ No Meshy binaries ship in this repo. Free-plan license is CC BY 4.0 (attribution
 
 ## `library/assembly-line/`
 
-Kenney Factory Kit subset (conveyors, crane/gantry, hopper, yellow structures) + Poly Haven / ambientCG rubber & metal textures + authored caution/lane markings — **CC0**. Ontology labels: `conveyor`, `conveyor_curve`, `conveyor_elevated`, `assembly_station`, `robotic_arm`, `parts_bin`, `safety_fence`, `light_curtain`, `control_panel`, `overhead_gantry`. Wired into Distribution Hub east zone via `buildAssemblyLineZone()` (OrbitControls untouched).
+Kenney Factory Kit subset (conveyors, crane/gantry, hopper, yellow structures) + Poly Haven / ambientCG rubber & metal textures + authored caution/lane markings — **CC0**. Ontology labels: `conveyor`, `conveyor_curve`, `conveyor_elevated`, `assembly_station`, `robotic_arm`, `parts_bin`, `safety_fence`, `light_curtain`, `control_panel`, `overhead_gantry`.
 
 
 ## Quality pass 2026-09-11 (Poly Haven 1k)

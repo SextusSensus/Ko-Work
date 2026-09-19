@@ -7,7 +7,7 @@ Foundation for Todd’s future loop:
 3. **Rerun / labeling** (Batch-Label, Plan A YOLO classes, or live detect) emits detections `{class, x, y, yaw, w, h, confidence, run_id}`
 4. **Assign 3D asset** from ontology → instance appears on Local Map and accumulates in `domains/<id>/instances.json`
 
-This ships the catalog, ontology, viewer hooks, procedural fallbacks, and a mock demo path. Live robot labeling will call the **same** API.
+This ships the catalog, ontology, viewer hooks and procedural fallbacks. Live robot labeling will call the **same** API.
 
 ## Paths
 
@@ -38,9 +38,6 @@ k1LocalMap.assignAsset('chair', { x: 0.5, y: -1.2, yaw: 0.4 });
 k1LocalMap.getAssetInstances();
 k1LocalMap.exportAssetInstances(); // localStorage + optional k1LocalMapHostSaveInstances
 
-// Demo seed for active domain (also ?demo_assets=1):
-k1LocalMap.runAssetDemo();
-
 // Building envelope walls (default ON):
 k1LocalMap.setExteriorVisible(false); // hide shell to inspect from outside
 ```
@@ -52,12 +49,6 @@ Lower-level: `window.k1LocalMapAssets` (catalog/ontology accessors, procedural b
 ```bash
 cd desktop
 python3 -m http.server 8765
-# Assembly Factory env shell (overlay instances empty by default):
-# http://127.0.0.1:8765/localmap-viewer/index.html?domain=assembly-factory
-# Distribution hub + force mock detections:
-# http://127.0.0.1:8765/localmap-viewer/index.html?domain=distribution-hub&demo_assets=1
-# Office + force mock detections:
-# http://127.0.0.1:8765/localmap-viewer/index.html?domain=office&demo_assets=1
 # Exact Lab stays empty until Import -Fixture / place:
 # http://127.0.0.1:8765/localmap-viewer/index.html?domain=exact-lab
 ```
@@ -70,7 +61,7 @@ python3 -m http.server 8765
 4. If `status: procedural`, Three.js recipe builds a dimensionally plausible proxy.
 5. Instance is recorded and written to localStorage; host apps should mirror into `instances.json`.
 
-Plan A / COCO classes in `robot/common.py` (`CLASS_BRAKE_*`) are first-class ontology entries (`person`, `chair`, `couch`, `refrigerator`, …). Warehouse labels (`pallet_rack`, `conveyor`, `dock_door`, …) are custom classes for hub/bay domains.
+Plan A / COCO classes in `robot/common.py` (`CLASS_BRAKE_*`) are first-class ontology entries (`person`, `chair`, `couch`, `refrigerator`, …). Warehouse labels (`pallet_rack`, `conveyor`, `dock_door`, …) are custom (non-COCO) classes.
 
 ## Exact poses from Rerun
 
@@ -83,14 +74,9 @@ For mathematically exact placement from `.rrd` / labeling (homogeneous `T_map_ca
 3. Append a `label_classes` row in `asset-ontology.json` pointing `default_asset` at that id; set `scale_m` and `domains`.
 4. Optionally seed `domains/<id>/instances.json` or call `registerDetections` once.
 
-## Domains covered
+## Domains
 
-- **office** — desks, chairs, cubicles, elevators, shelves, windows, TVs, plants, couch, procedural walls/doors/exit/cooler (primary follow-test domain)
-- **assembly-factory** — dense assembly line (conveyors, stations, arms, fencing, HMI, Poly Haven industrial); legacy `kitchen` id maps here
-- **kitchen (removed as seed)** — stove, cabinets, table/chairs, fridge (procedural), microwave, trash, doorway, person
-- **warehouse-bay-a** — racks, pallets, boxes, cones, bollards, dock
-- **distribution-hub** — multi-aisle racks, conveyors, dock doors, totes, forklift proxy, barriers (replaces outdoor-patio)
-- **generic / future** — sofa, plant, pillar, wall, stairs, elevator, signage
+The repo ships one domain, **`exact-lab`**. It stays empty until `Import-RerunToDomain.ps1 -Domain exact-lab -Fixture` (or a real `.rrd`) places instances. Create a domain per real environment; the label→asset catalog is global, so any domain can place any catalog asset.
 
 ## Licenses
 

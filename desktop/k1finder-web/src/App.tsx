@@ -5,6 +5,7 @@ import { LocalMapPanel } from "@/components/local-map-panel"
 import { TrackerPanel } from "@/components/tracker-panel"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Toaster } from "@/components/ui/sonner"
+import { useHost } from "@/lib/host"
 
 function initialTab() {
   const q = new URLSearchParams(window.location.search)
@@ -16,6 +17,7 @@ function initialTab() {
 
 export function App() {
   const [tab, setTab] = React.useState(initialTab)
+  const { state } = useHost()
 
   return (
     <div className="relative mx-auto flex min-h-svh w-full max-w-[1280px] flex-col px-4 py-5 sm:px-6 sm:py-7 lg:px-8">
@@ -46,7 +48,9 @@ export function App() {
                 <div className="text-[10px] tracking-[0.16em] uppercase opacity-70">
                   Status
                 </div>
-                <div className="mt-1 text-sm text-foreground">Systems nominal</div>
+                <div className="mt-1 max-w-72 truncate text-sm text-foreground" title={state?.status}>
+                  {state?.status || "Systems nominal"}
+                </div>
               </div>
             </div>
 

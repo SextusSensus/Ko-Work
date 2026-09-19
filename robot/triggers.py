@@ -106,7 +106,7 @@ class GestureTrigger(LockTrigger):
     pose inference (audit cadence) so it can never starve the live ArUco control loop."""
     name = "gesture"
 
-    def __init__(self, model_path, args, every_n=1):
+    def __init__(self, model_path, args, every_n=1, _model_override=None):
         self.a = args
         # The gesture hold rides the EXISTING tracker id stamped on each person (p['track_id']
         # at tracker.update) -- NOT a bespoke association map -- so no tracker handle is needed
@@ -129,6 +129,10 @@ class GestureTrigger(LockTrigger):
         self._ms_log_last = 0.0
         self._head_logged = False  # one-time model-head shape log (detect-vs-pose export check)
         self._last_pose_dets = 0   # #pose detections last inference (for the GDBG FRAME line)
+        if _model_override is not None:      # selftests only: a fake with .predict(frame)
+            self.model = _model_override
+            self.ok = True
+            return
         # Always log the model path + existence -- the #1 silent failure is a wrong/missing file
         # (load fails -> ArUco fallback). Visible in the app once stderr is captured.
         log("GESTURE-MODEL path=%s exists=%s size=%s"
@@ -370,6 +374,91 @@ class GestureTrigger(LockTrigger):
             return raisers, owners
         return raisers, owners
 
+    def _pose_by_track(self, frame, persons):
+        """Run pose once and return {track_id: (keypoints(17,3), person_box)} for every pose
+        detection that binds UNAMBIGUOUSLY to one tracked person (same IoU match + owner-margin
+        gate as _raisers, without the raised-hand test). Used by the 2FA sequence trigger; the
+        plain trigger keeps its own _raisers path untouched. Empty on any fault."""
+        out = {}
+        if not persons:
+            return out
+        try:
+            _t0 = time.monotonic()
+            res = self.model.predict(frame, verbose=False)
+            self._ms.append((time.monotonic() - _t0) * 1000.0)
+        except Exception:  # noqa: BLE001
+            return out
+        self.ran_inference = True
+        try:
+            for r in res:
+                kpts = getattr(r, "keypoints", None)
+                boxes = getattr(r, "boxes", None)
+                if kpts is None or boxes is None or kpts.data is None:
+                    continue
+                kd = kpts.data
+                for i in range(len(kd)):
+                    try:
+                        k = kd[i]
+                        pxy = boxes.xyxy[i].tolist()
+                        pb = (float(pxy[0]), float(pxy[1]), float(pxy[2]), float(pxy[3]))
+                    except Exception:  # noqa: BLE001
+                        continue
+                    best_tid, best_iou, best_box = None, 0.0, None
+                    second_iou = 0.0
+                    for p in persons:
+                        tid = p.get("track_id")
+                        if tid is None:
+                            continue
+                        iou = iou_xyxy(pb, p["box"])
+                        if iou > best_iou:
+                            second_iou = best_iou
+                            best_iou, best_tid, best_box = iou, tid, p["box"]
+                        elif iou > second_iou:
+                            second_iou = iou
+                    if best_tid is None or best_iou < self.a.iou_min:
+                        continue
+                    if (best_iou - second_iou) < self.a.gesture_owner_margin:
+                        continue                     # overlaps two people alike -> never guess
+                    if best_tid in out:
+                        del out[best_tid]            # two poses on one track -> unreadable
+                        continue
+                    out[best_tid] = (k, best_box)
+        except Exception:  # noqa: BLE001
+            return {}
+        return out
+
+    def _sides_up(self, k, box, margin):
+        """(left_up, right_up): each wrist confidently above its own shoulder by >= margin AND
+        inside the body column of the matched box, with every confident shoulder inside the box
+        (the same owner-authority tests as _arm_owned, split per side). Never raises."""
+        try:
+            kpc = float(self.a.gesture_kp_conf)
+            x1, y1, x2, y2 = box
+            padx = 0.12 * max(x2 - x1, 1.0)
+
+            def conf(idx):
+                return float(k[idx][2]) >= kpc
+
+            def inx(idx):
+                return (x1 - padx) <= float(k[idx][0]) <= (x2 + padx)
+
+            def iny(idx):
+                return (y1 - 1.0) <= float(k[idx][1]) <= (y2 + 1.0)
+
+            def yv(idx):
+                return float(k[idx][1])
+
+            for sh in (KP_L_SHOULDER, KP_R_SHOULDER):
+                if conf(sh) and not (inx(sh) and iny(sh)):
+                    return False, False
+
+            def up(w, s):
+                return (conf(w) and conf(s) and float(k[w][0]) > 0.0 and float(k[w][1]) > 0.0
+                        and yv(w) < yv(s) - margin and inx(w))
+            return up(KP_L_WRIST, KP_L_SHOULDER), up(KP_R_WRIST, KP_R_SHOULDER)
+        except Exception:  # noqa: BLE001
+            return False, False
+
     def detect(self, frame, persons, state, w_img, h_img):
         self.ran_inference = False
         if not self.ok:
@@ -566,6 +655,212 @@ class CompositeTrigger(LockTrigger):
 
     def on_overrun(self):
         self.gesture.on_overrun()
+
+
+# ---------------------------------------------------------------------------
+# 2FA SEQUENCE lock (crowd mode, 2026-09-11). One raised hand is something anyone in a crowd of
+# 80 does by accident; an ORDERED sequence of poses held for a set time each is not. The
+# sequence is tracked PER tracker id and must be completed by ONE body, in order, with bounded
+# gaps and a total timeout; two bodies completing on the same frame refuse. It is factor one
+# (something you DO); _seed_from's frozen-anchor identity check is factor two (something you
+# ARE) and still runs on every re-seed, so after the first lock a stranger who copies the
+# sequence is refused by identity as well.
+#
+# Step vocabulary:
+#   R_UP / L_UP  one wrist above its shoulder (owner-authoritative, the other hand down)
+#   BOTH_UP      both wrists up          ONE_UP  exactly one wrist up       DOWN  no wrist up
+#   F0..F5       exactly one hand up showing that many fingers (needs the hand model:
+#                handcount.HandCounter on a crop around the raised wrist)
+# ---------------------------------------------------------------------------
+_BODY_STEPS = ("R_UP", "L_UP", "BOTH_UP", "ONE_UP", "DOWN")
+_HAND_STEPS = tuple("F%d" % n for n in range(6))
+DEFAULT_2FA_STEPS = "R_UP,BOTH_UP,L_UP,DOWN"        # works with the body pose model alone
+COUNTDOWN_2FA_STEPS = "F5,F4,F3,F2,F1,F0"             # needs --hand-model
+# The node seeds only after --seed-frames (3) CONSECUTIVE frames carry a lock hint. A completed
+# sequence is one event, so the hint is LATCHED while the same tracked body stays in view: for
+# seed_frames + LATCH_RETRIES offers (the seed attempt plus a couple of retries), and never longer
+# than LATCH_S. The identity check in _seed_from runs on every attempt. Dropped the moment the body
+# leaves the tracker's person list (nobody else can inherit it) or the offers run out -- a REFUSED
+# sequence (identity or bystander check) must be done again from the start, and pose (paused while
+# latched) resumes quickly for everyone else.
+LATCH_S = 2.0
+LATCH_RETRIES = 2
+
+
+def parse_2fa_steps(spec):
+    """'R_UP,BOTH_UP,L_UP,DOWN' -> ['R_UP', ...]. ValueError on an empty, unknown or
+    same-twice-in-a-row step (a repeated step could never be told apart from a held one)."""
+    steps = [s.strip().upper() for s in str(spec or "").split(",") if s.strip()]
+    if len(steps) < 2:
+        raise ValueError("need at least 2 steps, got %r" % spec)
+    for i, s in enumerate(steps):
+        if s not in _BODY_STEPS and s not in _HAND_STEPS:
+            raise ValueError("unknown step %r (allowed: %s)" % (s, ",".join(_BODY_STEPS + _HAND_STEPS)))
+        if i > 0 and steps[i - 1] == s:
+            raise ValueError("step %r repeated back-to-back" % s)
+    return steps
+
+
+def needs_hand_model(steps):
+    return any(s in _HAND_STEPS for s in steps)
+
+
+class SequenceGestureTrigger(GestureTrigger):
+    """Ordered multi-step gesture lock. Same pose model, state gating and dwell as
+    GestureTrigger; the raised-hand hold is replaced by the per-track step machine."""
+    name = "gesture2fa"
+
+    def __init__(self, model_path, args, every_n=1, hand=None, _model_override=None):
+        super().__init__(model_path, args, every_n, _model_override=_model_override)
+        self.steps = parse_2fa_steps(getattr(args, "gesture_2fa_steps", DEFAULT_2FA_STEPS))
+        self.hand = hand
+        self.step_s = max(0.0, float(getattr(args, "gesture_2fa_step_s", 0.6)))
+        self.gap_s = max(0.1, float(getattr(args, "gesture_2fa_gap_s", 2.0)))
+        self.total_s = max(1.0, float(getattr(args, "gesture_2fa_total_s", 12.0)))
+        self.step_floor = max(1, int(getattr(args, "gesture_hold_floor", 3)))
+        self._seq = {}            # track_id -> step state
+        self._last_seen = {}      # track_id -> monotonic time of the last pose match
+        self._latch = None        # completed sequence waiting to seed: {"tid", "until"}
+        if needs_hand_model(self.steps) and (hand is None or not getattr(hand, "ok", False)):
+            log("GESTURE-2FA REFUSED: steps %s need the hand model and none is loaded -> trigger disabled"
+                % ",".join(self.steps))
+            self.ok = False
+        if self.ok:
+            log("GESTURE-2FA ok steps=%s step_s=%.1f gap_s=%.1f total_s=%.1f floor=%d hand=%s"
+                % (",".join(self.steps), self.step_s, self.gap_s, self.total_s, self.step_floor,
+                   "ok" if (hand is not None and getattr(hand, "ok", False)) else "none"))
+
+    # -- step predicates ------------------------------------------------------------------
+    def _step_matches(self, name, frame, k, box):
+        margin = self.a.gesture_kp_margin_frac * max(box[3] - box[1], 1.0)
+        l_up, r_up = self._sides_up(k, box, margin)
+        if name == "R_UP":
+            return r_up and not l_up
+        if name == "L_UP":
+            return l_up and not r_up
+        if name == "BOTH_UP":
+            return l_up and r_up
+        if name == "ONE_UP":
+            return l_up != r_up
+        if name == "DOWN":
+            try:
+                kpc = float(self.a.gesture_kp_conf)
+                sh_ok = float(k[KP_L_SHOULDER][2]) >= kpc or float(k[KP_R_SHOULDER][2]) >= kpc
+            except Exception:  # noqa: BLE001
+                sh_ok = False
+            return sh_ok and not l_up and not r_up
+        if name in _HAND_STEPS:
+            if l_up == r_up or self.hand is None or not self.hand.ok:
+                return False                      # exactly one hand up, and a counter to read it
+            w = KP_L_WRIST if l_up else KP_R_WRIST
+            try:
+                sw = abs(float(k[KP_L_SHOULDER][0]) - float(k[KP_R_SHOULDER][0]))
+                if sw < 4.0:
+                    sw = 0.25 * max(box[3] - box[1], 1.0)
+                n = self.hand.count(frame, (float(k[w][0]), float(k[w][1])), sw)
+            except Exception:  # noqa: BLE001
+                n = None
+            return n is not None and n == int(name[1])
+        return False
+
+    def _reset(self, tid, why):
+        st = self._seq.pop(tid, None)
+        if st is not None and st["idx"] > 0:
+            log("GESTURE-2FA-RESET tid=%s at step %d/%d (%s)" % (tid, st["idx"] + 1, len(self.steps), why))
+
+    def detect(self, frame, persons, state, w_img, h_img):
+        self.ran_inference = False
+        if not self.ok:
+            return None
+        # Same state gate + acquisition dwell as GestureTrigger.detect (kept separate so the
+        # plain trigger stays byte-identical): pose runs only while the robot is stood still.
+        if state not in (S_SEARCH, S_REACQUIRE, S_PARKED):
+            self._stationary_since = None
+            if self._seq:
+                self._seq = {}; self._last_seen = {}
+            self._latch = None
+            return None
+        now = time.monotonic()
+        # A completed sequence stays offered to the seed funnel for LATCH_S while the SAME tracked
+        # body is in view (the funnel needs --seed-frames consecutive hints). No pose runs while
+        # latched; the box follows the tracker. Leaving view or timing out drops it.
+        if self._latch is not None:
+            _lt = self._latch
+            _body = next((p for p in persons if p.get("track_id") == _lt["tid"]), None)
+            if _body is None or now > _lt["until"] or _lt["left"] <= 0:
+                log("GESTURE-2FA-LATCH-DROP tid=%s (%s) -> sequence needed again"
+                    % (_lt["tid"], "left view" if _body is None
+                       else "refused by the seed checks" if _lt["left"] <= 0
+                       else "not seeded in %.1fs" % LATCH_S))
+                self._latch = None
+            else:
+                _lt["left"] -= 1
+                x1, y1, x2, y2 = _body["box"]
+                return LockHint(((x1 + x2) * 0.5, y1 + 0.6 * max(y2 - y1, 1.0)), _body["box"],
+                                _lt["tid"], "gesture", "gesture")
+        if self._stationary_since is None:
+            self._stationary_since = now
+        _dwell = max(0.0, float(getattr(self.a, "gesture_dwell_s", 0.0)))
+        if self._ever_locked and _dwell > 0.0 and (now - self._stationary_since) < _dwell:
+            return None
+        self._tick += 1
+        if self.every_n > 1 and (self._tick % self.every_n) != 0:
+            return None
+        poses = self._pose_by_track(frame, persons)
+        self._log_latency()
+        n_steps = len(self.steps)
+        confirmed = []
+        for tid, (k, box) in poses.items():
+            self._last_seen[tid] = now
+            st = self._seq.get(tid)
+            if st is None:
+                if self._step_matches(self.steps[0], frame, k, box):
+                    self._seq[tid] = {"idx": 0, "since": now, "last_ok": now, "started": now,
+                                      "frames": 1, "done": False, "box": box}
+                continue
+            if (now - st["started"]) > self.total_s:
+                self._reset(tid, "total %.1fs exceeded" % self.total_s)
+                continue
+            st["box"] = box
+            if self._step_matches(self.steps[st["idx"]], frame, k, box):
+                st["last_ok"] = now
+                st["frames"] += 1
+                if (not st["done"] and st["frames"] >= self.step_floor
+                        and (now - st["since"]) >= self.step_s):
+                    st["done"] = True
+                    log("GESTURE-2FA tid=%s step %d/%d %s held" % (tid, st["idx"] + 1, n_steps, self.steps[st["idx"]]))
+            elif (st["done"] and st["idx"] + 1 < n_steps
+                  and self._step_matches(self.steps[st["idx"] + 1], frame, k, box)):
+                st["idx"] += 1
+                st["since"] = now; st["last_ok"] = now; st["frames"] = 1; st["done"] = False
+            elif (now - st["last_ok"]) > self.gap_s:
+                self._reset(tid, "gap %.1fs without the expected step" % self.gap_s)
+                continue
+            if st["done"] and st["idx"] == n_steps - 1:
+                confirmed.append(tid)
+        # bodies that vanished mid-sequence
+        for tid in list(self._seq.keys()):
+            if (now - self._last_seen.get(tid, now)) > self.gap_s:
+                self._reset(tid, "body left the frame")
+        if not confirmed:
+            return None
+        if len(confirmed) >= 2:
+            log("GESTURE-2FA-AMBIGUOUS %d bodies completed the sequence together -> refusing"
+                % len(confirmed))
+            for tid in confirmed:
+                self._seq.pop(tid, None)
+            return None
+        tid = confirmed[0]
+        st = self._seq.pop(tid)
+        x1, y1, x2, y2 = st["box"]
+        bh = max(y2 - y1, 1.0)
+        point = ((x1 + x2) * 0.5, y1 + 0.6 * bh)
+        log("GESTURE-2FA-COMPLETE tid=%s %s in %.1fs -> lock hint (identity check follows)"
+            % (tid, ",".join(self.steps), now - st["started"]))
+        # this completion hint is offer 1 of seed_frames + LATCH_RETRIES
+        self._latch = {"tid": tid, "until": now + LATCH_S,
+                       "left": max(1, int(getattr(self.a, "seed_frames", 3))) + LATCH_RETRIES - 1}
+        return LockHint(point, st["box"], tid, "gesture", "gesture")
 
 
 # ---------------------------------------------------------------------------

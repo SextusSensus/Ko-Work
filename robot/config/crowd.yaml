@@ -1,0 +1,24 @@
+# crowd profile (2026-09-11) -- follow ONE operator in a dense crowd (80+ people) and never hand the
+# lock to anyone else. Overlaid on defaults.yaml; CLI wins. Two independent factors guard every
+# (re-)seed: the ordered gesture sequence (something you DO) and the frozen-anchor identity check
+# (something you ARE). Markerless auto re-lock is OFF: a probabilistic re-ID match is not a hard
+# guarantee in a crowd (strangers reached anchor 0.68 in the Sep-10 logs), so after a real loss the
+# robot stands and waits for the sequence from the same person.
+lock_trigger: 'gesture2fa'
+gesture_2fa_steps: 'R_UP,BOTH_UP,L_UP,DOWN'   # body steps: no hand model needed. Countdown = 'F5,F4,F3,F2,F1,F0' + hand_model
+gesture_2fa_step_s: 0.6
+gesture_2fa_gap_s: 2.0
+gesture_2fa_total_s: 12.0
+gesture_dwell_s: 1.0            # after a loss, start looking for the sequence sooner (the sequence itself takes >2 s)
+gesture_min_sep_frac: 0.16      # wider bystander-adjacency refuse around the lock point (default 0.12)
+auto_reacquire: false           # NO markerless auto re-lock in a crowd
+arm_reacquire: false
+reseed_anchor_floor: 0.55       # a re-seed must look like the locked person (default 0.5); strangers p99 0.49 on re-seed attempts
+switch_anchor_floor: 0.55       # a change of tracker id needs the same proof; the bound track keeps the 0.35 floor
+switch_anchor_frames: 8         # ~0.8 s of sustained doubt on the accepted body -> LOST -> sequence required
+idsw_debounce_frames: 6         # a new tracker id must persist twice as long before the follow re-points
+coast_frames: 6                 # coast ~0.6 s through a brief occlusion instead of dropping the lock
+lost_grace: 12                  # hold 12 frames before declaring a loss (default 8): crowds occlude briefly and often
+search_on_loss: false           # no yaw scan: it cannot re-lock without auto re-lock and the sequence needs a still robot
+stand_on_loss: true
+reacquire_timeout: 120.0        # wait up to 2 min for the sequence before parking

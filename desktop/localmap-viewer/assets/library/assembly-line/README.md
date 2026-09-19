@@ -1,6 +1,6 @@
 # Assembly-line free assets
 
-CC0 / redistributable props for Local Map Assembly Factory domain + distribution-hub east zone.
+CC0 / redistributable assembly-line props (asset category; any Local Map domain can place them).
 
 | Path | Role |
 |------|------|

@@ -99,7 +99,7 @@ export function DomainChips({ domains, activeId, onSelect, onCreate }: Props) {
                 id="domain-name"
                 value={name}
                 maxLength={64}
-                placeholder="e.g. Warehouse Bay B"
+                placeholder="e.g. Lab hallway"
                 className="h-11 rounded-xl font-mono"
                 onChange={(e) => setName(e.target.value)}
                 onKeyDown={(e) => {

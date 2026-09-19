@@ -22,7 +22,6 @@
         0.75
       ],
       "domains": [
-        "office",
         "*"
       ]
     },
@@ -41,8 +40,7 @@
         0.75
       ],
       "domains": [
-        "distribution-hub",
-        "warehouse-bay-a"
+        "*"
       ]
     },
     {
@@ -58,8 +56,7 @@
         0.6
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub"
+        "*"
       ]
     },
     {
@@ -92,8 +89,7 @@
         0.18
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub"
+        "*"
       ]
     },
     {
@@ -126,7 +122,6 @@
         0.4
       ],
       "domains": [
-        "office",
         "*"
       ],
       "scope": "global"
@@ -145,7 +140,7 @@
         0.5
       ],
       "domains": [
-        "assembly-factory"
+        "*"
       ]
     },
     {
@@ -163,8 +158,6 @@
         0.4
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub",
         "*"
       ]
     },
@@ -181,7 +174,7 @@
         2.0
       ],
       "domains": [
-        "assembly-factory"
+        "*"
       ]
     },
     {
@@ -198,7 +191,6 @@
         0.6
       ],
       "domains": [
-        "office",
         "*"
       ],
       "scope": "global"
@@ -221,14 +213,9 @@
       ],
       "domains": [
         "*",
-        "assembly-factory",
-        "generic",
-        "office"
+        "generic"
       ],
       "tier": "P1",
-      "domain_assets": {
-        "office": "office/office-chair"
-      },
       "scope": "global"
     },
     {
@@ -258,7 +245,6 @@
         0.6
       ],
       "domains": [
-        "office",
         "*"
       ]
     },
@@ -277,8 +263,7 @@
         0.4
       ],
       "domains": [
-        "distribution-hub",
-        "warehouse-bay-a"
+        "*"
       ]
     },
     {
@@ -294,8 +279,7 @@
         0.7
       ],
       "domains": [
-        "distribution-hub",
-        "warehouse-bay-a"
+        "*"
       ]
     },
     {
@@ -311,8 +295,7 @@
         1.2
       ],
       "domains": [
-        "distribution-hub",
-        "warehouse-bay-a"
+        "*"
       ]
     },
     {
@@ -328,7 +311,7 @@
         0.7
       ],
       "domains": [
-        "distribution-hub"
+        "*"
       ]
     },
     {
@@ -346,8 +329,7 @@
         0.5
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub"
+        "*"
       ],
       "notes": "Corner steel shelf unit (~1.8\u20132.4 m H, ~0.4\u20130.6 m D) \u2014 not room-sized; not relative to K1"
     },
@@ -365,13 +347,9 @@
         0.85
       ],
       "domains": [
-        "*",
-        "office"
+        "*"
       ],
       "tier": "P1",
-      "domain_assets": {
-        "office": "office/couch"
-      },
       "scope": "global"
     },
     {
@@ -388,7 +366,7 @@
         0.65
       ],
       "domains": [
-        "assembly-factory"
+        "*"
       ]
     },
     {
@@ -405,8 +383,7 @@
         0.45
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub"
+        "*"
       ]
     },
     {
@@ -426,7 +403,6 @@
         1.6
       ],
       "domains": [
-        "office",
         "*"
       ],
       "tier": "P1",
@@ -447,7 +423,6 @@
         0.7
       ],
       "domains": [
-        "office",
         "*"
       ],
       "tier": "P1",
@@ -469,14 +444,9 @@
         0.85
       ],
       "domains": [
-        "*",
-        "assembly-factory",
-        "office"
+        "*"
       ],
       "tier": "P1",
-      "domain_assets": {
-        "office": "office/meeting-table"
-      },
       "scope": "global"
     },
     {
@@ -494,8 +464,7 @@
         0.25
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub"
+        "*"
       ]
     },
     {
@@ -512,12 +481,8 @@
         0.15
       ],
       "domains": [
-        "*",
-        "office"
+        "*"
       ],
-      "domain_assets": {
-        "office": "office/doorway"
-      },
       "scope": "global"
     },
     {
@@ -534,7 +499,7 @@
         0.7
       ],
       "domains": [
-        "assembly-factory"
+        "*"
       ]
     },
     {
@@ -554,9 +519,6 @@
       "domains": [
         "*"
       ],
-      "domain_assets": {
-        "office": "office/elevator-doors"
-      },
       "scope": "global"
     },
     {
@@ -573,7 +535,6 @@
         0.06
       ],
       "domains": [
-        "office",
         "*"
       ],
       "scope": "global"
@@ -593,9 +554,7 @@
         0.15
       ],
       "domains": [
-        "assembly-line",
-        "distribution-hub",
-        "warehouse-bay-a"
+        "assembly-line"
       ]
     },
     {
@@ -611,9 +570,7 @@
         0.2
       ],
       "domains": [
-        "assembly-factory",
-        "warehouse-bay-a",
-        "distribution-hub"
+        "*"
       ]
     },
     {
@@ -629,8 +586,7 @@
         2
       ],
       "domains": [
-        "distribution-hub",
-        "warehouse-bay-a"
+        "*"
       ]
     },
     {
@@ -647,8 +603,7 @@
         4.0
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub"
+        "*"
       ]
     },
     {
@@ -662,8 +617,7 @@
         2.4
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub"
+        "*"
       ]
     },
     {
@@ -681,7 +635,6 @@
         1.4
       ],
       "domains": [
-        "office",
         "*"
       ],
       "scope": "global"
@@ -699,8 +652,7 @@
         0.3
       ],
       "domains": [
-        "assembly-factory",
-        "warehouse-bay-a"
+        "*"
       ]
     },
     {
@@ -732,7 +684,7 @@
         0.12
       ],
       "domains": [
-        "distribution-hub"
+        "*"
       ]
     },
     {
@@ -747,7 +699,6 @@
         0.4
       ],
       "domains": [
-        "assembly-factory",
         "*"
       ],
       "tier": "P2"
@@ -768,7 +719,7 @@
         0.65
       ],
       "domains": [
-        "assembly-factory"
+        "*"
       ],
       "tier": "P2"
     },
@@ -787,8 +738,7 @@
         0.8
       ],
       "domains": [
-        "distribution-hub",
-        "warehouse-bay-a"
+        "*"
       ]
     },
     {
@@ -804,8 +754,7 @@
         1.0
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub"
+        "*"
       ],
       "notes": "CC0 authored wooden_pallet_cc0; procedural fallback"
     },
@@ -823,8 +772,7 @@
         1.1
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub"
+        "*"
       ]
     },
     {
@@ -841,8 +789,7 @@
         0.9
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub"
+        "*"
       ],
       "notes": "Pallet rack bay ~2.7\u20134.5 m tall; procedural rackBay uses 3.0 m. Corner steel shelves use corner_shelf."
     },
@@ -860,8 +807,7 @@
         0.4
       ],
       "domains": [
-        "distribution-hub",
-        "warehouse-bay-a"
+        "*"
       ]
     },
     {
@@ -916,13 +862,9 @@
         0.35
       ],
       "domains": [
-        "*",
-        "office"
+        "*"
       ],
       "tier": "P2",
-      "domain_assets": {
-        "office": "office/potted-plant"
-      },
       "scope": "global"
     },
     {
@@ -939,7 +881,7 @@
         0.7
       ],
       "domains": [
-        "assembly-factory"
+        "*"
       ],
       "tier": "P2"
     },
@@ -977,9 +919,7 @@
         1.2
       ],
       "domains": [
-        "assembly-line",
-        "distribution-hub",
-        "warehouse-bay-a"
+        "assembly-line"
       ]
     },
     {
@@ -997,8 +937,7 @@
         0.7
       ],
       "domains": [
-        "distribution-hub",
-        "warehouse-bay-a"
+        "*"
       ]
     },
     {
@@ -1014,8 +953,6 @@
         0.5
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub",
         "*"
       ]
     },
@@ -1051,8 +988,7 @@
         0.08
       ],
       "domains": [
-        "distribution-hub",
-        "warehouse-bay-a"
+        "*"
       ]
     },
     {
@@ -1086,7 +1022,6 @@
         0.4
       ],
       "domains": [
-        "office",
         "*"
       ],
       "tier": "P1",
@@ -1108,8 +1043,7 @@
         1.0
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub"
+        "*"
       ]
     },
     {
@@ -1128,9 +1062,6 @@
       "domains": [
         "*"
       ],
-      "domain_assets": {
-        "office": "office/exit-sign"
-      },
       "scope": "global"
     },
     {
@@ -1163,8 +1094,7 @@
         1.0
       ],
       "domains": [
-        "assembly-line",
-        "distribution-hub"
+        "assembly-line"
       ]
     },
     {
@@ -1181,9 +1111,7 @@
         1.2
       ],
       "domains": [
-        "assembly-factory",
-        "distribution-hub",
-        "warehouse-bay-a"
+        "*"
       ]
     },
     {
@@ -1216,8 +1144,7 @@
         0.45
       ],
       "domains": [
-        "assembly-factory",
-        "distribution-hub"
+        "*"
       ]
     },
     {
@@ -1236,8 +1163,7 @@
         0.4
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub"
+        "*"
       ]
     },
     {
@@ -1255,9 +1181,6 @@
         0.4
       ],
       "domains": [
-        "assembly-factory",
-        "warehouse-bay-a",
-        "distribution-hub",
         "*"
       ]
     },
@@ -1299,9 +1222,6 @@
         "*"
       ],
       "tier": "P2",
-      "domain_assets": {
-        "office": "office/television"
-      },
       "scope": "global"
     },
     {
@@ -1319,9 +1239,6 @@
       "domains": [
         "*"
       ],
-      "domain_assets": {
-        "office": "office/wall-module"
-      },
       "scope": "global"
     },
     {
@@ -1339,8 +1256,6 @@
         4.0
       ],
       "domains": [
-        "warehouse-bay-a",
-        "distribution-hub",
         "assembly-line"
       ]
     },
@@ -1359,7 +1274,6 @@
         0.4
       ],
       "domains": [
-        "office",
         "*"
       ],
       "scope": "global"
@@ -1379,7 +1293,6 @@
         0.12
       ],
       "domains": [
-        "office",
         "*"
       ],
       "tier": "P2",

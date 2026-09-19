@@ -226,7 +226,7 @@
     <div class="card">
       <h2>New domain</h2>
       <p>Separate map for a new environment. Follow / capture runs merge into the active domain over time.</p>
-      <input id="new-domain-name" type="text" placeholder="e.g. Warehouse Bay B" maxlength="64" />
+      <input id="new-domain-name" type="text" placeholder="e.g. Lab hallway" maxlength="64" />
       <div class="row">
         <button type="button" class="cancel" id="new-domain-cancel">Cancel</button>
         <button type="button" class="ok" id="new-domain-ok">Create</button>
@@ -253,9 +253,6 @@
           var domain = (window.k1LocalMap.getActiveDomain && window.k1LocalMap.getActiveDomain()) || q.get('domain');
           function loadFor(id) {
             if (!id) return;
-            var demo = q.get('demo_assets') === '1' || q.get('assets') === 'demo';
-            // Prefer seed instances.json; ?demo_assets=1 forces mock detections API path
-            if (demo) return window.k1LocalMap.runAssetDemo(id);
             return window.k1LocalMapAssets.loadInstancesForDomain(id);
           }
           window.k1LocalMapOnDomainChange = function (id) { loadFor(id); };

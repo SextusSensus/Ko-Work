@@ -37,9 +37,9 @@ Never `paid` / `purchase` / `link_only` / marketplace purchase targets.
 | Domain need | Free path |
 |-------------|-----------|
 | Kitchen appliances / cabinets | Poly Haven stove, microwave, drawer cabinet + procedural fridge/counter |
-| Warehouse Bay A | Poly Haven racks/boxes/crates + procedural aisle racks/bollards |
-| Distribution Hub | Kenney conveyors/doors + Poly Haven props + procedural forklifts/dock |
-| Assembly line (hub east zone) | Kenney Factory Kit conveyors/crane/hopper + procedural stations/arms/fence/HMI + rubber/metal/caution textures |
+| Warehouse | Poly Haven racks/boxes/crates + procedural bollards |
+| Distribution / logistics | Kenney conveyors/doors + Poly Haven props + procedural forklifts/dock |
+| Assembly line | Kenney Factory Kit conveyors/crane/hopper + procedural stations/arms/fence/HMI + rubber/metal/caution textures |
 | Generic indoor | Sofa, plant, procedural walls/pillars/doors |
 | **Office** | Poly Haven desk/chair/shelf/TV/plant + procedural elevators/cubicles/windows/exit/cooler; ambientCG carpet/ceiling |
 | Robot | Official Booster K1 URDF mesh (BSD-3) in `library/robot/k1/`; procedural fallback |
@@ -55,8 +55,7 @@ If a paid marketplace listing (or Meshy paid export) looks useful, scrape **free
 
 
 ### Domains
-- **assembly-factory** — dense factory line (Kenney + Poly Haven industrial + procedural)
-- **warehouse-bay-a** / **distribution-hub** — warehouse / hub (exterior shell toggle)
+- Ships one empty domain, **exact-lab** (Rerun fixture target). Create a domain per real environment; any domain can place any catalog asset.
 
 ## Quality bar
 

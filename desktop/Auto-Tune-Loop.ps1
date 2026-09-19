@@ -37,6 +37,9 @@
     .\Auto-Tune-Loop.ps1 -Ip 192.168.9.75 -PollSec 15
     .\Auto-Tune-Loop.ps1 -Once              # single-shot: process the
                                              #  latest run and exit
+    Pause .rrd pulls until a local time (text logs, manifest and hints continue), e.g. for a field block:
+      '2026-09-11T07:00' | Out-File -Encoding ascii <LocalRuns>\.pause_rrd_pulls_until
+    It lifts by itself at that time; deferred runs keep their autotune folder and pull afterwards.
 #>
 [CmdletBinding()]
 param(
@@ -236,6 +239,40 @@ function Receive-RrdPolled([string]$remote, [string]$local) {
     Remove-Item -LiteralPath $slog, ($slog + '.err'), $mlog, ($mlog + '.err') -Force -ErrorAction SilentlyContinue
   }
 }
+function Get-PullPause {
+  # FIELD-BLOCK PAUSE (lane B plan T1, 2026-09-10). Between K1Finder sessions the robot is idle but about to take
+  # the next launch's deploy, or a camera diagnosis the operator-session mutex does not cover. While
+  # <LocalRuns>\.pause_rrd_pulls_until holds a FUTURE local time, every .rrd pull is DEFERRED like a busy robot:
+  # the autotune folder is kept, nothing is counted, and the backlog pulls by itself once the time passes.
+  # (-MaxRrdPullMB 0 would have ledgered those runs as over-cap and never labelled them.) An unparsable file is
+  # ignored with a warning, so a typo cannot pause the loop forever. Returns the time, or $null.
+  $pf = Join-Path $LocalRuns '.pause_rrd_pulls_until'
+  if (-not (Test-Path -LiteralPath $pf)) { return $null }
+  $txt = [string](Get-Content -LiteralPath $pf -Raw -ErrorAction SilentlyContinue)
+  $t = [datetime]::MinValue
+  if (-not [datetime]::TryParse($txt.Trim(), [ref]$t)) {
+    if (-not $script:pauseWarned) {
+      Write-Host ("  WARN: {0} is not a time -- ignored, pulls NOT paused" -f $pf) -ForegroundColor Yellow
+      $script:pauseWarned = $true
+    }
+    return $null
+  }
+  if ((Get-Date) -lt $t) { return $t }
+  return $null
+}
+function Test-RrdLocal([string]$rid) {
+  # True when the run's .rrd is already here at its manifest byte count (no pull needed).
+  $ldir = Join-Path $LocalRuns $rid
+  $m = try { Get-Content (Join-Path $ldir 'manifest.json') -Raw -ErrorAction Stop | ConvertFrom-Json } catch { $null }
+  if (-not $m) { return $false }
+  foreach ($f in $m.files) {
+    if ($f.name -like '*.rrd') {
+      $p = Join-Path $ldir $f.name
+      return ((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p).Length -eq [int64]$f.bytes))
+    }
+  }
+  return $false
+}
 function Get-LocalRrd([string]$dir, [string]$rid) {
   # The manifest records the .rrd name AND its exact byte count, so the pull decision is made
   # from data. Returns the local path, or $null with the reason printed.
@@ -259,6 +296,15 @@ function Get-LocalRrd([string]$dir, [string]$rid) {
   if ((Test-Path $local) -and ((Get-Item $local).Length -eq $bytes)) { return $local }
   if ($bytes -gt ([int64]$MaxRrdPullMB * 1MB)) {
     Write-Host ("  rrd: {0} is {1:N0} MB, over the {2} MB cap -- replay/labelling skipped" -f $name, ($bytes / 1MB), $MaxRrdPullMB) -ForegroundColor Yellow
+    return $null
+  }
+  $until = Get-PullPause
+  if ($until) {
+    if (-not $script:pauseNoted.ContainsKey($rid)) {
+      $script:pauseNoted[$rid] = $true
+      Write-Host ("  rrd: pulls paused until {0:yyyy-MM-dd HH:mm} (field block) -- {1} kept for after" -f $until, $name) -ForegroundColor DarkGray
+    }
+    $null = Ensure-AutotuneFolder $rid
     return $null
   }
   # Room for it? Never fill the disk -- and never auto-delete an older recording to make room: the
@@ -335,6 +381,7 @@ function Retry-PendingSends {
              Where-Object { $_.Name -match '^[0-9]{8}T[0-9]{6}Z_' -and -not (Test-Path (Join-Path $_.FullName '.no_send')) })
   if ($cands.Count -eq 0) { return }
   $send = @(); $relabel = @()
+  $pause = Get-PullPause
   foreach ($d in $cands) {
     try {
       $vf = Join-Path $d.FullName 'label_validation.json'
@@ -351,6 +398,9 @@ function Retry-PendingSends {
                 (Get-Count (Join-Path $d.FullName '.pull_attempts')) -lt 3) {
         # No report, or one from an OLDER gate -- sent or not, any status (round 3): RELABEL. The stage moves
         # the old report aside, and a new PASS is re-sent over the old bundle.
+        # While pulls are paused, a run whose .rrd is not here yet waits: it would cost a robot probe every
+        # 10 min only to defer again.
+        if ($pause -and -not (Test-RrdLocal $d.Name)) { continue }
         $relabel += $d
       }
     } catch { Write-Host ("  retry {0}: {1}" -f $d.Name, $_.Exception.Message) -ForegroundColor Yellow }
@@ -398,6 +448,8 @@ $PullScript= $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPS
 # the next tick. We persist it so a restart of this loop stays sane.
 $ledgerPath = Join-Path $LocalRuns '.auto_tune_processed.txt'
 $processed = @{}
+$pauseNoted = @{}          # Get-LocalRrd: say "paused" once per run, not every tick
+$pauseWarned = $false      # Get-PullPause: warn about an unparsable pause file once
 if (Test-Path $ledgerPath) {
   Get-Content $ledgerPath | ForEach-Object { if ($_) { $processed[$_.Trim()] = $true } }
 }

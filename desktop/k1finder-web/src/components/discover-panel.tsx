@@ -1,3 +1,5 @@
+import * as React from "react"
+
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
@@ -11,6 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { click, selectRow, setValue, useHost, useLiveInput } from "@/lib/host"
 
 const robots = [
   {
@@ -30,7 +33,47 @@ const robots = [
   },
 ] as const
 
+function ConfidenceBadge({ label }: { label: string }) {
+  if (label === "High") return <Badge className="rounded-full">High</Badge>
+  if (label === "Medium")
+    return (
+      <Badge variant="secondary" className="rounded-full text-warning">
+        Medium
+      </Badge>
+    )
+  return (
+    <Badge variant="outline" className="rounded-full text-muted-foreground">
+      {label || "Low"}
+    </Badge>
+  )
+}
+
 export function DiscoverPanel() {
+  const { state, logs, available } = useHost()
+  const c = state?.c ?? {}
+  const rows = state?.rows ?? []
+  const scanning = state?.scanning ?? false
+  const ip = useLiveInput(typeof c.ipBox?.v === "string" ? c.ipBox.v : undefined)
+  const pct =
+    state && state.progress.max > 0
+      ? Math.min(100, Math.round((100 * state.progress.v) / state.progress.max))
+      : 0
+
+  const logRef = React.useRef<HTMLPreElement>(null)
+  React.useEffect(() => {
+    const el = logRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [logs.discover])
+
+  const commitIp = () => {
+    ip.setEditing(false)
+    setValue("ipBox", ip.value.trim())
+  }
+  const verify = () => {
+    commitIp()
+    click("verifyBtn")
+  }
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-5 p-6 sm:p-8">
       <section className="rounded-3xl border border-white/8 bg-white/[0.03] p-5 sm:p-6">
@@ -43,8 +86,13 @@ export function DiscoverPanel() {
               Find Clanker Over LAN
             </h2>
             <p className="text-sm text-muted-foreground">
-              Subnets · 192.168.1.0/24 · 10.0.0.0/24
+              {state?.subnets || "Subnets · detected when you scan"}
             </p>
+            {!available && (
+              <p className="text-xs text-warning">
+                Preview only: open this page from Sky Connect to scan and verify.
+              </p>
+            )}
           </div>
 
           <div
@@ -70,19 +118,40 @@ export function DiscoverPanel() {
 
           <div className="flex shrink-0 flex-wrap items-end gap-3 xl:flex-col xl:items-stretch 2xl:flex-row 2xl:items-end">
             <div className="flex flex-wrap items-end gap-3">
-              <Button type="button" size="lg" className="h-10 rounded-xl px-5">
-                Scan For Clanker
+              <Button
+                type="button"
+                size="lg"
+                className="h-10 rounded-xl px-5"
+                disabled={!available || scanning || c.scanBtn?.e === false}
+                onClick={() => click("scanBtn")}
+              >
+                {scanning ? "Scanning…" : "Scan For Clanker"}
               </Button>
               <Button
                 type="button"
                 size="lg"
                 variant="outline"
                 className="h-10 rounded-xl px-5"
-                disabled
+                disabled={!available || !c.stopBtn?.e}
+                onClick={() => click("stopBtn")}
               >
                 Stop
               </Button>
             </div>
+            {scanning && (
+              <div
+                className="h-1.5 w-full overflow-hidden rounded-full bg-white/10"
+                role="progressbar"
+                aria-valuenow={pct}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <div
+                  className="h-full rounded-full bg-primary transition-[width] duration-300"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            )}
             <FieldGroup className="flex w-full flex-col items-center gap-3">
               <Field className="w-full gap-2">
                 <FieldLabel htmlFor="k1-ip" className="sr-only">
@@ -90,9 +159,16 @@ export function DiscoverPanel() {
                 </FieldLabel>
                 <Input
                   id="k1-ip"
-                  defaultValue="192.168.1.81"
+                  value={ip.value}
                   placeholder="Enter IP"
                   className="h-10 w-full min-w-44 rounded-xl font-mono"
+                  disabled={!available}
+                  onFocus={() => ip.setEditing(true)}
+                  onChange={(e) => ip.setLocal(e.target.value)}
+                  onBlur={commitIp}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") verify()
+                  }}
                 />
               </Field>
               <Button
@@ -100,6 +176,8 @@ export function DiscoverPanel() {
                 size="lg"
                 variant="outline"
                 className="h-10 w-full rounded-xl px-5"
+                disabled={!available || c.verifyBtn?.e === false}
+                onClick={verify}
               >
                 Verify
               </Button>
@@ -114,10 +192,12 @@ export function DiscoverPanel() {
             <p className="font-mono text-[10px] tracking-[0.16em] text-muted-foreground uppercase">
               Candidates
             </p>
-            <p className="mt-1 text-sm text-muted-foreground">Ranked by confidence</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Ranked by confidence · click to select, double-click to verify
+            </p>
           </div>
           <Badge variant="secondary" className="rounded-full px-3 py-1 font-mono text-[10px]">
-            2 hosts
+            {rows.length} {rows.length === 1 ? "host" : "hosts"}
           </Badge>
         </div>
         <ScrollArea className="min-h-0 flex-1">
@@ -133,48 +213,70 @@ export function DiscoverPanel() {
                 </TableRow>
               </TableHeader>
               <TableBody className="font-mono text-xs">
-                <TableRow className="border-white/6">
-                  <TableCell className="px-4 py-4">
-                    <Badge className="rounded-full">High</Badge>
-                  </TableCell>
-                  <TableCell className="px-4 py-4">192.168.1.81</TableCell>
-                  <TableCell className="px-4 py-4">booster-k1</TableCell>
-                  <TableCell className="px-4 py-4">OpenSSH_8.9</TableCell>
-                  <TableCell className="px-4 py-4 text-muted-foreground">
-                    banner + hostname match
-                  </TableCell>
-                </TableRow>
-                <TableRow className="border-white/6">
-                  <TableCell className="px-4 py-4">
-                    <Badge variant="secondary" className="rounded-full text-warning">
-                      Medium
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="px-4 py-4">192.168.1.44</TableCell>
-                  <TableCell className="px-4 py-4">orin-dev</TableCell>
-                  <TableCell className="px-4 py-4">OpenSSH_8.2</TableCell>
-                  <TableCell className="px-4 py-4 text-muted-foreground">
-                    open 22 only
-                  </TableCell>
-                </TableRow>
+                {rows.length === 0 ? (
+                  <TableRow className="border-white/6 hover:bg-transparent">
+                    <TableCell colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
+                      {scanning
+                        ? "Scanning the LAN…"
+                        : "No robots found yet. Press Scan For Clanker, or enter an IP and Verify."}
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  rows.map((r, i) => (
+                    <TableRow
+                      key={`${r.ip}-${i}`}
+                      data-state={r.sel ? "selected" : undefined}
+                      className="cursor-pointer border-white/6"
+                      onClick={() => selectRow(i)}
+                      onDoubleClick={() => selectRow(i, true)}
+                    >
+                      <TableCell className="px-4 py-4">
+                        <ConfidenceBadge label={r.c} />
+                      </TableCell>
+                      <TableCell className="px-4 py-4">{r.ip}</TableCell>
+                      <TableCell className="px-4 py-4">{r.h}</TableCell>
+                      <TableCell className="px-4 py-4">{r.b}</TableCell>
+                      <TableCell className="px-4 py-4 text-muted-foreground">{r.w}</TableCell>
+                    </TableRow>
+                  ))
+                )}
               </TableBody>
             </Table>
           </div>
         </ScrollArea>
         <div className="flex flex-wrap gap-3 border-t border-white/6 px-5 py-4 sm:px-6">
-          <Button type="button" variant="secondary" className="h-10 rounded-xl px-5">
+          <Button
+            type="button"
+            variant="secondary"
+            className="h-10 rounded-xl px-5"
+            disabled={!available || c.connectBtn?.e === false}
+            onClick={() => {
+              commitIp()
+              click("connectBtn")
+            }}
+          >
             Verify Selected
           </Button>
-          <Button type="button" variant="outline" className="h-10 rounded-xl px-5">
+          <Button
+            type="button"
+            variant="outline"
+            className="h-10 rounded-xl px-5"
+            disabled={!available || c.useBtn?.e === false}
+            onClick={() => {
+              commitIp()
+              click("useBtn")
+            }}
+          >
             Use this IP everywhere
           </Button>
         </div>
       </section>
 
-      <pre className="h-40 overflow-auto rounded-3xl border border-white/8 bg-black/35 p-5 font-mono text-xs leading-relaxed text-muted-foreground">
-{`--- Starting scan ---
-[+] 192.168.1.81  High  booster-k1
-ready.`}
+      <pre
+        ref={logRef}
+        className="h-40 overflow-auto rounded-3xl border border-white/8 bg-black/35 p-5 font-mono text-xs leading-relaxed whitespace-pre-wrap text-muted-foreground"
+      >
+        {logs.discover || "ready."}
       </pre>
     </div>
   )

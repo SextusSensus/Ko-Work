@@ -1,4 +1,4 @@
-# ============================================================================
+﻿# ============================================================================
 #  Sky Connect - Booster K1 discovery, SSH/files, live camera view & control
 #  Native Windows desktop app (PowerShell + Windows Forms, zero dependencies)
 #
@@ -23,6 +23,17 @@ Set-StrictMode -Off
 $ErrorActionPreference = 'SilentlyContinue'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+# High DPI: Windows PowerShell 5.1 is DPI-unaware, so on a 200% display Windows draws this app at half
+# resolution and stretches it (blurry). Opt in to system DPI awareness before any window exists; the form is
+# scaled by the system DPI right before it is shown, and WebView2 renders crisp on its own.
+try{
+    Add-Type -Namespace SkyConnect -Name Dpi -ErrorAction Stop -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(System.IntPtr value);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern uint GetDpiForSystem();
+'@
+    if(-not [SkyConnect.Dpi]::SetProcessDpiAwarenessContext([IntPtr](-2))){ [void][SkyConnect.Dpi]::SetProcessDPIAware() }   # -2 = SYSTEM_AWARE
+}catch{}
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 # ---- Known K1 facts / config ------------------------------------------------
@@ -144,7 +155,7 @@ function Deploy-FollowFiles {
     # bridge_build.sh is hard-required too (P1.9): it is the ONE copy of the bridge build recipe and
     # every launcher sources it and refuses to start without it (exit 3), so a failed push must abort
     # the launch HERE rather than surface later on the robot as "COMPILE FAILED".
-    foreach ($f in @('follow_person_k1.py','common.py','bridge.py','tracking.py','identity.py','rerun_sink.py','perception.py','triggers.py','calibration.py','map_change.py','loco_follow_bridge.cpp','loco_follow_bridge_ros.cpp','bridge_build.sh','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
+    foreach ($f in @('follow_person_k1.py','common.py','bridge.py','tracking.py','identity.py','rerun_sink.py','perception.py','triggers.py','handcount.py','calibration.py','map_change.py','loco_follow_bridge.cpp','loco_follow_bridge_ros.cpp','bridge_build.sh','run_follow.sh','run_follow_demo.sh','stage_pose.py')) {
         $src = Join-Path $ROBOT_DIR $f
         if (-not (Test-Path $src)) { $script:DeployErr = ("local helper file not found: {0}" -f $src); return $false }
         $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($src, ("{0}@{1}:/home/booster/{2}" -f $script:SshUser, $ip, $f)))
@@ -161,7 +172,7 @@ function Deploy-FollowFiles {
     # abort the launch, not leave a stale config in place and report success.
     $rc = Invoke-Proc scp.exe ($SSH_OPTS + @($defaults, ("{0}@{1}:/home/booster/config/defaults.yaml" -f $script:SshUser, $ip)))
     if ($rc -ne 0) { $script:DeployErr = ("scp of config/defaults.yaml to {0} failed (exit {1}) -- the node fail-closes without it." -f $ip, $rc); return $false }
-    foreach ($prof in @('dev.yaml', 'demo.yaml', 'field.yaml', 'capture.yaml')) {
+    foreach ($prof in @('dev.yaml', 'demo.yaml', 'field.yaml', 'capture.yaml', 'crowd.yaml')) {
         $ps = Join-Path $cfgDir $prof
         if (Test-Path $ps) { $null = Invoke-Proc scp.exe ($SSH_OPTS + @($ps, ("{0}@{1}:/home/booster/config/{2}" -f $script:SshUser, $ip, $prof))) }
     }
@@ -660,6 +671,7 @@ function Set-K1Log([System.Windows.Forms.RichTextBox]$rtb) {
 #  Form + header + tabs + status
 # ============================================================================
 $form=New-Object System.Windows.Forms.Form
+$form.AutoScaleMode=[System.Windows.Forms.AutoScaleMode]::None   # layout is authored at 96 dpi; scaled once before ShowDialog
 $form.Text='Sky Connect'
 $form.Size=New-Object System.Drawing.Size(1180,860)
 $form.MinimumSize=New-Object System.Drawing.Size(1000,740)
@@ -1117,6 +1129,12 @@ $trackHbChk=New-Object System.Windows.Forms.CheckBox; $trackHbChk.Text='Deadman 
 # recognizer that maps spoken words to the SAME command enum the Cmd buttons send.
 $chkGesture=New-Object System.Windows.Forms.CheckBox; $chkGesture.Text='Gesture lock'; $chkGesture.AutoSize=$true; $chkGesture.Location='14,216'; Set-K1Check $chkGesture 'accent'; $chkGesture.Checked=$true; $grpTrackCtl.Controls.Add($chkGesture)   # DEFAULT ON (2026-07-05, user request): gesture is the default lock trigger; UNTICK for the (more reliable) ArUco marker. Raise a hand DURING SEARCH to seed.
 $chkAB=New-Object System.Windows.Forms.CheckBox; $chkAB.Text='A/B (compare)'; $chkAB.AutoSize=$true; $chkAB.Location='134,216'; Set-K1Check $chkAB; $grpTrackCtl.Controls.Add($chkAB)
+# Crowd 2FA lock (2026-09-11): --lock-trigger gesture2fa + --profile crowd. The lock needs an ORDERED pose
+# sequence from ONE body (right hand up, both up, left up, hands down; or the 5-4-3-2-1-fist countdown once a
+# hand model is deployed) AND the frozen-anchor identity check on every re-seed. Markerless auto re-lock is
+# OFF in this mode (the node refuses to start with it on). Overrides Gesture lock / A/B.
+$chkCrowd=New-Object System.Windows.Forms.CheckBox; $chkCrowd.Text='Crowd 2FA lock'; $chkCrowd.AutoSize=$true; $chkCrowd.Location='440,154'; Set-K1Check $chkCrowd 'accent'; $grpTrackCtl.Controls.Add($chkCrowd)   # row y=154 after Head probe: the y=216 acquisition row is full in the Sky Connect layout
+$script:HandModel = '/home/booster/hand_kp.onnx'   # 21-keypoint hand pose model; only used if present on the robot (finger countdown steps)
 $chkVoice=New-Object System.Windows.Forms.CheckBox; $chkVoice.Text='Voice cmds'; $chkVoice.AutoSize=$true; $chkVoice.Location='254,216'; Set-K1Check $chkVoice 'accent'; $chkVoice.Enabled=$false; $grpTrackCtl.Controls.Add($chkVoice)
 $voiceStatus=New-Object System.Windows.Forms.Label; $voiceStatus.Text='Voice: off'; $voiceStatus.AutoSize=$true; $voiceStatus.Location='354,218'; Set-K1Label $voiceStatus 'muted'; $grpTrackCtl.Controls.Add($voiceStatus)
 # --- persistent ReID-health badge (parsed from the node's REID-ENGINE ok/FAILED + REID-DEGRADED stderr) ---
@@ -1222,7 +1240,7 @@ $script:LocalMapDomainsIndex = Join-Path $script:LocalMapDataDir 'domains.json'
 $script:MapHostMode       = 'none'   # webview2 | webbrowser | external
 $script:MapWebView        = $null
 $script:MapBrowser        = $null
-$script:ActiveDomainId    = 'warehouse-bay-a'
+$script:ActiveDomainId    = 'exact-lab'
 
 $mapLayout=New-Object System.Windows.Forms.TableLayoutPanel
 $mapLayout.Dock='Fill'; $mapLayout.ColumnCount=1; $mapLayout.RowCount=2; $mapLayout.Padding='12,8,12,8'; $mapLayout.BackColor=$bg
@@ -1319,43 +1337,47 @@ function Update-LocalMapDomainCombo{
     }
 }
 
+# Retired synthetic demo scenes (procedural layouts, made-up run counts): never seeded, and dropped
+# from an existing domains.json on launch so old installs come up on exact-lab.
+# ponytail: id + manifest-notes check -- a domain the operator later creates with the same id
+# (New-LocalMapDomain writes notes='operator-created-empty') stays listed.
+$script:RetiredDemoDomainIds = @('office','assembly-factory','warehouse-bay-a','distribution-hub')
+
+function Test-LocalMapDomainListed([string]$id){
+    if(-not $id){ return $false }   # before Join-Path: PS 5.1 Join-Path throws on an empty ChildPath
+    $dir = Get-LocalMapDomainDir $id
+    if(-not (Test-Path $dir)){ return $false }
+    if($script:RetiredDemoDomainIds -notcontains $id){ return $true }
+    try{ return ((Get-Content -Raw (Join-Path $dir 'manifest.json') | ConvertFrom-Json).notes -eq 'operator-created-empty') }catch{ return $false }
+}
+
 function Ensure-LocalMapDomains{
     New-Item -ItemType Directory -Force -Path $script:LocalMapDomainsDir | Out-Null
     $idx = Read-LocalMapDomainsIndex
-    if($idx -and $idx.domains -and $idx.domains.Count -gt 0){
-        $script:ActiveDomainId = [string]$idx.active
-        if(-not $script:ActiveDomainId){ $script:ActiveDomainId = [string]$idx.domains[0].id }
-        Sync-LocalMapFeedFromDomain $script:ActiveDomainId | Out-Null
-        Update-LocalMapDomainCombo
-        return
-    }
-    # Seed three demo domains if the data pack is missing
-    $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-    $seeds = @(
-        @{ id='assembly-factory'; name='Assembly Factory'; runs=6 },
-        @{ id='warehouse-bay-a'; name='Warehouse Bay A'; runs=7 },
-        @{ id='distribution-hub'; name='Distribution Hub'; runs=6 }
-    )
     $domains = @()
-    foreach($s in $seeds){
-        $dir = Get-LocalMapDomainDir $s.id
+    if($idx -and $idx.domains){ $domains = @($idx.domains | Where-Object { Test-LocalMapDomainListed ([string]$_.id) }) }
+    $changed = (-not $idx) -or ($domains.Count -ne @($idx.domains).Count)
+    if(-not ($domains | Where-Object { [string]$_.id -eq 'exact-lab' })){
+        # exact-lab is the default domain: create it EMPTY if missing. Never seed demo scenes.
+        $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $dir = Get-LocalMapDomainDir 'exact-lab'
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
         $occPath = Join-Path $dir 'occupancy.json'
-        # Never copy sample.json into seeded domains (legacy sample was Kitchen occupancy).
         if(-not (Test-Path $occPath)){
-            $emptyOcc = @{ domain_id=$s.id; res_m=0.08; range_m=3.5; pose=@{x=0;y=0;yaw=0}; trail=@(); cells=@() }
-            ($emptyOcc | ConvertTo-Json -Depth 6) | Set-Content -Path $occPath -Encoding UTF8
+            (@{ domain_id='exact-lab'; res_m=0.08; range_m=3.5; pose=@{x=0;y=0;yaw=0}; trail=@(); cells=@() } | ConvertTo-Json -Depth 6) | Set-Content -Path $occPath -Encoding UTF8
         }
-        $cells = 0
-        try{ $cells = ((Get-Content -Raw $occPath | ConvertFrom-Json).cells | Measure-Object).Count }catch{}
-        $man = @{ id=$s.id; name=$s.name; created=$now; updated=$now; run_count=$s.runs; cell_count=$cells; notes='seeded' }
-        ($man | ConvertTo-Json -Depth 4) | Set-Content -Path (Join-Path $dir 'manifest.json') -Encoding UTF8
-        $domains += @{ id=$s.id; name=$s.name; updated=$now; run_count=$s.runs; cell_count=$cells }
+        $manPath = Join-Path $dir 'manifest.json'
+        if(-not (Test-Path $manPath)){   # never overwrite the tracked exact-lab manifest
+            (@{ id='exact-lab'; name='Exact Lab (Rerun fixture)'; created=$now; updated=$now; run_count=0; cell_count=0; notes='seeded' } | ConvertTo-Json -Depth 4) | Set-Content -Path $manPath -Encoding UTF8
+        }
+        $domains = @(@{ id='exact-lab'; name='Exact Lab (Rerun fixture)'; updated=$now; run_count=0; cell_count=0 }) + $domains
+        $changed = $true
     }
-    $idx = @{ active='warehouse-bay-a'; domains=$domains }
-    Write-LocalMapDomainsIndex $idx
-    $script:ActiveDomainId = 'warehouse-bay-a'
-    Sync-LocalMapFeedFromDomain 'warehouse-bay-a' | Out-Null
+    $active = if($idx){ [string]$idx.active } else { '' }
+    if(-not ($domains | Where-Object { [string]$_.id -eq $active })){ $active = 'exact-lab'; $changed = $true }
+    if($changed){ Write-LocalMapDomainsIndex @{ active=$active; domains=$domains } }
+    $script:ActiveDomainId = $active
+    Sync-LocalMapFeedFromDomain $active | Out-Null
     Update-LocalMapDomainCombo
 }
 
@@ -1388,12 +1410,12 @@ function New-LocalMapDomain([string]$name){
     if(-not $id){ $id = ('domain-{0}' -f [guid]::NewGuid().ToString('N').Substring(0,8)) }
     $dir = Get-LocalMapDomainDir $id
     if(Test-Path $dir){
-        $mapInfo.Text = ("Domain already exists: {0}" -f $id)
-        Switch-LocalMapDomain $id
-        return $id
+        if(Test-LocalMapDomainListed $id){ $mapInfo.Text = ("Domain already exists: {0}" -f $id); Switch-LocalMapDomain $id; return $id }
+        # Leftover retired-demo folder (e.g. 'office'): never reuse or overwrite it; start a fresh empty domain.
+        $id = '{0}-{1}' -f $id, [guid]::NewGuid().ToString('N').Substring(0,4); $dir = Get-LocalMapDomainDir $id
     }
     # Always start EMPTY: no occupancy cells, no asset instances, no copied seed props.
-    # Content arrives via Import last run / Rerun placer / autofill / ?demo_assets=1.
+    # Content arrives via Import last run / Rerun placer / autofill.
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     $occ = @{ domain_id=$id; res_m=0.08; range_m=3.5; pose=@{x=0;y=0;yaw=0}; trail=@(); cells=@() }
@@ -1410,7 +1432,7 @@ function New-LocalMapDomain([string]$name){
     $idx.active = $id
     Write-LocalMapDomainsIndex $idx
     Switch-LocalMapDomain $id
-    [void](Invoke-LocalMapJs ("window.k1LocalMap && window.k1LocalMap.refreshDomains && window.k1LocalMap.refreshDomains({ forceId: '{0}' })" -f $id.Replace("'","\'")))
+    [void](Invoke-LocalMapJs ("window.k1LocalMap && window.k1LocalMap.refreshDomains && window.k1LocalMap.refreshDomains({{ forceId: '{0}' }})" -f $id.Replace("'","\'")))
     $mapInfo.Text = ("Created empty domain '{0}' — Import last run / Rerun placer / autofill to add content." -f $n)
     return $id
 }
@@ -1559,6 +1581,24 @@ function New-SkyWebView2([System.Windows.Forms.Control]$parent, [string]$uri, [s
     try{
         $wv = New-Object Microsoft.Web.WebView2.WinForms.WebView2
         $wv.Dock = 'Fill'
+        # WebView2's default user-data folder sits next to powershell.exe (System32), which is not writable:
+        # initialization then fails with E_ACCESSDENIED and the window stays blank. Use a per-user folder.
+        $udf = Join-Path $env:LOCALAPPDATA 'SkyConnect\WebView2'
+        if(-not (Test-Path $udf)){ New-Item -ItemType Directory -Force -Path $udf | Out-Null }
+        $cp = New-Object Microsoft.Web.WebView2.WinForms.CoreWebView2CreationProperties
+        $cp.UserDataFolder = $udf
+        $wv.CreationProperties = $cp
+        # Chromium refuses ES module scripts over file:// (origin 'null'), so the Vite build under
+        # k1finder-web/dist renders an empty #root. Serve this folder under a virtual https host instead.
+        $root = $SCRIPT_DIR
+        $navUri = $uri
+        try{
+            $u = [Uri]$uri
+            if($u.IsFile -and $u.LocalPath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)){
+                $rel = $u.LocalPath.Substring($root.Length).TrimStart('\').Replace('\','/')
+                $navUri = 'https://skyconnect.local/' + $rel + $u.Query
+            }
+        }catch{}
         $parent.Controls.Add($wv)
         $wv.BringToFront()
         # Register completion handler BEFORE EnsureCoreWebView2Async to avoid a race
@@ -1566,8 +1606,21 @@ function New-SkyWebView2([System.Windows.Forms.Control]$parent, [string]$uri, [s
         $wv.Add_CoreWebView2InitializationCompleted({
             param($s,$e)
             if($e.IsSuccess){
-                $s.CoreWebView2.Navigate($uri)
+                if($navUri -like 'https://skyconnect.local/*'){
+                    $s.CoreWebView2.SetVirtualHostNameToFolderMapping('skyconnect.local', $root,
+                        [Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind]::Allow)
+                }
+                $s.CoreWebView2.Navigate($navUri)
                 if($onReady){ & $onReady $s $e }
+            } else {
+                # Never leave a blank window: drop the failed web view and bring the classic tabs back.
+                $msg = if($e.InitializationException){ $e.InitializationException.Message } else { 'unknown error' }
+                try{ $parent.Controls.Remove($s) }catch{}
+                if($parent -ne $mapHost){
+                    $parent.Visible = $false
+                    $header.Visible = $true; $tabs.Visible = $true; $status.Visible = $true
+                }
+                $statusLbl.Text = ('WebView2 init failed ({0}) -- showing the classic tabs.' -f $msg)
             }
         }.GetNewClosure())
         [void]$wv.EnsureCoreWebView2Async($null)
@@ -1616,6 +1669,205 @@ function Initialize-LocalMapHost{
     $mapInfo.Text = 'No embedded browser — Open in browser launches the Three.js Local Map viewer.'
 }
 
+# ============================================================================
+#  Sky Connect web shell <-> host bridge
+# ============================================================================
+# The web shell (desktop/k1finder-web) is a skin over the classic controls below, which stay the single
+# source of truth. Every web action drives the SAME WinForms control and runs the SAME handler (Start-Scan,
+# Do-Verify, Start-Tracker, Stop-Tracker, the ARM confirmation, ...), so the launch pre-flight, the
+# operator-session contract, the confirmations and STOP behave exactly as in the classic tabs. The host
+# pushes a snapshot of these controls, the scan results, the logs and the Tracker preview frame back.
+#   page -> host : {t:'hello'} | {t:'click',id} | {t:'set',id,v} | {t:'row',i,verify}
+#   host -> page : {t:'state',...} | {t:'log',ch,text,reset} | {t:'frame',src}
+function Get-SkyControls{
+    return [ordered]@{
+        # Discover
+        scanBtn=$scanBtn; stopBtn=$stopBtn; ipBox=$ipBox; verifyBtn=$verifyBtn; connectBtn=$connectBtn; useBtn=$useBtn
+        # Tracker: primary
+        trackToggle=$trackToggle; trackStopBtn=$trackStopBtn; trackDriveChk=$trackDriveChk; trackArmChk=$trackArmChk
+        trackMuteChk=$trackMuteChk; ipTrack=$ipTrack; distTrack=$distTrack; spdTrack=$spdTrack
+        # Tracker: avoidance
+        trackGap=$trackGap; trackScan=$trackScan; trackHitBox=$trackHitBox; trackEscape=$trackEscape
+        trackObstacle=$trackObstacle; trackClassBrake=$trackClassBrake; trackFloor=$trackFloor
+        trackLocalMap=$trackLocalMap; trackMapAssist=$trackMapAssist; trackHeadProbe=$trackHeadProbe
+        # Tracker: advanced
+        trackApp=$trackApp; trackCoast=$trackCoast; trackReacq=$trackReacq; trackFence=$trackFence
+        trackArmReloc=$trackArmReloc; trackHbChk=$trackHbChk
+        # Tracker: acquisition
+        chkGesture=$chkGesture; chkAB=$chkAB; chkCrowd=$chkCrowd; chkVoice=$chkVoice
+        # Tracker: recording + commands
+        trackRerun=$trackRerun; trackCtrlRun=$trackCtrlRun
+        btnWait=$btnWait; btnResume=$btnResume; btnPark=$btnPark; btnStatus=$btnStatus; btnFollowCmd=$btnFollowCmd; btnRrd=$btnRrd
+    }
+}
+
+function Get-SkyColorHex($color){
+    if(-not $color){ return '' }
+    try{ return ('#{0:X2}{1:X2}{2:X2}' -f $color.R, $color.G, $color.B) }catch{ return '' }
+}
+
+function Invoke-SkyClick([System.Windows.Forms.Button]$button, [bool]$force){
+    # Button.PerformClick() does nothing on a hidden control (CanSelect is false), so raise Click directly.
+    # A disabled button stays inert, exactly as in the classic tab -- except STOP ($force), which must never
+    # be blocked by a stale Enabled state.
+    if(-not $button){ return }
+    if(-not $force -and -not $button.Enabled){ return }
+    $onClick = [System.Windows.Forms.Button].GetMethod('OnClick', [System.Reflection.BindingFlags]'NonPublic,Instance')
+    [void]$onClick.Invoke($button, @([EventArgs]::Empty))
+}
+
+function Set-SkyValue([string]$id, $value){
+    $x = $script:SkyControls[$id]
+    if(-not $x -or -not $x.Enabled){ return }
+    if($x -is [System.Windows.Forms.CheckBox]){
+        $x.Checked = [bool]$value   # CheckedChanged runs: the ARM confirmation, Start-Tracker / Stop-Tracker, ...
+    } elseif($x -is [System.Windows.Forms.ComboBox]){
+        $s = [string]$value
+        if($x.Items.Contains($s)){ $x.SelectedItem = $s }
+    } elseif($x -is [System.Windows.Forms.TrackBar]){
+        $n = 0; if([int]::TryParse([string]$value, [ref]$n)){ $x.Value = [Math]::Max($x.Minimum, [Math]::Min($x.Maximum, $n)) }
+    } elseif($x -is [System.Windows.Forms.TextBox]){
+        $x.Text = [string]$value
+        if($id -eq 'ipTrack' -and $x.Text.Trim()){ $script:RobotIP = $x.Text.Trim() }   # same as its Leave handler
+    }
+}
+
+function Select-SkyRow([int]$index, [bool]$verify){
+    if($index -lt 0 -or $index -ge $list.Items.Count){ return }
+    foreach($it in $list.Items){ if($it.Selected){ $it.Selected = $false } }
+    $list.Items[$index].Selected = $true   # SelectedIndexChanged copies its IP into the Discover IP box
+    $ip = $list.Items[$index].SubItems[1].Text
+    if($ip){ $ipBox.Text = $ip }   # same as that handler, in case it has not run
+    if($verify){ Do-Verify $ip }
+}
+
+function Send-SkyJson([string]$json){
+    $view = $script:SkyBridge.View
+    if(-not $view -or -not $view.CoreWebView2){ return }
+    try{ $view.CoreWebView2.PostWebMessageAsJson($json) }catch{}
+}
+
+function Send-SkyState([bool]$force){
+    if(-not $script:SkyBridge){ return }
+    $c = [ordered]@{}
+    foreach($k in $script:SkyControls.Keys){
+        $x = $script:SkyControls[$k]
+        if(-not $x){ continue }
+        $o = [ordered]@{ e = [bool]$x.Enabled }
+        if($x -is [System.Windows.Forms.CheckBox]){ $o.k = [bool]$x.Checked; $o.x = [string]$x.Text }
+        elseif($x -is [System.Windows.Forms.ComboBox]){ $o.v = [string]$x.SelectedItem; $o.o = @($x.Items | ForEach-Object { [string]$_ }) }
+        elseif($x -is [System.Windows.Forms.TrackBar]){ $o.v = [int]$x.Value; $o.min = [int]$x.Minimum; $o.max = [int]$x.Maximum }
+        elseif($x -is [System.Windows.Forms.TextBox]){ $o.v = [string]$x.Text }
+        else { $o.x = [string]$x.Text }
+        $c[$k] = $o
+    }
+    $rows = New-Object System.Collections.ArrayList
+    foreach($it in $list.Items){
+        [void]$rows.Add([ordered]@{ c = $it.SubItems[0].Text; ip = $it.SubItems[1].Text; h = $it.SubItems[2].Text; b = $it.SubItems[3].Text; w = $it.SubItems[4].Text; sel = [bool]$it.Selected })
+    }
+    $state = [ordered]@{
+        t = 'state'; c = $c; rows = @($rows.ToArray())
+        status = [string]$statusLbl.Text
+        progress = [ordered]@{ v = [int]$progress.Value; max = [int]$progress.Maximum }
+        subnets = [string]$subnetLbl.Text
+        scanning = [bool]$sync.Running
+        trackOn = [bool]$script:TrackOn
+        badge = [ordered]@{ x = [string]$trackBadge.Text; bg = (Get-SkyColorHex $trackBadge.BackColor) }
+        reid = [ordered]@{ x = [string]$reidBadge.Text; bg = (Get-SkyColorHex $reidBadge.BackColor) }
+        dist = (Get-TrackStandoff); spd = (Get-TrackVxMax)
+    }
+    $json = ConvertTo-Json -InputObject $state -Depth 6 -Compress
+    if($force -or $json -ne $script:SkyBridge.LastJson){
+        $script:SkyBridge.LastJson = $json
+        Send-SkyJson $json
+    }
+}
+
+function Send-SkyLogs([bool]$reset){
+    if(-not $script:SkyBridge){ return }
+    foreach($ch in @('discover', 'tracker')){
+        $box = if($ch -eq 'discover'){ $logBox } else { $trackLog }
+        if(-not $box){ continue }
+        $n = [int]$box.TextLength
+        if(-not $reset -and $n -eq [int]$script:SkyBridge.LogLen[$ch]){ continue }
+        $t = [string]$box.Text
+        $prev = [int]$script:SkyBridge.LogText[$ch]
+        $msg = $null
+        if($reset -or $t.Length -lt $prev){
+            $tail = if($t.Length -gt 20000){ $t.Substring($t.Length - 20000) } else { $t }
+            $msg = [ordered]@{ t = 'log'; ch = $ch; reset = $true; text = $tail }
+        } elseif($t.Length -gt $prev){
+            $msg = [ordered]@{ t = 'log'; ch = $ch; reset = $false; text = $t.Substring($prev) }
+        }
+        $script:SkyBridge.LogLen[$ch] = $n
+        $script:SkyBridge.LogText[$ch] = $t.Length
+        if($msg){ Send-SkyJson (ConvertTo-Json -InputObject $msg -Compress) }
+    }
+}
+
+function Send-SkyFrame{
+    if(-not $script:SkyBridge){ return }
+    $img = $trackPic.Image
+    if(-not $img){
+        if($script:SkyBridge.HadFrame){
+            $script:SkyBridge.HadFrame = $false; $script:SkyBridge.LastImg = $null
+            Send-SkyJson '{"t":"frame","src":null}'
+        }
+        return
+    }
+    if([object]::ReferenceEquals($img, $script:SkyBridge.LastImg)){ return }
+    if(((Get-Date) - $script:SkyBridge.LastFrameAt).TotalMilliseconds -lt 180){ return }   # <= ~5 fps to the page
+    try{
+        $ms = New-Object System.IO.MemoryStream
+        $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+        $src = 'data:image/jpeg;base64,' + [Convert]::ToBase64String($ms.ToArray())
+        $ms.Dispose()
+        $script:SkyBridge.LastImg = $img; $script:SkyBridge.LastFrameAt = Get-Date; $script:SkyBridge.HadFrame = $true
+        Send-SkyJson (ConvertTo-Json -InputObject ([ordered]@{ t = 'frame'; src = $src }) -Compress)
+    }catch{}
+}
+
+function Invoke-SkyMessage([string]$json){
+    $m = $null
+    try{ $m = $json | ConvertFrom-Json }catch{ return }
+    if(-not $m){ return }
+    switch([string]$m.t){
+        'hello' { Send-SkyLogs $true; Send-SkyState $true; return }
+        'click' {
+            $id = [string]$m.id
+            $b = $script:SkyControls[$id]
+            if($b -is [System.Windows.Forms.Button]){ Invoke-SkyClick $b ($id -eq 'trackStopBtn') }
+        }
+        'set' { Set-SkyValue ([string]$m.id) $m.v }
+        'row' { Select-SkyRow ([int]$m.i) ([bool]$m.verify) }
+    }
+    Send-SkyState $false
+}
+
+function Start-SkyBridge($view){
+    if(-not $view -or -not $view.CoreWebView2){ return }
+    $script:SkyControls = Get-SkyControls
+    # The classic tabs stay hidden in shell mode, so the Discover ListView never gets a window handle. Without
+    # one it reports no SelectedItems and never raises SelectedIndexChanged, which breaks Verify Selected and
+    # Use this IP everywhere. Create the handle now.
+    try{ $null = $list.Handle }catch{}
+    $script:SkyBridge = @{ View = $view; LastJson = ''; LogLen = @{ discover = -1; tracker = -1 }; LogText = @{ discover = 0; tracker = 0 }; LastImg = $null; LastFrameAt = [datetime]::MinValue; HadFrame = $false; Tick = 0 }
+    $script:SkyInbox = New-Object System.Collections.Queue
+    # Only queue inside the WebView2 event: the handlers it triggers can open modal dialogs (the ARM
+    # confirmation) or block on ssh, and WebView2 must not be re-entered from its own event callback.
+    $view.CoreWebView2.add_WebMessageReceived({ param($s, $e) try{ $script:SkyInbox.Enqueue($e.WebMessageAsJson) }catch{} })
+    if(-not $script:SkyBridgeTimer){
+        $script:SkyBridgeTimer = New-Object System.Windows.Forms.Timer
+        $script:SkyBridgeTimer.Interval = 75
+        $script:SkyBridgeTimer.Add_Tick({
+            while($script:SkyInbox.Count -gt 0){ Invoke-SkyMessage ([string]$script:SkyInbox.Dequeue()) }
+            $script:SkyBridge.Tick++
+            if(($script:SkyBridge.Tick % 4) -eq 0){ Send-SkyState $false; Send-SkyLogs $false; Send-SkyFrame }
+        })
+        $script:SkyBridgeTimer.Start()
+    }
+}
+
 function Initialize-SkyConnectShell{
     if(-not $script:SkyShellMode){ return $false }
     if(-not (Test-Path $script:K1FinderWebDist)){ return $false }
@@ -1631,7 +1883,9 @@ function Initialize-SkyConnectShell{
 
     $uri = Get-SkyConnectShellUri 'discover'
     $wv = New-SkyWebView2 $shellHost $uri {
+        param($s,$e)
         $statusLbl.Text = 'Sky Connect shell ready.'
+        Start-SkyBridge $s   # web buttons drive the classic controls; their state streams back to the page
     }
     if($wv){
         $script:MapWebView = $wv
@@ -1714,7 +1968,7 @@ $cmbDomain.Add_SelectedIndexChanged({
 })
 $btnDomainNew.Add_Click({
     $name = [Microsoft.VisualBasic.Interaction]::InputBox(
-        "Name this environment (assembly factory, warehouse bay, distribution hub…).`r`nFollow/capture runs will accumulate into this domain.",
+        "Name this environment (e.g. lab hallway).`r`nFollow/capture runs will accumulate into this domain.",
         'New Local Map domain',
         'New area'
     )
@@ -2176,6 +2430,13 @@ function Get-TrackExtraArgs {
     $lt='aruco'
     if($chkGesture -and $chkGesture.Checked){ $lt='gesture' }
     if($chkAB -and $chkAB.Checked){ $lt='both' }
+    if($chkCrowd -and $chkCrowd.Checked){
+        # Crowd 2FA: the profile sets the sequence, the identity floors and turns auto re-lock off.
+        # Probe the hand model ONCE (tri-state, never stage on UNKNOWN); pass it only when PRESENT so a
+        # missing file cannot make the node refuse a body-step config.
+        $lt='gesture2fa'; $a += '--profile crowd'
+        if((Get-RobotFileState $ip $script:HandModel) -eq 'PRESENT'){ $a += ('--hand-model {0}' -f $script:HandModel) }
+    }
     # NOTE: --gesture-stop (in-follow both-hands WAIT) is DELIBERATELY OFF here. It runs the pose model
     # DURING follow (S_TRACK); with a slow .pt/torch model that stalls the 10Hz control loop mid-stride
     # and destabilizes the gait (observed: robot tripping after a gesture lock). Re-enable ONLY after the
@@ -2561,7 +2822,7 @@ function Start-Tracker([bool]$drive){
         # hints and autotune label summary ([tune-hints] / [autotune] and their ==== banners) and the
         # [run_follow] TUNE-STALE alarm for a dead auto-improve loop. Filtered out, they never reached
         # the operator (review C12).
-        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|LOOP-MS|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB|RERUN|\[tune-hints\]|\[autotune\]|==== (end )?(TUNE HINTS|AUTOTUNE)|\[run_follow\] (TUNE-STALE|tune hints|REFUSED))')){
+        if($d -and ($d -match '^(GDBG|GESTURE|LOCK-TRIGGER|SEED|LOCKED|AUTO-RELOCK|IDENTITY-DOUBT|HAND-|CMD|GBIND|DRIVE-|BRIDGE|ARM|HELD|RANGE-GATE|HB-|SLOW-LOOP|LOOP-MS|WATCHDOG|FRAME-ERR|RESUME|EXIT|MODE |REID|RELOC|DEPTH|NO-FRAME stall=|RGB|RERUN|\[tune-hints\]|\[autotune\]|==== (end )?(TUNE HINTS|AUTOTUNE)|\[run_follow\] (TUNE-STALE|tune hints|REFUSED))')){
             $Event.MessageData.Enqueue($d)
         }
     }
@@ -3591,4 +3852,18 @@ $form.Add_FormClosing({
     try{ if($sync.PS){ $sync.PS.Stop() } }catch{}
 })
 
+# High DPI: the layout is authored in 96-dpi pixels and AutoScale does not scale this code-built form, so scale
+# the form and every classic control once by the system DPI (2x at 200%). Fonts are in points and already
+# render at the right size. Then keep the window inside the screen's working area.
+try{
+    $dpiScale = [SkyConnect.Dpi]::GetDpiForSystem() / 96.0
+    if($dpiScale -gt 1.01){
+        $form.Scale((New-Object System.Drawing.SizeF([single]$dpiScale, [single]$dpiScale)))
+        $form.MinimumSize = New-Object System.Drawing.Size([int](1000 * $dpiScale), [int](740 * $dpiScale))
+        $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        if($form.MinimumSize.Height -gt $wa.Height -or $form.MinimumSize.Width -gt $wa.Width){ $form.MinimumSize = New-Object System.Drawing.Size([Math]::Min($form.MinimumSize.Width, $wa.Width), [Math]::Min($form.MinimumSize.Height, $wa.Height)) }
+        if($form.Width -gt $wa.Width){ $form.Width = [int]($wa.Width * 0.95) }
+        if($form.Height -gt $wa.Height){ $form.Height = [int]($wa.Height * 0.95) }
+    }
+}catch{}
 [void]$form.ShowDialog()

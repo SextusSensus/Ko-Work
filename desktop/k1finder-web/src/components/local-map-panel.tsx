@@ -23,18 +23,13 @@ const DEFAULT_LAYERS: MapLayers = {
 }
 
 function seedDomains(): MapDomain[] {
-  return [
-    { id: "assembly-factory", name: "Assembly Factory" },
-    { id: "warehouse-bay-a", name: "Warehouse Bay A" },
-    { id: "distribution-hub", name: "Distribution Hub" },
-    { id: "office", name: "Office" },
-  ]
+  return [{ id: "exact-lab", name: "Exact Lab (Rerun fixture)" }]
 }
 
 export function LocalMapPanel() {
   const iframeRef = React.useRef<HTMLIFrameElement>(null)
   const [domains, setDomains] = React.useState<MapDomain[]>(seedDomains)
-  const [activeId, setActiveId] = React.useState<string | null>("warehouse-bay-a")
+  const [activeId, setActiveId] = React.useState<string | null>("exact-lab")
   const [hud, setHud] = React.useState<HudSnapshot | null>(null)
   const [layers, setLayers] = React.useState<MapLayers>(DEFAULT_LAYERS)
   const [ready, setReady] = React.useState(false)
@@ -45,7 +40,7 @@ export function LocalMapPanel() {
   }, [])
 
   const embedSrc = React.useMemo(
-    () => localMapEmbedSrc(activeId || "warehouse-bay-a", wantLive),
+    () => localMapEmbedSrc(activeId || "exact-lab", wantLive),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only initial domain in iframe URL
     [wantLive]
   )

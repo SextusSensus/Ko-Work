@@ -1,6 +1,6 @@
 # Office library (CC0)
 
-Free-only props for the **Office** Local Map domain (`?domain=office`).
+Free-only office furniture props. `office` is an asset category, not a Local Map domain; any domain can place these.
 
 | Folder / file | Source | License |
 |---------------|--------|---------|

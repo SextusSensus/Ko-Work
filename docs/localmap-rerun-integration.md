@@ -93,13 +93,13 @@ python3 eval/localmap_rerun_ingest.py \
 ```bash
 # 1) poses only (also: python eval/rrd_poses.py capture.rrd --out poses.jsonl)
 python3 eval/localmap_rerun_ingest.py \
-  --domain warehouse-bay-a \
+  --domain exact-lab \
   --rrd /path/to/capture.rrd \
   --cam-h 1.35 --cam-pitch 8
 
 # 2) ingest + place from Batch-Label / rrd_label obstacles.jsonl-shaped labels
 python3 eval/localmap_rerun_ingest.py \
-  --domain warehouse-bay-a \
+  --domain exact-lab \
   --rrd /path/to/capture.rrd \
   --labels /path/to/labels.jsonl \
   --place \
@@ -107,7 +107,7 @@ python3 eval/localmap_rerun_ingest.py \
 
 # Or place into an already-ingested run:
 python3 eval/localmap_asset_placer.py \
-  --domain warehouse-bay-a --run-id <run_id> \
+  --domain exact-lab --run-id <run_id> \
   --labels domains/.../runs/<run_id>/labels.jsonl \
   --poses  domains/.../runs/<run_id>/poses.jsonl \
   --depth  domains/.../runs/<run_id>/depth.npz \
@@ -118,7 +118,7 @@ python3 eval/localmap_asset_placer.py \
 
 ```powershell
 cd desktop
-.\Import-RerunToDomain.ps1 -Domain warehouse-bay-a -Rrd "D:\runs\capture.rrd" -Labels "D:\runs\labels.jsonl" -Place
+.\Import-RerunToDomain.ps1 -Domain exact-lab -Rrd "D:\runs\capture.rrd" -Labels "D:\runs\labels.jsonl" -Place
 # Fixture:
 .\Import-RerunToDomain.ps1 -Domain exact-lab -Fixture
 ```

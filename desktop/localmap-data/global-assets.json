@@ -275,27 +275,6 @@
       "texture": "assets/library/office/textures/ceiling_tile_diff.jpg"
     },
     {
-      "id": "office/couch",
-      "name": "Lounge sofa",
-      "category": "office",
-      "status": "downloaded",
-      "path": "assets/library/generic/Sofa_01/Sofa_01_1k.gltf",
-      "license": "CC0",
-      "source": "Poly Haven",
-      "source_url": "https://polyhaven.com/a/Sofa_01",
-      "fallback_procedural": "sofa",
-      "scope": "global",
-      "label_classes": [
-        "couch",
-        "sofa"
-      ],
-      "real_world_m": [
-        1.8,
-        0.85,
-        0.85
-      ]
-    },
-    {
       "id": "office/cubicle",
       "name": "Cubicle partition",
       "category": "office",
@@ -313,25 +292,6 @@
         1.6,
         1.5,
         1.6
-      ]
-    },
-    {
-      "id": "office/doorway",
-      "name": "Office doorway",
-      "category": "office",
-      "status": "procedural",
-      "procedural": "door_frame",
-      "license": "CC0",
-      "source": "procedural Three.js stand-in",
-      "scope": "global",
-      "label_classes": [
-        "doorway",
-        "door"
-      ],
-      "real_world_m": [
-        1.0,
-        2.1,
-        0.15
       ]
     },
     {
@@ -391,28 +351,6 @@
         1.4
       ],
       "texture": "assets/library/office/textures/carpet_diff.jpg"
-    },
-    {
-      "id": "office/meeting-table",
-      "name": "Meeting / side table",
-      "category": "office",
-      "status": "downloaded",
-      "path": "assets/library/office/SchoolDesk_01/SchoolDesk_01_1k.gltf",
-      "license": "CC0",
-      "source": "Poly Haven",
-      "source_url": "https://polyhaven.com/a/SchoolDesk_01",
-      "fallback_procedural": "table",
-      "scope": "global",
-      "label_classes": [
-        "dining_table",
-        "table",
-        "meeting_table"
-      ],
-      "real_world_m": [
-        1.2,
-        0.75,
-        0.7
-      ]
     },
     {
       "id": "office/metal-office-desk",
@@ -518,25 +456,6 @@
         1.0,
         0.6,
         0.1
-      ]
-    },
-    {
-      "id": "office/wall-module",
-      "name": "Interior wall module",
-      "category": "office",
-      "status": "procedural",
-      "procedural": "wall",
-      "license": "CC0",
-      "source": "procedural Three.js stand-in",
-      "scope": "global",
-      "label_classes": [
-        "wall",
-        "wall_segment"
-      ],
-      "real_world_m": [
-        4.0,
-        3.0,
-        0.2
       ]
     },
     {
@@ -819,9 +738,7 @@
         0.5
       ],
       "placement": "footprint",
-      "domain_assets": {
-        "office": "office/office-chair"
-      }
+      "domain_assets": {}
     },
     "dining_chair": {
       "alias_of": "chair",
@@ -988,9 +905,7 @@
         0.85
       ],
       "placement": "footprint",
-      "domain_assets": {
-        "office": "office/couch"
-      }
+      "domain_assets": {}
     },
     "sofa": {
       "alias_of": "couch",
@@ -1131,9 +1046,7 @@
         0.85
       ],
       "placement": "footprint",
-      "domain_assets": {
-        "office": "office/meeting-table"
-      }
+      "domain_assets": {}
     },
     "conference_table": {
       "alias_of": "dining_table",
@@ -1194,9 +1107,7 @@
         0.15
       ],
       "placement": "wall",
-      "domain_assets": {
-        "office": "office/doorway"
-      }
+      "domain_assets": {}
     },
     "door": {
       "alias_of": "doorway",
@@ -1245,9 +1156,7 @@
         0.2
       ],
       "placement": "wall",
-      "domain_assets": {
-        "office": "office/elevator-doors"
-      }
+      "domain_assets": {}
     },
     "elevator_door": {
       "alias_of": "elevator",
@@ -1692,9 +1601,7 @@
         0.35
       ],
       "placement": "footprint",
-      "domain_assets": {
-        "office": "office/potted-plant"
-      }
+      "domain_assets": {}
     },
     "plant": {
       "alias_of": "potted_plant",
@@ -1911,9 +1818,7 @@
         0.2
       ],
       "placement": "footprint",
-      "domain_assets": {
-        "office": "office/exit-sign"
-      }
+      "domain_assets": {}
     },
     "sign": {
       "alias_of": "signage",
@@ -2098,9 +2003,7 @@
         0.08
       ],
       "placement": "anchor",
-      "domain_assets": {
-        "office": "office/television"
-      }
+      "domain_assets": {}
     },
     "computer_monitor": {
       "alias_of": "tv",
@@ -2139,9 +2042,7 @@
         0.2
       ],
       "placement": "wall",
-      "domain_assets": {
-        "office": "office/wall-module"
-      }
+      "domain_assets": {}
     },
     "wall_segment": {
       "alias_of": "wall",

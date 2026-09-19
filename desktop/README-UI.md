@@ -23,7 +23,7 @@ npm run preview
 
 ## Local Map = domains
 
-Domains are **separate environments** (assembly factory, warehouse bay, distribution hub). Each follow/capture run **merges** occupancy into the **active** domain — accumulate over time, do not blindly replace.
+Domains are **separate environments** (one per real place the robot works). Each follow/capture run **merges** occupancy into the **active** domain — accumulate over time, do not blindly replace.
 
 Parallel Local Map workers: see [`localmap-viewer/COORDINATION.md`](localmap-viewer/COORDINATION.md).
 
@@ -44,7 +44,7 @@ Parallel Local Map workers: see [`localmap-viewer/COORDINATION.md`](localmap-vie
 - **Domain chips** in the 3D viewer (+ Domain combo on the WinForms toolbar): click to switch; scene reloads that domain’s map.
 - **+ New domain**: create when bringing the robot to a new environment.
 - **Import last run** / **Refresh**: pull robot dump (or sample) and **merge** into the active domain.
-- Seed data: Kitchen, Warehouse Bay A, Distribution Hub.
+- Ships one empty domain, **Exact Lab** (`exact-lab`, Rerun fixture target), the default active domain. No demo scenes; create a domain per real environment.
 - **Live telemetry**: green HUD pill when WebSocket `/ws/telemetry` is connected; last pose + `vx/vy/wz` stay on screen across reconnects.
 
 ### Hosting
@@ -64,13 +64,13 @@ Local Map is observe-only. Tracker DRIVE / ARM / STOP / Deadman HB wiring is unc
 cd desktop/telemetry-bridge
 npm install
 npm start
-# http://127.0.0.1:8742/localmap-viewer/index.html?live=1&domain=warehouse-bay-a
+# http://127.0.0.1:8742/localmap-viewer/index.html?live=1&domain=exact-lab
 # http://127.0.0.1:8742/k1finder-web/dist/index.html?tab=map&live=1
 # ws://127.0.0.1:8742/ws/telemetry
 # http://127.0.0.1:8742/api/status
 ```
 
-Mock Booster-like odom walks the warehouse aisle at ~15 Hz. `feed.json` is still watched for occupancy dumps from Sky Connect.
+Mock Booster-like odom walks forward with a slow yaw weave at ~15 Hz (`--domain` defaults to `exact-lab`). `feed.json` is still watched for occupancy dumps from Sky Connect.
 
 ## Static preview (no WebSocket)
 
@@ -98,4 +98,4 @@ Textures and free meshes (Poly Haven / ambientCG / Kenney / OpenGameArt CC0) liv
 
 ### Exterior shell toggle
 
-HUD **Exterior** layer (default **ON**) shows/hides building envelope walls for Warehouse Bay A, Distribution Hub, and Assembly Factory. Preference persists in `localStorage` key `k1LocalMap.exteriorVisible`. API: `k1LocalMap.setExteriorVisible(bool)`. OrbitControls unchanged.
+HUD **Exterior** layer (default **ON**) shows/hides building-envelope walls when a domain scene provides them (the shipped `exact-lab` shell has none). Preference persists in `localStorage` key `k1LocalMap.exteriorVisible`. API: `k1LocalMap.setExteriorVisible(bool)`. OrbitControls unchanged.
