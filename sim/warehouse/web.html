@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>K1 Sim Control</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #eceff3; --panel: #ffffff; --panel-2: #f4f6f8; --line: #d3d9e0; --text: #16202a; --muted: #5a6876;
+  --accent: #0a6f80; --accent-ink: #ffffff; --ok: #1b7a44; --warn: #9a5b06; --bad: #b8352c; --focus: #2457d6;
+  --low: #0a6f80; --high: #b0680a; --grid: #c4ccd5; --video: #090c10;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0a0e13; --panel: #121920; --panel-2: #18212a; --line: #26313c; --text: #e1e7ed; --muted: #8d9cab;
+    --accent: #3bbccf; --accent-ink: #03222a; --ok: #4cc28a; --warn: #e3a447; --bad: #f0675c; --focus: #86aaff;
+    --low: #3bbccf; --high: #e3a447; --grid: #2c3844;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.num { font-family: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace; font-variant-numeric: tabular-nums; }
+[hidden] { display: none !important; }
+
+header { display: flex; align-items: center; gap: 8px 20px; flex-wrap: wrap; padding: 10px 16px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: .01em; display: flex; align-items: center; gap: 8px; }
+.mark { width: 18px; height: 18px; border-radius: 4px; background: var(--accent); display: inline-block; }
+.readouts { display: flex; gap: 6px 18px; flex-wrap: wrap; color: var(--muted); font-size: 13px; }
+.readouts b { color: var(--text); font-weight: 600; }
+.pill { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .06em; padding: 3px 9px;
+  border-radius: 999px; border: 1px solid currentColor; color: var(--muted); }
+.pill[data-s="running"] { color: var(--ok); } .pill[data-s="paused"] { color: var(--warn); }
+.pill[data-s="success"] { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.pill[data-s="failed"], .pill[data-s="offline"] { color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, transparent); }
+.spacer { flex: 1; }
+
+main { display: grid; gap: 16px; padding: 16px; max-width: 1560px; margin: 0 auto;
+  grid-template-columns: minmax(0, 1fr) 360px; grid-template-areas: "stage side" "tele side"; align-items: start; }
+.stage { grid-area: stage; } .tele { grid-area: tele; } .side { grid-area: side; display: grid; gap: 12px; }
+@media (max-width: 980px) {
+  main { grid-template-columns: minmax(0, 1fr); grid-template-areas: "stage" "side" "tele"; padding: 12px 16px; }
+}
+
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+.card h2 { margin: 0 0 10px; font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); }
+.video { position: relative; aspect-ratio: 4 / 3; background: var(--video); border-radius: 8px; overflow: hidden; border: 1px solid var(--line); }
+.video img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.overlay { position: absolute; left: 10px; top: 10px; display: flex; gap: 6px; }
+.tag { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: #e8eef3;
+  background: rgba(8, 12, 16, .66); border-radius: 4px; padding: 3px 7px; }
+.banner { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); width: min(92%, 520px);
+  background: rgba(8, 12, 16, .86); color: #eef3f6; border-radius: 8px; padding: 12px 16px; text-align: center;
+  border-left: 4px solid #f0675c; }
+.banner.ok { border-left-color: #4cc28a; }
+.banner strong { display: block; font-size: 18px; letter-spacing: .04em; }
+.banner span { font-size: 13px; color: #b9c5cf; }
+
+.toolbar { display: flex; gap: 10px 20px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+.toolbar .lbl { font-size: 12px; color: var(--muted); margin-right: 6px; }
+
+button, select, input { font: inherit; color: var(--text); }
+button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 11px;
+  min-height: 34px; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: .42; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.danger { color: var(--bad); }
+button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+select, input[type="number"] { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+  padding: 6px 8px; min-height: 34px; min-width: 0; }
+.seg { display: inline-flex; }
+.seg button { border-radius: 0; margin-left: -1px; }
+.seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.seg button:last-child { border-radius: 0 6px 6px 0; }
+.seg button:focus-visible { position: relative; z-index: 1; }
+
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
+.row + .row { margin-top: 8px; }
+.field { display: grid; gap: 3px; font-size: 12px; color: var(--muted); }
+.grow { flex: 1; }
+.btns { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 8px; }
+.btns button { white-space: nowrap; }
+.hint { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+
+.drive { display: flex; gap: 16px; align-items: center; margin-top: 12px; }
+.dpad { display: grid; grid-template-columns: repeat(3, 46px); grid-template-rows: repeat(3, 46px); gap: 4px; }
+.dpad button { padding: 0; font-size: 18px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.dpad button.held { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.dpad [data-dir="f"] { grid-area: 1 / 2; } .dpad [data-dir="l"] { grid-area: 2 / 1; } .dpad [data-dir="stop"] { grid-area: 2 / 2; font-size: 14px; }
+.dpad [data-dir="r"] { grid-area: 2 / 3; } .dpad [data-dir="b"] { grid-area: 3 / 2; }
+kbd { font-family: inherit; font-size: 11px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; }
+
+#msg { border-radius: 8px; padding: 10px 12px; font-size: 13px; border: 1px solid var(--line); background: var(--panel); }
+#msg[data-kind="error"] { border-color: var(--bad); color: var(--bad); background: color-mix(in srgb, var(--bad) 8%, var(--panel)); }
+
+.tele { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; }
+.tile { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.tile .k { font-size: 11px; color: var(--muted); }
+.tile .v { font-size: 20px; font-weight: 600; line-height: 1.2; }
+.tile[data-level="warn"] .v { color: var(--warn); } .tile[data-level="bad"] .v { color: var(--bad); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.chip[data-on="warn"] { color: var(--warn); border-color: currentColor; background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.chip[data-on="ok"] { color: var(--ok); border-color: currentColor; background: color-mix(in srgb, var(--ok) 12%, transparent); }
+dl.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
+dl.kv dt { color: var(--muted); } dl.kv dd { margin: 0; text-align: right; }
+canvas { display: block; width: 100%; height: 180px; }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend i { display: inline-block; width: 12px; height: 3px; vertical-align: middle; margin-right: 5px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="mark" aria-hidden="true"></span>K1 Warehouse Sim</h1>
+  <span class="pill" id="status" data-s="offline" role="status">Connecting</span>
+  <div class="readouts" aria-label="Episode readouts">
+    <span>Time <b class="num" id="time">-</b></span>
+    <span>Task <b id="h-task">-</b></span>
+    <span>Seed <b class="num" id="h-seed">-</b></span>
+    <span>Driver <b id="h-driver">-</b></span>
+    <span>Map <b id="h-map">-</b></span>
+  </div>
+  <span class="spacer"></span>
+  <span class="readouts"><span>Recorded <b class="num" id="h-rec">0</b> steps</span></span>
+</header>
+
+<main>
+  <section class="stage" aria-label="Simulator view">
+    <div class="video">
+      <img id="video" src="/stream" alt="Live simulator camera view">
+      <div class="overlay" aria-hidden="true"><span class="tag" id="cam-tag">Chase</span><span class="tag num" id="speed-tag">1x</span></div>
+      <div class="banner" id="banner" role="status" aria-live="polite" hidden><strong id="banner-title"></strong><span id="banner-text"></span></div>
+    </div>
+    <div class="toolbar">
+      <div><span class="lbl" id="cam-lbl">Camera</span>
+        <span class="seg" role="group" aria-labelledby="cam-lbl">
+          <button data-camera="chase" aria-label="Chase camera, behind the robot">Chase</button>
+          <button data-camera="top" aria-label="Top camera, whole map">Top</button>
+          <button data-camera="head" aria-label="Head camera, robot point of view">Head</button>
+        </span></div>
+      <div><span class="lbl" id="speed-lbl">Speed</span>
+        <span class="seg" role="group" aria-labelledby="speed-lbl">
+          <button data-speed="0.5" title="Half speed">0.5x</button>
+          <button data-speed="1" title="Real time">1x</button>
+          <button data-speed="2" title="2 times speed">2x</button>
+          <button data-speed="4" title="4 times speed">4x</button>
+          <button data-speed="8" title="8 times speed">8x</button>
+        </span></div>
+    </div>
+  </section>
+
+  <aside class="side" aria-label="Controls">
+    <div id="msg" role="alert" hidden></div>
+
+    <section class="card" aria-labelledby="ep-h">
+      <h2 id="ep-h">Episode</h2>
+      <div class="row">
+        <label class="field">Task
+          <select id="task"><option value="pick">Pick</option><option value="follow">Follow</option></select></label>
+        <label class="field grow">Seed
+          <input id="seed" type="number" min="0" max="9007199254740991" step="1" value="0" required class="num"></label>
+        <button class="primary" id="reset" aria-label="Reset episode with this task and seed">Reset</button>
+      </div>
+      <div class="btns" style="margin-top: 8px">
+        <button id="next" aria-label="Next episode, seed plus one">Next</button>
+        <button id="replay" aria-label="Replay the same scenario">Replay</button>
+        <button id="pause" aria-label="Pause">Pause</button>
+        <button id="step" aria-label="Step one 0.1 second control tick">Step</button>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="drv-h">
+      <h2 id="drv-h">Driver</h2>
+      <span class="seg" role="group" aria-labelledby="drv-h">
+        <button data-driver="auto" aria-label="Autopilot, scripted heuristic">Autopilot</button>
+        <button data-driver="manual" aria-label="Manual teleop">Manual</button>
+        <button data-driver="policy" aria-label="Trained policy">Policy</button>
+      </span>
+      <div class="drive">
+        <div class="dpad" role="group" aria-label="Teleop pad, press and hold">
+          <button data-dir="f" aria-label="Drive forward (hold)">&#9650;</button>
+          <button data-dir="l" aria-label="Turn left (hold)">&#9664;</button>
+          <button data-dir="stop" aria-label="Stop">&#9632;</button>
+          <button data-dir="r" aria-label="Turn right (hold)">&#9654;</button>
+          <button data-dir="b" aria-label="Drive backward (hold)">&#9660;</button>
+        </div>
+        <p class="hint">Hold <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or the arrow keys.
+          Commands pass through the bridge clamps (vx -0.10..0.30 m/s, vyaw &plusmn;0.40 rad/s). Release, or 300 ms of silence, stops the robot.</p>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="flt-h">
+      <h2 id="flt-h">Inject fault</h2>
+      <div class="btns">
+        <button class="danger" data-fault="stall05" aria-label="Link stall 0.5 seconds, watchdog zero tier">Link stall 0.5 s</button>
+        <button class="danger" data-fault="stall15" aria-label="Link stall 1.5 seconds, prepare tier">Link stall 1.5 s</button>
+        <button class="danger" data-fault="swap" aria-label="Swap target ID, follow task with 2 or more workers only">Swap target ID</button>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="imp-h">
+      <h2 id="imp-h">Import</h2>
+      <div class="row">
+        <label class="field grow">Local Map domain
+          <select id="domain"><option value="">Loading...</option></select></label>
+        <button id="loadmap" title="Run episodes on the selected Local Map domain">Load map</button>
+      </div>
+      <div class="row">
+        <button id="upload" title="Upload a scenario JSON file">Upload scenario...</button>
+        <input id="file" type="file" accept=".json,application/json" class="sr" tabindex="-1" aria-hidden="true">
+        <button id="randmaps" title="Back to randomly generated warehouses">Random maps</button>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="exp-h">
+      <h2 id="exp-h">Export</h2>
+      <div class="btns">
+        <button data-export="scenario" aria-label="Download scenario JSON">Scenario</button>
+        <button data-export="mjcf" aria-label="Download scene MJCF zip">Scene MJCF</button>
+        <button data-export="jsonl" title="Download episode as JSONL">Episode JSONL</button>
+        <button data-export="rrd" title="Download episode as Rerun recording">Rerun .rrd</button>
+        <button data-export="lerobot" title="Download episode as LeRobot dataset zip">LeRobot zip</button>
+      </div>
+      <p class="hint">Episode exports use the current recording, or the previous one right after a reset.</p>
+    </section>
+  </aside>
+
+  <section class="tele" aria-label="Telemetry">
+    <div class="card"><h2>Safety counters</h2><div class="tiles" id="tiles"></div></div>
+    <div class="card"><h2>Link &amp; loco</h2>
+      <div class="chips" id="chips"></div>
+      <dl class="kv">
+        <dt>Applied vx</dt><dd class="num" id="cmd-vx">-</dd>
+        <dt>Applied vyaw</dt><dd class="num" id="cmd-vyaw">-</dd>
+        <dt>Driver action</dt><dd class="num" id="act">-</dd>
+        <dt>Pose x, y, yaw</dt><dd class="num" id="pose">-</dd>
+      </dl>
+    </div>
+    <div class="card"><h2>Depth scan</h2>
+      <canvas id="scan" role="img" aria-label="Polar plot of the low and high depth scans"></canvas>
+      <div class="legend"><span><i style="background: var(--low)"></i>Low 0.10 m</span><span><i style="background: var(--high)"></i>High 0.8 m</span></div>
+    </div>
+  </section>
+</main>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const all = (sel) => document.querySelectorAll(sel);
+const NAMES = { auto: 'Autopilot', manual: 'Manual', policy: 'Policy', chase: 'Chase', top: 'Top', head: 'Head', pick: 'Pick', follow: 'Follow' };
+const COUNTERS = [['collisions', 'Collisions', 'warn'], ['box_hits', 'Box hits', 'warn'], ['human_contacts', 'Human contacts', 'bad'],
+  ['falls', 'Falls', 'bad'], ['stale_events', 'Stale 0.4 s', 'warn'], ['prep_events', 'Prepare 1 s', 'warn'], ['id_swaps', 'ID swaps', 'warn']];
+let S = null, edited = false, lastErr = null;
+
+// Live regions (status pill, banner) are only written on change, so screen readers do not
+// re-announce them on every 5 Hz poll.
+function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+
+// Rebuild a list's nodes only when its length changes, so the 5 Hz poll does not churn the DOM.
+function nodes(box, n, make) {
+  if (box.children.length !== n) box.replaceChildren(...Array.from({ length: n }, make));
+  return box.children;
+}
+
+function msg(text, kind = 'info') {
+  if (!text && S && S.error) { text = S.error; kind = 'error'; }     // never hide a still-active sim error
+  const m = $('msg');
+  m.textContent = text;
+  m.dataset.kind = kind;
+  m.hidden = !text;
+}
+
+async function post(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+  let j = {};
+  try { j = await r.json(); } catch (e) { /* empty or non-JSON body */ }
+  if (!r.ok) throw new Error(j.error || `Request failed (HTTP ${r.status})`);
+  if (j.state) render(j.state);
+  return j;
+}
+
+async function cmd(op, extra = {}) {
+  try {
+    await post('/api/cmd', JSON.stringify({ op, ...extra }));
+    msg('');
+    return true;
+  } catch (e) { msg(e.message, 'error'); return false; }
+}
+
+// ---------------------------------------------------------------- state -> UI
+function render(st) {
+  S = st;
+  const s = st.done ? (st.outcome && st.outcome.success ? 'success' : 'failed') : st.paused ? 'paused' : 'running';
+  $('status').dataset.s = s;
+  setText($('status'), { success: 'Success', failed: 'Failed', paused: 'Paused', running: 'Running' }[s]);
+  setText($('time'), `${st.t.toFixed(1)} / ${st.t_max.toFixed(0)} s`);
+  setText($('h-task'), NAMES[st.task]);
+  setText($('h-seed'), String(st.seed));
+  setText($('h-driver'), NAMES[st.driver]);
+  setText($('h-map'), st.map || 'random each reset');
+  setText($('h-rec'), String(st.rec_steps));
+  setText($('cam-tag'), NAMES[st.camera]);
+  setText($('speed-tag'), `${st.speed}x`);
+  if (!edited) { $('task').value = st.task; $('seed').value = st.seed; }
+
+  for (const b of all('[data-camera]')) b.setAttribute('aria-pressed', b.dataset.camera === st.camera);
+  for (const b of all('[data-speed]')) b.setAttribute('aria-pressed', Number(b.dataset.speed) === st.speed);
+  for (const b of all('[data-driver]')) b.setAttribute('aria-pressed', b.dataset.driver === st.driver);
+  const pol = document.querySelector('[data-driver="policy"]');
+  pol.disabled = !st.policy;
+  pol.title = st.policy ? '' : 'Start web.py with --model runs/<run>/model.zip';
+  $('pause').textContent = st.paused ? 'Resume' : 'Pause';
+  $('pause').setAttribute('aria-label', st.paused ? 'Resume' : 'Pause');
+  // Disabling the focused control would drop focus to <body>; hand it to Next, the banner's next step.
+  if (st.done && document.activeElement?.matches('#pause, #step, [data-fault]')) $('next').focus();
+  $('pause').disabled = $('step').disabled = st.done;
+  for (const b of all('[data-fault]')) {
+    b.disabled = st.done || (b.dataset.fault === 'swap' && (st.task !== 'follow' || st.workers < 2));
+  }
+  for (const b of all('[data-dir]')) b.disabled = st.driver !== 'manual';
+  if (st.driver !== 'manual' && held.size) { held.clear(); sync(); }
+
+  $('banner').hidden = !st.done;
+  if (st.done && st.outcome) {
+    $('banner').classList.toggle('ok', st.outcome.success);
+    setText($('banner-title'), st.outcome.success ? 'SUCCESS' : 'FAILED');
+    setText($('banner-text'), `${st.outcome.reason}. Next runs a new seed, Replay runs this scenario again.`);
+  }
+  if (st.error !== lastErr) { lastErr = st.error; if (st.error) msg(st.error, 'error'); }
+
+  const stt = st.stats;
+  const tiles = COUNTERS.map(([k, label, lvl]) => [label, stt[k], stt[k] ? lvl : '']);
+  if (st.task === 'follow') tiles.push(['In band', `${Math.round(100 * stt.in_band / Math.max(1, stt.steps))}%`, '']);
+  const tn = nodes($('tiles'), tiles.length, () => {
+    const d = document.createElement('div');
+    d.className = 'tile';
+    d.innerHTML = '<div class="k"></div><div class="v num"></div>';
+    return d;
+  });
+  tiles.forEach(([label, v, lvl], i) => {
+    if (tn[i].dataset.level !== lvl) tn[i].dataset.level = lvl;
+    setText(tn[i].firstChild, label);
+    setText(tn[i].lastChild, String(v));
+  });
+  const chips = [['Link stale', st.flags.stale, 'warn'], ['kPrepare (standing)', st.flags.standing, 'warn'],
+    ['Deadman', st.deadman, 'warn']];
+  if (st.task === 'follow') chips.push(['Target seen', st.flags.seen, 'ok'], ['Workers ' + st.workers, false, '']);
+  const cn = nodes($('chips'), chips.length, () => Object.assign(document.createElement('span'), { className: 'chip' }));
+  chips.forEach(([label, on, kind], i) => {
+    // The state is in the text too, not only the colour, for screen readers and colour-blind users.
+    setText(cn[i], kind ? `${label}: ${on ? 'on' : 'off'}` : label);
+    if (on && kind) { if (cn[i].dataset.on !== kind) cn[i].dataset.on = kind; } else delete cn[i].dataset.on;
+  });
+  setText($('cmd-vx'), `${st.cmd[0].toFixed(2)} m/s`);
+  setText($('cmd-vyaw'), `${st.cmd[1].toFixed(2)} rad/s`);
+  setText($('act'), `[${st.action.map((v) => v.toFixed(2)).join(', ')}]`);
+  setText($('pose'), `${st.pose[0].toFixed(2)}, ${st.pose[1].toFixed(2)}, ${(st.pose[2] * 180 / Math.PI).toFixed(0)}°`);
+  drawScan(st);
+}
+
+function drawScan(st) {
+  const c = $('scan'), dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (!w || !h) return;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement), col = (n) => css.getPropertyValue(n).trim();
+  const half = st.fov_deg * Math.PI / 360, cx = w / 2, cy = h - 8;
+  const k = Math.min(h - 18, (w / 2 - 6) / Math.sin(half)) / st.ray_max;      // px per metre
+  // Ray i spans -fov/2..+fov/2; positive angle = left of the heading (counter-clockwise).
+  const pt = (r, a) => [cx - r * k * Math.sin(a), cy - r * k * Math.cos(a)];
+  g.strokeStyle = col('--grid');
+  g.fillStyle = col('--muted');
+  g.font = '10px system-ui, sans-serif';
+  g.lineWidth = 1;
+  for (let r = 2; r <= st.ray_max; r += 2) {
+    g.beginPath();
+    g.arc(cx, cy, r * k, -Math.PI / 2 - half, -Math.PI / 2 + half);
+    g.stroke();
+    const [lx, ly] = pt(r, -half);
+    g.fillText(`${r} m`, lx + 3, ly + 3);
+  }
+  for (const a of [-half, half]) { g.beginPath(); g.moveTo(cx, cy); g.lineTo(...pt(st.ray_max, a)); g.stroke(); }
+  const ang = (i, n) => -half + (2 * half * i) / (n - 1);
+  for (const [key, colour, fill] of [['low', col('--low'), true], ['high', col('--high'), false]]) {
+    const v = st.scan[key];
+    g.beginPath();
+    g.moveTo(cx, cy);
+    v.forEach((r, i) => g.lineTo(...pt(r, ang(i, v.length))));
+    g.closePath();
+    g.strokeStyle = colour;
+    g.lineWidth = 1.5;
+    if (fill) { g.globalAlpha = 0.18; g.fillStyle = colour; g.fill(); g.globalAlpha = 1; } else g.setLineDash([4, 3]);
+    g.stroke();
+    g.setLineDash([]);
+  }
+  g.fillStyle = col('--text');
+  g.beginPath(); g.arc(cx, cy, 4, 0, 2 * Math.PI); g.fill();
+}
+
+// ---------------------------------------------------------------- polling + video
+// A dropped MJPEG stream leaves the <img> broken (complete, naturalWidth 0) and Chromium fires no
+// event, so the poll reconnects it whenever the server answers. A stream still connecting reports
+// complete=false and is left alone; the 1 s throttle covers a stream that fails straight away.
+let videoT = 0;
+async function poll() {
+  try {
+    const r = await fetch('/state', { cache: 'no-store' });
+    if (!r.ok) throw new Error();
+    render(await r.json());
+    const v = $('video');
+    if (v.complete && !v.naturalWidth && Date.now() - videoT > 1000) { videoT = Date.now(); v.src = '/stream?' + videoT; }
+  } catch (e) {
+    $('status').dataset.s = 'offline';
+    setText($('status'), 'Offline');
+  }
+  setTimeout(poll, 200);
+}
+
+// ---------------------------------------------------------------- episode + view controls
+const episode = (op, extra) => { edited = false; return cmd(op, extra); };
+$('task').addEventListener('change', () => { edited = true; });
+$('seed').addEventListener('input', () => { edited = true; });
+$('seed').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('reset').click(); });
+$('reset').addEventListener('click', () => {
+  // Check the raw text: Number('') is 0, and above 2^53 Number() rounds to a different seed.
+  const raw = $('seed').value.trim(), seed = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(seed)) {
+    msg('Seed must be a whole number from 0 to 9007199254740991.', 'error');
+    return;
+  }
+  episode('reset', { task: $('task').value, seed });
+});
+$('next').addEventListener('click', () => episode('next'));
+$('replay').addEventListener('click', () => episode('replay'));
+$('pause').addEventListener('click', () => cmd(S && S.paused ? 'resume' : 'pause'));
+$('step').addEventListener('click', () => cmd('step'));
+for (const b of all('[data-camera]')) b.addEventListener('click', () => cmd('camera', { value: b.dataset.camera }));
+for (const b of all('[data-speed]')) b.addEventListener('click', () => cmd('speed', { value: Number(b.dataset.speed) }));
+for (const b of all('[data-driver]')) b.addEventListener('click', async () => {
+  if (b.dataset.driver === 'policy') msg('Loading policy...');
+  await cmd('driver', { value: b.dataset.driver });
+});
+for (const b of all('[data-fault]')) b.addEventListener('click', () => cmd('fault', { value: b.dataset.fault }));
+
+// ---------------------------------------------------------------- manual teleop
+// held = "source:dir" entries (pointer, key, focused pad button); the action is their union.
+const held = new Set();
+const KEYS = { w: 'f', arrowup: 'f', s: 'b', arrowdown: 'b', a: 'l', arrowleft: 'l', d: 'r', arrowright: 'r' };
+let timer = null;
+
+function heldDirs() { return new Set([...held].map((s) => s.split(':').pop())); }
+function sendDrive(vx, vyaw) {
+  fetch('/api/cmd', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ op: 'drive', vx, vyaw }) }).catch(() => {});
+}
+function sendHeld() {
+  const d = heldDirs();
+  sendDrive((d.has('f') ? 1 : 0) - (d.has('b') ? 1 : 0), (d.has('l') ? 1 : 0) - (d.has('r') ? 1 : 0));
+}
+function sync() {
+  const d = heldDirs();
+  for (const b of all('[data-dir]')) b.classList.toggle('held', d.has(b.dataset.dir));
+  const on = held.size > 0 && S && S.driver === 'manual';
+  if (on) {
+    sendHeld();                                         // react now, then repeat at ~10 Hz
+    if (!timer) timer = setInterval(sendHeld, 100);
+  } else if (timer) {
+    clearInterval(timer);
+    timer = null;
+    sendDrive(0, 0);
+  }
+}
+function releaseAll() { held.clear(); sync(); }
+
+for (const b of all('[data-dir]')) {
+  const dir = b.dataset.dir;
+  if (dir === 'stop') { b.addEventListener('click', () => { releaseAll(); sendDrive(0, 0); }); continue; }
+  b.addEventListener('pointerdown', (e) => {
+    if (b.disabled) return;
+    b.setPointerCapture(e.pointerId);
+    held.add(`p${e.pointerId}:${dir}`);
+    sync();
+  });
+  const up = (e) => { if (held.delete(`p${e.pointerId}:${dir}`)) sync(); };
+  for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, up);
+  b.addEventListener('keydown', (e) => {
+    if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); held.add(`b:${dir}`); sync(); }
+  });
+  b.addEventListener('keyup', (e) => { if (e.key === ' ' || e.key === 'Enter') { held.delete(`b:${dir}`); sync(); } });
+  b.addEventListener('blur', () => { if (held.delete(`b:${dir}`)) sync(); });
+  b.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+addEventListener('keydown', (e) => {
+  const dir = KEYS[e.key.toLowerCase()];
+  if (!dir || !S || S.driver !== 'manual' || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (e.target.closest && e.target.closest('input, select, textarea')) return;
+  e.preventDefault();
+  if (!e.repeat) { held.add(`k${e.key.toLowerCase()}:${dir}`); sync(); }
+});
+addEventListener('keyup', (e) => { if (held.delete(`k${e.key.toLowerCase()}:${KEYS[e.key.toLowerCase()]}`)) sync(); });
+addEventListener('blur', releaseAll);
+document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); });
+
+// ---------------------------------------------------------------- import / export
+async function loadDomains() {
+  const sel = $('domain');
+  try {
+    const r = await fetch('/api/domains');
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    sel.replaceChildren(...j.map((d) => new Option(`${d.name} (${d.cells} cells, ${d.instances} objects)`, d.id)));
+    if (!j.length) sel.replaceChildren(new Option('No Local Map domains found', ''));
+    $('loadmap').disabled = !j.length;
+  } catch (e) {
+    sel.replaceChildren(new Option('Could not list domains', ''));
+    $('loadmap').disabled = true;
+    msg(`Local Map: ${e.message}`, 'error');
+  }
+}
+$('loadmap').addEventListener('click', async () => {
+  if (!$('domain').value) return;
+  msg('Importing Local Map...');
+  edited = false;
+  await cmd('import_localmap', { domain: $('domain').value });
+});
+$('randmaps').addEventListener('click', () => episode('random_maps'));
+$('upload').addEventListener('click', () => $('file').click());
+$('file').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  if (f.size > 8 * 1024 * 1024) { msg('That file is over the 8 MB limit.', 'error'); return; }
+  try {
+    msg(`Importing ${f.name}...`);
+    edited = false;
+    await post('/api/import/scenario', await f.text());
+    msg('');
+  } catch (err) { msg(`${f.name}: ${err.message}`, 'error'); }
+});
+for (const b of all('[data-export]')) b.addEventListener('click', async () => {
+  const hadFocus = document.activeElement === b;      // disabling it drops focus to <body>; put it back after
+  b.disabled = true;
+  msg('Exporting...');
+  try {
+    const r = await fetch('/api/export/' + b.dataset.export);
+    if (!r.ok) {
+      let j = {};
+      try { j = await r.json(); } catch (e) { /* non-JSON error */ }
+      throw new Error(j.error || `HTTP ${r.status}`);
+    }
+    const blob = await r.blob();
+    const m = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = m ? m[1] : b.dataset.export;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    msg('');
+  } catch (e) { msg(`Export failed: ${e.message}`, 'error'); }
+  b.disabled = false;
+  if (hadFocus && document.activeElement === document.body) b.focus();
+});
+
+poll();
+loadDomains();
+</script>
+</body>
+</html>
