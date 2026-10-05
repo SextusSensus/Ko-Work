@@ -53,7 +53,22 @@ def _col(rb, name):
     return rb.column(i) if i >= 0 else None
 
 
-def _read_rrd_dataframe(path, depth_only=False):
+# Written (static) into every .rrd from the K1 warehouse sim (sim/warehouse/record.py). Readers
+# refuse such recordings unless asked: sim data must never reach calibration, Local Map ingest or a
+# training dataset as if the robot recorded it.
+SIM_ENTITY = "/sim/provenance"
+
+
+class SimulatedRecordingError(ValueError):
+    pass
+
+
+def _refuse_sim(path):
+    raise SimulatedRecordingError("%s is a SIMULATED recording (%s); pass allow_sim=True "
+                                  "(rrd_to_lerobot.py --allow-sim) to read it anyway" % (path, SIM_ENTITY))
+
+
+def _read_rrd_dataframe(path, depth_only=False, allow_sim=False):
     """read_rrd for rerun 0.23.x, which has no rerun.experimental.RrdReader.
 
     Returns the SAME (scalars, images, depth) structure as read_rrd. The GPU analysis venv pins
@@ -72,6 +87,8 @@ def _read_rrd_dataframe(path, depth_only=False):
              str(getattr(c, "component", None) or getattr(c, "component_name", "")))
             for c in rec.schema().component_columns()]
     ents = {e for e, _c in cols}
+    if SIM_ENTITY in ents and not allow_sim:
+        _refuse_sim(path)
 
     scalars = {}
     for ent in sorted({e for e, c in cols if c.endswith("Scalar")}):
@@ -126,23 +143,26 @@ def _read_rrd_dataframe(path, depth_only=False):
     return scalars, images, depth
 
 
-def read_rrd(path, depth_only=False):
+def read_rrd(path, depth_only=False, allow_sim=False):
     """Return (scalars, images, depth) where scalars[entity] = {frame_idx: value},
     images = {frame_idx: HxWx3 uint8}, depth = {frame_idx: HxW float32}.
     depth_only=True skips the RGB decode entirely (the ingest depth-sanity path never uses RGB;
-    decoding hundreds of full frames it throws away is a needless OOM risk on a long capture)."""
+    decoding hundreds of full frames it throws away is a needless OOM risk on a long capture).
+    A recording from the sim raises SimulatedRecordingError unless allow_sim=True."""
     try:
         from rerun.experimental import RrdReader  # noqa: F401 -- newer chunk-stream API
     except ImportError:
         # rerun 0.23.x (the version that matches the robot's writer) has no RrdReader; read the
         # same recording through the dataframe API instead. Same return structure.
-        return _read_rrd_dataframe(path, depth_only)
+        return _read_rrd_dataframe(path, depth_only, allow_sim)
     import numpy as np
     store = _load_store(path)
     scalars = {}
     images = {}
     depth = {}
     for ch in store.stream():
+        if ch.is_static and str(ch.entity_path) == SIM_ENTITY and not allow_sim:
+            _refuse_sim(path)
         if ch.is_static or ch.is_empty:
             continue
         ep = str(ch.entity_path)
@@ -215,7 +235,7 @@ def _wall_secs(v):
     return iv / 1e9 if iv > 1_000_000_000_000 else float(iv)   # ns since epoch -> s (heuristic)
 
 
-def read_rrd_frames(path):
+def read_rrd_frames(path, allow_sim=False):
     """Richer decode for the P6G.2 geometry stages (desktop/recon/geom.py): per-frame WALL timestamps
     for RGB and depth, plus the /camera/rgb/target Boxes2D. The geometry stages pair RGBD by WALL time
     (RECON_CONTRACT doctrine 4 -- depth's frame_idx is best-effort), which read_rrd's frame_idx-only view
@@ -231,6 +251,8 @@ def read_rrd_frames(path):
     store = _load_store(path)
     rgb, depth, boxes_by_fi = [], [], {}
     for ch in store.stream():
+        if ch.is_static and str(ch.entity_path) == SIM_ENTITY and not allow_sim:
+            _refuse_sim(path)
         if ch.is_static or ch.is_empty:
             continue
         ep = str(ch.entity_path)
@@ -535,6 +557,15 @@ def try_write_lerobot(out, frames, state, action, rgb, fps, task, repo_id):
     return True
 
 
+def is_simulated(path):
+    """True if the .rrd carries the sim's provenance marker (see SIM_ENTITY)."""
+    try:
+        read_rrd(path, depth_only=True)
+    except SimulatedRecordingError:
+        return True
+    return False
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("rrd", help="input .rrd (from --rerun or replay_eval --rerun)")
@@ -549,6 +580,8 @@ def main():
                     help="export a TRACK-less .rrd anyway (health/FSM QA only; follow state cols "
                          "are 0-filled). Default: refuse, so fabricated range=0.0 rows can't ship")
     ap.add_argument("--raw", action="store_true", help="force the RAW layout (skip the lerobot lib)")
+    ap.add_argument("--allow-sim", action="store_true",
+                    help="convert a SIMULATED .rrd (sim/warehouse); output is labelled booster_k1_sim")
     a = ap.parse_args()
 
     if a.with_depth:  # review fix: this was a silently-dead flag; fail loudly until implemented
@@ -558,7 +591,11 @@ def main():
     if not os.path.exists(a.rrd):
         raise SystemExit("no such .rrd: %s" % a.rrd)
     print("reading %s ..." % a.rrd)
-    scalars, images, depth = read_rrd(a.rrd)
+    try:
+        scalars, images, depth = read_rrd(a.rrd, allow_sim=a.allow_sim)
+    except SimulatedRecordingError as e:
+        raise SystemExit(str(e))
+    sim = a.allow_sim and is_simulated(a.rrd)
     print("  entities: %d scalar, %d rgb frames, %d depth frames"
           % (len(scalars), len(images), len(depth)))
     frames, state, action, rgb = assemble_episode(scalars, images, allow_no_track=a.allow_no_track)
@@ -566,10 +603,15 @@ def main():
     print("  episode: T=%d frames, state%s, action%s, rgb=%d/%d"
           % (len(frames), tuple(state.shape), tuple(action.shape), n_rgb, len(frames)))
 
-    if not a.raw and try_write_lerobot(a.out, frames, state, action, rgb, a.fps, a.task, a.repo_id):
+    if not a.raw and not sim and try_write_lerobot(a.out, frames, state, action, rgb, a.fps, a.task, a.repo_id):
         print("WROTE canonical LeRobot dataset (lerobot lib) -> %s" % a.out)
         return 0
     info = write_raw(a.out, frames, state, action, rgb, a.fps, a.task, a.repo_id, a.with_depth)
+    if sim:  # same relabel sim/warehouse/record.py applies to its own LeRobot export
+        info.update(robot_type="booster_k1_sim", note="SIMULATED: converted from a K1 warehouse sim .rrd, "
+                    "NOT robot data. " + info["note"])
+        with open(os.path.join(a.out, "meta", "info.json"), "w") as f:
+            json.dump(info, f, indent=2)
     print("WROTE raw LeRobot-v3-shaped dataset -> %s  (video_backend=%s)"
           % (a.out, info["video_backend"]))
     print("NOTE: internal QA/pipeline-proof artifact -- NOT thesis training data (see LEROBOT_EXPORT.md).")
