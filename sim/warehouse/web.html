@@ -456,10 +456,14 @@ const held = new Set();
 const KEYS = { w: 'f', arrowup: 'f', s: 'b', arrowdown: 'b', a: 'l', arrowleft: 'l', d: 'r', arrowright: 'r' };
 let timer = null;
 
+// Each drive is its own request, so a forward sent before a release can land after it. The server
+// drops any seq not above the newest it applied; starting at Date.now() keeps it increasing across reloads.
+let driveSeq = Date.now();
+
 function heldDirs() { return new Set([...held].map((s) => s.split(':').pop())); }
 function sendDrive(vx, vyaw) {
   fetch('/api/cmd', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ op: 'drive', vx, vyaw }) }).catch(() => {});
+    body: JSON.stringify({ op: 'drive', vx, vyaw, seq: ++driveSeq }) }).catch(() => {});
 }
 function sendHeld() {
   const d = heldDirs();

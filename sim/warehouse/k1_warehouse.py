@@ -347,7 +347,7 @@ class K1WarehouseEnv(gym.Env):
         self._fixed_grid = _Grid(world) if world is not None else None
         self.action_space = gym.spaces.Box(-1, 1, (2,), np.float32)
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (OBS_DIM,), np.float32)
-        self.model = self.data = self.spec = self.scenario = None
+        self.model = self.data = self.mj_spec = self.scenario = None   # not .spec: that is gym's EnvSpec
 
     # ------------------------------------------------------------------ world build
     def _build(self, world, ep):
@@ -408,7 +408,7 @@ class K1WarehouseEnv(gym.Env):
         d = mujoco.MjData(m)
         k1 = m.body("k1").id
         assert m.jnt_qposadr[m.joint("byaw").id] == 2 and m.jnt_dofadr[m.joint("byaw").id] == 2
-        self.spec, self.model, self.data, self.k1 = s, m, d, k1
+        self.mj_spec, self.model, self.data, self.k1 = s, m, d, k1
         self.floor = m.geom("floor").id
         nw = len(ep["workers"])
         self.worker_mocap = [m.body_mocapid[m.body(f"worker{k}").id] for k in range(nw)]
@@ -655,6 +655,9 @@ class K1WarehouseEnv(gym.Env):
             mujoco.mj_step(m, d)
             self.t += PHYS_DT
         self._move_workers(CTRL_DT)
+        # Mocap actors moved after the last substep: refresh geom poses so this tick's rays and
+        # occlusion checks see people/forklift where the detector math says they are.
+        mujoco.mj_kinematics(m, d)
 
         # Contacts.
         hit_static = hit_box = hit_human = hit_vehicle = hit_low = False
@@ -873,6 +876,12 @@ def selftest():
         runs.append(np.array(seq))
     assert np.array_equal(*runs), "non-deterministic under a fixed seed"
     assert np.isfinite(runs[0]).all() and runs[0].shape[1] == OBS_DIM
+    # gym's Env.spec stays an EnvSpec slot (wrappers read it); the MuJoCo spec lives on mj_spec.
+    assert not isinstance(env.spec, mujoco.MjSpec) and isinstance(env.mj_spec, mujoco.MjSpec)
+    # After a step, people's geoms are where the detector math puts them (rays see this tick).
+    for w, mid in zip(env.workers, env.worker_mocap):
+        body = int(np.nonzero(env.model.body_mocapid == mid)[0][0])
+        assert np.allclose(env.data.xpos[body][:2], w["pos"]), "geoms lag the mocap actors"
 
     # Watchdog: every command lost while walking -> velocity zeroes near STALE_S, then the
     # kPrepare tier locks the loco out until walk_ready_t even though commands resume.

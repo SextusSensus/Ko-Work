@@ -45,6 +45,7 @@ def main():
         model, out = PPO.load(a.eval, device="cpu"), pathlib.Path(a.eval).parent
     else:
         out = HERE / "runs" / f"{a.task}_{time.strftime('%Y%m%d_%H%M%S')}"
+        out.mkdir(parents=True, exist_ok=True)
         venv = make_vec_env(K1WarehouseEnv, n_envs=a.envs, seed=0, vec_env_cls=SubprocVecEnv,
                             env_kwargs=env_kwargs)
         # ponytail: SB3 defaults + a longer horizon; tune once there is a learning curve to tune against.
@@ -58,7 +59,6 @@ def main():
     report = dict(task=a.task, world=(world or {}).get("name", "generated (new map per episode)"),
                   policy=evaluate(env, lambda o: model.predict(o, deterministic=True)[0], a.episodes),
                   baseline=evaluate(env, heuristic, a.episodes))
-    out.mkdir(parents=True, exist_ok=True)
     (out / "eval.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
 

@@ -124,7 +124,7 @@ Every reset re-randomizes these:
 | Task | Success | 95% CI |
 |---|---|---|
 | pick (2 stations) | 0.80 | 0.63–0.91 |
-| follow | 0.63 | 0.46–0.78 |
+| follow | 0.57 | 0.39–0.73 |
 
 A trained policy has to beat these on the same seeds (`train.py` reports both). The next step
 after that is shadow mode on the robot, not driving.

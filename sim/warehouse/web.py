@@ -305,7 +305,7 @@ class SimThread(threading.Thread):
         scn = self.scenario if kind in ("scenario", "mjcf") else rec.scenario
         ctype, suffix = EXPORTS[kind]
         name = f"k1_{scn['task']}_seed{scn['seed']}{suffix}"
-        if kind == "mjcf":                      # needs env.spec: here
+        if kind == "mjcf":                      # needs env.mj_spec: here
             return sim_io.export_mjcf_zip(self.env), ctype, name
         if kind == "scenario":
             with tempfile.TemporaryDirectory() as td:

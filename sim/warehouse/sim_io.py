@@ -529,11 +529,11 @@ def export_mjcf(env, out_dir):
     moved them. A plain viewer opens at qpos0 (robot and actors at the origin) until that key is
     loaded. Verified to reload, and the key to place the robot, before returning."""
     import xml.etree.ElementTree as ET
-    if env.spec is None:
+    if env.mj_spec is None:
         raise ValueError("env has no scene yet: call env.reset() first")
     out = pathlib.Path(out_dir)
     (out / "meshes").mkdir(parents=True, exist_ok=True)
-    root = ET.fromstring(env.spec.to_xml())
+    root = ET.fromstring(env.mj_spec.to_xml())
     comp = root.find("compiler")
     meshdir = pathlib.Path(comp.get("meshdir", "") if comp is not None else "")
     seen = {}
