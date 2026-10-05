@@ -71,3 +71,6 @@ autotune/
 .venv-analysis/
 .venv-npu/
 __pycache__/
+
+# MuJoCo warning log (written to the cwd)
+MUJOCO_LOG.TXT
