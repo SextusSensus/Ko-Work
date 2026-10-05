@@ -1,0 +1,16 @@
+# K1 warehouse simulator tool (sim/warehouse/). Windows-native or Linux, Python 3.10-3.13.
+# CPU is fine: MLP PPO is CPU-bound in SB3; install a CUDA torch only if you swap in a big net.
+# Versions verified 2026-10-05 (mujoco 3.3+ needed for MjSpec.attach).
+
+mujoco>=3.3,<4
+gymnasium>=1.0,<2
+stable-baselines3>=2.4,<3    # pulls torch; on an existing CUDA torch env it reuses that
+numpy>=2.0,<3
+scipy>=1.11                  # router: sparse-graph Dijkstra over the occupancy grid
+pillow>=10                   # web UI video + recorder frames (JPEG)
+
+# Optional exporters (imported lazily; the tool says what to install when one is missing):
+pyarrow>=17,<22              # LeRobot RAW export (parquet)
+imageio>=2.34                # LeRobot RAW export (mp4)
+imageio-ffmpeg==0.6.0
+rerun-sdk>=0.33,<0.34        # .rrd export -- same pin as requirements-p7.txt (robot .rrd compat)
