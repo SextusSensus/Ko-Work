@@ -24,7 +24,7 @@ import mujoco
 from PIL import Image
 
 import record, sim_io
-from k1_warehouse import (CTRL_DT, I_SCAN, I_SEEN, I_STALE, I_STAND, N_RAYS, RACK_GROUPS, RAY_FOV, RAY_MAX,
+from k1_warehouse import (CTRL_DT, I_SCAN, I_SEEN, I_STALE, I_STAND, N_RAYS, PLAN_MIN_H, RACK_GROUPS, RAY_FOV, RAY_MAX,
                           K1WarehouseEnv, heuristic, render_option)
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -336,13 +336,7 @@ class SimThread(threading.Thread):
             # films the back of the wall (or, just grazing over it, hides the robot's legs).
             cam.lookat[:] = [x, y, 0.6]
             cam.azimuth, cam.distance = math.degrees(yaw), 3.0
-            for el in (-20, -35, -50, -65, -80):
-                e = math.radians(el)
-                back = np.array([-math.cos(e) * math.cos(yaw), -math.cos(e) * math.sin(yaw), -math.sin(e)])
-                if not any(0 <= mujoco.mj_ray(env.model, d, p, back, RACK_GROUPS, 1, -1, np.zeros(1, np.int32)) < 3.0
-                           for p in (cam.lookat, np.array([x, y, 0.1]))):
-                    break
-            cam.elevation = el
+            cam.elevation = chase_elevation(env.model, d, x, y, yaw)
         else:                                   # head: from the RealSense link, along the robot's heading
             el = record.HEAD_PITCH_DEG
             fwd = np.array([math.cos(math.radians(el)) * math.cos(yaw), math.cos(math.radians(el)) * math.sin(yaw),
@@ -567,6 +561,19 @@ class Server6(Server):
     address_family = socket.AF_INET6
 
 
+def chase_elevation(m, d, x, y, yaw, dist=3.0):
+    """Chase camera tilt: the shallowest of -20..-80 deg with no wall or rack between camera and robot,
+    checked from the robot's middle (0.6 m) and from just above its knees (PLAN_MIN_H). Not from the
+    floor: a ray from there starts inside or under a 0.14 m pallet and would always tilt to top-down."""
+    for el in (-20, -35, -50, -65, -80):
+        e = math.radians(el)
+        back = np.array([-math.cos(e) * math.cos(yaw), -math.cos(e) * math.sin(yaw), -math.sin(e)])
+        if not any(0 <= mujoco.mj_ray(m, d, np.array([x, y, z]), back, RACK_GROUPS, 1, -1, np.zeros(1, np.int32)) < dist
+                   for z in (0.6, PLAN_MIN_H)):
+            return el
+    return el
+
+
 def make_server(host="127.0.0.1", port=8765, model=None, data_root=None):
     """Bind the HTTP server and start the sim (first episode ready on return); caller runs serve_forever."""
     bind = host.strip("[]")
@@ -593,6 +600,20 @@ def make_server(host="127.0.0.1", port=8765, model=None, data_root=None):
 def selftest():
     import http.client, itertools, urllib.error, urllib.request, zipfile
     global REC_MAX_STEPS
+
+    # Chase camera: the robot over a pallet's edge keeps the shallow view (a floor-level ray started
+    # inside the pallet and slammed it top-down); a rack behind the robot does tilt it.
+    from k1_warehouse import _static
+    def tilt(kind, x, half, z):
+        w = {"name": "t", "size": [12, 6], "stations": [], "spawn": [8, 2, 9, 4], "forklift_lane": None,
+             "statics": [_static(kind, [x, 3, z], half)]}
+        env = K1WarehouseEnv(world=w, n_workers=(0, 0), n_boxes=(0, 0))
+        env.reset(seed=0)
+        env.data.qpos[:3] = [6.0, 3.0, 0.0]              # facing +x
+        mujoco.mj_forward(env.model, env.data)
+        return chase_elevation(env.model, env.data, 6.0, 3.0, 0.0)
+    assert tilt("pallet", 5.85, [0.5, 0.25, 0.07], 0.07) == -20, "a pallet under the robot must not tilt the chase camera"
+    assert tilt("rack", 4.5, [0.3, 1.0, 1.0], 1.0) < -20, "a rack 1.5 m behind the robot must tilt the chase camera"
 
     with tempfile.TemporaryDirectory() as td:
         srv = make_server("127.0.0.1", 0, data_root=pathlib.Path(td))
