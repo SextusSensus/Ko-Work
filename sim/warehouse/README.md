@@ -14,7 +14,7 @@ python sim/warehouse/web.py                  # control UI on http://127.0.0.1:87
 python sim/warehouse/train.py --task follow --steps 2000000
 ```
 
-Every module has a self-test: `python sim/warehouse/<k1_warehouse|sim_io|record|web>.py selftest`.
+Every module has a self-test: `python sim/warehouse/<k1_warehouse|sim_io|record|web|assets>.py selftest`.
 
 ## Web control UI
 
@@ -24,7 +24,7 @@ Every module has a self-test: `python sim/warehouse/<k1_warehouse|sim_io|record|
 |---|---|
 | Episode | Task (pick/follow), seed, Reset, Next, Replay, Pause, Step (one 0.1 s tick), speed 0.5×–8× |
 | Driver | Autopilot (the scripted baseline), Manual teleop (D-pad or WASD/arrow keys), Policy (needs `--model runs/x/model.zip`) |
-| Camera | Chase, Top, Head (robot point of view) |
+| Camera | Chase, Top, Head (robot point of view); Sensor view toggle (what the depth rays, detector and planner see) |
 | Inject fault | Link stall 0.5 s (watchdog zero tier), link stall 1.5 s (prepare tier), swap target ID (follow) |
 | Import | Upload a scenario JSON, or load a Local Map domain as the map |
 | Export | Scenario JSON, scene MJCF zip, episode JSONL, Rerun `.rrd`, LeRobot zip |
@@ -37,6 +37,62 @@ which covers a closed tab or a dropped connection. Manual driving never runs fas
 The server binds 127.0.0.1. `--host 0.0.0.0` exposes it to the LAN. That is an explicit opt-in:
 anyone on the network can then drive the sim. They cannot drive the robot.
 
+## Visuals
+
+The scene is drawn in two layers, kept apart by MuJoCo geom group:
+
+| Group | Contents | Used by |
+|---|---|---|
+| 0 | Physics floor; walls, racks, pallets, obstacles as plain boxes (the world statics) | Depth rays, physics. The route planner reads the same statics |
+| 1 | Workers (capsules), forklift (a block), loose boxes | Depth rays, detector occlusion, physics |
+| 2 | The K1 and its tote | Physics |
+| 3 | Visual layer (`assets.py`): stocked steel shelving, pallets, people in hi-vis, a forklift, concrete floor, floor markings (rack rows, forklift lane, dock), plastered walls and obstacles, a dock door, lights | Rendering only |
+| 4 | Visual layer parts that ride on the robot (the tote's carrier, bracket and rim). Hidden with the robot in the head camera | Rendering only |
+
+Every visual-layer geom has `contype = conaffinity = 0` and mass 0. It is built from the scenario
+data, never from `env.rng`, and is not part of the scenario JSON. It cannot change what the robot
+senses or how it moves. A dressed person rides a massless mocap twin of its worker body
+(`worker<k>_vis`) that turns to face where they walk; the proxy capsule itself never rotates.
+The `k1_warehouse` self-test checks that observations, rewards, infos and `qpos` are bit-identical
+with visuals on and off, and that no depth ray hits a visual geom.
+
+- **Training stays lean.** `K1WarehouseEnv(visuals=False)` is the default, and `train.py` uses it.
+  The web UI, `record.py` frames and `k1_warehouse.py view` use `visuals=True`. On a generated
+  hall a dressed reset takes about 0.13 s against 0.03–0.05 s. A dressed step costs about 0.26 ms
+  more (+17%), and about 0.5 ms more (+25%) on a 120-rack imported site. `mj_ray` and
+  `mj_kinematics` loop over every geom, so the render-only ones cost time too. `visuals=False`
+  steps at the same speed as before the visual layer existed.
+- **Imported maps share meshes.** Each mesh size is its own copy of the vertices. A rack is drawn
+  at an earlier rack's shelving size when that size fits inside it and fills 90% of it on every
+  axis. A loose box reuses an earlier box's carton when the sizes are within 5%. Generated halls
+  use one rack size, so their shelving fits the proxy to 1%.
+- **One scene option for every renderer.** `k1_warehouse.render_option(head, sensor)` gives:
+  - Detailed (default): groups 2, 3 and 4.
+  - Sensor view: groups 0–2, the boxes and capsules the robot's sensors and planner work on. This
+    is the **Sensor view** button in the UI, and the geom-group toggles in `view`.
+  - `head=True` also hides the robot's own body and group 4.
+- **Recordings.** Head-camera RGB is rendered from the dressed scene. Depth (`/camera/depth`) is
+  rendered from the proxies, the same boxes the ray scan and planner see, so it is the same
+  with visuals on or off.
+- **MJCF bundles** include the visual layer. MuJoCo `simulate` opens them showing groups 0–2. For
+  the dressed view, turn groups 3 and 4 on and groups 0 and 1 off.
+
+Assets come from the repo's CC0 library, `desktop/localmap-viewer/assets/library/` (licences in
+`desktop/localmap-viewer/assets/ATTRIBUTION.md`):
+
+| Used for | Asset | Source | Licence |
+|---|---|---|---|
+| Shelving | `warehouse/steel_frame_shelves_01` | Poly Haven | CC0 |
+| Shelf stock, loose boxes | `warehouse/cardboard_box_01` | Poly Haven | CC0 |
+| Shelf stock | `warehouse/plastic_crate_01`, `warehouse/plastic_crate_03`, `warehouse/wooden_crate_01` | Poly Haven | CC0 |
+| Dock door | `warehouse/rollershutter_door` | Poly Haven | CC0 |
+| Floor | `materials/concrete_color.jpg` | ambientCG Concrete034 | CC0 |
+| Walls | `materials/plaster_diff.jpg` | Poly Haven Painted Plaster Wall | CC0 |
+
+People, the forklift, pallets, floor markings and the tote's carrier are built from MuJoCo primitives. MuJoCo cannot read
+glTF, so `assets.py` has a small loader (json + numpy only). It converts textures to PNG once into
+`sim/warehouse/.asset_cache/`, which is git-ignored.
+
 ## Import and export
 
 | Direction | Format | Where |
@@ -44,7 +100,7 @@ anyone on the network can then drive the sim. They cannot drive the robot.
 | ↔ | Scenario JSON (`k1sim.scenario` v1). The exact world and episode; replays bit for bit | UI, `sim_io.py`, `env.reset(options={"scenario": ...})` |
 | ← | Local Map domain. A robot-mapped site becomes a sim world | UI, `sim_io.py import-localmap`, `train.py --localmap` |
 | → | Local Map domain. A sim world opens in the Local Map viewer | `sim_io.py export-localmap` |
-| → | MJCF bundle (`scene.xml` + meshes). Opens in MuJoCo `simulate`, Isaac Lab, etc. | UI, `sim_io.py export-mjcf` |
+| → | MJCF bundle (`scene.xml` + meshes + textures). Opens in MuJoCo `simulate`, Isaac Lab, etc. | UI, `sim_io.py export-mjcf` |
 | → | Episode JSONL. Scenario header plus one line per step; header + actions replay | UI, `record.py dataset --format jsonl` |
 | → | Rerun `.rrd`. Uses the robot's entity paths and timelines | UI, `record.py dataset --format rrd` |
 | → | LeRobot RAW. TRAIN_CONTRACT `observation.state[7]` / `action[2]` + head-camera mp4 | UI, `record.py dataset --format lerobot` |

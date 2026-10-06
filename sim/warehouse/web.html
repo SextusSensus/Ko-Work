@@ -77,6 +77,7 @@ select, input[type="number"] { background: var(--panel-2); border: 1px solid var
 .seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
 .seg button:last-child { border-radius: 0 6px 6px 0; }
 .seg button:focus-visible { position: relative; z-index: 1; }
+#view { margin-left: 8px; }
 
 .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
 .row + .row { margin-top: 8px; }
@@ -134,7 +135,7 @@ canvas { display: block; width: 100%; height: 180px; }
   <section class="stage" aria-label="Simulator view">
     <div class="video">
       <img id="video" src="/stream" alt="Live simulator camera view">
-      <div class="overlay" aria-hidden="true"><span class="tag" id="cam-tag">Chase</span><span class="tag num" id="speed-tag">1x</span></div>
+      <div class="overlay" aria-hidden="true"><span class="tag" id="cam-tag">Chase</span><span class="tag" id="view-tag">Detailed</span><span class="tag num" id="speed-tag">1x</span></div>
       <div class="banner" id="banner" role="status" aria-live="polite" hidden><strong id="banner-title"></strong><span id="banner-text"></span></div>
     </div>
     <div class="toolbar">
@@ -143,7 +144,8 @@ canvas { display: block; width: 100%; height: 180px; }
           <button data-camera="chase" aria-label="Chase camera, behind the robot">Chase</button>
           <button data-camera="top" aria-label="Top camera, whole map">Top</button>
           <button data-camera="head" aria-label="Head camera, robot point of view">Head</button>
-        </span></div>
+        </span>
+        <button id="view" aria-pressed="false" title="Show the boxes and capsules the depth rays, person detector and planner see, instead of the dressed scene">Sensor view</button></div>
       <div><span class="lbl" id="speed-lbl">Speed</span>
         <span class="seg" role="group" aria-labelledby="speed-lbl">
           <button data-speed="0.5" title="Half speed">0.5x</button>
@@ -253,7 +255,8 @@ canvas { display: block; width: 100%; height: 180px; }
 'use strict';
 const $ = (id) => document.getElementById(id);
 const all = (sel) => document.querySelectorAll(sel);
-const NAMES = { auto: 'Autopilot', manual: 'Manual', policy: 'Policy', chase: 'Chase', top: 'Top', head: 'Head', pick: 'Pick', follow: 'Follow' };
+const NAMES = { auto: 'Autopilot', manual: 'Manual', policy: 'Policy', chase: 'Chase', top: 'Top', head: 'Head', pick: 'Pick', follow: 'Follow',
+  detailed: 'Detailed', sensor: 'Sensor view' };
 const COUNTERS = [['collisions', 'Collisions', 'warn'], ['box_hits', 'Box hits', 'warn'], ['human_contacts', 'Human contacts', 'bad'],
   ['falls', 'Falls', 'bad'], ['stale_events', 'Stale 0.4 s', 'warn'], ['prep_events', 'Prepare 1 s', 'warn'], ['id_swaps', 'ID swaps', 'warn']];
 let S = null, edited = false, lastErr = null;
@@ -306,10 +309,12 @@ function render(st) {
   setText($('h-map'), st.map || 'random each reset');
   setText($('h-rec'), String(st.rec_steps));
   setText($('cam-tag'), NAMES[st.camera]);
+  setText($('view-tag'), NAMES[st.view]);
   setText($('speed-tag'), `${st.speed}x`);
   if (!edited) { $('task').value = st.task; $('seed').value = st.seed; }
 
   for (const b of all('[data-camera]')) b.setAttribute('aria-pressed', b.dataset.camera === st.camera);
+  $('view').setAttribute('aria-pressed', st.view === 'sensor');
   for (const b of all('[data-speed]')) b.setAttribute('aria-pressed', Number(b.dataset.speed) === st.speed);
   for (const b of all('[data-driver]')) b.setAttribute('aria-pressed', b.dataset.driver === st.driver);
   const pol = document.querySelector('[data-driver="policy"]');
@@ -443,6 +448,7 @@ $('replay').addEventListener('click', () => episode('replay'));
 $('pause').addEventListener('click', () => cmd(S && S.paused ? 'resume' : 'pause'));
 $('step').addEventListener('click', () => cmd('step'));
 for (const b of all('[data-camera]')) b.addEventListener('click', () => cmd('camera', { value: b.dataset.camera }));
+$('view').addEventListener('click', () => cmd('view', { value: S && S.view === 'sensor' ? 'detailed' : 'sensor' }));
 for (const b of all('[data-speed]')) b.addEventListener('click', () => cmd('speed', { value: Number(b.dataset.speed) }));
 for (const b of all('[data-driver]')) b.addEventListener('click', async () => {
   if (b.dataset.driver === 'policy') msg('Loading policy...');

@@ -74,3 +74,5 @@ __pycache__/
 
 # MuJoCo warning log (written to the cwd)
 MUJOCO_LOG.TXT
+# Sim visual layer: JPG -> PNG texture conversions (regenerated on demand by sim/warehouse/assets.py)
+sim/warehouse/.asset_cache/

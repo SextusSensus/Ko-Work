@@ -4,8 +4,8 @@
                  straight in), save_scenario / load_scenario
   Local Map      localmap_to_world: a robot-mapped site (desktop/localmap-data/domains/<id>) -> sim
                  world; world_to_localmap: the inverse, so a sim world opens in the Local Map viewer
-  MJCF           export_mjcf / export_mjcf_zip: the built scene as scene.xml + meshes/, loadable by
-                 any MuJoCo with no repo checkout
+  MJCF           export_mjcf / export_mjcf_zip: the built scene as scene.xml + meshes/ + textures/,
+                 loadable by any MuJoCo with no repo checkout
 
 Local Map conventions (from desktop/localmap-viewer/{viewer,asset-placer}.js and
 eval/localmap_asset_placer.py):
@@ -523,8 +523,9 @@ def world_to_localmap(world, domain_id, data_root=DEFAULT_DATA_ROOT, overwrite=F
 
 # ---------------------------------------------------------------------- MJCF
 def export_mjcf(env, out_dir):
-    """The env's scene as a portable MJCF bundle: out_dir/scene.xml + out_dir/meshes/ (only the
-    meshes it uses). This is the scene as BUILT at the last reset: keyframe "start" holds the
+    """The env's scene as a portable MJCF bundle: out_dir/scene.xml + out_dir/meshes/ +
+    out_dir/textures/ (only the files it uses; the visual layer's own meshes are inline in
+    scene.xml). This is the scene as BUILT at the last reset: keyframe "start" holds the
     episode's start state (robot pose, workers, forklift, loose boxes), not wherever the episode has
     moved them. A plain viewer opens at qpos0 (robot and actors at the origin) until that key is
     loaded. Verified to reload, and the key to place the robot, before returning."""
@@ -532,27 +533,32 @@ def export_mjcf(env, out_dir):
     if env.mj_spec is None:
         raise ValueError("env has no scene yet: call env.reset() first")
     out = pathlib.Path(out_dir)
-    (out / "meshes").mkdir(parents=True, exist_ok=True)
     root = ET.fromstring(env.mj_spec.to_xml())
     comp = root.find("compiler")
-    meshdir = pathlib.Path(comp.get("meshdir", "") if comp is not None else "")
-    seen = {}
-    for m in root.iter("mesh"):
-        if m.get("file"):
-            src = meshdir / m.get("file")
-            if seen.setdefault(src.name, src) != src:
-                raise ValueError(f"two meshes named {src.name} from different folders")
-            shutil.copyfile(src, out / "meshes" / src.name)
-            m.set("file", "meshes/" + src.name)
-    if comp is not None:
-        comp.set("meshdir", ".")                                  # relative to scene.xml
+    for tag, attr, sub in (("mesh", "meshdir", "meshes"), ("texture", "texturedir", "textures")):
+        (out / sub).mkdir(parents=True, exist_ok=True)
+        base = pathlib.Path(comp.get(attr, "") if comp is not None else "")
+        seen = {}
+        for el in root.iter(tag):
+            if el.get("file"):
+                src = base / el.get("file")
+                if seen.setdefault(src.name, src) != src:
+                    raise ValueError(f"two {tag}s named {src.name} from different folders")
+                shutil.copyfile(src, out / sub / src.name)
+                el.set("file", f"{sub}/{src.name}")
+        if comp is not None:
+            comp.set(attr, ".")                                   # relative to scene.xml
 
     # The spec only has build-time poses (robot and actors at the origin); reset() places them in
     # env.data, which has moved on since. So the start state goes in as a keyframe, from the scenario.
     ep, em = env.scenario["episode"], env.model
     qpos = em.qpos0.copy()                                        # loose boxes: qpos0 is their start pose
     qpos[:3] = ep["start"]
-    mpos, mquat = np.zeros((em.nmocap, 3)), np.tile([1.0, 0.0, 0.0, 0.0], (em.nmocap, 1))
+    # Mocap bodies start as built (a dressed worker's twin is built at the worker's start pose),
+    # then the actors go where reset() puts them.
+    mb = np.nonzero(em.body_mocapid >= 0)[0]
+    mpos, mquat = np.zeros((em.nmocap, 3)), np.zeros((em.nmocap, 4))
+    mpos[em.body_mocapid[mb]], mquat[em.body_mocapid[mb]] = em.body_pos[mb], em.body_quat[mb]
     for k, w in enumerate(ep["workers"]):                         # as _place_workers / _place_forklift
         mpos[em.body_mocapid[em.body(f"worker{k}").id]] = [w["pos"][0], w["pos"][1], 0.85]
     if ep["forklift"]:
@@ -572,9 +578,9 @@ def export_mjcf(env, out_dir):
     path = out / "scene.xml"
     path.write_text(ET.tostring(root, encoding="unicode"), encoding="utf-8")
     m = mujoco.MjModel.from_xml_path(str(path))
-    if (m.nbody, m.ngeom) != (em.nbody, em.ngeom):
-        raise RuntimeError(f"exported scene reloads as {m.nbody} bodies / {m.ngeom} geoms, "
-                           f"expected {em.nbody} / {em.ngeom}")
+    if (m.nbody, m.ngeom, m.nmesh, m.ntex) != (em.nbody, em.ngeom, em.nmesh, em.ntex):
+        raise RuntimeError(f"exported scene reloads as {m.nbody} bodies / {m.ngeom} geoms / {m.nmesh} meshes / "
+                           f"{m.ntex} textures, expected {em.nbody} / {em.ngeom} / {em.nmesh} / {em.ntex}")
     d = mujoco.MjData(m)
     mujoco.mj_resetDataKeyframe(m, d, m.key("start").id)
     mujoco.mj_forward(m, d)
@@ -585,7 +591,7 @@ def export_mjcf(env, out_dir):
 
 
 def export_mjcf_zip(env):
-    """export_mjcf as zip bytes (scene.xml + meshes/ at the archive root)."""
+    """export_mjcf as zip bytes (scene.xml + meshes/ + textures/ at the archive root)."""
     with tempfile.TemporaryDirectory() as td:
         d = pathlib.Path(td) / "mjcf"
         export_mjcf(env, d)
@@ -798,8 +804,9 @@ def selftest():
         assert racks == sorted((round(s["pos"][0], 6), round(s["pos"][1], 6)) for s in gen["statics"] if s["kind"] == "rack")
         K1WarehouseEnv(world=back).reset(seed=1)                  # and it runs
 
-        # 5. MJCF bundle: only the meshes in use, reloads the same, export does not perturb the episode.
-        env = K1WarehouseEnv(task="follow")
+        # 5. MJCF bundle of a dressed scene: only the mesh and texture files in use (the visual
+        #    layer's own meshes inline), reloads the same, export does not perturb the episode.
+        env = K1WarehouseEnv(task="follow", visuals=True)
         ref = _rollout(env, 20, seed=2)
         o, _ = env.reset(seed=2)
         seq, xpos0 = [o], env.data.xpos.copy()
@@ -809,19 +816,28 @@ def selftest():
                 blob = export_mjcf_zip(env)
             seq.append(env.step(heuristic(seq[-1]))[0])
         assert np.array_equal(ref, np.array(seq)), "export perturbed the episode"
-        meshes = list((root / "mjcf/meshes").iterdir())
-        assert len(meshes) == env.model.nmesh and "meshdir=\".\"" in path.read_text(), len(meshes)
+        files = {t: sorted({pathlib.Path(x.file).name for x in getattr(env.mj_spec, t) if x.file})
+                 for t in ("meshes", "textures")}
+        assert files["textures"] and len(files["meshes"]) < env.model.nmesh, files  # PNGs + inline user meshes
+        for t, names in files.items():
+            assert sorted(p.name for p in (root / "mjcf" / t).iterdir()) == names, t
+        assert "meshdir=\".\"" in path.read_text() and "texturedir=\".\"" in path.read_text()
         with zipfile.ZipFile(io.BytesIO(blob)) as z:
-            assert "scene.xml" in z.namelist() and len([n for n in z.namelist() if not n.endswith("/")]) == 1 + env.model.nmesh
+            assert sorted(n for n in z.namelist() if not n.endswith("/")) == \
+                sorted(["scene.xml"] + [f"{t}/{n}" for t in ("meshes", "textures") for n in files[t]]), z.namelist()
             z.extractall(root / "unzipped")
+        xml = (root / "unzipped/scene.xml").read_text()
+        assert ".asset_cache" not in xml and str(REPO) not in xml and REPO.as_posix() not in xml, "absolute path in the bundle"
         m = mujoco.MjModel.from_xml_path(str(root / "unzipped/scene.xml"))
-        assert (m.nbody, m.ngeom, m.nmesh) == (env.model.nbody, env.model.ngeom, env.model.nmesh)
+        em = env.model
+        assert (m.nbody, m.ngeom, m.nmesh, m.ntex) == (em.nbody, em.ngeom, em.nmesh, em.ntex)
+        assert np.array_equal(m.geom_group, em.geom_group) and np.array_equal(m.tex_data, em.tex_data)
         # Keyframe "start" is the episode's start state: every body where reset() put it (to the
         # ~1e-7 m that to_xml's number formatting keeps of the K1 link offsets).
         d = mujoco.MjData(m)
         mujoco.mj_resetDataKeyframe(m, d, m.key("start").id)
         mujoco.mj_forward(m, d)
-        assert env.forklift is not None and m.nmocap == 2, "want the forklift and a worker in the export test"
+        assert env.forklift is not None and m.nmocap == 3, "want the forklift and a (dressed) worker in the export test"
         assert np.allclose(d.xpos, xpos0, rtol=0, atol=1e-6), np.abs(d.xpos - xpos0).max()
 
     assert (DEFAULT_DATA_ROOT / "domains.json").read_bytes() == repo_reg, "selftest touched the repo's Local Map data"
@@ -845,7 +861,7 @@ def main():
     p.add_argument("domain")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
-    p = sub.add_parser("export-mjcf", help="scenario -> scene.xml + meshes/")
+    p = sub.add_parser("export-mjcf", help="scenario -> scene.xml + meshes/ + textures/")
     p.add_argument("scenario")
     p.add_argument("out_dir")
     a = ap.parse_args()
@@ -870,7 +886,7 @@ def _cli(a):
         print("wrote", world_to_localmap(load_scenario(a.scenario)["world"], a.domain, a.data_root, a.overwrite))
     else:
         scn = load_scenario(a.scenario)
-        env = K1WarehouseEnv(task=scn["task"])
+        env = K1WarehouseEnv(task=scn["task"], visuals=True)
         env.reset(options={"scenario": scn})
         print("wrote", export_mjcf(env, a.out_dir))
 

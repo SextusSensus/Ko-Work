@@ -24,10 +24,12 @@ import mujoco
 from PIL import Image
 
 import record, sim_io
-from k1_warehouse import CTRL_DT, I_SCAN, I_SEEN, I_STALE, I_STAND, N_RAYS, RAY_FOV, RAY_MAX, K1WarehouseEnv, heuristic
+from k1_warehouse import (CTRL_DT, I_SCAN, I_SEEN, I_STALE, I_STAND, N_RAYS, RACK_GROUPS, RAY_FOV, RAY_MAX,
+                          K1WarehouseEnv, heuristic, render_option)
 
 HERE = pathlib.Path(__file__).resolve().parent
 TASKS, DRIVERS, CAMERAS = ("pick", "follow"), ("auto", "manual", "policy"), ("chase", "top", "head")
+VIEWS = ("detailed", "sensor")        # sensor: the proxies the depth rays, detector and planner see
 SPEEDS, FAULTS = (0.5, 1, 2, 4, 8), ("stall05", "stall15", "swap")
 EXPORTS = {"scenario": ("application/json", ".scenario.json"), "mjcf": ("application/zip", "_mjcf.zip"),
            "jsonl": ("application/x-ndjson", ".jsonl"), "rrd": ("application/octet-stream", ".rrd"),
@@ -69,12 +71,12 @@ class SimThread(threading.Thread):
         # Everything below is touched by this thread only.
         self.task, self.seed, self.world = "pick", 0, None
         self.env = self.scenario = self.obs = self.renderer = self.vd = self.rec = self.last_rec = None
-        self.driver, self.camera, self.speed = "auto", "chase", 1.0
+        self.driver, self.camera, self.view, self.speed = "auto", "chase", "detailed", 1.0
         self.paused = self.done = False
         self.outcome = self.error = None
         self.manual, self.manual_t, self.action = np.zeros(2), 0.0, np.zeros(2)
         self.drive_seq = -1                     # newest drive seq applied; never reset, so late drives stay dropped
-        self.cam, self.opt = mujoco.MjvCamera(), mujoco.MjvOption()
+        self.cam = mujoco.MjvCamera()
         self.next_step = self.next_frame = 0.0
         self.dirty = True                       # re-render even while paused
 
@@ -192,6 +194,8 @@ class SimThread(threading.Thread):
             self.speed, self.next_step = a, time.monotonic()
         elif op == "camera":
             self.camera = a
+        elif op == "view":
+            self.view = a
         elif op == "driver":
             if a == "policy":
                 self._load_policy()
@@ -205,7 +209,7 @@ class SimThread(threading.Thread):
         """Reset onto a (task, world) and start running. The env is reused unless either changed."""
         env = self.env
         if env is None or env.task != task or env.fixed_world is not world:
-            env = K1WarehouseEnv(task=task, world=world)
+            env = K1WarehouseEnv(task=task, world=world, visuals=True)
         try:
             obs, _ = env.reset(seed=seed, options={"scenario": scenario} if scenario else None)
         except Exception:
@@ -327,16 +331,25 @@ class SimThread(threading.Thread):
             cam.azimuth, cam.elevation = 90, -89.9
             cam.distance = 1.1 * max(env.W, env.L * VIDEO_H / VIDEO_W) / 2 / math.tan(math.radians(22.5))
         elif self.camera == "chase":
+            # 3 m behind the robot, tilted steeper until no wall or rack stands in between, from its
+            # middle and from its feet: robots spawn by the dock wall, and a level chase camera there
+            # films the back of the wall (or, just grazing over it, hides the robot's legs).
             cam.lookat[:] = [x, y, 0.6]
-            cam.azimuth, cam.elevation, cam.distance = math.degrees(yaw), -20, 3.0
+            cam.azimuth, cam.distance = math.degrees(yaw), 3.0
+            for el in (-20, -35, -50, -65, -80):
+                e = math.radians(el)
+                back = np.array([-math.cos(e) * math.cos(yaw), -math.cos(e) * math.sin(yaw), -math.sin(e)])
+                if not any(0 <= mujoco.mj_ray(env.model, d, p, back, RACK_GROUPS, 1, -1, np.zeros(1, np.int32)) < 3.0
+                           for p in (cam.lookat, np.array([x, y, 0.1]))):
+                    break
+            cam.elevation = el
         else:                                   # head: from the RealSense link, along the robot's heading
             el = record.HEAD_PITCH_DEG
             fwd = np.array([math.cos(math.radians(el)) * math.cos(yaw), math.cos(math.radians(el)) * math.sin(yaw),
                             math.sin(math.radians(el))])
             cam.lookat[:] = d.xpos[self.head] + fwd
             cam.azimuth, cam.elevation, cam.distance = math.degrees(yaw), el, 1.0
-        self.opt.geomgroup[2] = self.camera != "head"      # K1 + tote are geom group 2
-        self.renderer.update_scene(d, cam, self.opt)
+        self.renderer.update_scene(d, cam, render_option(head=self.camera == "head", sensor=self.view == "sensor"))
         if self.camera == "head":               # free cameras use fovy 45 deg: widen to the recorded head_rgb FOV
             k = math.tan(math.radians(record.HFOV_DEG) / 2) * VIDEO_H / VIDEO_W / math.tan(math.radians(env.model.vis.global_.fovy) / 2)
             for c in self.renderer.scene.camera:
@@ -354,7 +367,7 @@ class SimThread(threading.Thread):
         f3 = lambda v: [round(float(x), 3) for x in v]
         st = {"t": round(env.t, 2), "t_max": round(env.t_max, 1), "task": self.task, "seed": self.seed,
               "map": self.world["name"] if self.world else None, "driver": self.driver, "camera": self.camera,
-              "speed": self.speed, "paused": self.paused, "done": self.done, "outcome": self.outcome,
+              "view": self.view, "speed": self.speed, "paused": self.paused, "done": self.done, "outcome": self.outcome,
               "error": self.error, "policy": bool(self.model_path), "workers": len(env.workers),
               "stats": {k: int(v) for k, v in env.stats.items()}, "pose": f3(env._pose()),
               "flags": {"stale": bool(o[I_STALE]), "standing": bool(o[I_STAND]), "seen": bool(o[I_SEEN])},
@@ -408,8 +421,8 @@ def parse_cmd(body, data_root):
         return op, {"action": np.array([_num(body, "vx"), _num(body, "vyaw")]), "t": time.monotonic(), "seq": s}
     if op == "speed":
         return op, float(pick(SPEEDS))
-    if op in ("driver", "camera", "fault"):
-        return op, pick({"driver": DRIVERS, "camera": CAMERAS, "fault": FAULTS}[op])
+    if op in ("driver", "camera", "view", "fault"):
+        return op, pick({"driver": DRIVERS, "camera": CAMERAS, "view": VIEWS, "fault": FAULTS}[op])
     if op == "import_localmap":
         return "world", sim_io.localmap_to_world(body.get("domain"), data_root)   # it validates the id
     if op == "random_maps":
@@ -664,7 +677,8 @@ def selftest():
         assert abs(s2["t"] - s1["t"] - CTRL_DT) < 1e-6, (s1["t"], s2["t"])
 
         # One MJPEG part is a whole JPEG, and every camera draws a real picture after a reset (not
-        # the black frame a mis-ordered GL context close produces).
+        # the black frame a mis-ordered GL context close produces), in both views; the sensor view
+        # is a different picture (proxies instead of the visual layer).
         def frame():
             with urllib.request.urlopen(base + "/stream", timeout=30) as f:
                 assert f.headers.get_content_type() == "multipart/x-mixed-replace"
@@ -678,15 +692,29 @@ def selftest():
             return np.asarray(Image.open(io.BytesIO(jpg)))
         for c in CAMERAS:
             cmd("camera", value=c)
-            time.sleep(0.2)
-            px = frame()
-            assert px.shape == (VIDEO_H, VIDEO_W, 3) and px.std() > 10, (c, px.std())
+            px = []
+            for v in VIEWS:
+                assert cmd("view", value=v)["state"]["view"] == v
+                time.sleep(0.2)
+                px.append(frame())
+                assert px[-1].shape == (VIDEO_H, VIDEO_W, 3) and px[-1].std() > 10, (c, v, px[-1].std())
+            assert np.abs(px[0].astype(int) - px[1]).mean() > 3, (c, "sensor view draws the detailed picture")
+        cmd("view", 400, value="xray")
+        cmd("view", value="detailed")
         assert record.decode_rgb(srv.sim.rec.frames[-1]).std() > 10, "Recorder frames went black"
         assert state()["error"] is None, state()["error"]
         # Paused, so the head scene is settled: it covers what the recorded head_rgb covers.
         gc = srv.sim.renderer.scene.camera[0]
         hfov = 2 * math.degrees(math.atan(gc.frustum_top / gc.frustum_near * VIDEO_W / VIDEO_H))
         assert abs(hfov - record.HFOV_DEG) < 0.5, (hfov, record.HFOV_DEG)
+        # Chase camera 1 m from the dock wall: facing down the aisle it tilts up over the wall,
+        # facing the wall it stays level. (Paused: the sim thread is idle; nothing steps this pose.)
+        cmd("camera", value="chase")
+        for yaw, steep in ((0.0, True), (math.pi, False)):
+            srv.sim.env.data.qpos[:3] = [1.0, srv.sim.env.aisles_y[0], yaw]
+            cmd("view", value="detailed")                # any command re-renders
+            time.sleep(0.2)
+            assert (srv.sim.cam.elevation < -20) == steep, (yaw, srv.sim.cam.elevation)
 
         # Exports: scenario round-trips through the validator; episode + scene bundles download.
         code, h, b = req("/api/export/scenario")

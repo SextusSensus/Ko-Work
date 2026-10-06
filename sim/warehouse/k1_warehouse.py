@@ -40,6 +40,8 @@ import gymnasium as gym
 import mujoco
 import numpy as np
 
+import assets
+
 REPO = pathlib.Path(__file__).resolve().parents[2]
 K1_DIR = REPO / "desktop/localmap-viewer/assets/library/robot/k1"
 
@@ -334,14 +336,26 @@ def _yaw_quat(yaw):
     return [math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)]
 
 
+def render_option(head=False, sensor=False):
+    """Scene option for every renderer. Detailed (default): the visual layer (groups 3 and 4) and
+    the robot (group 2). sensor=True: the proxies the depth rays, detector and planner actually see
+    (groups 0/1) instead of the visual layer. head=True hides the robot's own body (head camera),
+    and with it group 4, the visual parts that ride on the robot."""
+    opt = mujoco.MjvOption()
+    opt.geomgroup[:5] = [sensor, sensor, not head, not sensor, not (sensor or head)]
+    return opt
+
+
 class K1WarehouseEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, task="pick", n_picks=2, n_workers=(1, 3), n_boxes=(0, 6), randomize=True, world=None):
+    def __init__(self, task="pick", n_picks=2, n_workers=(1, 3), n_boxes=(0, 6), randomize=True, world=None,
+                 visuals=False):
         """world=None generates a new warehouse every reset; pass a world dict (e.g. an imported
-        Local Map) to randomize episodes on that fixed map instead."""
+        Local Map) to randomize episodes on that fixed map instead. visuals=True adds the
+        render-only layer (assets.py) for UIs and exports; it never changes the episode."""
         assert task in ("pick", "follow")
-        self.task, self.n_picks, self.randomize = task, n_picks, randomize
+        self.task, self.n_picks, self.randomize, self.visuals = task, n_picks, randomize, visuals
         self.n_workers, self.n_boxes = n_workers, n_boxes
         self.fixed_world = world
         self._fixed_grid = _Grid(world) if world is not None else None
@@ -390,9 +404,9 @@ class K1WarehouseEnv(gym.Env):
             fb.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.6, 0.5, 1.0], rgba=[0.9, 0.6, 0.05, 1],
                         group=1, contype=1, conaffinity=2)
 
-        for b in list(world.get("boxes", [])) + ep["boxes"]:       # loose free bodies
+        for k, b in enumerate(list(world.get("boxes", [])) + ep["boxes"]):       # loose free bodies
             h = b["half"]
-            body = s.worldbody.add_body(pos=[b["pos"][0], b["pos"][1], h])
+            body = s.worldbody.add_body(name=f"box{k}", pos=[b["pos"][0], b["pos"][1], h])
             body.add_freejoint()
             body.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[h, h, h], mass=b["mass"],
                           rgba=[0.7, 0.5, 0.25, 1], group=1, contype=1, conaffinity=3)
@@ -404,6 +418,8 @@ class K1WarehouseEnv(gym.Env):
                         rgba=[0.9, 0.35, 0.1, 1] if w["role"] == "target" else [0.95, 0.8, 0.1, 1],
                         group=1, contype=1, conaffinity=2)
 
+        if self.visuals:
+            assets.add_visuals(s, world, ep)   # render-only geoms on top of the proxies above
         m = s.compile()
         d = mujoco.MjData(m)
         k1 = m.body("k1").id
@@ -413,6 +429,8 @@ class K1WarehouseEnv(gym.Env):
         nw = len(ep["workers"])
         self.worker_mocap = [m.body_mocapid[m.body(f"worker{k}").id] for k in range(nw)]
         self.worker_bodies = {m.body(f"worker{k}").id for k in range(nw)}
+        # Dressed people (render only) ride a twin mocap body each; see _place_workers.
+        self.worker_vis = [m.body_mocapid[m.body(f"worker{k}_vis").id] for k in range(nw)] if self.visuals else []
         self.forklift_body = m.body("forklift").id if ep["forklift"] else -1
 
     # ------------------------------------------------------------------ geometry helpers
@@ -555,8 +573,17 @@ class K1WarehouseEnv(gym.Env):
         return self._geo_dist((x, y), self._goal())
 
     def _place_workers(self):
+        d = self.data
         for w, mid in zip(self.workers, self.worker_mocap):
-            self.data.mocap_pos[mid] = [w["pos"][0], w["pos"][1], 0.85]
+            d.mocap_pos[mid] = [w["pos"][0], w["pos"][1], 0.85]
+        # The dressed person turns (at most 0.6 rad a tick) to face their last step, and keeps that
+        # heading while stood. Positions only, never env.rng; the proxy capsule is not rotated.
+        for w, mid in zip(self.workers, self.worker_vis):
+            dx, dy = w["pos"] - d.mocap_pos[mid][:2]
+            if dx * dx + dy * dy > 1e-10:
+                yaw = 2 * math.atan2(d.mocap_quat[mid][3], d.mocap_quat[mid][0])
+                d.mocap_quat[mid] = _yaw_quat(yaw + float(np.clip(wrap(math.atan2(dy, dx) - yaw), -0.6, 0.6)))
+            d.mocap_pos[mid] = [w["pos"][0], w["pos"][1], 0.85]
 
     def forklift_pos(self):
         f = self.forklift
@@ -883,6 +910,76 @@ def selftest():
         body = int(np.nonzero(env.model.body_mocapid == mid)[0][0])
         assert np.allclose(env.data.xpos[body][:2], w["pos"]), "geoms lag the mocap actors"
 
+    # Visual layer (assets.py) is render-only: same seed + actions -> bit-identical obs, rewards,
+    # infos and qpos with it on or off, on generated maps (both tasks) and on a Local-Map-style
+    # world; the proxies are untouched (the layer only adds massless mocap bodies, after them);
+    # every visual geom is group 3 or 4, contype/conaffinity 0, mass 0; no depth ray can hit one;
+    # and the dressed people stand where their proxies are, facing their last step.
+    lm = {"name": "local map fixture", "size": [10.0, 7.0], "stations": [], "spawn": [0.8, 0.8, 2.5, 6.2],
+          "forklift_lane": None, "boxes": [{"pos": [8.6, 3.5], "half": 0.2, "mass": 3.0}], "source": {"kind": "localmap"},
+          "statics": [_static("wall", [5, -0.05, 1], [5, 0.05, 1]), _static("wall", [5, 7.05, 1], [5, 0.05, 1]),
+                      _static("wall", [-0.05, 3.5, 1], [0.05, 3.5, 1]), _static("wall", [10.05, 3.5, 1], [0.05, 3.5, 1]),
+                      _static("obstacle", [4.0, 2.0, 0.75], [1.5, 0.1, 0.75]),           # an occupancy run
+                      _static("obstacle", [7.0, 5.0, 0.4], [0.3, 0.3, 0.4], 0.5),
+                      _static("rack", [6.5, 2.5, 1.0], [0.4, 1.6, 1.0], 0.3),            # long, along its y
+                      _static("pallet", [3.0, 5.0, 0.07], [0.6, 0.4, 0.07], 1.2)]}
+
+    def stream(env, seed):
+        """200 heuristic steps, 60 of them ramming loose box 0 from 0.8 m (contact with a dressed body)."""
+        o, _ = env.reset(seed=seed)
+        out, rammed = [o.tobytes()], False
+        for i in range(200):
+            if i == 100:
+                bx, by = env.data.xpos[env.model.body("box0").id][:2]
+                env.data.qpos[:3] = [bx - 0.8, by, 0.0]
+            o, r, term, trunc, info = env.step([1, 0] if 100 <= i < 160 else heuristic(o))
+            out.append((o.tobytes(), r, term, trunc, sorted(info.items()), env.data.qpos.tobytes()))
+            rammed |= 100 <= i < 160 and info["box_hits"] > 0
+            if term or trunc:
+                o, _ = env.reset(seed=seed + 1 + i)
+                out.append(o.tobytes())
+        assert rammed, "stream never touched a loose box"
+        return out
+
+    def proxies(m, nbody):
+        p = m.geom_group < 3
+        return [a[p].tobytes() for a in (m.geom_type, m.geom_bodyid, m.geom_size, m.geom_pos, m.geom_quat, m.geom_group,
+                                         m.geom_contype, m.geom_conaffinity, m.geom_friction)] + \
+               [a[:nbody].tobytes() for a in (m.body_mass, m.body_inertia, m.body_ipos, m.body_mocapid)]
+    gid = np.zeros(1, np.int32)
+    for kw in (dict(task="pick"), dict(task="follow"), dict(task="follow", world=lm)):
+        off, on = K1WarehouseEnv(**kw), K1WarehouseEnv(visuals=True, **kw)
+        assert stream(off, 1) == stream(on, 1), f"the visual layer changed the episode: {kw}"
+        for w, mid in zip(on.workers, on.worker_vis):   # dressed twins stand on the proxies...
+            q, (x, y, _) = on.data.mocap_quat[mid], on.data.mocap_pos[mid]
+            assert (x, y) == tuple(w["pos"]) and q[1] == q[2] == 0, (q, w["pos"], kw)
+        w, mid = on.workers[0], on.worker_vis[0]        # ...and turn to a new heading, 0.6 rad a tick
+        for _ in range(6):
+            w["pos"] = w["pos"] + [0.0, 0.05]
+            on._place_workers()
+        q = on.data.mocap_quat[mid]
+        assert abs(wrap(2 * math.atan2(q[3], q[0]) - math.pi / 2)) < 1e-9, (q, kw)
+        off.reset(seed=1)
+        on.reset(seed=1)
+        m, vis = on.model, on.model.geom_group >= 3
+        nb = off.model.nbody
+        assert proxies(off.model, nb) == proxies(m, nb) and not (off.model.geom_group >= 3).any(), kw
+        assert all(m.body(b).name.endswith("_vis") and m.body_mocapid[b] >= 0 and m.body_mass[b] == 0
+                   for b in range(nb, m.nbody)), kw
+        assert vis.sum() > 50 and not (m.geom_contype[vis] | m.geom_conaffinity[vis]).any(), kw
+        assert all(g.mass == 0 for g in on.mj_spec.geoms if g.group >= 3), kw
+        hit_vis = 0
+        for x in np.linspace(0.3, on.L - 0.3, 9):
+            for y in np.linspace(0.3, on.W - 0.3, 7):
+                for z in (0.05, 0.1, 0.8, 1.0, 1.6):
+                    for a in np.linspace(0, 2 * math.pi, 8, endpoint=False):
+                        p, v = np.array([x, y, z]), np.array([math.cos(a), math.sin(a), -0.2 * (z > 1)])
+                        mujoco.mj_ray(m, on.data, p, v, ENV_GROUPS, 1, -1, gid)
+                        assert gid[0] < 0 or m.geom_group[gid[0]] in (0, 1), ("depth ray hit a visual geom", kw)
+                        mujoco.mj_ray(m, on.data, p, v, None, 1, -1, gid)
+                        hit_vis += gid[0] >= 0 and m.geom_group[gid[0]] == 3
+        assert hit_vis > 100, hit_vis                   # the same rays, all groups on, do hit the layer
+
     # Watchdog: every command lost while walking -> velocity zeroes near STALE_S, then the
     # kPrepare tier locks the loco out until walk_ready_t even though commands resume.
     env = K1WarehouseEnv(n_workers=(0, 0), n_boxes=(0, 0))
@@ -1001,11 +1098,12 @@ def view(task, model_path, seed):
         from stable_baselines3 import PPO
         ppo = PPO.load(model_path, device="cpu")
         policy = lambda o: ppo.predict(o, deterministic=True)[0]
-    env = K1WarehouseEnv(task=task)
+    env = K1WarehouseEnv(task=task, visuals=True)
     ep = 0
     while True:
         obs, _ = env.reset(seed=seed + ep)
         with mujoco.viewer.launch_passive(env.model, env.data) as v:
+            v.opt.geomgroup[:] = render_option().geomgroup   # viewer group toggles 0/1 vs 3 = sensor view
             v.cam.lookat[:] = [env.L / 2, env.W / 2, 0]
             v.cam.distance, v.cam.elevation = max(env.L, env.W) * 1.1, -60
             done = False

@@ -31,7 +31,7 @@ import numpy as np
 from PIL import Image
 
 from k1_warehouse import (CTRL_DT, I_SCAN, N_RAYS, RAY_FOV, RAY_MAX, REPO, STALE_S, K1WarehouseEnv,
-                          action_to_cmd, heuristic, wrap)
+                          action_to_cmd, heuristic, render_option, wrap)
 
 EVAL_DIR = REPO / "eval"
 FSM = json.loads((EVAL_DIR / "fsm_states.json").read_text())["states"]   # frozen ids, never hardcoded
@@ -126,8 +126,11 @@ class Recorder:
         self.env, self.size, self.frames_on = env, (int(frame_size[0]), int(frame_size[1])), frames
         self.rows, self.frames, self.depths, self.scenario, self.wall0 = [], [], [], None, 0.0
         self._pre = self._r = self._model = None
-        self._opt = mujoco.MjvOption()
-        self._opt.geomgroup[2] = 0                  # hide the robot's own body + tote (group 2)
+        # Head POV without the robot's own body. An env built without the visual layer
+        # (visuals=False) records its proxies instead of an empty scene. Depth is always of the
+        # proxies: the depth sensor stream the ray scan and planner work on, whatever is drawn.
+        self._opt = render_option(head=True, sensor=not env.visuals)
+        self._dopt = render_option(head=True, sensor=True)
 
     def begin(self, obs=None):
         """Start a recording on the episode env.reset() just built. Pass the reset obs so row 0
@@ -169,7 +172,9 @@ class Recorder:
         return (row, *self._render(depth=row["i"] % RRD_IMAGE_EVERY == 0)) if self.frames_on else (row, None, None)
 
     def _render(self, depth=True):
-        """Head-POV RGB (JPEG) + depth (uint16 mm PNG, or None when depth=False) of the current env state."""
+        """Head-POV RGB (JPEG) + depth (uint16 mm PNG, or None when depth=False) of the current env state.
+        RGB is of the drawn scene (the visual layer when the env has one); depth is of the proxies,
+        so it matches the row's ray scan and is the same with visuals on or off."""
         env, (w, h) = self.env, self.size
         m = env.model
         if self._model is not m:                    # every reset recompiles the world
@@ -188,14 +193,19 @@ class Recorder:
         cam = mujoco.MjvCamera()                    # free camera: eye at the head, along yaw, pitched down
         cam.distance, cam.azimuth, cam.elevation = 1.0, math.degrees(yaw), HEAD_PITCH_DEG
         cam.lookat[:] = vd.xpos[self._head] + [math.cos(el) * math.cos(yaw), math.cos(el) * math.sin(yaw), math.sin(el)]
-        r.update_scene(vd, cam, self._opt)
-        # Free cameras use the model's fovy (45 deg vertical); widen the frustum to HFOV_DEG.
         k = math.tan(math.radians(HFOV_DEG) / 2) * h / w / math.tan(math.radians(m.vis.global_.fovy) / 2)
-        for c in r.scene.camera:
-            c.frustum_bottom, c.frustum_top = c.frustum_bottom * k, c.frustum_top * k
+
+        def scene(opt):
+            r.update_scene(vd, cam, opt)
+            # Free cameras use the model's fovy (45 deg vertical); widen the frustum to HFOV_DEG.
+            for c in r.scene.camera:
+                c.frustum_bottom, c.frustum_top = c.frustum_bottom * k, c.frustum_top * k
+        scene(self._opt)
         rgb = r.render()
         if not depth:
             return _jpeg(rgb), None
+        if self.env.visuals:                        # RGB drew the visual layer: depth sees the proxies
+            scene(self._dopt)
         r.enable_depth_rendering()
         dep = r.render()
         r.disable_depth_rendering()
@@ -326,8 +336,9 @@ def dataset(a):
         from stable_baselines3 import PPO
         ppo = PPO.load(a.policy, device="cpu")
         policy = lambda o: ppo.predict(o, deterministic=True)[0]
-    env = K1WarehouseEnv(task=scn["task"] if scn else a.task, world=world)
-    rec = Recorder(env, frames=not a.no_frames and a.format != "jsonl")
+    frames = not a.no_frames and a.format != "jsonl"
+    env = K1WarehouseEnv(task=scn["task"] if scn else a.task, world=world, visuals=frames)   # dress only what is drawn
+    rec = Recorder(env, frames=frames)
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     for e in range(a.episodes):
@@ -373,11 +384,12 @@ def selftest():
     env.reset(seed=5)
     assert contract_state(env)[3:] == [0.0, 1.0, 10.0, FSM["TRACK"]]
 
-    # Recording must not change the episode: same seed + policy, with and without a Recorder.
+    # Recording must not change the episode: same seed + policy, the lean training env without a
+    # Recorder vs a dressed (visuals=True) env with one.
     T = 60
     runs = []
     for on in (False, True):
-        env = K1WarehouseEnv(task="follow")
+        env = K1WarehouseEnv(task="follow", visuals=on)
         obs, _ = env.reset(seed=11)
         rec = Recorder(env) if on else None
         if rec:
@@ -400,6 +412,13 @@ def selftest():
     assert dp.shape == (240, 320) and dp.max() <= DEPTH_MAX and (dp > 0.3).mean() > 0.5, (dp.min(), dp.max())
     print(f"frame {len(rec.frames[0])} B jpeg, depth {len(rec.depths[0])} B png")
     assert rec._r.scene.maxgeom == env.model.ngeom + 1000, "renderer scene buffer not sized to the model"
+    lean = K1WarehouseEnv(task="follow")        # no visual layer: the head POV draws the proxies, not nothing
+    lr = Recorder(lean)
+    lr.begin(lean.reset(seed=11)[0])
+    assert decode_rgb(lr._pre[1]).std() > 5, "a visuals=False env recorded a blank frame"
+    # ...and depth is of the proxies either way: the dressed env's reset frame, to the mm rounding.
+    assert np.abs(decode_depth(lr._pre[2]) - decode_depth(rec.depths[0])).max() < 1.5e-3, "depth depends on visuals"
+    lr.close()
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
         td = pathlib.Path(td)
