@@ -28,6 +28,7 @@ silently resized.
 Usage:
   python selfmask_from_runs.py --runs ../runs --since 20260903 --out ../models/self_mask.npy
   python selfmask_from_runs.py --runs ../runs --since 20260903 --out /tmp/m.npy --report
+  python selfmask_from_runs.py selftest      # needs rerun-sdk; prints SELFMASK-SELFTEST-OK
 """
 import argparse
 import glob
@@ -36,6 +37,8 @@ import os
 import sys
 
 import numpy as np
+
+from rrd_to_lerobot import SIM_ENTITY  # stdlib-only module; "/sim/provenance"
 
 # rerun's Recording API. Kept local so the module imports on a box without rerun for --help.
 DTYPES = {1: np.uint8, 2: np.uint16, 3: np.uint32, 7: np.float16, 8: np.float32, 9: np.float64}
@@ -51,7 +54,18 @@ def depth_frames(path):
     except Exception as e:  # noqa: BLE001 -- one unreadable recording must not stop the sweep
         print("  ! unreadable (%s)" % e, file=sys.stderr)
         return
-    for ch in rec.chunks():
+    # Sim-data guard (rrd_to_lerobot.SIM_ENTITY): a sim .rrd must never feed the robot's pixel mask.
+    # Checked over ALL chunks before the first yield -- the static marker may come after the depth.
+    # Skip, not raise: one sim file in runs/ must not abort the sweep over the real archive.
+    try:
+        chunks = list(rec.chunks())
+    except Exception as e:  # noqa: BLE001
+        print("  ! unreadable (%s)" % e, file=sys.stderr)
+        return
+    if any(ch.is_static and str(ch.entity_path) == SIM_ENTITY for ch in chunks):
+        print("  ! SIMULATED recording, skipped (%s)" % path, file=sys.stderr)
+        return
+    for ch in chunks:
         try:
             if "depth" not in str(ch.entity_path).lower():
                 continue
@@ -82,7 +96,33 @@ def depth_frames(path):
             continue
 
 
+def selftest():
+    """Sim-data guard: a sim .rrd yields no depth frames even when its static marker is logged
+    AFTER the depth (depth_frames is a generator; the check must precede the first yield)."""
+    import tempfile
+    import rerun as rr
+    with tempfile.TemporaryDirectory() as td:
+        paths = {}
+        for name in ("real", "sim"):
+            p = paths[name] = os.path.join(td, name + ".rrd")
+            s = rr.RecordingStream("selfmask_selftest")
+            s.save(p)
+            s.set_time("frame_idx", sequence=0)
+            s.log("/camera/depth", rr.DepthImage(np.full((4, 6), 1.5, np.float32), meter=1.0))
+            if name == "sim":
+                s.log(SIM_ENTITY, rr.TextLog("{}"), static=True)
+            s.flush()
+            s.disconnect()
+        real = list(depth_frames(paths["real"]))
+        assert len(real) == 1 and real[0].shape == (4, 6), real
+        assert list(depth_frames(paths["sim"])) == [], "sim .rrd leaked into the self-mask"
+    print("SELFMASK-SELFTEST-OK")
+    return 0
+
+
 def main():
+    if sys.argv[1:] == ["selftest"]:
+        return selftest()
     ap = argparse.ArgumentParser()
     ap.add_argument("--runs", default="runs", help="directory of <timestamp>_<commit>/ run dirs")
     ap.add_argument("--since", default="20260903",

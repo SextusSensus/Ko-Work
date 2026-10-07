@@ -134,7 +134,7 @@ canvas { display: block; width: 100%; height: 180px; }
 <main>
   <section class="stage" aria-label="Simulator view">
     <div class="video">
-      <img id="video" src="/stream" alt="Live simulator camera view">
+      <img id="video" alt="Live simulator camera view">
       <div class="overlay" aria-hidden="true"><span class="tag" id="cam-tag">Chase</span><span class="tag" id="view-tag">Detailed</span><span class="tag num" id="speed-tag">1x</span></div>
       <div class="banner" id="banner" role="status" aria-live="polite" hidden><strong id="banner-title"></strong><span id="banner-text"></span></div>
     </div>
@@ -166,7 +166,7 @@ canvas { display: block; width: 100%; height: 180px; }
         <label class="field">Task
           <select id="task"><option value="pick">Pick</option><option value="follow">Follow</option></select></label>
         <label class="field grow">Seed
-          <input id="seed" type="number" min="0" max="9007199254740991" step="1" value="0" required class="num"></label>
+          <input id="seed" type="number" min="0" max="9223372036854775808" step="1" value="0" required class="num"></label>
         <button class="primary" id="reset" aria-label="Reset episode with this task and seed">Reset</button>
       </div>
       <div class="btns" style="margin-top: 8px">
@@ -202,7 +202,7 @@ canvas { display: block; width: 100%; height: 180px; }
       <div class="btns">
         <button class="danger" data-fault="stall05" aria-label="Link stall 0.5 seconds, watchdog zero tier">Link stall 0.5 s</button>
         <button class="danger" data-fault="stall15" aria-label="Link stall 1.5 seconds, prepare tier">Link stall 1.5 s</button>
-        <button class="danger" data-fault="swap" aria-label="Swap target ID, follow task with 2 or more workers only">Swap target ID</button>
+        <button class="danger" data-fault="swap" aria-label="Swap target ID, follow task only, when another worker can steal the lock">Swap target ID</button>
       </div>
     </section>
 
@@ -229,7 +229,8 @@ canvas { display: block; width: 100%; height: 180px; }
         <button data-export="rrd" title="Download episode as Rerun recording">Rerun .rrd</button>
         <button data-export="lerobot" title="Download episode as LeRobot dataset zip">LeRobot zip</button>
       </div>
-      <p class="hint">Episode exports use the current recording, or the previous one right after a reset.</p>
+      <p class="hint"><label><input type="checkbox" id="prev-ep"> Previous episode (the one before the last Next, Replay, Reset or import)</label></p>
+      <p class="hint">Episode exports (JSONL, .rrd, LeRobot) use the current recording unless Previous episode is ticked.</p>
     </section>
   </aside>
 
@@ -279,18 +280,23 @@ function msg(text, kind = 'info') {
   m.hidden = !text;
 }
 
+// Seeds go up to 2^63, a JS Number is exact only up to 2^53: read the state's "seed" as its digits.
+// ponytail: a regex on the server's JSON (a quote inside a string value is escaped, so only the key
+// matches); a String seed in /state would be the server-side version.
+const parse = (text) => JSON.parse(text.replace(/"seed":\s*(\d+)/g, '"seed": "$1"'));
+
 async function post(path, body) {
   const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
   let j = {};
-  try { j = await r.json(); } catch (e) { /* empty or non-JSON body */ }
+  try { j = parse(await r.text()); } catch (e) { /* empty or non-JSON body */ }
   if (!r.ok) throw new Error(j.error || `Request failed (HTTP ${r.status})`);
   if (j.state) render(j.state);
   return j;
 }
 
-async function cmd(op, extra = {}) {
+async function cmd(op, extra = {}, body = JSON.stringify({ op, ...extra })) {
   try {
-    await post('/api/cmd', JSON.stringify({ op, ...extra }));
+    await post('/api/cmd', body);
     msg('');
     return true;
   } catch (e) { msg(e.message, 'error'); return false; }
@@ -306,7 +312,7 @@ function render(st) {
   setText($('h-task'), NAMES[st.task]);
   setText($('h-seed'), String(st.seed));
   setText($('h-driver'), NAMES[st.driver]);
-  setText($('h-map'), st.map || 'random each reset');
+  setText($('h-map'), st.map === null ? 'random each reset' : (st.map || '(unnamed map)'));   // null = generated maps
   setText($('h-rec'), String(st.rec_steps));
   setText($('cam-tag'), NAMES[st.camera]);
   setText($('view-tag'), NAMES[st.view]);
@@ -325,19 +331,27 @@ function render(st) {
   // Disabling the focused control would drop focus to <body>; hand it to Next, the banner's next step.
   if (st.done && document.activeElement?.matches('#pause, #step, [data-fault]')) $('next').focus();
   $('pause').disabled = $('step').disabled = st.done;
-  for (const b of all('[data-fault]')) {
-    b.disabled = st.done || (b.dataset.fault === 'swap' && (st.task !== 'follow' || st.workers < 2));
-  }
+  // swap_ok: the server's own rule (another worker than the locked one to steal the lock). Without
+  // it in the state, the old approximation, so Swap never goes dead against a server that lacks it.
+  const swapOk = st.swap_ok ?? (st.task === 'follow' && st.workers >= 2);
+  for (const b of all('[data-fault]')) b.disabled = st.done || (b.dataset.fault === 'swap' && !swapOk);
   for (const b of all('[data-dir]')) b.disabled = st.driver !== 'manual';
   if (st.driver !== 'manual' && held.size) { held.clear(); sync(); }
 
   $('banner').hidden = !st.done;
-  if (st.done && st.outcome) {
-    $('banner').classList.toggle('ok', st.outcome.success);
-    setText($('banner-title'), st.outcome.success ? 'SUCCESS' : 'FAILED');
-    setText($('banner-text'), `${st.outcome.reason}. Next runs a new seed, Replay runs this scenario again.`);
+  if (st.done) {                         // done without an outcome: env.step or reset threw
+    const ok = !!(st.outcome && st.outcome.success);
+    $('banner').classList.toggle('ok', ok);
+    setText($('banner-title'), ok ? 'SUCCESS' : 'FAILED');
+    setText($('banner-text'), st.outcome ? `${st.outcome.reason}. Next runs a new seed, Replay runs this scenario again.`
+      : 'The sim stopped on an error. Next runs a new seed.');
   }
-  if (st.error !== lastErr) { lastErr = st.error; if (st.error) msg(st.error, 'error'); }
+  if (st.error !== lastErr) {
+    // Cleared (another client resumed or reset): hide it, unless this tab has since shown its own message.
+    const prev = lastErr;
+    lastErr = st.error;
+    if (st.error) msg(st.error, 'error'); else if (prev && $('msg').textContent === prev) msg('');
+  }
 
   const stt = st.stats;
   const tiles = COUNTERS.map(([k, label, lvl]) => [label, stt[k], stt[k] ? lvl : '']);
@@ -414,14 +428,19 @@ function drawScan(st) {
 // A dropped MJPEG stream leaves the <img> broken (complete, naturalWidth 0) and Chromium fires no
 // event, so the poll reconnects it whenever the server answers. A stream still connecting reports
 // complete=false and is left alone; the 1 s throttle covers a stream that fails straight away.
+// The poll also starts the stream (no src in the HTML), and only in a visible tab: a stream never
+// ends and holds one of the browser's 6 connections per host for good, so 6 tabs would otherwise
+// leave no connection for /state, commands or drive. A hidden tab hands its stream back.
 let videoT = 0;
+document.addEventListener('visibilitychange', () => { if (document.hidden) $('video').removeAttribute('src'); });
 async function poll() {
   try {
-    const r = await fetch('/state', { cache: 'no-store' });
+    // A timeout, so a request queued behind a full connection pool shows Offline, not a frozen HUD.
+    const r = await fetch('/state', { cache: 'no-store', signal: AbortSignal.timeout(2000) });
     if (!r.ok) throw new Error();
-    render(await r.json());
+    render(parse(await r.text()));
     const v = $('video');
-    if (v.complete && !v.naturalWidth && Date.now() - videoT > 1000) { videoT = Date.now(); v.src = '/stream?' + videoT; }
+    if (!document.hidden && v.complete && !v.naturalWidth && Date.now() - videoT > 1000) { videoT = Date.now(); v.src = '/stream?' + videoT; }
   } catch (e) {
     $('status').dataset.s = 'offline';
     setText($('status'), 'Offline');
@@ -430,18 +449,20 @@ async function poll() {
 }
 
 // ---------------------------------------------------------------- episode + view controls
-const episode = (op, extra) => { edited = false; return cmd(op, extra); };
+const episode = (op, extra, body) => { edited = false; return cmd(op, extra, body); };
 $('task').addEventListener('change', () => { edited = true; });
 $('seed').addEventListener('input', () => { edited = true; });
 $('seed').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('reset').click(); });
 $('reset').addEventListener('click', () => {
-  // Check the raw text: Number('') is 0, and above 2^53 Number() rounds to a different seed.
-  const raw = $('seed').value.trim(), seed = Number(raw);
-  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(seed)) {
-    msg('Seed must be a whole number from 0 to 9007199254740991.', 'error');
+  // Check the raw text: Number('') is 0, and above 2^53 Number() rounds to a different seed, so the
+  // seed stays a BigInt and goes out as its digits (JSON.stringify cannot write a BigInt).
+  const raw = $('seed').value.trim();
+  const seed = /^\d+$/.test(raw) ? BigInt(raw) : -1n;
+  if (seed < 0n || seed > 2n ** 63n) {
+    msg('Seed must be a whole number from 0 to 9223372036854775808.', 'error');
     return;
   }
-  episode('reset', { task: $('task').value, seed });
+  episode('reset', {}, `{"op": "reset", "task": ${JSON.stringify($('task').value)}, "seed": ${seed}}`);
 });
 $('next').addEventListener('click', () => episode('next'));
 $('replay').addEventListener('click', () => episode('replay'));
@@ -463,13 +484,16 @@ const KEYS = { w: 'f', arrowup: 'f', s: 'b', arrowdown: 'b', a: 'l', arrowleft: 
 let timer = null;
 
 // Each drive is its own request, so a forward sent before a release can land after it. The server
-// drops any seq not above the newest it applied; starting at Date.now() keeps it increasing across reloads.
-let driveSeq = Date.now();
+// drops any seq not above the newest it applied from this page (client): seqs of different pages
+// never compare, so a tab loaded earlier is not locked out once a newer one drives. Not
+// crypto.randomUUID: that needs a secure context, and a LAN http:// page is not one.
+const driveClient = Math.random().toString(36).slice(2) + Date.now().toString(36);
+let driveSeq = 0;
 
 function heldDirs() { return new Set([...held].map((s) => s.split(':').pop())); }
 function sendDrive(vx, vyaw) {
   fetch('/api/cmd', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ op: 'drive', vx, vyaw, seq: ++driveSeq }) }).catch(() => {});
+    body: JSON.stringify({ op: 'drive', vx, vyaw, seq: ++driveSeq, client: driveClient }) }).catch(() => {});
 }
 function sendHeld() {
   const d = heldDirs();
@@ -560,7 +584,8 @@ for (const b of all('[data-export]')) b.addEventListener('click', async () => {
   b.disabled = true;
   msg('Exporting...');
   try {
-    const r = await fetch('/api/export/' + b.dataset.export);
+    const prev = $('prev-ep').checked && ['jsonl', 'rrd', 'lerobot'].includes(b.dataset.export);
+    const r = await fetch('/api/export/' + b.dataset.export + (prev ? '?episode=previous' : ''));
     if (!r.ok) {
       let j = {};
       try { j = await r.json(); } catch (e) { /* non-JSON error */ }

@@ -27,12 +27,12 @@ Usage:  python sim_io.py selftest                                  -> SIM-IO-SEL
         python sim_io.py export-localmap <scenario.json> <domain> [--overwrite]
         python sim_io.py export-mjcf <scenario.json> <out_dir>
 """
-import argparse, copy, io, json, math, numbers, os, pathlib, re, shutil, tempfile, time, zipfile
+import argparse, copy, io, json, math, numbers, os, pathlib, re, shutil, tempfile, threading, time, zipfile
 
 import mujoco
 import numpy as np
 
-from k1_warehouse import (GRID_RES, PHYS_DT, PLAN_MIN_H, REPO, SCENARIO_FORMAT, SCENARIO_VERSION, VX_MAX,
+from k1_warehouse import (GRID_RES, INFLATE, PHYS_DT, PLAN_MIN_H, REPO, SCENARIO_FORMAT, SCENARIO_VERSION, VX_MAX,
                           K1WarehouseEnv, _Grid, _static, _yaw_quat, generate_world, heuristic)
 
 DEFAULT_DATA_ROOT = REPO / "desktop/localmap-data"
@@ -41,14 +41,17 @@ DEFAULT_DATA_ROOT = REPO / "desktop/localmap-data"
 # Caps on everything a web upload can grow: no memory blowups, no absurd values.
 KINDS = ("wall", "rack", "pallet", "obstacle")
 MAX_STATICS, MAX_STATIONS, MAX_WORKERS, MAX_BOXES, MAX_GOALS = 20000, 5000, 50, 500, 100
+# Loose boxes are free bodies: ~75 in one spot overflow MuJoCo's stack arena (FatalError), 200+
+# overflow the constraint arena and every contact is silently dropped (boxes and robot fall
+# through statics). Generated episodes have <= 6 boxes, so <= 15 pairs.
+MAX_BOX_OVERLAPS = 64
 MAX_SIZE_M = 500.0
 # Longest t_max sample_episode can generate (3 x pick route / VX_MAX + 30) on a world we accept.
 MAX_T = 3.0 * (MAX_GOALS + 1) * math.hypot(MAX_SIZE_M, MAX_SIZE_M) / VX_MAX + 30.0
-# The planner grid (k1_warehouse._Grid) costs ~15 ns per grid cell x tall static to build
-# (measured) and 8 B per cell for each of up to 257 cached distance fields. Without these a
-# valid 500 m upload hangs the web UI's sim thread for minutes. ponytail: drop MAX_GRID_WORK
-# once _Grid rasterizes each static over its own bounding box only.
-MAX_GRID_CELLS, MAX_GRID_WORK = 1_000_000, 1e9
+# The planner grid (k1_warehouse._Grid) costs 20-35 ns per cell of each tall static's
+# (inflated) bounding-circle window, clipped to the grid (measured), plus 8 B per grid cell for
+# each of up to 257 cached distance fields. MAX_GRID_WORK = sum of those windows: ~1-2 s a build.
+MAX_GRID_CELLS, MAX_GRID_WORK = 1_000_000, 5e7
 PAD = 10.0                              # statics may sit this far outside [0,L]x[0,W] (perimeter walls)
 ANG = 100.0                             # |yaw| bound (rad): any finite yaw works, this keeps junk out
 
@@ -121,6 +124,18 @@ def _boxes(v, what, L, W):
     return out
 
 
+def _box_overlaps(boxes, what):
+    """Reject piles of footprint-overlapping loose boxes (see MAX_BOX_OVERLAPS); never edits them."""
+    if len(boxes) < 2:
+        return
+    p, h = np.array([b["pos"] for b in boxes]), np.array([b["half"] for b in boxes])
+    mask = np.all(np.abs(p[:, None] - p[None]) < (h[:, None] + h[None])[..., None], axis=-1)
+    pairs = (int(mask.sum()) - len(boxes)) // 2
+    if pairs > MAX_BOX_OVERLAPS:
+        raise ValueError(f"{what}: {pairs} overlapping loose-box pairs (max {MAX_BOX_OVERLAPS}); "
+                         "MuJoCo's contact arena overflows")
+
+
 def _source(v):
     """Provenance: free-form but flat -- short strings, numbers, bools, short number lists."""
     if not isinstance(v, dict) or len(v) > 32 or not isinstance(v.get("kind"), str):
@@ -138,11 +153,19 @@ def _source(v):
             out[k] = [_num(e, what, -1e9, 1e9) for e in _list(x, what, 0, 16)]
         else:
             out[k] = _num(x, what, -1e9, 1e9)
+    if out["kind"] == "localmap" and "map_offset" in out and not (
+            isinstance(out["map_offset"], list) and len(out["map_offset"]) == 2):
+        raise ValueError("world.source.map_offset: expected [x, y] for a localmap source")
     return out
 
 
 def validate_world(world):
     """Strict, normalized deep copy of a world dict (schema in k1_warehouse.py). ValueError if bad."""
+    return _validate_world(world)[0]
+
+
+def _validate_world(world):
+    """validate_world + the planner grid it builds (validate_scenario reuses it)."""
     w = _obj(world, "world", ("name", "size", "statics", "stations", "spawn"),
              ("forklift_lane", "hints", "boxes", "source"))
     L, W = (_num(v, "world.size", 1, MAX_SIZE_M) for v in _list(w["size"], "world.size", 2, 2))
@@ -155,13 +178,20 @@ def validate_world(world):
                                 zip(_list(st["pos"], what + ".pos", 3, 3), (L + PAD, W + PAD, 50.0))],
                         "half": [_num(v, what + ".half", 1e-3, MAX_SIZE_M) for v in _list(st["half"], what + ".half", 3, 3)],
                         "yaw": _num(st["yaw"], what + ".yaw", -ANG, ANG)})
-    cells = math.ceil(L / GRID_RES) * math.ceil(W / GRID_RES)
-    tall = sum(st["pos"][2] + st["half"][2] >= PLAN_MIN_H for st in statics)
-    if cells > MAX_GRID_CELLS or cells * tall > MAX_GRID_WORK:
-        raise ValueError(f"world: too big to plan on ({cells} grid cells x {tall} tall statics; limits "
-                         f"{MAX_GRID_CELLS} cells, {MAX_GRID_WORK:.0e} cells x statics)")
+    nx, ny = math.ceil(L / GRID_RES), math.ceil(W / GRID_RES)
+    work = 0
+    for st in statics:                  # the window k1_warehouse._Grid rasterizes each tall static over
+        (px, py, pz), (hx, hy, hz) = st["pos"], st["half"]
+        if pz + hz >= PLAN_MIN_H:
+            r = math.hypot(hx + INFLATE, hy + INFLATE)
+            work += (max(0, min(nx, int((px + r) / GRID_RES) + 1) - max(0, int((px - r) / GRID_RES)))
+                     * max(0, min(ny, int((py + r) / GRID_RES) + 1) - max(0, int((py - r) / GRID_RES))))
+    if nx * ny > MAX_GRID_CELLS or work > MAX_GRID_WORK:
+        raise ValueError(f"world: too big to plan on ({nx * ny} grid cells, {work} cells under tall statics; "
+                         f"limits {MAX_GRID_CELLS}, {MAX_GRID_WORK:.0e})")
     # Same check as sample_episode (a scenario replay skips it): the env's _free_point crashes on a full grid.
-    if not len(_Grid({"size": [L, W], "statics": statics}).free_cells):
+    grid = _Grid({"size": [L, W], "statics": statics})
+    if not len(grid.free_cells):
         raise ValueError("world: no free floor for the robot (tall statics block every planner cell)")
     sp = [_num(v, "world.spawn", 0, (L, W)[i % 2]) for i, v in enumerate(_list(w["spawn"], "world.spawn", 4, 4))]
     if sp[0] > sp[2] or sp[1] > sp[3]:
@@ -181,9 +211,10 @@ def validate_world(world):
                                         for v in _list(h["aisles_y"], "world.hints.aisles_y", 0, 1000)]
     if "boxes" in w:
         out["boxes"] = _boxes(w["boxes"], "world.boxes", L, W)
+        _box_overlaps(out["boxes"], "world.boxes")
     if "source" in w:
         out["source"] = _source(w["source"])
-    return out
+    return out, grid
 
 
 def validate_scenario(scn):
@@ -194,7 +225,7 @@ def validate_scenario(scn):
         raise ValueError(f"scenario.format: expected {SCENARIO_FORMAT!r}")
     _int(s["version"], "scenario.version", SCENARIO_VERSION, SCENARIO_VERSION)
     task = _str(s["task"], "scenario.task", choices=("pick", "follow"))
-    world = validate_world(s["world"])
+    world, grid = _validate_world(s["world"])
     L, W = world["size"]
     e = _obj(s["episode"], "episode", ("start", "floor_friction", "robot", "link", "sensing", "boxes",
                                        "forklift", "workers", "goals", "t_max"))
@@ -205,12 +236,13 @@ def validate_scenario(scn):
     ep = {"start": [*_xy([x, y], "episode.start", L, W), _num(yaw, "episode.start[2]", -ANG, ANG)],
           "floor_friction": _num(e["floor_friction"], "episode.floor_friction", 0.01, 5),
           # force / kv / sway: the generator's ranges plus margin. Past them the base servo goes
-          # unstable at PHYS_DT (yaw kv > ~100) or sway pushes the robot with zero command, which
-          # would drive it well past the action_to_cmd clamps.
+          # unstable at PHYS_DT (explicit-Euler yaw servo: kv > ~85 at payload 0, i.e.
+          # 2 * I_yaw_min / PHYS_DT) or sway pushes the robot with zero command, which would drive
+          # it well past the action_to_cmd clamps.
           "robot": {"payload": _num(rb["payload"], "episode.robot.payload", 0, 50),
                     "force": _num(rb["force"], "episode.robot.force", 1, 200),
                     "kv": [_num(v, "episode.robot.kv", 1, hi)
-                           for v, hi in zip(_list(rb["kv"], "episode.robot.kv", 3, 3), (1000, 1000, 100))],
+                           for v, hi in zip(_list(rb["kv"], "episode.robot.kv", 3, 3), (1000, 1000, 80))],
                     "accel": [_num(v, "episode.robot.accel", 0.01, 100)
                               for v in _list(rb["accel"], "episode.robot.accel", 2, 2)],
                     "tau": _num(rb["tau"], "episode.robot.tau", PHYS_DT, 10),      # < PHYS_DT overshoots
@@ -223,6 +255,12 @@ def validate_scenario(scn):
           "sensing": {"depth_c": _num(sn["depth_c"], "episode.sensing.depth_c", 0, 1)},
           "boxes": _boxes(e["boxes"], "episode.boxes", L, W),
           "forklift": None, "workers": []}
+    # The generator only starts on free planner cells. Inside or against a static, MuJoCo's
+    # penetration recovery flings the robot at up to ~19x VX_MAX with a zero command.
+    if grid.blocked[grid.cell(ep["start"][:2])]:
+        raise ValueError("episode.start: inside or against a static (blocked planner cell); "
+                         "the robot would be ejected past the bridge clamps")
+    _box_overlaps(world.get("boxes", []) + ep["boxes"], "world.boxes + episode.boxes")   # the env builds both
     if e["forklift"] is not None:
         f = _obj(e["forklift"], "episode.forklift", ("path", "s", "dir", "speed"))
         ep["forklift"] = {"path": [_xy(p, "episode.forklift.path", L, W)
@@ -235,9 +273,16 @@ def validate_scenario(scn):
     for i, wk in enumerate(_list(e["workers"], "episode.workers", 1 if task == "follow" else 0, MAX_WORKERS)):
         what = f"episode.workers[{i}]"
         _obj(wk, what, ("pos", "speed", "yields", "role"))
-        ep["workers"].append({"pos": _xy(wk["pos"], what + ".pos", L, W), "speed": _num(wk["speed"], what + ".speed", 0, 5),
+        # speed * CTRL_DT must stay under the 0.7 m non-yield stand-off minus the ~0.57 m
+        # tote-corner contact radius, else a worker steps INTO a stood robot in one tick.
+        ep["workers"].append({"pos": _xy(wk["pos"], what + ".pos", L, W), "speed": _num(wk["speed"], what + ".speed", 0, 1.3),
                               "yields": _bool(wk["yields"], what + ".yields"),
                               "role": _str(wk["role"], what + ".role", choices=("target", "worker"))})
+    # The env follows workers[0] by index; role only colours it. Same layout as sample_episode.
+    roles = [w["role"] for w in ep["workers"]]
+    if roles != (["target"] + ["worker"] * (len(roles) - 1) if task == "follow" else ["worker"] * len(roles)):
+        raise ValueError("episode.workers.role: " + ("follow expects workers[0] = target, the rest worker"
+                                                     if task == "follow" else "pick expects all worker"))
     ep["goals"] = [_xy(g, f"episode.goals[{i}]", L, W)
                    for i, g in enumerate(_list(e["goals"], "episode.goals", 1 if task == "pick" else 0, MAX_GOALS))]
     ep["t_max"] = _num(e["t_max"], "episode.t_max", 0.1, MAX_T)
@@ -249,8 +294,16 @@ def save_scenario(scn, path):
     pathlib.Path(path).write_text(json.dumps(validate_scenario(scn), indent=1, allow_nan=False), encoding="utf-8")
 
 
+def _loads(path):
+    """JSON from a file; utf-8-sig: PowerShell 5 writes a BOM. Deep nesting is a ValueError like any bad input."""
+    try:
+        return json.loads(pathlib.Path(path).read_text(encoding="utf-8-sig"))
+    except RecursionError:
+        raise ValueError(f"{path}: JSON nested too deeply") from None
+
+
 def load_scenario(path):
-    return validate_scenario(json.loads(pathlib.Path(path).read_text(encoding="utf-8-sig")))
+    return validate_scenario(_loads(path))
 
 
 # ---------------------------------------------------------------------- Local Map
@@ -275,21 +328,30 @@ def _domain_dir(domain_id, data_root):
 
 
 def _read(path):
-    """JSON object from disk, {} if the file is missing. utf-8-sig: PowerShell 5 writes a BOM."""
+    """JSON object from disk, {} if the file is missing."""
     path = pathlib.Path(path)
     if not path.is_file():
         return {}
-    d = json.loads(path.read_text(encoding="utf-8-sig"))
+    d = _loads(path)
     if not isinstance(d, dict):
         raise ValueError(f"{path}: expected a JSON object")
     return d
 
 
 def _write(path, obj):
-    """Write via a temp file + rename so a crash never leaves half a domains.json."""
-    tmp = path.with_name(path.name + ".tmp")
+    """Write via a temp file + rename so a crash never leaves half a domains.json. The temp name is
+    unique per call (concurrent writers), and the rename retries: on Windows it fails while
+    another process (K1Finder, the viewer) has the target open."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")   # not mkstemp: keep umask perms
     tmp.write_text(json.dumps(obj, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    for k in range(50):
+        try:
+            return os.replace(tmp, path)
+        except PermissionError:
+            if k == 49:
+                os.unlink(tmp)
+                raise
+            time.sleep(0.05)
 
 
 def _ontology(data_root):
@@ -306,7 +368,12 @@ def _ontology(data_root):
 def list_localmap_domains(data_root=DEFAULT_DATA_ROOT):
     """Registered domains (domains.json order), then unregistered domain folders."""
     root = pathlib.Path(data_root)
-    names = {d.get("id"): d.get("name") for d in _read(root / "domains.json").get("domains") or [] if isinstance(d, dict)}
+    try:
+        reg = _read(root / "domains.json").get("domains") or []
+    except (OSError, ValueError):
+        reg = []                                            # corrupt registry: still list the folders
+    names = {d["id"]: d.get("name") for d in (reg if isinstance(reg, list) else [])
+             if isinstance(d, dict) and isinstance(d.get("id"), str)}
     dirs = sorted(p.name for p in (root / "domains").glob("*") if p.is_dir())
     out = []
     for did in dict.fromkeys(list(names) + dirs):
@@ -315,7 +382,7 @@ def list_localmap_domains(data_root=DEFAULT_DATA_ROOT):
         d = root / "domains" / did
         try:
             n_cells, n_inst = len(_read(d / "occupancy.json").get("cells") or []), len(_read(d / "instances.json").get("instances") or [])
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError):
             n_cells = n_inst = 0                            # corrupt file: import says why
         out.append({"id": did, "name": names.get(did) or did, "cells": n_cells, "instances": n_inst})
     return out
@@ -325,6 +392,12 @@ def _extent(hx, hy, yaw):
     """Axis-aligned half extents of a yawed box footprint."""
     c, s = abs(math.cos(yaw)), abs(math.sin(yaw))
     return c * hx + s * hy, s * hx + c * hy
+
+
+def _perimeter(L, W):
+    """The 4 walls an import puts MARGIN outside the map content (not mapped: export leaves them out)."""
+    return [_static("wall", [L / 2, -0.05, 1], [L / 2, 0.05, 1]), _static("wall", [L / 2, W + 0.05, 1], [L / 2, 0.05, 1]),
+            _static("wall", [-0.05, W / 2, 1], [0.05, W / 2, 1]), _static("wall", [L + 0.05, W / 2, 1], [0.05, W / 2, 1])]
 
 
 def localmap_to_world(domain_id, data_root=DEFAULT_DATA_ROOT, min_hits=1, wall_height=1.0):
@@ -359,24 +432,48 @@ def localmap_to_world(domain_id, data_root=DEFAULT_DATA_ROOT, min_hits=1, wall_h
             y = _num(inst.get("y", pm.get("y")), "y", -1e4, 1e4)
             yaw = inst.get("yaw", pm.get("yaw"))
             if yaw is None and pm.get("qw") is not None:          # placer pose_map is a quaternion
-                yaw = math.atan2(2 * (pm["qw"] * pm.get("qz", 0) + pm.get("qx", 0) * pm.get("qy", 0)),
-                                 1 - 2 * (pm.get("qy", 0) ** 2 + pm.get("qz", 0) ** 2))
+                qw, qx, qy, qz = (_num(pm.get(k, 0), "pose_map." + k, -1e3, 1e3) for k in ("qw", "qx", "qy", "qz"))
+                yaw = math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy ** 2 + qz ** 2))
             yaw = _num(yaw or 0.0, "yaw", -ANG, ANG)
             scale = inst.get("scale_m") or row.get("scale_m")
             sx, sy = (inst["w"], inst["h"]) if inst.get("w") and inst.get("h") else (scale[0], scale[2])
             sx, sy = _num(sx, "w", 0.01, MAX_SIZE_M), _num(sy, "h", 0.01, MAX_SIZE_M)
             sz = _num(scale[1], "height", 0.01, 50) if scale else wall_height
-        except (AttributeError, KeyError, TypeError, IndexError, ValueError):
+            kind = ("rack" if cid in RACK_CLASSES else "wall" if cid in WALL_CLASSES else "pallet" if cid == "pallet"
+                    else "box" if cid in BOX_MASS else "obstacle")
+            h, mass = min(max((sx + sy + sz) / 6, 0.05), 0.5), BOX_MASS.get(cid)   # a loose box: cube of half h
+            if kind == "box" and inst.get("source") == "k1sim":    # the sim's own export: exact size + mass back
+                h, mass = _num(sx / 2, "w", 0.01, 1.0), _num(inst.get("mass"), "mass", 0.01, 1000)
+            z = inst.get("z", pm.get("z"))                         # placer: the detection's measured height
+            if kind == "box" and z is not None and _num(z, "z", -1e4, 1e4) - h > 0.15:
+                skipped += 1                # shelf stock / upper carton of a stack: the rack or stack base covers it
+                continue
+        except (AttributeError, KeyError, TypeError, IndexError, ValueError, OverflowError):
             skipped += 1                    # unsized / unreadable instance
             continue
-        kind = ("rack" if cid in RACK_CLASSES else "wall" if cid in WALL_CLASSES else "pallet" if cid == "pallet"
-                else "box" if cid in BOX_MASS else "obstacle")
-        h = min(max((sx + sy + sz) / 6, 0.05), 0.5)           # a loose box is a cube of this half size
-        items.append((kind, x, y, yaw, sx, sy, sz, BOX_MASS.get(cid), h))
-        if kind == "box":                   # the box replaces the cells the depth camera saw on it,
-            for i in range(round((x - h) / res), round((x + h) / res) + 1):     # else MuJoCo ejects it
-                for j in range(round((y - h) / res), round((y + h) / res) + 1):
-                    cells.discard((i, j))
+        items.append((kind, x, y, yaw, sx, sy, sz, mass, h))
+
+    # A floor box must stand alone: MuJoCo flings one spawned inside a rack/wall or another box (up
+    # to 25x VX_MAX measured). A carton on a static is that static's stock; a second box on the
+    # same spot is a repeat detection. ponytail: O(boxes x statics) numpy, seconds at the 100k cap.
+    solid = np.array([(x, y, *_extent(sx / 2, sy / 2, yaw)) for kind, x, y, yaw, sx, sy, *_ in items
+                      if kind != "box"]).reshape(-1, 4)
+    kept, floor = [], []
+    for it in items:
+        kind, x, y, *_, h = it
+        if kind == "box":
+            if (np.any((np.abs(solid[:, 0] - x) < solid[:, 2] + h) & (np.abs(solid[:, 1] - y) < solid[:, 3] + h))
+                    or any(abs(x - bx) < h + bh and abs(y - by) < h + bh for bx, by, bh in floor)):
+                skipped += 1
+                continue
+            if len(floor) == MAX_BOXES:
+                raise ValueError(f"Local Map domain {domain_id!r}: more than {MAX_BOXES} loose boxes")
+            floor.append((x, y, h))
+            for i in range(round((x - h) / res), round((x + h) / res) + 1):     # the box replaces the cells the
+                for j in range(round((y - h) / res), round((y + h) / res) + 1):  # depth camera saw on it, else
+                    cells.discard((i, j))                                        # MuJoCo ejects it
+        kept.append(it)
+    items = kept
 
     runs = []                               # [i0, i1, j]: cells merged along x per row
     for i, j in sorted(cells, key=lambda c: (c[1], c[0])):
@@ -398,8 +495,7 @@ def localmap_to_world(domain_id, data_root=DEFAULT_DATA_ROOT, min_hits=1, wall_h
     ox, oy = MARGIN - min(xs), MARGIN - min(ys)
     L, W = max(xs) - min(xs) + 2 * MARGIN, max(ys) - min(ys) + 2 * MARGIN
 
-    statics = [_static("wall", [L / 2, -0.05, 1], [L / 2, 0.05, 1]), _static("wall", [L / 2, W + 0.05, 1], [L / 2, 0.05, 1]),
-               _static("wall", [-0.05, W / 2, 1], [0.05, W / 2, 1]), _static("wall", [L + 0.05, W / 2, 1], [0.05, W / 2, 1])]
+    statics = _perimeter(L, W)
     statics += [_static("obstacle", [(i0 + i1) / 2 * res + ox, j * res + oy, wall_height / 2],
                         [(i1 - i0 + 1) * res / 2, res / 2, wall_height / 2]) for i0, i1, j in runs]
     boxes = []
@@ -443,8 +539,10 @@ def localmap_to_world(domain_id, data_root=DEFAULT_DATA_ROOT, min_hits=1, wall_h
     return world
 
 
-def _raster(statics, res, ox=0.0, oy=0.0):
-    """Map-frame cells (i, j) whose centers (i*res, j*res) lie inside a planner-visible static."""
+def _raster(statics, res, ox=0.0, oy=0.0, size=None):
+    """Map-frame cells (i, j) whose centers (i*res, j*res) lie inside a planner-visible static.
+    size=[L, W]: only cells where validate_world lets statics sit (PAD around the sim world), so a
+    500 m diagonal wall next to a 2 m site does not allocate its whole bounding box."""
     out = set()
     for st in statics:
         (px, py, pz), (hx, hy, hz), yaw = st["pos"], st["half"], st["yaw"]
@@ -453,8 +551,12 @@ def _raster(statics, res, ox=0.0, oy=0.0):
         hx, hy = max(hx, res / 2), max(hy, res / 2)               # a thin wall still leaves one cell
         ex, ey = _extent(hx, hy, yaw)
         mx, my = px - ox, py - oy
-        I, J = np.meshgrid(np.arange(math.floor((mx - ex) / res), math.ceil((mx + ex) / res) + 1),
-                           np.arange(math.floor((my - ey) / res), math.ceil((my + ey) / res) + 1), indexing="ij")
+        i0, i1 = math.floor((mx - ex) / res), math.ceil((mx + ex) / res) + 1
+        j0, j1 = math.floor((my - ey) / res), math.ceil((my + ey) / res) + 1
+        if size is not None:
+            i0, i1 = max(i0, math.floor((-PAD - ox) / res)), min(i1, math.ceil((size[0] + PAD - ox) / res) + 1)
+            j0, j1 = max(j0, math.floor((-PAD - oy) / res)), min(j1, math.ceil((size[1] + PAD - oy) / res) + 1)
+        I, J = np.meshgrid(np.arange(i0, i1), np.arange(j0, j1), indexing="ij")
         dx, dy = I * res - mx, J * res - my
         c, s = math.cos(yaw), math.sin(yaw)
         inside = (np.abs(c * dx + s * dy) <= hx) & (np.abs(-s * dx + c * dy) <= hy)
@@ -468,18 +570,25 @@ def world_to_localmap(world, domain_id, data_root=DEFAULT_DATA_ROOT, overwrite=F
     world = validate_world(world)
     root = pathlib.Path(data_root)
     ddir = _domain_dir(domain_id, root)
-    if (ddir / "manifest.json").exists():
+    domain_id = ddir.name               # on-disk case: on Windows 'Site-A' IS an existing 'site-a'
+    if ddir.exists():                   # robot data may sit in a folder with no manifest yet
         if not overwrite:
             raise FileExistsError(f"Local Map domain {domain_id!r} already exists (overwrite=True replaces it)")
-        old = _read(ddir / "manifest.json")             # K1Finder bumps run_count when it merges a robot run
-        if old.get("source") != "k1sim" or old.get("run_count"):
+        old = _read(ddir / "manifest.json")             # {} if missing: not the sim's, refused
+        if old.get("source") != "k1sim" or old.get("run_count"):     # K1Finder bumps run_count on a robot run
             raise FileExistsError(f"refusing to overwrite robot-mapped Local Map domain {domain_id!r}")
     src = world.get("source") or {}
-    ox, oy = src["map_offset"] if src.get("kind") == "localmap" and len(src.get("map_offset") or ()) == 2 else (0.0, 0.0)
+    statics = world["statics"]
+    ox, oy = 0.0, 0.0
+    if src.get("kind") == "localmap":   # back to its own map frame, minus the walls the import invented
+        ox, oy = src.get("map_offset") or (0.0, 0.0)
+        per = _perimeter(*world["size"])
+        statics = [st for st in statics if st not in per]
     onto = _ontology(root)
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
-    cells = [{"x": i * EXPORT_RES, "y": j * EXPORT_RES, "hits": 1} for i, j in sorted(_raster(world["statics"], EXPORT_RES, ox, oy))]
+    cells = [{"x": i * EXPORT_RES, "y": j * EXPORT_RES, "hits": 1}
+             for i, j in sorted(_raster(statics, EXPORT_RES, ox, oy, world["size"]))]
     insts = []
 
     def inst(cls, x, y, yaw, w, h, height):
@@ -491,11 +600,14 @@ def world_to_localmap(world, domain_id, data_root=DEFAULT_DATA_ROOT, overwrite=F
                       "T_source": "map", "run_id": "k1sim", "placement_method": "sim_export", "confidence": 1.0,
                       "source": "k1sim"})
     for st in world["statics"]:
+        (px, py, pz), (hx, hy, hz) = st["pos"], st["half"]
         if st["kind"] in ("rack", "pallet"):
-            (px, py, _), (hx, hy, hz) = st["pos"], st["half"]
             inst("pallet_rack" if st["kind"] == "rack" else "pallet", px - ox, py - oy, st["yaw"], 2 * hx, 2 * hy, 2 * hz)
+        elif pz + hz < PLAN_MIN_H:      # _raster skips it: keep the low trip hazard as an instance (import
+            inst(st["kind"], px - ox, py - oy, st["yaw"], 2 * hx, 2 * hy, pz + hz)   # extrudes it from the floor)
     for b in world.get("boxes", []):
         inst("cardboard_box", b["pos"][0] - ox, b["pos"][1] - oy, 0.0, 2 * b["half"], 2 * b["half"], 2 * b["half"])
+        insts[-1]["mass"] = b["mass"]   # read back exactly: the import trusts size + mass of source k1sim
 
     sp = world["spawn"]
     man = {"id": domain_id, "name": world["name"], "created": now, "updated": now, "run_count": 0,
@@ -509,15 +621,30 @@ def world_to_localmap(world, domain_id, data_root=DEFAULT_DATA_ROOT, overwrite=F
     _write(ddir / "manifest.json", man)
     # Registry last, so it never names a half-written domain. Same upsert as server.js / K1Finder.ps1, but
     # 'active' is left alone: K1Finder merges the next real robot mapping run into the active domain.
-    reg = _read(root / "domains.json")
-    doms = reg["domains"] = [d for d in reg.get("domains") or [] if isinstance(d, dict)]
-    meta = {"id": domain_id, "name": man["name"], "updated": now, "run_count": man["run_count"], "cell_count": len(cells)}
-    k = next((k for k, d in enumerate(doms) if d.get("id") == domain_id), None)
-    if k is None:
-        doms.append(meta)
+    # The read-upsert-write holds an exclusive lock file so concurrent exports never lose an entry.
+    # ponytail: sim-side lock only; K1Finder.ps1 and server.js don't take it. A registry lock shared
+    # by all three tools is out of sim_io's scope.
+    lock = root / "domains.json.lock"
+    for _ in range(200):
+        try:
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL))
+            break
+        except (FileExistsError, PermissionError):       # Windows: PermissionError while a delete is pending
+            time.sleep(0.05)
     else:
-        doms[k] = meta
-    _write(root / "domains.json", reg)
+        raise FileExistsError(f"{lock} held for 10 s: another export is running, or it is stale (delete it)")
+    try:
+        reg = _read(root / "domains.json")
+        doms = reg["domains"] = [d for d in reg.get("domains") or [] if isinstance(d, dict)]
+        meta = {"id": domain_id, "name": man["name"], "updated": now, "run_count": man["run_count"], "cell_count": len(cells)}
+        k = next((k for k, d in enumerate(doms) if d.get("id") == domain_id), None)
+        if k is None:
+            doms.append(meta)
+        else:
+            doms[k] = meta
+        _write(root / "domains.json", reg)
+    finally:
+        lock.unlink()
     return ddir
 
 
@@ -533,6 +660,20 @@ def export_mjcf(env, out_dir):
     if env.mj_spec is None:
         raise ValueError("env has no scene yet: call env.reset() first")
     out = pathlib.Path(out_dir)
+    # to_xml() re-opens every texture file. The visual layer's PNGs live in the git-ignored
+    # .asset_cache, which may have been cleared since the last reset; the compiled model still has
+    # their pixels (identical to the PNG's), so put any missing one back. env.model/data untouched.
+    for t in env.mj_spec.textures:
+        f = pathlib.Path(env.mj_spec.texturedir) / t.file
+        if t.file and not f.exists():
+            from PIL import Image
+            m, i = env.model, env.model.texture(t.name).id
+            w, h, nc = m.tex_width[i], m.tex_height[i], m.tex_nchannel[i]
+            px = m.tex_data[m.tex_adr[i]:m.tex_adr[i] + w * h * nc].reshape(h, w, nc)
+            f.parent.mkdir(parents=True, exist_ok=True)
+            tmp = f.with_name(f"{f.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            Image.fromarray(px.squeeze(-1) if nc == 1 else px).save(tmp, "PNG")
+            os.replace(tmp, f)
     root = ET.fromstring(env.mj_spec.to_xml())
     comp = root.find("compiler")
     for tag, attr, sub in (("mesh", "meshdir", "meshes"), ("texture", "texturedir", "textures")):
@@ -669,7 +810,7 @@ def selftest():
         "kind": lambda s: s["world"]["statics"][0].update(kind="lava"),
         "statics cap": lambda s: s["world"].update(statics=[s["world"]["statics"][0]] * (MAX_STATICS + 1)),
         "grid cells": lambda s: s["world"].update(size=[400, 400]),
-        "grid work": lambda s: s["world"].update(size=[150, 150], statics=[s["world"]["statics"][0]] * 2000),
+        "grid work": lambda s: s["world"].update(size=[150, 150], statics=[_static("obstacle", [75, 75, 0.5], [20, 20, 0.5])] * 1000),
         "station out": lambda s: s["world"]["stations"].append([-1.0, 1.0]),
         "spawn flipped": lambda s: s["world"].update(spawn=[2, 1, 1, 2]),
         "spawn out": lambda s: s["world"]["spawn"].__setitem__(2, 1e6),
@@ -691,7 +832,18 @@ def selftest():
              "half": [s["world"]["size"][0] / 2, s["world"]["size"][1] / 2, 0.5], "yaw": 0.0}),
         "forklift dir": lambda s: s["episode"].update(forklift={"path": [[1, 1], [2, 2]], "s": 0, "dir": 0.5, "speed": 1}),
         "follow no target": lambda s: s.update(task="follow") or s["episode"].update(workers=[]),
+        "follow target not [0]": lambda s: s.update(task="follow") or s["episode"].update(workers=[wk, dict(wk, role="target")]),
+        "follow two targets": lambda s: s.update(task="follow") or s["episode"].update(workers=[dict(wk, role="target")] * 2),
+        "pick target": lambda s: s["episode"]["workers"].append(dict(wk, role="target")),
+        "worker speed 3": lambda s: s["episode"]["workers"].append(dict(wk, speed=3)),
+        "yaw kv 90": lambda s: s["episode"]["robot"]["kv"].__setitem__(2, 90),
+        "start in rack": lambda s: s["episode"].update(start=[rk["pos"][0], rk["pos"][1] - rk["half"][1] - 0.1, 1.5708]),
+        "boxes piled": lambda s: s["episode"].update(boxes=[{"pos": [1.0, 1.0], "half": 0.3, "mass": 1.0}] * 75),
+        "boxes piled world+ep": lambda s: s["world"].update(boxes=[{"pos": [1.0, 1.0], "half": 0.3, "mass": 1.0}] * 10)
+        or s["episode"].update(boxes=[{"pos": [1.2, 1.0], "half": 0.3, "mass": 1.0}] * 10),   # 45 + 45 pairs pass alone
+        "map_offset str": lambda s: s["world"].update(source={"kind": "localmap", "map_offset": "ab"}),
     }
+    rk = next(t for t in good["world"]["statics"] if t["kind"] == "rack")
     for name, mutate in bad.items():
         s = copy.deepcopy(good)
         mutate(s)
@@ -707,6 +859,18 @@ def selftest():
             raise AssertionError(f"accepted {junk!r}")
         except ValueError:
             pass
+    with tempfile.TemporaryDirectory() as td:                    # too deep for json: ValueError, not RecursionError
+        p = pathlib.Path(td) / "deep.json"
+        p.write_text('{"format": ' + "[" * 100000 + "]" * 100000 + "}")
+        try:
+            load_scenario(p)
+            raise AssertionError("accepted deeply nested JSON")
+        except ValueError:
+            pass
+    # Grid cost is the tall statics' own footprints: a 100x60 m site of 8000 short wall runs is cheap.
+    validate_world({"name": "site", "size": [100, 60], "stations": [], "spawn": [0, 0, 1, 1],
+                    "statics": [_static("wall", [1 + k % 190 * 0.5, 1 + k // 190 * 1.4, 0.5], [0.1, 0.04, 0.5])
+                                for k in range(8000)]})
 
     # ...but every scenario the env generates passes: actors on the last grid column, whose
     # centers sit past L on a wall-less 5.05 m map, and a long pick tour (t_max > 2 h) down a hall.
@@ -741,6 +905,33 @@ def selftest():
         assert localmap_to_world("fixture", data_root=root, min_hits=3)["source"]["cells"] == len(map_cells) - 2   # noise, box
         assert len(world["stations"]) >= 4 and world["spawn"] == [2.0 + ox - 0.5, 0.4 + oy - 0.5, 2.0 + ox + 0.5, 0.4 + oy + 0.5]
         assert list_localmap_domains(root) == [{"id": "fixture", "name": "Fixture site", "cells": 49, "instances": 4}]
+        with tempfile.TemporaryDirectory() as td2:    # corrupt registry / domain files never break the listing
+            r2 = pathlib.Path(td2)
+            (r2 / "domains/bad").mkdir(parents=True)
+            (r2 / "domains/bad/occupancy.json").write_text('{"cells": 5}')
+            (r2 / "domains/bad/instances.json").write_text('{"instances": 1.5}')
+            for reg in ('{"domains": [{"id": ["x"]}, 5, {"id": "bad", "name": "Bad"}]}', '{"domains": 5}', "{oops"):
+                (r2 / "domains.json").write_text(reg)
+                assert [(d["id"], d["cells"], d["instances"]) for d in list_localmap_domains(r2)] == [("bad", 0, 0)], reg
+
+        # Robot shelf data: a carton on a rack shelf (z), one inside the rack footprint, and a repeat
+        # detection of a floor carton are not loose floor boxes, and keep the cells under them;
+        # quaternion junk (overflow, str * huge int) skips just that instance.
+        d = root / "domains/shelf"
+        d.mkdir(parents=True)
+        shelf_cells = [{"x": i * 0.08, "y": 0.32, "hits": 2} for i in range(-5, 6)] + [{"x": 3.04, "y": 0.0, "hits": 2}]
+        _write(d / "occupancy.json", {"res_m": 0.08, "pose": {"x": 3.0, "y": 2.0}, "cells": shelf_cells})
+        _write(d / "instances.json", {"instances": [
+            {"label_class": "pallet_rack", "x": 0, "y": 0, "yaw": 0, "w": 2.4, "h": 0.9},
+            {"label_class": "cardboard_box", "x": 0, "y": 0.3, "z": 1.1},
+            {"label_class": "cardboard_box", "x": 0.5, "y": 0.0},
+            {"label_class": "cardboard_box", "x": 3.0, "y": 0.0, "pose_map": {"x": 3.0, "y": 0.0, "z": 0.2}},
+            {"label_class": "cardboard_box", "x": 3.05, "y": 0.02},
+            {"label_class": "pallet_rack", "pose_map": {"x": 1, "y": 3, "qw": 1.0, "qy": 1e200}, "w": 1, "h": 1},
+            {"label_class": "pallet_rack", "pose_map": {"x": 1, "y": 3, "qw": "x", "qz": 10 ** 13}, "w": 1, "h": 1}]})
+        shelf = localmap_to_world("shelf", data_root=root)
+        assert len(shelf["boxes"]) == 1 and shelf["source"]["skipped"] == 5, shelf["source"]
+        assert shelf["source"]["cells"] == len(shelf_cells) - 1, shelf["source"]       # only the floor box's cell
 
         # The router can reach every station from the spawn, and the scripted baseline walks a
         # 1 m pick to the nearest rack face within 50 steps on the imported map.
@@ -790,6 +981,25 @@ def selftest():
                 raise AssertionError(f"accepted domain id {did!r}")
             except ValueError:
                 pass
+        # The import's invented perimeter walls are not exported as mapped walls: a 2nd cycle keeps the size.
+        assert np.allclose(localmap_to_world("fixture-out", data_root=root)["size"], world["size"])
+        (root / "domains/robot").mkdir()    # robot data in a folder with no manifest: never overwritten
+        (root / "domains/robot/occupancy.json").write_text('{"cells": []}')
+        for ow in (False, True):
+            try:
+                world_to_localmap(world, "robot", data_root=root, overwrite=ow)
+                raise AssertionError("overwrote a robot domain that has no manifest")
+            except FileExistsError:
+                pass
+        assert (root / "domains/robot/occupancy.json").read_text() == '{"cells": []}'
+        from concurrent.futures import ThreadPoolExecutor   # concurrent exports: no lost registry entry
+        with ThreadPoolExecutor(8) as ex:
+            list(ex.map(lambda i: world_to_localmap(world, f"par{i}", data_root=root), range(8)))
+        assert {f"par{i}" for i in range(8)} <= {d["id"] for d in _read(root / "domains.json")["domains"]}
+        if os.path.normcase("A") == "a":    # case-insensitive FS: 'X' is the existing 'x', one registry entry
+            world_to_localmap(world, "x", data_root=root)
+            world_to_localmap(world, "X", data_root=root, overwrite=True)
+            assert [d["id"] for d in _read(root / "domains.json")["domains"] if d["id"] in ("x", "X")] == ["x"]
 
         # Round trip of a generated warehouse: same racks/pallets, occupancy on the same cells.
         gen = generate_world(np.random.default_rng(4))
@@ -803,6 +1013,28 @@ def selftest():
         racks = sorted((round(s["pos"][0] - bx, 6), round(s["pos"][1] - by, 6)) for s in back["statics"] if s["kind"] == "rack")
         assert racks == sorted((round(s["pos"][0], 6), round(s["pos"][1], 6)) for s in gen["statics"] if s["kind"] == "rack")
         K1WarehouseEnv(world=back).reset(seed=1)                  # and it runs
+        assert _raster(gen["statics"], EXPORT_RES, size=gen["size"]) == a     # the export's clip drops nothing real
+
+        # Low statics (no occupancy: under PLAN_MIN_H) come back as instances, and the sim's own
+        # boxes keep their exact size and mass (5 small parts boxes 2 cm apart, a 200 kg crate).
+        tiny = {"name": "tiny", "size": [8.0, 6.0], "stations": [], "spawn": [0.5, 0.5, 1.5, 1.5],
+                "statics": [_static("rack", [4, 4.5, 1], [1, 0.4, 1]), _static("obstacle", [2, 3, 0.1], [0.3, 0.3, 0.1]),
+                            _static("wall", [6, 3.5, 0.12], [0.05, 0.5, 0.12])],
+                "boxes": [{"pos": [2.0 + 0.06 * k, 1.0], "half": 0.02, "mass": 0.5} for k in range(5)]
+                + [{"pos": [5.5, 1.5], "half": 0.8, "mass": 200.0}]}
+        world_to_localmap(tiny, "tiny", data_root=root)
+        back = localmap_to_world("tiny", data_root=root)
+
+        def low(w):
+            return sorted((s["kind"], round(s["pos"][2] + s["half"][2], 9)) for s in w["statics"]
+                          if s["pos"][2] + s["half"][2] < PLAN_MIN_H)
+        assert low(back) == low(tiny) == [("obstacle", 0.2), ("wall", 0.24)], low(back)
+        assert sorted((b["half"], b["mass"]) for b in back["boxes"]) == sorted((b["half"], b["mass"]) for b in tiny["boxes"])
+        # A 500 m diagonal wall beside a 2 m site: only cells near the site (not a 2830^2 meshgrid each).
+        diag = {"name": "diag", "size": [2, 2], "stations": [], "spawn": [0.2, 0.2, 1.8, 1.8],
+                "statics": [_static("wall", [-10, 6, 1], [500, 0.001, 1], math.pi / 4)] * 10}
+        cells = _read(world_to_localmap(diag, "diag", data_root=root) / "occupancy.json")["cells"]
+        assert cells and all(-PAD - 1 <= c[k] <= 2 + PAD + 1 for c in cells for k in "xy"), len(cells)
 
         # 5. MJCF bundle of a dressed scene: only the mesh and texture files in use (the visual
         #    layer's own meshes inline), reloads the same, export does not perturb the episode.
@@ -839,6 +1071,16 @@ def selftest():
         mujoco.mj_forward(m, d)
         assert env.forklift is not None and m.nmocap == 3, "want the forklift and a (dressed) worker in the export test"
         assert np.allclose(d.xpos, xpos0, rtol=0, atol=1e-6), np.abs(d.xpos - xpos0).max()
+        # A cleared .asset_cache (git clean while web.py runs) does not break the export: the PNGs
+        # come back from the compiled model. Simulated on copies, never on the real cache.
+        cache2 = root / "cache2"
+        cache2.mkdir()
+        for t in env.mj_spec.textures:
+            if t.file:
+                t.file = str(shutil.copy(t.file, cache2))
+        shutil.rmtree(cache2)
+        m2 = mujoco.MjModel.from_xml_path(str(export_mjcf(env, root / "mjcf2")))
+        assert np.array_equal(m2.tex_data, em.tex_data) and len(list(cache2.iterdir())) == len(files["textures"])
 
     assert (DEFAULT_DATA_ROOT / "domains.json").read_bytes() == repo_reg, "selftest touched the repo's Local Map data"
     print("SIM-IO-SELFTEST-OK")

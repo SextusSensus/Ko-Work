@@ -18,7 +18,7 @@ in desktop/localmap-viewer/assets/ATTRIBUTION.md). MuJoCo cannot read glTF, so l
 
 Usage:  python assets.py selftest      -> ASSETS-SELFTEST-OK
 """
-import base64, functools, hashlib, io, json, math, os, pathlib, random, struct, sys, urllib.parse
+import base64, functools, hashlib, io, json, math, os, pathlib, random, struct, sys, tempfile, threading, urllib.parse
 
 import mujoco
 import numpy as np
@@ -35,20 +35,30 @@ Y_UP = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], float)   # glTF is Y-up, MuJ
 def _png(key, read):
     """Cached PNG for a texture image; read() returns the source bytes (a JPG/PNG file or a glTF
     image). key must change when the source does (path + mtime). Checked on every build, so a
-    deleted cache just regenerates."""
-    out = CACHE / (hashlib.sha1(key.encode()).hexdigest()[:16] + ".png")
-    if not out.exists():
+    deleted cache just regenerates. A read-only checkout caches in the temp dir instead."""
+    name = hashlib.sha1(key.encode()).hexdigest()[:16] + ".png"
+    dirs = (CACHE, pathlib.Path(tempfile.gettempdir()) / "k1sim_asset_cache")
+    hit = next((d / name for d in dirs if (d / name).exists()), None)
+    if hit:
+        return hit
+
+    def put(d):
         from PIL import Image
-        CACHE.mkdir(exist_ok=True)
-        tmp = out.with_suffix(f".{os.getpid()}.tmp")
+        out = d / name
+        d.mkdir(exist_ok=True)
+        tmp = out.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")   # one per writer
         Image.open(io.BytesIO(read())).convert("RGB").save(tmp, "PNG")
         try:
-            tmp.replace(out)                   # atomic: two processes may convert the same file
-        except OSError:                        # Windows: out exists and the other process has it open
+            tmp.replace(out)                   # atomic: two processes or threads may convert the same file
+        except OSError:                        # Windows: out exists and another writer has it open
             tmp.unlink(missing_ok=True)
             if not out.exists():
                 raise                          # same bytes either way: the winner's PNG will do
-    return out
+        return out
+    try:
+        return put(dirs[0])
+    except OSError:                            # ponytail: read-only checkout -> temp cache, same bytes
+        return put(dirs[1])
 
 
 def _src(path):
@@ -171,6 +181,9 @@ CRATES = (("warehouse/plastic_crate_03/plastic_crate_03_1k.gltf", (0.481, 0.265,
           ("warehouse/plastic_crate_01/plastic_crate_01_1k.gltf", (0.298, 0.408, 0.264)))
 WOOD_CRATE = ("warehouse/wooden_crate_01/wooden_crate_01_1k.gltf", (0.825, 0.409, 0.35))
 STOCK_VERTS = 2_600_000                         # render budget (mesh vertices); the biggest generated hall stocks ~2M
+# Dressing budget (geoms made for the statics, vis_geoms): a generated hall is ~500, 20000 one-cell
+# obstacles of an imported map 40k (~6 s). A world over it is refused, not dressed for minutes.
+MAX_VIS_GEOMS = 50_000
 SCALE_STEP = math.log(1.02)                     # library meshes scale in 2% steps: drawn within 1% of the proxy
 # A rack's shelving reuses an earlier rack's size if that fits in it and fills BAY_FILL of it on
 # every axis, and a loose box an earlier box's carton within BOX_FIT: an imported map's measured
@@ -210,10 +223,37 @@ def _xy_half(half, yaw):
     return c * half[0] + s_ * half[1], s_ * half[0] + c * half[1]
 
 
+def _bays(hx, hz):
+    """Shelving bays along a rack hx long (half, its long side): the asset's aspect, none narrower
+    than 0.5 m (a long, low rack is not 1000s of bays)."""
+    lo, hi, _ = _aabb(SHELF)
+    return max(1, min(round(2 * hx / (2 * hz * (hi - lo)[0] / (hi - lo)[2])), round(2 * hx / 0.5)))
+
+
+def _decks(hx):
+    """Deck boards across a pallet hx long (half): ~0.16 m apart, wider past 64 (a 500 m pallet is not 6k geoms)."""
+    return max(3, min(64, round(2 * hx / 0.16)))
+
+
+def vis_geoms(st):
+    """At most how many geoms add_visuals makes for one static (its own fan-out formulas). Rack
+    stock is not counted: STOCK_VERTS caps it for the whole world (~550 geoms)."""
+    hx, hy, hz = st["half"]
+    if st["kind"] == "pallet":
+        return 6 + _decks(hx)
+    if st["kind"] == "rack":
+        return _bays(max(hx, hy), hz) * len(load_gltf(LIB / SHELF)) + 4   # + its row's floor tape
+    return 2
+
+
 def add_visuals(spec, world, episode):
     """Dress the scene in spec (built by K1WarehouseEnv._build, not yet compiled): one call adds
     the whole render-only layer. Proxies keep their geometry and physics; only the tote's and the
-    K1's rgba is repainted; see the module docstring."""
+    K1's rgba is repainted; see the module docstring. ValueError, before adding anything, for a
+    world over MAX_VIS_GEOMS."""
+    n = sum(map(vis_geoms, world["statics"]))
+    if n > MAX_VIS_GEOMS:
+        raise ValueError(f"world: too detailed to dress (~{n} visual geoms for its statics > {MAX_VIS_GEOMS})")
     made = set()
     wb = spec.worldbody
     L, W = world["size"]
@@ -300,6 +340,9 @@ def add_visuals(spec, world, episode):
                          cutoff=70, exponent=1, diffuse=[0.2, 0.2, 0.19], specular=[0.0, 0.0, 0.0])
 
     racks = [st for st in world["statics"] if st["kind"] == "rack"]
+    # Rack centres and footprint radius bounds (a + b), so each pallet tests only the racks near it.
+    rxy = np.array([r["pos"][:2] for r in racks], float).reshape(-1, 2)
+    rr = np.array([r["half"][0] + r["half"][1] for r in racks], float)
     rows = []                                  # rack rows for the floor tape: [yaw, half depth, lateral, a0, a1]
     bays = []                                  # shelving sizes drawn so far (half extents)
     verts = 0
@@ -309,9 +352,7 @@ def add_visuals(spec, world, episode):
         if st["kind"] == "rack":
             if hy > hx:                        # shelving runs along the static's long side
                 hx, hy, yaw, c, s_ = hy, hx, yaw + math.pi / 2, -s_, c
-            lo, hi, _ = _aabb(SHELF)
-            # Bays at the asset's aspect, none narrower than 0.5 m (a long, low rack is not 1000s of bays).
-            n = max(1, min(round(2 * hx / (2 * hz * (hi - lo)[0] / (hi - lo)[2])), round(2 * hx / 0.5)))
+            n = _bays(hx, hz)
             want = np.array([hx / n, hy, hz])  # a bay's slot (half extents); bh = the shelving drawn in it
             bh = next((q for q in bays if (q <= want).all() and (q >= BAY_FILL * want).all()), None)
             if bh is None:
@@ -350,10 +391,12 @@ def add_visuals(spec, world, episode):
         elif st["kind"] == "pallet":
             # The end of a pallet pushed into a rack bay would slice through the bottom shelf: cut it
             # off (the proxy is inside the rack's proxy there anyway), but only where the rack is
-            # square to the pallet and covers that whole end. Any other cut would leave pallet undrawn
-            # that the low scan sees and the robot can trip on, so then the pallet is drawn whole.
+            # square to the pallet and covers that whole end, full height. Any other cut would leave
+            # pallet undrawn that the low scan sees and the robot can trip on, so then the pallet is
+            # drawn whole.
             lo, hi = [-hx, -hy], [hx, hy]
-            for r in racks:
+            # A rack whose footprint (within its centre +- (a + b)) misses the pallet's (+- (hx + hy)) can't cut it.
+            for r in (racks[i] for i in np.flatnonzero(np.abs(rxy - (px, py)).max(1) <= rr + (hx + hy))):
                 dx, dy = r["pos"][0] - px, r["pos"][1] - py
                 cen, ext = (c * dx + s_ * dy, -s_ * dx + c * dy), _xy_half(r["half"], r["yaw"] - yaw)
                 ov = [min(hi[i], cen[i] + ext[i]) - max(lo[i], cen[i] - ext[i]) for i in (0, 1)]
@@ -361,6 +404,7 @@ def add_visuals(spec, world, episode):
                 j = 1 - i
                 if min(ov) > 0 and abs(math.remainder(r["yaw"] - yaw, math.pi / 2)) < 1e-3 \
                         and cen[j] - ext[j] <= lo[j] and cen[j] + ext[j] >= hi[j] \
+                        and r["pos"][2] - r["half"][2] <= pz - hz + 1e-6 and r["pos"][2] + r["half"][2] >= pz + hz - 1e-6 \
                         and (cen[i] + ext[i] >= hi[i] if cen[i] > 0 else cen[i] - ext[i] <= lo[i]):
                     if cen[i] > 0:
                         hi[i] = cen[i] - ext[i]
@@ -399,7 +443,8 @@ def add_visuals(spec, world, episode):
     x0, y0, x1, y1 = world["spawn"]            # the dock (spawn area): outlined and hatched
     for side in (-1, 1):
         box([(x0 + x1) / 2, (y0 + y1) / 2 + side * (y1 - y0) / 2, 0.002], [(x1 - x0) / 2 + 0.025, 0.025, 0.002], TAPE)
-        box([(x0 + x1) / 2 + side * (x1 - x0) / 2, (y0 + y1) / 2, 0.002], [0.025, (y1 - y0) / 2, 0.002], TAPE)
+        box([(x0 + x1) / 2 + side * (x1 - x0) / 2, (y0 + y1) / 2, 0.002], [0.025, max((y1 - y0) / 2, 1e-3), 0.002],
+            TAPE)                              # floored: a valid line/point spawn has ymin == ymax
     x0, y0, x1, y1 = x0 + 0.05, y0 + 0.05, x1 - 0.05, y1 - 0.05
     for c in np.arange(y0 - x1 + 0.5, y1 - x0, 1.0):          # 45 deg stripes y = x + c, clipped to the box
         xa, xb = max(x0, y0 - c), min(x1, y1 - c)
@@ -441,11 +486,14 @@ def add_visuals(spec, world, episode):
     if episode["forklift"]:
         _forklift(spec.body("forklift"))
 
-    for g in spec.geoms:                       # K1 paint job + a grey tote (rgba only: not physics)
+    # K1 paint job + a grey tote (rgba only: not physics). The meshless collision primitives would
+    # poke through the shell as dark sleeves: alpha 0 hides them (group 2: no depth ray casts it).
+    for g in spec.geoms:
         if g.name == "tote":
             g.rgba = [0.25, 0.32, 0.4, 1]
         elif g.parent.name.startswith("k1/") and g.meshname != "k1/K1logo":
-            g.rgba = [0.92, 0.92, 0.9, 1] if g.meshname[3:] in K1_SHELL else [0.13, 0.13, 0.14, 1]
+            g.rgba = ([0.92, 0.92, 0.9, 1] if g.meshname[3:] in K1_SHELL else [0.13, 0.13, 0.14, 1]) if g.meshname \
+                else [0, 0, 0, 0]
     _tote(spec.body("k1"), asset)
 
 
@@ -475,10 +523,11 @@ def _pallet(body, pos, half, yaw):
         body.add_geom(type=BOX, pos=[px + c * x - s_ * y, py + s_ * x + c * y, pz + z], size=[bx, by, bz],
                       quat=_yaw(yaw), rgba=WOOD, material="vis_matte", **VIS)
     t = hz * 0.18                              # board thickness (half)
-    for y in (-hy + 0.05, 0.0, hy - 0.05):
-        board(0, y, 0, hx, 0.045, hz - 2 * t)                      # stringers
-        board(0, y, -hz + t, hx, 0.05, t)                          # bottom boards
-    n = max(3, round(2 * hx / 0.16))
+    e = min(0.05, hy)                          # bottom board half width: a strip under 10 cm stays inside +- hy
+    for y in (-hy + e, 0.0, hy - e):
+        board(0, y, 0, hx, min(0.045, e), hz - 2 * t)              # stringers
+        board(0, y, -hz + t, hx, e, t)                             # bottom boards
+    n = _decks(hx)
     for i in range(n):                                             # deck boards across the stringers
         board(-hx + (2 * i + 1) * hx / n, 0, hz - t, hx / n * 0.7, hy, t)
 
@@ -575,7 +624,6 @@ def _forklift(body):
 
 
 def selftest():
-    import tempfile
     # Loader math on a hand-made glTF: data-URI buffer, u8 indices, a column-major matrix parent
     # (+1 along glTF z) over a TRS child (90 deg about y, mirrored x). Expect Z-up vertices
     # (x, -z, y), the winding flipped back by the mirror, and uv as glTF has it.
@@ -625,6 +673,24 @@ def selftest():
             px = r.render()[8, 8]
         assert px[0] > 200 and px[2] < 50, ("usertexcoord v runs the other way", px)
 
+        # Texture cache: four threads converting one new image all get the cached PNG (each writer
+        # its own temp file), and a cache that can't be written (under a file) falls back to temp.
+        src, cache, tdir = (pathlib.Path(tmp) / "uv.png").read_bytes(), CACHE, tempfile.tempdir
+        try:
+            globals()["CACHE"], tempfile.tempdir = pathlib.Path(tmp) / "cache", tmp
+            got = []
+            ts = [threading.Thread(target=lambda: got.append(_png("selftest-race", lambda: src))) for _ in range(4)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+            assert len(got) == 4 and {p.parent for p in got} == {CACHE} and got[0].is_file(), got
+            globals()["CACHE"] = pathlib.Path(tmp) / "uv.png" / "cache"
+            out = _png("selftest-ro", lambda: src)
+            assert out.parent == pathlib.Path(tmp) / "k1sim_asset_cache" and out.is_file(), out
+        finally:
+            globals()["CACHE"], tempfile.tempdir = cache, tdir
+
     # Every library asset the scene uses (+ two GLBs for loader coverage: u8 indices, an external
     # and an embedded image): sane vertices/faces/uvs, outward winding, a PNG texture, and MuJoCo
     # accepts the mesh.
@@ -645,12 +711,13 @@ def selftest():
     lo, hi, _ = _aabb(SHELF)
     assert np.allclose(hi - lo, [10.97, 5.02, 21.41], atol=0.01), hi - lo   # SHELF_LEVELS were measured on this mesh
 
-    def dress(statics, boxes=()):
-        """add_visuals on a bare spec (a k1 body, the loose boxes' bodies), compiled."""
+    def dress(statics, boxes=(), spawn=(0.8, 0.8, 2, 7.2)):
+        """add_visuals on a bare spec (a k1 body with a collision box, the loose boxes' bodies), compiled."""
         spec = mujoco.MjSpec()
         for name in ["k1"] + [f"box{k}" for k in range(len(boxes))]:
             spec.worldbody.add_body(name=name)
-        add_visuals(spec, {"size": [12, 8], "spawn": [0.8, 0.8, 2, 7.2], "statics": statics},
+        spec.body("k1").add_body(name="k1/trunk").add_geom(type=BOX, size=[0.1, 0.1, 0.1])
+        add_visuals(spec, {"size": [12, 8], "spawn": list(spawn), "statics": statics},
                     dict(boxes=[{"half": h} for h in boxes], workers=[], forklift=None, start=[1, 1, 0]))
         return spec, spec.compile()
 
@@ -664,20 +731,42 @@ def selftest():
     # A pallet pushed 0.2 m into a rack bay is drawn cut at the rack's face, its outer end kept...
     spec, _ = dress([st("rack", [3, 2, 1], [0.6, 0.4, 1]), st("pallet", [3, 2.55, 0.07], [0.5, 0.25, 0.07])])
     assert np.allclose(boards(spec), [2.5, 2.4, 3.5, 2.8]), boards(spec)
+    # (the K1's meshless collision primitives are hidden, not drawn dark over its shell)
+    assert next(g for g in spec.geoms if g.parent.name == "k1/trunk").rgba[3] == 0
     # ...but drawn whole where the rack does not cover the cut-off end: a narrow rack across it, a
-    # rack over one corner, a yawed rack into it (the low scan sees all of the proxy; it must not
-    # look like empty floor).
-    for rack in (st("rack", [4, 3, 1], [0.1, 0.8, 1]), st("rack", [4.65, 3.525, 1], [0.35, 0.475, 1])):
+    # rack over one corner, a rack raised 1 m off the floor, a 6 cm one, a yawed rack into it (the
+    # low scan sees all of the proxy; it must not look like empty floor).
+    for rack in (st("rack", [4, 3, 1], [0.1, 0.8, 1]), st("rack", [4.65, 3.525, 1], [0.35, 0.475, 1]),
+                 st("rack", [4, 3.6, 1.5], [0.7, 0.4, 0.5]), st("rack", [4, 3.6, 0.03], [0.7, 0.4, 0.03])):
         spec, _ = dress([rack, st("pallet", [4, 3, 0.07], [0.6, 0.4, 0.07])])
         assert np.allclose(boards(spec), [3.4, 2.6, 4.6, 3.4]), (rack, boards(spec))
     spec, _ = dress([st("rack", [4, 3, 1], [0.6, 0.4, 1], math.pi / 4), st("pallet", [4, 3.75, 0.07], [0.6, 0.4, 0.07])])
     assert np.allclose(boards(spec), [3.4, 3.35, 4.6, 4.15]), boards(spec)
+    # A pallet under 10 cm wide stays inside its proxy: an imported 2 cm strip, and the 3 cm a
+    # pallet sticks out of a rack face once cut.
+    spec, _ = dress([st("pallet", [6, 6, 0.07], [0.5, 0.01, 0.07])])
+    assert np.allclose(boards(spec), [5.5, 5.99, 6.5, 6.01]), boards(spec)
+    spec, _ = dress([st("rack", [6, 5, 1], [0.6, 0.5, 1]), st("pallet", [6, 4.72, 0.07], [0.5, 0.25, 0.07])])
+    assert np.allclose(boards(spec), [5.5, 4.47, 6.5, 4.5]), boards(spec)
+
+    # Dressing budget: a 1 km pallet is 70 geoms (wider deck boards), and a world over
+    # MAX_VIS_GEOMS is refused before anything is added (it took minutes to dress).
+    assert vis_geoms(st("pallet", [0, -9, 0.07], [500, 0.5, 0.07])) == 70
+    spec = mujoco.MjSpec()
+    try:
+        add_visuals(spec, {"size": [6, 6], "spawn": [1, 1, 2, 2], "statics": [st("rack", [3, 2, 1], [500, 0.4, 1])] * 100},
+                    None)
+        raise AssertionError("an over-budget world was dressed")
+    except ValueError as e:
+        assert "too detailed" in str(e) and not spec.geoms, e
 
     # Degenerate statics a valid world can hold (any half >= 1 mm) still compile: a 4 mm-high rack,
     # a 1 mm-deep one, a 1 mm loose box, and a 0.1 m wall along the dock (too low for a door).
     spec, _ = dress([st("rack", [4, 3, 0.004], [0.6, 0.4, 0.004]), st("rack", [8, 3, 1], [0.6, 0.001, 1]),
                      st("wall", [6, -0.05, 0.05], [6, 0.05, 0.05])], boxes=[0.001])
     assert not any(g.meshname.startswith("vis_" + pathlib.Path(DOOR).stem) for g in spec.geoms), "door on a 0.1 m wall"
+    for spawn in ((1, 1, 3, 1), (2, 3, 2, 3)):   # a line and a point spawn (min == max is valid)
+        dress([], spawn=spawn)
 
     # Mesh sharing: a rack within BAY_FILL of an earlier, smaller one is drawn at that size, on its
     # own floor; a deeper one gets its own mesh. Loose boxes within BOX_FIT share a carton.

@@ -24,8 +24,9 @@ Schema mapping (see LEROBOT_EXPORT.md):
 Usage:
   python3 rrd_to_lerobot.py <in.rrd> --out <dir> [--fps 10] [--task "follow the locked person"]
                                      [--with-depth] [--repo-id local/k1_follow]
+  python3 rrd_to_lerobot.py selftest
 """
-import argparse, json, os, sys
+import argparse, json, math, os, sys
 
 # ---- entity -> feature mapping ---------------------------------------------
 # observation.state components, in order, each an entity that logs rr.Scalars.
@@ -338,10 +339,13 @@ def _boxes2d_row(rb):
 
 
 def _ffill(series_by_fi, frames):
-    """Forward-fill a {frame_idx: value} map onto the sorted `frames` list (0.0 before first)."""
+    """Forward-fill a {frame_idx: value} map onto the sorted `frames` list (0.0 before first).
+    Non-finite samples count as missing: the robot logs NaN for "not measured" (e.g. /reid/sim on a
+    COAST tick, every follow col when unlocked), so they carry the last real value (or the 0.0 seed)
+    instead of reaching observation.state / stats.json as NaN."""
     out, last = [], 0.0
     for fi in frames:
-        if fi in series_by_fi:
+        if fi in series_by_fi and math.isfinite(series_by_fi[fi]):
             last = series_by_fi[fi]
         out.append(last)
     return out
@@ -404,6 +408,9 @@ def assemble_episode(scalars, images, allow_no_track=False):
         while j + 1 < len(img_fis) and img_fis[j + 1] <= fi:
             j += 1
         rgb.append(images[img_fis[j]] if (img_fis and img_fis[j] <= fi) else None)
+    # Fail closed: a NaN channel would poison stats.json (mean/std NaN) and every normalized frame.
+    if not (np.isfinite(state).all() and np.isfinite(action).all()):
+        raise SystemExit("non-finite state/action after assembly")
     return frames, state, action, rgb
 
 
@@ -557,6 +564,29 @@ def try_write_lerobot(out, frames, state, action, rgb, fps, task, repo_id):
     return True
 
 
+def sim_provenance(path):
+    """The static /sim/provenance JSON of a sim .rrd as a dict, or None (robot recording).
+    Carries task/seed/world name only -- NOT the full scenario, so it is not enough to replay."""
+    try:
+        store = _load_store(path)
+    except ImportError:  # ponytail: rerun 0.23 has no RrdReader -> caller labels the task "unknown"
+        return None
+    for ch in store.stream():
+        if ch.is_static and str(ch.entity_path) == SIM_ENTITY:
+            v = _col(ch.to_record_batch(), "TextLog:text").to_pylist()[0]
+            try:
+                d = json.loads(v[0] if isinstance(v, list) else v)
+            except (TypeError, ValueError):
+                return None
+            return d if isinstance(d, dict) else None
+    return None
+
+
+# Keep identical to sim/warehouse/record.py TASK_TEXT (its own LeRobot export labels the same data).
+SIM_TASK_TEXT = {"follow": "follow the locked person",
+                 "pick": "visit the pick stations, then return to the dock"}
+
+
 def is_simulated(path):
     """True if the .rrd carries the sim's provenance marker (see SIM_ENTITY)."""
     try:
@@ -571,8 +601,10 @@ def main():
     ap.add_argument("rrd", help="input .rrd (from --rerun or replay_eval --rerun)")
     ap.add_argument("--out", required=True, help="output dataset directory")
     ap.add_argument("--fps", type=float, default=10.0)
-    ap.add_argument("--task", default="follow the locked person")
-    ap.add_argument("--repo-id", default="local/k1_follow")
+    ap.add_argument("--task", default=None,
+                    help='default "follow the locked person"; a sim .rrd defaults to its own task')
+    ap.add_argument("--repo-id", default=None,
+                    help="default local/k1_follow; a sim .rrd defaults to local/k1_sim_<task>")
     ap.add_argument("--with-depth", action="store_true",
                     help="NOT IMPLEMENTED: depth frames are read but a head_depth export does not "
                          "exist yet -- this flag exits with an error instead of silently no-opping")
@@ -596,6 +628,13 @@ def main():
     except SimulatedRecordingError as e:
         raise SystemExit(str(e))
     sim = a.allow_sim and is_simulated(a.rrd)
+    prov = (sim_provenance(a.rrd) or {}) if sim else None
+    if sim:  # label sim data with the task it records, like record.export_lerobot does
+        ptask = str(prov.get("task", "unknown"))
+        a.task = a.task or SIM_TASK_TEXT.get(ptask, ptask)
+        a.repo_id = a.repo_id or "local/k1_sim_%s" % ptask
+    a.task = a.task or "follow the locked person"
+    a.repo_id = a.repo_id or "local/k1_follow"
     print("  entities: %d scalar, %d rgb frames, %d depth frames"
           % (len(scalars), len(images), len(depth)))
     frames, state, action, rgb = assemble_episode(scalars, images, allow_no_track=a.allow_no_track)
@@ -608,15 +647,81 @@ def main():
         return 0
     info = write_raw(a.out, frames, state, action, rgb, a.fps, a.task, a.repo_id, a.with_depth)
     if sim:  # same relabel sim/warehouse/record.py applies to its own LeRobot export
-        info.update(robot_type="booster_k1_sim", note="SIMULATED: converted from a K1 warehouse sim .rrd, "
-                    "NOT robot data. " + info["note"])
+        info.update(robot_type="booster_k1_sim",
+                    note="SIMULATED: converted from a K1 warehouse sim .rrd (sim/warehouse/), NOT robot "
+                         "data. observation.state is a synthetic mapping of the sim's detector model. "
+                         "RAW layout. See meta/sim_provenance.json.")
         with open(os.path.join(a.out, "meta", "info.json"), "w") as f:
             json.dump(info, f, indent=2)
+        with open(os.path.join(a.out, "meta", "sim_provenance.json"), "w") as f:
+            json.dump(prov, f, indent=2)
     print("WROTE raw LeRobot-v3-shaped dataset -> %s  (video_backend=%s)"
           % (a.out, info["video_backend"]))
     print("NOTE: internal QA/pipeline-proof artifact -- NOT thesis training data (see LEROBOT_EXPORT.md).")
     return 0
 
 
+def selftest():
+    """Regression checks: NaN-as-missing ffill (COAST + no-track) and sim .rrd task labelling."""
+    import tempfile
+    import numpy as np
+    import rerun as rr
+    nan = float("nan")
+
+    def sc(n, **over):   # {entity: {fi: v}} for n frames of a locked follow, with per-entity overrides
+        base = {"/follow/range": 1.5, "/follow/range_source": 2.0, "/follow/bearing": 3.0, "/reid/sim": 0.8,
+                "/track/conf": 0.9, "/health/depth_fps": 15.0, "/fsm/state_id": 3.0, "/cmd/vx": 0.1, "/cmd/vyaw": 0.0}
+        return {e: {i: over.get(e, {}).get(i, v) for i in range(n)} for e, v in base.items()}
+
+    # COAST ticks log finite range + NaN /reid/sim: kept, carrying the last real anchor_sim.
+    fr, st, ac, _ = assemble_episode(sc(10, **{"/reid/sim": {4: nan, 5: nan}}), {})
+    assert fr == list(range(10)) and np.isfinite(st).all() and st[4, 3] == st[5, 3] == np.float32(0.8), st[:, 3]
+    # Never-locked + --allow-no-track: follow cols are 0-filled (as documented), not NaN.
+    nt = {e: nan for e in ("/follow/range", "/follow/bearing", "/reid/sim", "/track/conf")}
+    fr, st, ac, _ = assemble_episode(sc(5, **{e: dict.fromkeys(range(5), v) for e, v in nt.items()}), {},
+                                     allow_no_track=True)
+    assert np.isfinite(st).all() and (st[:, [0, 1, 3, 4]] == 0).all(), st
+
+    # --allow-sim takes task/repo_id from the .rrd's /sim/provenance; robot defaults unchanged.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        def mk(name, prov):
+            path = os.path.join(td, name)
+            s = rr.RecordingStream("k1_selftest")
+            s.save(path)
+            if prov:
+                s.log(SIM_ENTITY, rr.TextLog(json.dumps(prov)), static=True)
+            for e, d in sc(4).items():
+                for i, v in d.items():
+                    s.set_time("frame_idx", sequence=i)
+                    s.log(e, rr.Scalars(v))
+            s.flush()
+            s.disconnect()
+            return path
+
+        def run(*argv):
+            old, sys.argv = sys.argv, ["rrd_to_lerobot.py", *argv, "--raw"]
+            try:
+                main()
+            finally:
+                sys.argv = old
+            out = argv[argv.index("--out") + 1]
+            meta = lambda f: open(os.path.join(out, "meta", f)).read()
+            return json.loads(meta("info.json")), json.loads(meta("tasks.jsonl"))["task"], out
+
+        sim_rrd = mk("pick.rrd", {"simulated": True, "task": "pick", "seed": 8, "world": "w"})
+        info, task, out = run(sim_rrd, "--out", os.path.join(td, "pick"), "--allow-sim")
+        assert task == SIM_TASK_TEXT["pick"] and info["repo_id"] == "local/k1_sim_pick", (task, info["repo_id"])
+        assert info["robot_type"] == "booster_k1_sim" and "follow" not in info["note"], info["note"]
+        assert json.load(open(os.path.join(out, "meta", "sim_provenance.json")))["seed"] == 8
+        info, task, _ = run(sim_rrd, "--out", os.path.join(td, "pick2"), "--allow-sim", "--task", "t", "--repo-id", "r")
+        assert (task, info["repo_id"]) == ("t", "r")
+        info, task, out = run(mk("robot.rrd", None), "--out", os.path.join(td, "robot"))
+        assert (task, info["repo_id"], info["robot_type"]) == ("follow the locked person", "local/k1_follow",
+                                                               "booster_k1_follow")
+        assert not os.path.exists(os.path.join(out, "meta", "sim_provenance.json"))
+    print("RRD2LR-SELFTEST-OK")
+    return 0
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(selftest() if sys.argv[1:] == ["selftest"] else main())

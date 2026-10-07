@@ -14,7 +14,7 @@ driving runs at real time at most, so that is 300 ms of sim time too.
 Usage:  python web.py [--host 127.0.0.1] [--port 8765] [--model runs/x/model.zip]
         python web.py selftest      -> WEB-SELFTEST-OK
 """
-import argparse, copy, io, json, math, os, pathlib, queue, socket, tempfile, threading, time, traceback
+import argparse, copy, io, json, math, os, pathlib, queue, socket, tempfile, threading, time, traceback, urllib.parse
 from concurrent.futures import Future
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -34,6 +34,7 @@ SPEEDS, FAULTS = (0.5, 1, 2, 4, 8), ("stall05", "stall15", "swap")
 EXPORTS = {"scenario": ("application/json", ".scenario.json"), "mjcf": ("application/zip", "_mjcf.zip"),
            "jsonl": ("application/x-ndjson", ".jsonl"), "rrd": ("application/octet-stream", ".rrd"),
            "lerobot": ("application/zip", "_lerobot.zip")}
+EPISODE_EXPORTS = ("jsonl", "rrd", "lerobot")   # of a recording: these can take ?episode=previous
 DEADMAN_S = 0.3                       # manual action -> 0 this long after the last drive message
 FPS, VIDEO_W, VIDEO_H = 15, 640, 480
 MAX_BODY = 8 << 20                    # POST body cap (bytes)
@@ -67,7 +68,7 @@ class SimThread(threading.Thread):
         self.cv = threading.Condition()         # guards the published snapshot below
         self.state, self.jpeg, self.frame_n = {}, b"", 0
         self.ready, self.stopping = threading.Event(), False
-        self.model_path, self.ppo = model_path, None
+        self.model_path, self.ppo, self.ppo_task = model_path, None, None
         # Everything below is touched by this thread only.
         self.task, self.seed, self.world = "pick", 0, None
         self.env = self.scenario = self.obs = self.renderer = self.vd = self.rec = self.last_rec = None
@@ -75,7 +76,7 @@ class SimThread(threading.Thread):
         self.paused = self.done = False
         self.outcome = self.error = None
         self.manual, self.manual_t, self.action = np.zeros(2), 0.0, np.zeros(2)
-        self.drive_seq = -1                     # newest drive seq applied; never reset, so late drives stay dropped
+        self.drive_seqs = {}                    # page id -> newest drive seq applied; late drives stay dropped
         self.cam = mujoco.MjvCamera()
         self.next_step = self.next_frame = 0.0
         self.dirty = True                       # re-render even while paused
@@ -89,7 +90,11 @@ class SimThread(threading.Thread):
 
     def snapshot(self):
         with self.cv:
-            return self.state
+            st = dict(self.state)
+        if st:                                  # wall-time flag: exact on every read, also while paused or done
+            at = st.pop("deadman_at", None)
+            st["deadman"] = at is not None and time.monotonic() > at
+        return st
 
     def wait_frame(self, last, timeout=1.0):
         with self.cv:
@@ -163,10 +168,14 @@ class SimThread(threading.Thread):
 
     def _do(self, op, a):
         if op == "drive":
-            if a["seq"] is not None:
-                if a["seq"] <= self.drive_seq:
-                    return                      # delivered late: a newer message (maybe a stop) already won
-                self.drive_seq = a["seq"]
+            if a["seq"] is not None:            # per page: one page's counter says nothing about another's
+                seqs, c = self.drive_seqs, a["client"]
+                if a["seq"] <= seqs.get(c, -1):
+                    return                      # delivered late: a newer message from that page (maybe a stop) won
+                seqs.pop(c, None)
+                seqs[c] = a["seq"]              # most recently heard last
+                if len(seqs) > 64:              # ponytail: forget the longest-quiet page; its late drives are long gone
+                    del seqs[next(iter(seqs))]
             self.manual, self.manual_t = a["action"], a["t"]
         elif op == "reset":
             self._start(a.get("task", self.task), self.world, seed=a.get("seed", self.seed))
@@ -203,7 +212,7 @@ class SimThread(threading.Thread):
         elif op == "fault":
             self._fault(a)
         elif op == "export":
-            return self._export(a)
+            return self._export(*a)
 
     def _start(self, task, world, seed=None, scenario=None):
         """Reset onto a (task, world) and start running. The env is reused unless either changed."""
@@ -253,7 +262,16 @@ class SimThread(threading.Thread):
             got = (self.env.observation_space.shape, self.env.action_space.shape)
             if want != got:
                 raise ValueError(f"the policy expects obs/action shapes {want}, this sim gives {got}")
-            self.ppo = ppo
+            # Every model fits both tasks' shapes: train.py's eval.json beside model.zip says which it
+            # learned. No record, no driving.
+            try:
+                task = json.loads(pathlib.Path(self.model_path).with_name("eval.json").read_text())["task"]
+            except (OSError, ValueError, KeyError, TypeError):
+                raise ValueError(f"no eval.json with a task beside {self.model_path}: cannot tell which task "
+                                 "it was trained on") from None
+            self.ppo, self.ppo_task = ppo, task
+        if self.ppo_task != self.env.task:      # every call: a reset can switch the task under a loaded policy
+            raise ValueError(f"the policy was trained on {self.ppo_task}, this episode is {self.env.task}")
         return self.ppo
 
     def _step(self):
@@ -275,7 +293,7 @@ class SimThread(threading.Thread):
         self.rec.step(self.action, obs, rew, term, trunc or full, info)   # gym meaning: cut by a limit
         self.obs = obs
         if term or trunc or full:
-            self.done = self.paused = True      # auto-pause on the outcome banner
+            self.done = self.paused = self.dirty = True     # auto-pause on the outcome banner, drawn as it ended
             self.outcome = _outcome(self.env.task, info, term) if term or trunc else \
                 {"success": False, "reason": f"Recording limit reached ({REC_MAX_STEPS * CTRL_DT:.0f} s of sim)"}
         self._publish()
@@ -302,13 +320,17 @@ class SimThread(threading.Thread):
                                 "belief_k": int(env.belief_k)})
         self.rec._pre[0].setdefault("faults", []).append(kind)   # on the row it lands before (jsonl)
 
-    def _export(self, kind):
+    def _export(self, kind, prev=False):
         """-> (bytes or a recording snapshot, content type, filename). Episode exports use the
-        current recording, or the previous one right after a reset."""
-        rec = self.rec if self.rec.rows or self.last_rec is None else self.last_rec
+        current recording, or with prev the one before the last reset (Next/Replay/Reset/import)."""
+        if prev and kind not in EPISODE_EXPORTS:
+            raise ValueError(f"only episode exports {list(EPISODE_EXPORTS)} can take the previous episode")
+        rec = self.last_rec if prev else self.rec
+        if rec is None:
+            raise ValueError("no previous episode recorded yet")
         scn = self.scenario if kind in ("scenario", "mjcf") else rec.scenario
         ctype, suffix = EXPORTS[kind]
-        name = f"k1_{scn['task']}_seed{scn['seed']}{suffix}"
+        name = f"k1_{scn['task']}_seed{scn['seed']}{'_prev' if prev else ''}{suffix}"
         if kind == "mjcf":                      # needs env.mj_spec: here
             return sim_io.export_mjcf_zip(self.env), ctype, name
         if kind == "scenario":
@@ -366,7 +388,7 @@ class SimThread(threading.Thread):
               "stats": {k: int(v) for k, v in env.stats.items()}, "pose": f3(env._pose()),
               "flags": {"stale": bool(o[I_STALE]), "standing": bool(o[I_STAND]), "seen": bool(o[I_SEEN])},
               "cmd": f3(env.cmd), "action": f3(self.action),
-              "deadman": self.driver == "manual" and time.monotonic() - self.manual_t > DEADMAN_S,
+              "deadman_at": self.manual_t + DEADMAN_S if self.driver == "manual" else None,   # snapshot -> deadman
               "scan": {"low": f3(o[I_SCAN:I_SCAN + N_RAYS] * RAY_MAX), "high": f3(o[I_SCAN + N_RAYS:] * RAY_MAX)},
               "fov_deg": round(math.degrees(RAY_FOV)), "ray_max": RAY_MAX, "rec_steps": len(self.rec.rows)}
         with self.cv:
@@ -407,12 +429,16 @@ def parse_cmd(body, data_root):
             a["seed"] = min(max(s, 0), SEED_MAX)
         return op, a
     if op == "drive":
-        # seq: the page's increasing counter. Each drive is its own connection, so a forward sent
-        # before a release can arrive after it; the sim drops it. Optional: without it, last arrival wins.
-        s = body.get("seq")
+        # seq: the page's increasing counter, client: that page's id (seqs compare within a page only).
+        # Each drive is its own connection, so a forward sent before a release can arrive after it;
+        # the sim drops it. Optional: without seq, last arrival wins; without client, pages share one counter.
+        s, c = body.get("seq"), body.get("client")
         if s is not None and (isinstance(s, bool) or not isinstance(s, int) or not 0 <= s <= 2 ** 53):
             raise ValueError("drive: seq must be an integer in [0, 2**53]")
-        return op, {"action": np.array([_num(body, "vx"), _num(body, "vyaw")]), "t": time.monotonic(), "seq": s}
+        if c is not None and (not isinstance(c, str) or not 0 < len(c) <= 64):
+            raise ValueError("drive: client must be a string of 1-64 characters")
+        return op, {"action": np.array([_num(body, "vx"), _num(body, "vyaw")]), "t": time.monotonic(),
+                    "seq": s, "client": c}
     if op == "speed":
         return op, float(pick(SPEEDS))
     if op in ("driver", "camera", "view", "fault"):
@@ -484,7 +510,7 @@ class Handler(BaseHTTPRequestHandler):
         self._guard(self._post)
 
     def _get(self):
-        path = self.path.split("?", 1)[0]
+        path, _, qs = self.path.partition("?")
         if path == "/":
             self._send(200, (HERE / "web.html").read_bytes(), "text/html; charset=utf-8")
         elif path == "/state":
@@ -494,7 +520,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/domains":
             self._json(200, sim_io.list_localmap_domains(self.server.data_root))
         elif path.startswith("/api/export/") and path[12:] in EXPORTS:
-            data, ctype, name = self._ask("export", path[12:])
+            ep = urllib.parse.parse_qs(qs).get("episode", ["current"])
+            if ep not in (["current"], ["previous"]):
+                raise ValueError("episode must be current or previous")
+            data, ctype, name = self._ask("export", (path[12:], ep == ["previous"]))
             if not isinstance(data, bytes):     # episode snapshot: encode here, off the sim thread
                 data = encode_episode(path[12:], data)
             self._send(200, data, ctype, [("Content-Disposition", f'attachment; filename="{name}"')])
@@ -688,6 +717,16 @@ def selftest():
         cmd("drive", 204, vx=1, vyaw=0, seq=s_old)
         time.sleep(0.2)                                  # >= 1 step, < the deadman
         assert state()["action"] == [0.0, 0.0], state()
+        # Seqs compare within one page (client): a page loaded earlier (lower seq base) still drives
+        # after a newer page spoke, and its own forward delivered after its own stop is still dropped.
+        cmd("drive", 204, vx=0, vyaw=0, seq=10 ** 12, client="tab-b")
+        cmd("drive", 204, vx=0, vyaw=1, seq=5, client="tab-a")
+        time.sleep(0.2)
+        assert state()["action"] == [0.0, 1.0], state()
+        cmd("drive", 204, vx=0, vyaw=0, seq=7, client="tab-a")
+        cmd("drive", 204, vx=1, vyaw=0, seq=6, client="tab-a")
+        time.sleep(0.2)
+        assert state()["action"] == [0.0, 0.0], state()
 
         # Pause + step = exactly one 0.1 s control tick.
         s1 = cmd("pause")["state"]
@@ -696,6 +735,11 @@ def selftest():
         s2 = cmd("step")["state"]
         assert s2["paused"] and s2["stats"]["steps"] == s1["stats"]["steps"] + 1, (s1, s2)
         assert abs(s2["t"] - s1["t"] - CTRL_DT) < 1e-6, (s1["t"], s2["t"])
+        # The deadman flag is wall time read on demand: it trips while paused, with no step to publish it.
+        cmd("drive", 204, vx=0, vyaw=0, seq=next_seq())
+        time.sleep(DEADMAN_S + 0.4)
+        st = state()
+        assert st["deadman"] and st["t"] == s2["t"], st
 
         # One MJPEG part is a whole JPEG, and every camera draws a real picture after a reset (not
         # the black frame a mis-ordered GL context close produces), in both views; the sensor view
@@ -770,6 +814,7 @@ def selftest():
         assert code == 400 and "unknown op" in json.loads(b)["error"], (code, b)
         assert req("/api/cmd", b'{"op": "drive", "vx": NaN, "vyaw": 0}')[0] == 400
         assert req("/api/cmd", {"op": "drive", "vx": 0, "vyaw": 0, "seq": "7"})[0] == 400
+        assert req("/api/cmd", {"op": "drive", "vx": 0, "vyaw": 0, "seq": 7, "client": 7})[0] == 400
         assert req("/api/cmd", {"op": "reset", "seed": "5"})[0] == 400
         c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
         c.putrequest("POST", "/api/import/scenario")
@@ -788,8 +833,10 @@ def selftest():
         st = state()
         assert st["stats"]["prep_events"] > prep0 and not st["done"], st
         # The fault is in the recording, so the export says the episode was tampered with.
-        rows = [json.loads(ln) for ln in req("/api/export/jsonl")[2].splitlines()[1:]]
+        lines = req("/api/export/jsonl")[2].splitlines()
+        rows = [json.loads(ln) for ln in lines[1:]]
         assert [r["faults"] for r in rows if "faults" in r] == [["stall15"]], [r.get("faults") for r in rows]
+        assert [f["kind"] for f in json.loads(lines[0])["faults"]] == ["stall15"], lines[0][:200]
         assert [f["kind"] for f in srv.sim.rec.faults] == ["stall15"], srv.sim.rec.faults
         # Swap target ID: needs a distractor; a pick episode refuses it.
         env = K1WarehouseEnv(task="follow")
@@ -802,7 +849,10 @@ def selftest():
 
         # Recording cap: the episode ends on a truncated row, with the reason on the banner. The
         # finished recording moved to last_rec without its env (the old map's grid can be freed).
+        # An episode that ends while running is drawn as it ended, under the banner.
         cap, REC_MAX_STEPS = REC_MAX_STEPS, 12
+        drawn_t = []                                     # env.t of every frame the sim draws
+        srv.sim._render = lambda r=srv.sim._render: (drawn_t.append(srv.sim.env.t), r())[1]
         try:
             cmd("driver", value="auto")
             cmd("speed", value=8)
@@ -810,13 +860,23 @@ def selftest():
             t_end = time.monotonic() + 60
             while not state()["done"] and time.monotonic() < t_end:
                 time.sleep(0.05)
+            time.sleep(0.3)                              # > one frame slot
         finally:
             REC_MAX_STEPS = cap
+            del srv.sim._render
+        assert drawn_t[-1] == srv.sim.env.t, ("final state never drawn", drawn_t[-3:], srv.sim.env.t)
         st = state()
         assert st["done"] and st["rec_steps"] == 12 and "Recording limit" in st["outcome"]["reason"], st
         last = json.loads(req("/api/export/jsonl")[2].splitlines()[-1])
         assert last["truncated"] and not last["terminated"], last
         assert srv.sim.last_rec.env is None
+        # After Next the finished episode exports on request (?episode=previous); plain is the new one.
+        cmd("next")
+        code, h, b = req("/api/export/jsonl?episode=previous")
+        assert code == 200 and "seed1_prev.jsonl" in h["Content-Disposition"] and len(b.splitlines()) == 13, (code, b[:200])
+        assert json.loads(b.splitlines()[-1])["truncated"]
+        assert json.loads(req("/api/export/jsonl")[2].splitlines()[0])["scenario"]["seed"] == 2
+        assert req("/api/export/mjcf?episode=previous")[0] == 400 and req("/api/export/jsonl?episode=old")[0] == 400
 
         # A policy trained on another env is refused at load time; the driver stays as it was.
         from stable_baselines3 import PPO
@@ -824,7 +884,22 @@ def selftest():
         srv.sim.model_path = str(pathlib.Path(td) / "pendulum.zip")
         code, _, b = req("/api/cmd", {"op": "driver", "value": "policy"})
         assert code == 400 and "shapes" in json.loads(b)["error"] and state()["driver"] == "auto", (code, b)
-        srv.sim.model_path = None
+        # Both tasks share the shapes: a policy drives only the task its run's eval.json names, also
+        # once loaded (a reset can switch the task under it), and not at all without that record.
+        run = pathlib.Path(td) / "follow_run"
+        run.mkdir()
+        PPO("MlpPolicy", K1WarehouseEnv(task="follow"), n_steps=64, device="cpu").save(run / "model.zip")
+        srv.sim.model_path = str(run / "model.zip")
+        cmd("reset", task="follow", seed=3)
+        cmd("pause")
+        assert "eval.json" in cmd("driver", 400, value="policy")["error"]
+        (run / "eval.json").write_text(json.dumps({"task": "follow"}))
+        cmd("driver", value="policy")
+        assert cmd("step")["state"]["driver"] == "policy"
+        cmd("driver", value="auto")
+        cmd("reset", task="pick", seed=3)
+        assert "trained on follow" in cmd("driver", 400, value="policy")["error"] and state()["driver"] == "auto"
+        srv.sim.model_path, srv.sim.ppo = None, None
 
         # Local Map: a domain written into the temp data root lists, imports and runs.
         sim_io.world_to_localmap(scn["world"], "selftest_map", data_root=pathlib.Path(td))

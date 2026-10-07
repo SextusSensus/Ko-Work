@@ -160,7 +160,7 @@ policy. The same planner runs on generated and imported maps.
 |---|---|
 | **Fall** on foot-level contact at speed, on a velocity lunge, or on fast yaw while walking | `docs/HARDENING_2026-07.md` |
 | **Forklift contact** is always a fall | Warehouse hazard; forklifts do not yield |
-| **kPrepare lockout**: 1.5–3 s before walking again after the 1000 ms stale tier | `STALE_PREP_MS` in `robot/loco_follow_bridge.cpp`; `_graceful_stop` in `robot/follow_person_k1.py` |
+| **kPrepare lockout**: 1.5–3 s before walking again, counted from when commands resume after the 1000 ms stale tier | `STALE_PREP_MS` in `robot/loco_follow_bridge.cpp`; `_graceful_stop` in `robot/follow_person_k1.py` |
 | **Reacquire**: the follow target is only known through the detector; behind a rack it is gone | `S_REACQUIRE` in `robot/follow_person_k1.py` |
 | **Identity swap**: a worker crossing within 0.6 m of the target can steal the lock | `docs/CROWD_2FA_LOCK.md` |
 | **Depth range glitch**: 2% of person detections read 1.5–3× long | `docs/HARDENING_2026-07.md` |
@@ -180,7 +180,7 @@ Every reset re-randomizes these:
 | Task | Success | 95% CI |
 |---|---|---|
 | pick (2 stations) | 0.80 | 0.63–0.91 |
-| follow | 0.57 | 0.39–0.73 |
+| follow | 0.63 | 0.46–0.78 |
 
 A trained policy has to beat these on the same seeds (`train.py` reports both). The next step
 after that is shadow mode on the robot, not driving.

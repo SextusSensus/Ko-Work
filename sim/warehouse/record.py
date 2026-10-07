@@ -218,12 +218,18 @@ class Recorder:
 
 
 # ---------------------------------------------------------------------- exporters
+class NoLockedFrames(ValueError):
+    """export_lerobot: the episode has no locked row to export (a follow that never saw its target)."""
+
+
 def provenance(rec):
     scn = rec.scenario
     return {"simulated": True, "sim": "sim/warehouse/k1_warehouse.py",
             "sim_version": f"{scn['format']} v{scn['version']}", "task": scn["task"], "seed": scn["seed"],
             "world": scn["world"].get("name"), "world_source": scn["world"].get("source"),
-            "git_sha": _git_sha(), "steps": len(rec.rows), "frame_size": list(rec.size)}
+            "git_sha": _git_sha(), "steps": len(rec.rows), "frame_size": list(rec.size),
+            # web UI fault injections (rec.faults): with any, scenario + actions alone no longer replay
+            "faults": list(getattr(rec, "faults", [])), "replayable": not getattr(rec, "faults", [])}
 
 
 def _round(v):
@@ -242,10 +248,13 @@ def export_jsonl(rec, path):
     actions replay the episode bit for bit. Frames are not included (binary; use rrd or lerobot)."""
     with open(path, "w") as f:
         f.write(json.dumps({"type": "scenario", "simulated": True, "steps": len(rec.rows),
+                            "faults": list(getattr(rec, "faults", [])),
                             "scenario": rec.scenario}) + "\n")
         for row in rec.rows:
-            # cmd is clipped finite by action_to_cmd; a NaN raw action (broken policy) becomes null.
-            act = [a if math.isfinite(a) else None for a in row["action"]]
+            # cmd is clipped finite by action_to_cmd. A NaN raw action (broken policy) becomes null,
+            # which replays as NaN; +/-inf becomes +/-1.0, the value env.step clips it to anyway.
+            act = [a if math.isfinite(a) else None if math.isnan(a) else math.copysign(1.0, a)
+                   for a in row["action"]]
             f.write(json.dumps({"type": "step", **_round(row), "action": act, "cmd": row["cmd"]},
                                allow_nan=False) + "\n")
     return str(path)
@@ -260,25 +269,31 @@ def export_rrd(rec, path):
     r2l = _rrd_to_lerobot()
     scn, (w, h) = rec.scenario, rec.size
     s = rr.RecordingStream("k1_sim")
-    s.save(str(path))
-    s.send_recording_name(f"SIMULATED k1sim {scn['task']} seed {scn['seed']}")
-    s.log("/sim/provenance", rr.TextLog(json.dumps(provenance(rec))), static=True)
-    if rec.frames:
-        f = w / 2 / math.tan(math.radians(HFOV_DEG) / 2)
-        s.log("/camera/rgb", rr.Pinhole(resolution=[w, h], focal_length=[f, f], principal_point=[w / 2, h / 2]),
-              static=True)
-    for i, row in enumerate(rec.rows):
-        s.set_time("frame_idx", sequence=i)
-        s.set_time("wall", timestamp=rec.wall0 + row["t"])
-        for (ent, _), v in zip(r2l.STATE_ENTITIES + r2l.ACTION_ENTITIES, row["state"] + row["cmd"]):
-            if ent == "/follow/range_source":
-                v = 2.0 if v >= 0.5 else 0.0       # robot code: 2 depth, 0 no range (unlocked; NaN range)
-            s.log(ent, rr.Scalars(v))
-        if rec.frames and i % RRD_IMAGE_EVERY == 0:
-            s.log("/camera/rgb", rr.Image(decode_rgb(rec.frames[i])))
-            s.log("/camera/depth", rr.DepthImage(decode_depth(rec.depths[i]), meter=1.0))
-    s.flush()
-    s.disconnect()
+    try:
+        s.save(str(path))
+        s.send_recording_name(f"SIMULATED k1sim {scn['task']} seed {scn['seed']}")
+        s.log("/sim/provenance", rr.TextLog(json.dumps(provenance(rec))), static=True)
+        if rec.frames:
+            f = w / 2 / math.tan(math.radians(HFOV_DEG) / 2)
+            s.log("/camera/rgb", rr.Pinhole(resolution=[w, h], focal_length=[f, f], principal_point=[w / 2, h / 2]),
+                  static=True)
+        for i, row in enumerate(rec.rows):
+            s.set_time("frame_idx", sequence=i)
+            s.set_time("wall", timestamp=rec.wall0 + row["t"])
+            for (ent, _), v in zip(r2l.STATE_ENTITIES + r2l.ACTION_ENTITIES, row["state"] + row["cmd"]):
+                if ent == "/follow/range_source":
+                    v = 2.0 if v >= 0.5 else 0.0       # robot code: 2 depth, 0 no range (unlocked; NaN range)
+                s.log(ent, rr.Scalars(v))
+            if rec.frames and i % RRD_IMAGE_EVERY == 0:
+                s.log("/camera/rgb", rr.Image(decode_rgb(rec.frames[i])))
+                s.log("/camera/depth", rr.DepthImage(decode_depth(rec.depths[i]), meter=1.0))
+        s.flush()
+    finally:
+        # rerun 0.33: a dropped stream keeps its 2 native threads + handles alive for good (web.py is
+        # long-lived). Drop the last reference, then reap it the way rr.init() does.
+        s.disconnect()
+        del s
+        rr.bindings.flush_and_cleanup_orphaned_recordings()
     return str(path)
 
 
@@ -293,7 +308,13 @@ def export_lerobot(rec, out_dir):
         raise ValueError("nothing recorded")
     keep = [i for i, r in enumerate(rec.rows) if math.isfinite(r["state"][0])]
     if not keep:
-        raise ValueError("no locked frames: the target was never seen in this recording")
+        raise NoLockedFrames("no locked frames: the target was never seen in this recording")
+    segments = []                                   # maximal runs of consecutive kept rows, [first, last]
+    for i in keep:
+        if segments and i == segments[-1][1] + 1:
+            segments[-1][1] = i
+        else:
+            segments.append([i, i])
     r2l = _rrd_to_lerobot()
     out, task = pathlib.Path(out_dir), rec.scenario["task"]
     state = np.array([rec.rows[i]["state"] for i in keep], np.float32)
@@ -301,15 +322,25 @@ def export_lerobot(rec, out_dir):
     # ponytail: every frame decoded at once (~230 KB each, write_raw wants a list); stream it if
     # episodes ever get long enough for that to hurt.
     rgb = [decode_rgb(rec.frames[i]) for i in keep] if rec.frames else [None] * len(keep)
+    # write_raw overwrites but never deletes: clear the video an earlier export into this dir left.
+    vid = out / "videos" / "chunk-000" / "observation.images.head_rgb"
+    (vid / "episode_000000.mp4").unlink(missing_ok=True)
+    shutil.rmtree(vid / "episode_000000_frames", ignore_errors=True)
     info = r2l.write_raw(str(out), keep, state, action, rgb, FPS, TASK_TEXT[task],
                          f"local/k1_sim_{task}", False)
+    if not rec.frames:                              # no images at all: no video feature, not a failed encode
+        info["features"].pop("observation.images.head_rgb", None)
+        info.pop("video_path", None)
+        info["video_backend"] = "none (recorded with --no-frames)"
     info.update(robot_type="booster_k1_sim",
                 note="SIMULATED: K1 warehouse sim (sim/warehouse/), NOT robot data. observation.state is a "
                      "synthetic mapping of the sim's detector model (record.py contract_state). "
-                     "See meta/sim_provenance.json.")
+                     "Unlocked rows are dropped and timestamp/frame_index are compacted over the gaps: "
+                     "meta/sim_provenance.json kept_rows maps each row to its sim step and segments "
+                     "lists the contiguous runs.")
     (out / "meta" / "info.json").write_text(json.dumps(info, indent=2))
-    (out / "meta" / "sim_provenance.json").write_text(json.dumps({**provenance(rec), "scenario": rec.scenario},
-                                                                 indent=2))
+    (out / "meta" / "sim_provenance.json").write_text(json.dumps(
+        {**provenance(rec), "scenario": rec.scenario, "kept_rows": keep, "segments": segments}, indent=2))
     return info
 
 
@@ -321,7 +352,8 @@ def export_lerobot_zip(rec):
 
 
 # ---------------------------------------------------------------------- CLI
-def dataset(a):
+def dataset(a, policy=None):
+    """policy: obs -> action, overrides a.policy (the selftest drives a constant one)."""
     world = scn = None
     if a.scenario:
         import sim_io
@@ -331,18 +363,27 @@ def dataset(a):
     elif a.localmap:
         import sim_io
         world = sim_io.localmap_to_world(a.localmap)
-    policy = heuristic
-    if a.policy != "heuristic":
-        from stable_baselines3 import PPO
-        ppo = PPO.load(a.policy, device="cpu")
-        policy = lambda o: ppo.predict(o, deterministic=True)[0]
-    frames = not a.no_frames and a.format != "jsonl"
-    env = K1WarehouseEnv(task=scn["task"] if scn else a.task, world=world, visuals=frames)   # dress only what is drawn
-    rec = Recorder(env, frames=frames)
+    task = scn["task"] if scn else a.task
+    seeds = [scn["seed"]] if scn else [a.seed + e for e in range(a.episodes)]
     out = pathlib.Path(a.out)
+    # 'sim' in the name: never mistaken for a robot recording. The task too, and an existing output
+    # fails the run before any episode is simulated: another task's or map's run is never replaced.
+    paths = [out / (f"k1sim_{task}_ep_{s}" + ("" if a.format == "lerobot" else "." + a.format)) for s in seeds]
+    for p in paths:
+        if p.exists():
+            raise SystemExit(f"{p} exists; refusing to overwrite (use another --out)")
+    if policy is None:
+        policy = heuristic
+        if a.policy != "heuristic":
+            from stable_baselines3 import PPO
+            ppo = PPO.load(a.policy, device="cpu")
+            policy = lambda o: ppo.predict(o, deterministic=True)[0]
+    frames = not a.no_frames and a.format != "jsonl"
+    env = K1WarehouseEnv(task=task, world=world, visuals=frames)   # dress only what is drawn
+    rec = Recorder(env, frames=frames)
     out.mkdir(parents=True, exist_ok=True)
-    for e in range(a.episodes):
-        obs, _ = env.reset(seed=None if scn else a.seed + e, options={"scenario": scn} if scn else None)
+    for p, seed in zip(paths, seeds):
+        obs, _ = env.reset(seed=None if scn else seed, options={"scenario": scn} if scn else None)
         rec.begin(obs)
         done = False
         while not done:
@@ -350,11 +391,13 @@ def dataset(a):
             obs, rew, term, trunc, info = env.step(act)
             rec.step(act, obs, rew, term, trunc, info)
             done = term or trunc
-        p = out / f"k1sim_ep_{env.scenario['seed']}"     # 'sim' in the name: never mistaken for a robot recording
         if a.format == "lerobot":
-            export_lerobot(rec, p)
+            try:
+                export_lerobot(rec, p)
+            except NoLockedFrames as err:         # nothing to export; the batch goes on
+                print(f"{p.name}: skipped ({err})")
+                continue
         else:
-            p = p.with_suffix("." + a.format)
             (export_jsonl if a.format == "jsonl" else export_rrd)(rec, p)
         print(f"{p.name}: steps={len(rec.rows)} success={info['success']} falls={info['falls']} "
               f"collisions={info['collisions']} human_contacts={info['human_contacts']}")
@@ -395,8 +438,9 @@ def selftest():
         if rec:
             rec.begin(obs)
         seq = [obs]
-        for _ in range(T):
-            act = heuristic(obs)
+        for k in range(T):
+            # one +/-inf action (a broken policy): the jsonl below must still replay it bit for bit
+            act = np.array([np.inf, -np.inf]) if k == 10 else heuristic(obs)
             obs, rew, term, trunc, info = env.step(act)
             if rec:
                 rec.step(act, obs, rew, term, trunc, info)
@@ -436,6 +480,7 @@ def selftest():
         env2 = K1WarehouseEnv(task="follow")
         o2, _ = env2.reset(options={"scenario": lines[0]["scenario"]})
         seq2 = [o2] + [env2.step(np.array(ln["action"]))[0] for ln in lines[1:]]
+        assert lines[11]["action"] == [1.0, -1.0], lines[11]["action"]
         assert np.array_equal(np.array(seq2), runs[1][0]), "jsonl does not replay bit for bit"
 
         # rrd: the repo's own reader keeps exactly the locked frames, with the same state/action columns.
@@ -468,12 +513,33 @@ def selftest():
         prov = json.loads((td / "lr/meta/sim_provenance.json").read_text())
         assert meta["robot_type"] == "booster_k1_sim" and "SIMULATED" in meta["note"] and info["total_frames"] == len(seen)
         assert prov["simulated"] and prov["seed"] == 11 and prov["scenario"]["seed"] == 11 and prov["git_sha"]
+        # timestamps are compacted over the dropped rows: provenance maps every row back to its step
+        assert prov["kept_rows"] == seen == [i for a, b in prov["segments"] for i in range(a, b + 1)], prov["segments"]
+        assert all(b + 1 < c for (_, b), (c, _) in zip(prov["segments"], prov["segments"][1:])), prov["segments"]
         vid = td / "lr/videos/chunk-000/observation.images.head_rgb"
         assert (vid / "episode_000000.mp4").exists() or (vid / "episode_000000_frames").exists()
         print("lerobot video_backend:", info["video_backend"])
         import zipfile
         z = zipfile.ZipFile(io.BytesIO(export_lerobot_zip(rec)))
         assert "meta/sim_provenance.json" in z.namelist() and "data/chunk-000/episode_000000.parquet" in z.namelist()
+        # An imageless re-export into the same dir: no video feature, and the old video is gone.
+        nf = copy.copy(rec)
+        nf.frames = []
+        info = export_lerobot(nf, td / "lr")
+        meta = json.loads((td / "lr/meta/info.json").read_text())
+        assert "observation.images.head_rgb" not in meta["features"] and "video_path" not in meta, meta
+        assert info["video_backend"].startswith("none") and not any(vid.iterdir()), list(vid.iterdir())
+
+        # rerun 0.33 streams leak 2 native threads each unless reaped: repeated exports stay flat.
+        try:
+            import psutil
+        except ImportError:
+            psutil = None
+        if psutil:
+            n0 = psutil.Process().num_threads()
+            for k in range(3):
+                export_rrd(rec, td / f"again{k}.rrd")
+            assert psutil.Process().num_threads() <= n0, (n0, psutil.Process().num_threads())
 
     # Next episode: reset recompiles the model; the Recorder rebinds its renderer.
     obs, _ = env.reset(seed=12)
@@ -484,6 +550,22 @@ def selftest():
         rec.step(act, obs, rew, term, trunc, info)
     assert rec._model is env.model and len(rec.rows) == len(rec.frames) == 3 and rec.scenario["seed"] == 12
     rec.close()
+
+    # dataset CLI: a follow episode that never locks is skipped and the batch goes on; outputs are
+    # named by task + seed and never overwritten.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        td = pathlib.Path(td)
+        ns = argparse.Namespace(scenario=None, localmap=None, task="follow", episodes=2, seed=36,
+                                policy="heuristic", format="lerobot", no_frames=True, out=str(td))
+        dataset(ns, policy=lambda o: np.zeros(2, np.float32))
+        assert not (td / "k1sim_follow_ep_36").exists(), "seed 36 must never see the target standing still"
+        assert (td / "k1sim_follow_ep_37/meta/info.json").exists(), sorted(td.iterdir())
+        ns.episodes, ns.seed = 1, 37
+        try:
+            dataset(ns)
+            raise AssertionError("dataset overwrote an existing episode")
+        except SystemExit as e:
+            assert "refusing to overwrite" in str(e), e
     print("RECORD-SELFTEST-OK")
 
 
@@ -494,7 +576,7 @@ if __name__ == "__main__":
     ap.add_argument("--episodes", type=int, default=1)
     ap.add_argument("--policy", default="heuristic", help="heuristic, or a PPO .zip from train.py")
     ap.add_argument("--format", default="lerobot", choices=["rrd", "lerobot", "jsonl"])
-    ap.add_argument("--out", help="output dir; one k1sim_ep_<seed> file/dir per episode")
+    ap.add_argument("--out", help="output dir; one k1sim_<task>_ep_<seed> file/dir per episode, never overwritten")
     ap.add_argument("--scenario", help="replay this exact scenario JSON (one episode)")
     ap.add_argument("--localmap", help="Local Map domain id: randomize episodes on that real site's map")
     ap.add_argument("--seed", type=int, default=0, help="first episode seed (seeds seed..seed+N-1)")
